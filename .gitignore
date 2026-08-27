@@ -1,0 +1,13 @@
+# Node / build artifacts
+node_modules/
+.output/
+.wxt/
+dist/
+
+# Temporary research clones, test downloads and local HTTP server state
+.tmp/
+
+# Local OS/editor noise
+.DS_Store
+Thumbs.db
+*.log
