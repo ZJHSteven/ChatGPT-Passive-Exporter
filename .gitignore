@@ -7,6 +7,9 @@ dist/
 # Temporary research clones, test downloads and local HTTP server state
 .tmp/
 
+# Generated upstream status report (CI also writes it to the job summary)
+upstream/REPORT.md
+
 # Local OS/editor noise
 .DS_Store
 Thumbs.db
