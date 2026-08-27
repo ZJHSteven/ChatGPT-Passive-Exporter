@@ -1,0 +1,118 @@
+{
+  "title": "Synthetic complex conversation",
+  "conversation_id": "fixture-conversation",
+  "current_node": "assistant-final",
+  "messages": [
+    {
+      "id": "system-1",
+      "author": { "role": "system" },
+      "recipient": "all",
+      "content": { "content_type": "text", "parts": [""] },
+      "metadata": { "is_visually_hidden_from_conversation": true }
+    },
+    {
+      "id": "user-1",
+      "author": { "role": "user" },
+      "recipient": "all",
+      "content": { "content_type": "text", "parts": ["Please inspect a travel option."] },
+      "metadata": {}
+    },
+    {
+      "id": "assistant-preamble",
+      "author": { "role": "assistant" },
+      "recipient": "all",
+      "channel": "commentary",
+      "content": { "content_type": "text", "parts": ["I will inspect the available sources."] },
+      "metadata": {}
+    },
+    {
+      "id": "assistant-web-call",
+      "author": { "role": "assistant" },
+      "recipient": "web.run",
+      "content": { "content_type": "code", "language": "json", "text": "{\"query\":\"fixture\"}" },
+      "metadata": {}
+    },
+    {
+      "id": "tool-web-result",
+      "author": { "role": "tool", "name": "web.run" },
+      "recipient": "all",
+      "content": { "content_type": "code", "language": "json", "text": "{}" },
+      "metadata": {
+        "search_result_groups": [
+          {
+            "type": "search_result_group",
+            "domain": "example.com",
+            "entries": [
+              {
+                "title": "Fixture source",
+                "url": "https://example.com/source",
+                "snippet": "Fixture snippet",
+                "ref_id": "turn0search0"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "assistant-app-call",
+      "author": { "role": "assistant" },
+      "recipient": "api_tool.call_tool",
+      "content": { "content_type": "code", "language": "json", "text": "{\"tool\":\"search\"}" },
+      "metadata": {}
+    },
+    {
+      "id": "tool-app-result",
+      "author": { "role": "tool", "name": "api_tool.call_tool" },
+      "recipient": "all",
+      "content": { "content_type": "code", "language": "json", "text": "{\"result\":\"fixture\"}" },
+      "metadata": {
+        "invoked_resource": {
+          "app_name": "Trip.com",
+          "contains_mcp_source": true,
+          "publish_status": "published",
+          "description": "Synthetic connector fixture"
+        }
+      }
+    },
+    {
+      "id": "assistant-thought",
+      "author": { "role": "assistant" },
+      "recipient": "all",
+      "content": { "content_type": "thoughts", "thoughts": [{ "summary": "hidden", "content": "hidden", "chunks": [], "finished": true }] },
+      "metadata": {}
+    },
+    {
+      "id": "assistant-final",
+      "author": { "role": "assistant" },
+      "recipient": "all",
+      "channel": "final",
+      "content": {
+        "content_type": "text",
+        "parts": ["Here is the result. [archive](sandbox:/mnt/data/fixture.zip)"]
+      },
+      "metadata": {
+        "content_references": [
+          {
+            "type": "image_group",
+            "layout": "carousel",
+            "aspect_ratio": "1:1",
+            "images": [
+              { "image_ref_id": "turn0image0", "image_search_query": "fixture" },
+              { "image_ref_id": "turn0image1", "image_search_query": "fixture" }
+            ]
+          },
+          {
+            "type": "client_defined_widget",
+            "category": "map",
+            "data": {
+              "widget_type": "map_widget",
+              "points": [{ "name": "Fixture", "address": "Toronto, ON, Canada" }]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "page_info": { "has_previous_page": false, "has_next_page": false }
+}
