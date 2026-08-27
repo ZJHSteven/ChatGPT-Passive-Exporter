@@ -1,0 +1,16 @@
+{
+  "extends": "./.wxt/tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "entrypoints/**/*.ts",
+    "tests/**/*.ts",
+    "wxt.config.ts",
+    "vite.userscript.config.ts"
+  ]
+}
