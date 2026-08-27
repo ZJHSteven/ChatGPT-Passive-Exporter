@@ -4,6 +4,10 @@ node_modules/
 .wxt/
 dist/
 
+# Local archive database/runtime state
+data/*.sqlite
+data/*.sqlite-*
+
 # Temporary research clones, test downloads and local HTTP server state
 .tmp/
 
