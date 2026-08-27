@@ -5,7 +5,9 @@ import { adaptConversation } from '../src/core/adapter'
 import { buildPortableArchive } from '../src/core/archive'
 import { downloadText, safeFilename } from '../src/core/download'
 import { conversationToMarkdown } from '../src/core/markdown'
-import type { PassiveCaptureEnvelope } from '../src/core/types'
+import { buildRichManifest } from '../src/core/manifest'
+import type { CanonicalConversation, PassiveCaptureEnvelope } from '../src/core/types'
+import { mountSidebarExporter } from '../src/ui/sidebar'
 
 interface ExportRequest {
   type: 'chatgpt-passive-exporter/export-current'
@@ -57,13 +59,10 @@ export default defineContentScript({
       },
     })
 
-    browser.runtime.onMessage.addListener((message: unknown) => {
-      const request = message as Partial<ExportRequest>
-      if (request.type !== 'chatgpt-passive-exporter/export-current') return undefined
-
+    const getCurrentConversation = (): CanonicalConversation | null => {
       if (!latest) {
         window.alert('还没有被动捕获到当前会话。请刷新当前 ChatGPT 对话，或切换到另一条聊天再切回来，然后重新点导出。')
-        return { ok: false, reason: 'not-captured' }
+        return null
       }
 
       // 防止 SPA 切换聊天后，latest 还是上一条聊天的响应。
@@ -71,24 +70,69 @@ export default defineContentScript({
       const payloadChatId = capturedChatId(latest)
       if (pageChatId && payloadChatId && pageChatId !== payloadChatId) {
         window.alert('当前页已经切换到另一条聊天，但新聊天还没产生可捕获响应。请刷新/重新进入当前聊天后再导出。')
-        return { ok: false, reason: 'stale-capture' }
+        return null
       }
 
       try {
-        const conversation = adaptConversation(latest.payload)
-        const base = safeFilename(conversation.title)
-        const markdown = conversationToMarkdown(conversation)
-        const archive = JSON.stringify(buildPortableArchive(conversation), null, 2)
-
-        downloadText(`${base}.md`, markdown, 'text/markdown;charset=utf-8')
-        downloadText(`${base}.archive.json`, archive, 'application/json;charset=utf-8')
-        return { ok: true, title: conversation.title, messageCount: conversation.messages.length }
+        return adaptConversation(latest.payload)
       }
       catch (error) {
-        console.error('[ChatGPT Passive Exporter] export failed', error)
-        window.alert(`导出失败：${error instanceof Error ? error.message : String(error)}`)
-        return { ok: false, reason: 'export-failed' }
+        console.error('[ChatGPT Passive Exporter] parse failed', error)
+        window.alert(`解析失败：${error instanceof Error ? error.message : String(error)}`)
+        return null
       }
+    }
+
+    const exportMarkdown = () => {
+      const conversation = getCurrentConversation()
+      if (!conversation) return false
+      const base = safeFilename(conversation.title)
+      downloadText(`${base}.md`, conversationToMarkdown(conversation), 'text/markdown;charset=utf-8')
+      return true
+    }
+
+    const exportArchive = () => {
+      const conversation = getCurrentConversation()
+      if (!conversation) return false
+      const base = safeFilename(conversation.title)
+      downloadText(
+        `${base}.archive.json`,
+        JSON.stringify(buildPortableArchive(conversation), null, 2),
+        'application/json;charset=utf-8',
+      )
+      return true
+    }
+
+    const exportManifest = () => {
+      const conversation = getCurrentConversation()
+      if (!conversation) return false
+      const base = safeFilename(conversation.title)
+      downloadText(
+        `${base}.manifest.json`,
+        JSON.stringify(buildRichManifest(conversation), null, 2),
+        'application/json;charset=utf-8',
+      )
+      return true
+    }
+
+    // 除工具栏 action 外，扩展版也直接嵌入 ChatGPT sidebar；两端共用同一 UI 模块。
+    mountSidebarExporter({ exportMarkdown, exportArchive, exportManifest })
+
+    browser.runtime.onMessage.addListener((message: unknown) => {
+      const request = message as Partial<ExportRequest>
+      if (request.type !== 'chatgpt-passive-exporter/export-current') return undefined
+
+      const conversation = getCurrentConversation()
+      if (!conversation) return { ok: false, reason: 'not-captured-or-stale' }
+
+      const base = safeFilename(conversation.title)
+      downloadText(`${base}.md`, conversationToMarkdown(conversation), 'text/markdown;charset=utf-8')
+      downloadText(
+        `${base}.archive.json`,
+        JSON.stringify(buildPortableArchive(conversation), null, 2),
+        'application/json;charset=utf-8',
+      )
+      return { ok: true, title: conversation.title, messageCount: conversation.messages.length }
     })
   },
 })
