@@ -1,4 +1,6 @@
 import { browser } from 'wxt/browser'
+import { defineContentScript } from 'wxt/utils/define-content-script'
+import { injectScript } from 'wxt/utils/inject-script'
 import { adaptConversation } from '../src/core/adapter'
 import { buildPortableArchive } from '../src/core/archive'
 import { downloadText, safeFilename } from '../src/core/download'
