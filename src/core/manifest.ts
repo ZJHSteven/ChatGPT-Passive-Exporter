@@ -125,11 +125,14 @@ export function buildRichManifest(conversation: CanonicalConversation): RichMani
 
     // sandbox 文件一般只是 assistant 正文中的 Markdown URL，不是独立 attachment 节点。
     for (const match of message.text.matchAll(SANDBOX_RE)) {
+      // Markdown 链接形如 `(sandbox:/mnt/data/a.zip)`；正则允许文件名含括号，
+      // 因此这里把链接语法产生的尾部 `)` 归一化掉。
+      const sandboxUrl = match[0].replace(/\)+$/u, '')
       pushUnique(items, {
         kind: 'sandbox-file',
         messageId: message.id,
-        label: match[0],
-        data: { url: match[0] },
+        label: sandboxUrl,
+        data: { url: sandboxUrl },
       }, seen)
     }
 
