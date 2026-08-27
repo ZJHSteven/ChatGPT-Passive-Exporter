@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser'
+import { defineBackground } from 'wxt/utils/define-background'
 
 /**
  * 工具栏按钮只是“触发器”；所有捕获和文件生成都发生在当前 ChatGPT 页的 content script。
