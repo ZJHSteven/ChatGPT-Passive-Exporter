@@ -2,8 +2,10 @@ import { adaptConversation } from './core/adapter'
 import { buildPortableArchive } from './core/archive'
 import { downloadText, safeFilename } from './core/download'
 import { conversationToMarkdown } from './core/markdown'
+import { buildRichManifest } from './core/manifest'
 import { installPassiveCapture } from './core/passive-capture'
-import type { PassiveCaptureEnvelope } from './core/types'
+import type { CanonicalConversation, PassiveCaptureEnvelope } from './core/types'
+import { mountSidebarExporter } from './ui/sidebar'
 
 let latest: PassiveCaptureEnvelope | null = null
 
@@ -28,73 +30,73 @@ function capturedChatId(envelope: PassiveCaptureEnvelope): string | null {
   }
 }
 
-function exportCurrent(): void {
+function currentConversation(): CanonicalConversation | null {
   if (!latest) {
     window.alert('还没有被动捕获到当前会话。请刷新聊天，或切换聊天后再试。')
-    return
+    return null
   }
 
   const pageId = currentChatId()
   const captureId = capturedChatId(latest)
   if (pageId && captureId && pageId !== captureId) {
     window.alert('当前聊天尚未捕获；最近一次数据属于另一条聊天。请刷新/重新进入当前聊天。')
-    return
+    return null
   }
 
   try {
-    const conversation = adaptConversation(latest.payload)
-    const base = safeFilename(conversation.title)
-    downloadText(`${base}.md`, conversationToMarkdown(conversation), 'text/markdown;charset=utf-8')
-    downloadText(
-      `${base}.archive.json`,
-      JSON.stringify(buildPortableArchive(conversation), null, 2),
-      'application/json;charset=utf-8',
-    )
+    return adaptConversation(latest.payload)
   }
   catch (error) {
-    console.error('[ChatGPT Passive Exporter] export failed', error)
-    window.alert(`导出失败：${error instanceof Error ? error.message : String(error)}`)
+    console.error('[ChatGPT Passive Exporter] parse failed', error)
+    window.alert(`解析失败：${error instanceof Error ? error.message : String(error)}`)
+    return null
   }
+}
+
+function exportMarkdown(): void {
+  const conversation = currentConversation()
+  if (!conversation) return
+  const base = safeFilename(conversation.title)
+  downloadText(`${base}.md`, conversationToMarkdown(conversation), 'text/markdown;charset=utf-8')
+}
+
+function exportArchive(): void {
+  const conversation = currentConversation()
+  if (!conversation) return
+  const base = safeFilename(conversation.title)
+  downloadText(
+    `${base}.archive.json`,
+    JSON.stringify(buildPortableArchive(conversation), null, 2),
+    'application/json;charset=utf-8',
+  )
+}
+
+function exportManifest(): void {
+  const conversation = currentConversation()
+  if (!conversation) return
+  const base = safeFilename(conversation.title)
+  downloadText(
+    `${base}.manifest.json`,
+    JSON.stringify(buildRichManifest(conversation), null, 2),
+    'application/json;charset=utf-8',
+  )
 }
 
 /**
- * 不挂靠 ChatGPT 的任何 React 节点/类名，只往 documentElement 加自己的 Shadow DOM。
- * 因此侧边栏、消息卡片、React 路由即使改版，这个入口也基本不受影响。
+ * 直接挂进 ChatGPT 普通 DOM sidebar；不使用 Shadow DOM。
+ * sidebar 本身会被 React 重建，所以 mountSidebarExporter 内部负责自动重挂载。
  */
-function mountButton(): void {
-  if (document.querySelector('[data-chatgpt-passive-exporter-host]')) return
-
-  const host = document.createElement('div')
-  host.dataset.chatgptPassiveExporterHost = 'true'
-  const shadow = host.attachShadow({ mode: 'closed' })
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.textContent = '⇩'
-  button.title = 'ChatGPT Passive Exporter：导出当前聊天'
-  button.setAttribute('aria-label', '导出当前 ChatGPT 聊天')
-  button.style.cssText = [
-    'position:fixed',
-    'right:18px',
-    'bottom:18px',
-    'z-index:2147483647',
-    'width:38px',
-    'height:38px',
-    'border:1px solid rgba(127,127,127,.35)',
-    'border-radius:12px',
-    'background:rgba(32,32,32,.88)',
-    'color:white',
-    'font:700 20px/1 system-ui,sans-serif',
-    'box-shadow:0 4px 18px rgba(0,0,0,.18)',
-    'cursor:pointer',
-  ].join(';')
-  button.addEventListener('click', exportCurrent)
-  shadow.append(button)
-  document.documentElement.append(host)
+function mountUi(): void {
+  mountSidebarExporter({
+    exportMarkdown,
+    exportArchive,
+    exportManifest,
+  })
 }
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', mountButton, { once: true })
+  document.addEventListener('DOMContentLoaded', mountUi, { once: true })
 }
 else {
-  mountButton()
+  mountUi()
 }
