@@ -14,7 +14,7 @@ export default defineConfig({
         namespace: 'https://github.com/ZJHSteven/chatgpt-passive-exporter',
         description: '被动捕获 ChatGPT 页面自身会话响应并导出，不主动调用私有 conversation API。',
         match: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
-        runAt: 'document-start',
+        'run-at': 'document-start',
         grant: 'none',
       },
       build: {
