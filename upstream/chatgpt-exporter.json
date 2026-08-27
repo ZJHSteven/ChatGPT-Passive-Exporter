@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/pionxzh/chatgpt-exporter.git",
+  "pinnedSha": "b6466b375d0720681d75d78a0a4fad6b948a89a9",
+  "observedVersion": "2.34.1",
+  "observedAt": "2026-08-27",
+  "trackedPaths": [
+    "CHANGELOG.md",
+    "LICENSE",
+    "src/api.ts",
+    "src/type.ts",
+    "src/exporter/markdown.ts",
+    "src/exporter/json.ts",
+    "src/utils/citations.ts",
+    "src/utils/markdown.ts"
+  ],
+  "policy": "reference-only: capture/api layer is intentionally not imported; upstream exporter changes are reviewed and ported behind local adapters"
+}
