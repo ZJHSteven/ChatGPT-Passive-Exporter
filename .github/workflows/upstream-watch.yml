@@ -89,8 +89,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh pr view --head bot/chatgpt-upstream-watch >/dev/null 2>&1; then
-            gh pr comment bot/chatgpt-upstream-watch --body \
+          EXISTING_PR="$(gh pr list --head bot/chatgpt-upstream-watch --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$EXISTING_PR" ]; then
+            gh pr comment "$EXISTING_PR" --body \
               "Upstream watch detected a new change and refreshed this branch. Typecheck, contract tests, and all four builds passed. Review the upstream diff before porting any code."
           else
             gh pr create \
