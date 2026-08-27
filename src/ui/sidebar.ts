@@ -10,9 +10,10 @@
  */
 
 export interface SidebarExportActions {
-  exportMarkdown: () => void | Promise<void>
-  exportArchive: () => void | Promise<void>
-  exportManifest?: () => void | Promise<void>
+  // UI 只关心动作是否可调用，不消费返回值；扩展工具栏版本会顺带返回 boolean 状态。
+  exportMarkdown: () => unknown | Promise<unknown>
+  exportArchive: () => unknown | Promise<unknown>
+  exportManifest?: () => unknown | Promise<unknown>
 }
 
 const ITEM_MARKER = 'data-chatgpt-passive-exporter-item'
@@ -116,7 +117,7 @@ function createMenu(actions: SidebarExportActions): HTMLDivElement {
     'box-shadow:0 12px 36px rgba(0,0,0,.18)',
   ].join(';')
 
-  const entries: Array<[string, () => void | Promise<void>]> = [
+  const entries: Array<[string, () => unknown | Promise<unknown>]> = [
     ['导出 Markdown', actions.exportMarkdown],
     ['导出安全归档 JSON', actions.exportArchive],
   ]
