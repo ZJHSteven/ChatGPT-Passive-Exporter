@@ -40,6 +40,16 @@ function findNativeSidebarItem(): HTMLElement | null {
 }
 
 function findInsertionReference(): Element | null {
+  // 优先完全跟随 ChatGPT Exporter 的成熟位置：个人资料按钮之前。
+  // 当前 ChatGPT 会把 data-sidebar-item 的 <a> 交给全局路由事件处理；我们若伪装成链接，
+  // 点击会触发侧栏自己的关闭/重建逻辑。所以只借样式，不借路由语义。
+  const profile = document.querySelector('[data-testid="accounts-profile-button"]')
+  if (profile) {
+    const wrapper = profile.parentElement
+    if (wrapper?.parentElement && wrapper.children.length === 1) return wrapper
+    return profile
+  }
+
   return document.querySelector('[data-testid="plugins-button"]')
     ?? document.querySelector('[data-testid="sidebar-item-tasks"]')
     ?? document.querySelector('[data-testid="sidebar-item-recall"]')
@@ -78,7 +88,7 @@ function replaceTemplateContents(item: HTMLElement): void {
   item.setAttribute('tabindex', '0')
   item.setAttribute('aria-label', '导出 / 归档当前聊天')
   item.setAttribute(ITEM_MARKER, 'true')
-  item.setAttribute('data-sidebar-item', 'true')
+  item.removeAttribute('data-sidebar-item')
 
   // 直接重建内部结构，避免把模板自己的链接、快捷键、trailing button 一并克隆过来。
   item.replaceChildren()
@@ -200,7 +210,11 @@ export function mountSidebarExporter(actions: SidebarExportActions): () => void 
     const reference = findInsertionReference()
     if (!template || !reference?.parentElement) return
 
-    const clone = template.cloneNode(false) as HTMLElement
+    // 不 clone <a> 标签本身：只复制 ChatGPT 当前 menu-item 的 class/style 到自己的 div。
+    // 这正是原版 ChatGPT Exporter 避开 React Router 事件委托的关键。
+    const clone = document.createElement('div')
+    clone.className = template.className
+    clone.style.cssText = template.style.cssText
     replaceTemplateContents(clone)
 
     menu ??= createMenu(actions)
@@ -218,7 +232,7 @@ export function mountSidebarExporter(actions: SidebarExportActions): () => void 
       if (event.key === 'Enter' || event.key === ' ') toggle(event)
     })
 
-    // 放在“插件”之前；和 ChatGPT Exporter 旧版一样属于 sidebar 的一级入口。
+    // 优先插在个人资料按钮之前；fallback 才放到其它一级入口之前。
     reference.before(clone)
   }
 
