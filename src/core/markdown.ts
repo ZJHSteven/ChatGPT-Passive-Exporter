@@ -1,5 +1,5 @@
-import { buildRichManifest } from './manifest'
-import type { CanonicalConversation, CanonicalMessage } from './types'
+import { buildRichManifest } from './manifest.ts'
+import type { CanonicalConversation, CanonicalMessage } from './types.ts'
 
 const CITATION_MARKER_RE = /\uE200cite(?:\uE202[^\uE200\uE201]*)+\uE201/gu
 

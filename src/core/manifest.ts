@@ -1,4 +1,4 @@
-import type { CanonicalConversation, RichManifest, RichManifestItem } from './types'
+import type { CanonicalConversation, RichManifest, RichManifestItem } from './types.ts'
 
 const SANDBOX_RE = /sandbox:\/mnt\/data\/[\p{L}\p{N}._~!$&'()*+,;=:@%\-/]+/gu
 const ASSET_POINTER_RE = /(?:sediment|file-service|asset):\/\/[\w.:%+\-/]+/gu

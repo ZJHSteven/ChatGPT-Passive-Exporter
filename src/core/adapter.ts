@@ -6,7 +6,7 @@ import type {
   MessagesConversationPayload,
   RawChatMessage,
   RawConversationPayload,
-} from './types'
+} from './types.ts'
 
 /**
  * 判断捕获到的对象是不是“值得作为 conversation 保存”的响应。
