@@ -1,3 +1,4 @@
+import { defineUnlistedScript } from 'wxt/utils/define-unlisted-script'
 import { installPassiveCapture } from '../src/core/passive-capture'
 
 /**
