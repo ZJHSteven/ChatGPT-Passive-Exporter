@@ -164,7 +164,9 @@ function createMenu(actions: SidebarExportActions): HTMLDivElement {
     menu.append(button)
   }
 
-  document.body.append(menu)
+  // ChatGPT 的 React 根偶尔会重建/清理 body 直属的未知节点；挂到 documentElement
+  // 可以避免菜单在 sidebar 状态变化后被页面顺手移除。它是 position:fixed，不参与布局。
+  document.documentElement.append(menu)
   return menu
 }
 
@@ -217,7 +219,9 @@ export function mountSidebarExporter(actions: SidebarExportActions): () => void 
     clone.style.cssText = template.style.cssText
     replaceTemplateContents(clone)
 
-    menu ??= createMenu(actions)
+    // 页面重建 body 时，旧 menu 引用可能仍在变量里但节点已经断开。
+    // 此时必须重新创建，而不能因为 `menu !== null` 就误以为它还活着。
+    if (!menu?.isConnected) menu = createMenu(actions)
 
     const toggle = (event: Event) => {
       event.preventDefault()
