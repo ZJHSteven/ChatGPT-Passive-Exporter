@@ -1,0 +1,30 @@
+{
+  "name": "chatgpt-passive-exporter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "被动捕获 ChatGPT 页面自身 conversation 响应并导出 Markdown/JSON/富媒体清单。",
+  "scripts": {
+    "dev": "wxt",
+    "dev:firefox": "wxt -b firefox",
+    "build:chrome": "wxt build -b chrome",
+    "build:edge": "wxt build -b edge",
+    "build:firefox": "wxt build -b firefox",
+    "build:userscript": "vite build --config vite.userscript.config.ts",
+    "build": "npm run build:chrome && npm run build:edge && npm run build:firefox && npm run build:userscript",
+    "zip:chrome": "wxt zip -b chrome",
+    "zip:edge": "wxt zip -b edge",
+    "zip:firefox": "wxt zip -b firefox",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "vite-plugin-monkey": "latest",
+    "vitest": "latest",
+    "wxt": "latest"
+  }
+}
