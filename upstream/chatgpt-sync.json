@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/pavel-voronin/chatgpt-sync.git",
+  "branch": "main",
+  "pinnedSha": "a6fe9881b032148f20d415970b44a8b3622c3a09",
+  "observedVersion": "0.12.5",
+  "observedAt": "2026-08-27",
+  "trackedPaths": [
+    "src/chatgpt/api-export.ts",
+    "src/chatgpt/conversation-export.ts",
+    "src/chatgpt/list-scan.ts",
+    "src/chatgpt/cdp.ts",
+    "src/chatgpt/types.ts",
+    "src/chatgpt/markdown.ts"
+  ],
+  "policy": "architecture-reference: reuse incremental sync, watermark/overlap, pacing and browser-authenticated backend transport ideas; do not blindly copy browser identity spoofing or backend request code"
+}
