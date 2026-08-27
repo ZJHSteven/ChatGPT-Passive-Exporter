@@ -19,6 +19,8 @@ export function downloadText(filename: string, text: string, mime = 'text/plain;
   anchor.click()
   anchor.remove()
 
-  // 撤销太早会让 Firefox 偶发拿不到 Blob；延后到当前事件循环结束之后。
-  window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
+  // 下载并不一定在 anchor.click() 返回后立刻完成。ChatGPT/CDP 测试里 72KB Blob
+  // 在 1 秒时 revoke 会出现“已收满字节但最终 canceled”的竞态；保守留 30 秒。
+  // 这是一次性对象 URL，几十秒的额外生命周期对内存影响可以忽略。
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
 }
