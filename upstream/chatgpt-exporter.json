@@ -1,5 +1,6 @@
 {
   "repository": "https://github.com/pionxzh/chatgpt-exporter.git",
+  "branch": "master",
   "pinnedSha": "b6466b375d0720681d75d78a0a4fad6b948a89a9",
   "observedVersion": "2.34.1",
   "observedAt": "2026-08-27",
