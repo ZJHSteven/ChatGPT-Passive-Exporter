@@ -4,7 +4,9 @@ const SANDBOX_RE = /sandbox:\/mnt\/data\/[\p{L}\p{N}._~!$&'()*+,;=:@%\-/]+/gu
 const ASSET_POINTER_RE = /(?:sediment|file-service|asset):\/\/[\w.:%+\-/]+/gu
 
 function pushUnique(items: RichManifestItem[], item: RichManifestItem, seen: Set<string>): void {
-  const key = `${item.kind}\u0000${item.messageId}\u0000${item.label}`
+  // 同一条回答里允许出现多个同尺寸 image_group；仅用 label 去重会把两组“3 张图”误合并。
+  // data 参与身份判断后，只有结构也完全相同的重复引用才会被折叠。
+  const key = `${item.kind}\u0000${item.messageId}\u0000${item.label}\u0000${JSON.stringify(item.data)}`
   if (seen.has(key)) return
   seen.add(key)
   items.push(item)
