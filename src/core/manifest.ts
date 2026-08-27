@@ -1,0 +1,151 @@
+import type { CanonicalConversation, RichManifest, RichManifestItem } from './types'
+
+const SANDBOX_RE = /sandbox:\/mnt\/data\/[\p{L}\p{N}._~!$&'()*+,;=:@%\-/]+/gu
+const ASSET_POINTER_RE = /(?:sediment|file-service|asset):\/\/[\w.:%+\-/]+/gu
+
+function pushUnique(items: RichManifestItem[], item: RichManifestItem, seen: Set<string>): void {
+  const key = `${item.kind}\u0000${item.messageId}\u0000${item.label}`
+  if (seen.has(key)) return
+  seen.add(key)
+  items.push(item)
+}
+
+/**
+ * 从原始 metadata 中生成“富内容目录”。
+ *
+ * 安全原则：manifest 默认只保存展示/审计需要的结构摘要，不复制 connector 的
+ * session/token/cookie 等运行时字段。完整原始响应仍可由用户单独选择保存，但不应该
+ * 在普通 Markdown 附录里把敏感运行信息扩散一遍。
+ */
+export function buildRichManifest(conversation: CanonicalConversation): RichManifest {
+  const items: RichManifestItem[] = []
+  const seen = new Set<string>()
+
+  for (const message of conversation.messages) {
+    const metadata = message.metadata
+
+    const searchGroups = metadata.search_result_groups
+    if (Array.isArray(searchGroups) && searchGroups.length > 0) {
+      const groups = searchGroups
+        .filter(group => group && typeof group === 'object')
+        .map((group) => {
+          const record = group as Record<string, unknown>
+          const entries = Array.isArray(record.entries)
+            ? record.entries.map((entry) => {
+              if (!entry || typeof entry !== 'object') return null
+              const value = entry as Record<string, unknown>
+              return {
+                title: typeof value.title === 'string' ? value.title : undefined,
+                url: typeof value.url === 'string' ? value.url : undefined,
+                snippet: typeof value.snippet === 'string' ? value.snippet : undefined,
+                refId: typeof value.ref_id === 'string' ? value.ref_id : undefined,
+                pubDate: value.pub_date,
+              }
+            }).filter(Boolean)
+            : []
+
+          return {
+            domain: typeof record.domain === 'string' ? record.domain : undefined,
+            entries,
+          }
+        })
+
+      pushUnique(items, {
+        kind: 'web-search',
+        messageId: message.id,
+        label: `Web Search (${groups.length} groups)`,
+        data: groups,
+      }, seen)
+    }
+
+    const invokedResource = metadata.invoked_resource
+    if (invokedResource && typeof invokedResource === 'object') {
+      const resource = invokedResource as Record<string, unknown>
+      const appName = typeof resource.app_name === 'string' ? resource.app_name : 'App Connector'
+      pushUnique(items, {
+        kind: 'app-connector',
+        messageId: message.id,
+        label: appName,
+        data: {
+          appName,
+          containsMcpSource: resource.contains_mcp_source === true,
+          publishStatus: typeof resource.publish_status === 'string' ? resource.publish_status : undefined,
+          description: typeof resource.description === 'string' ? resource.description : undefined,
+        },
+      }, seen)
+    }
+
+    const references = Array.isArray(metadata.content_references) ? metadata.content_references : []
+    for (const reference of references) {
+      if (!reference || typeof reference !== 'object') continue
+      const ref = reference as Record<string, unknown>
+
+      if (ref.type === 'image_group') {
+        const images = Array.isArray(ref.images) ? ref.images : []
+        pushUnique(items, {
+          kind: 'image-group',
+          messageId: message.id,
+          label: `图片轮播 (${images.length})`,
+          data: {
+            layout: ref.layout,
+            aspectRatio: ref.aspect_ratio,
+            images,
+          },
+        }, seen)
+      }
+
+      if (ref.type === 'client_defined_widget') {
+        pushUnique(items, {
+          kind: 'widget',
+          messageId: message.id,
+          label: typeof ref.category === 'string' ? ref.category : 'client_defined_widget',
+          data: {
+            category: ref.category,
+            data: ref.data,
+          },
+        }, seen)
+      }
+    }
+
+    if (message.role === 'assistant' && message.recipient !== 'all') {
+      pushUnique(items, {
+        kind: 'tool-call',
+        messageId: message.id,
+        label: message.recipient,
+        data: {
+          recipient: message.recipient,
+          contentType: message.contentType,
+          // 默认只记录调用轨迹，不复制参数正文；参数可能含用户私有路径、查询或密钥。
+          hasPayload: message.text.length > 0,
+        },
+      }, seen)
+    }
+
+    // sandbox 文件一般只是 assistant 正文中的 Markdown URL，不是独立 attachment 节点。
+    for (const match of message.text.matchAll(SANDBOX_RE)) {
+      pushUnique(items, {
+        kind: 'sandbox-file',
+        messageId: message.id,
+        label: match[0],
+        data: { url: match[0] },
+      }, seen)
+    }
+
+    // 用户上传图片/语音等可能以 sediment:// 等 pointer 出现；这里只建目录，不主动下载。
+    const rawString = JSON.stringify(message.raw)
+    for (const match of rawString.matchAll(ASSET_POINTER_RE)) {
+      pushUnique(items, {
+        kind: 'asset-pointer',
+        messageId: message.id,
+        label: match[0].split('://')[0] ?? 'asset',
+        data: { scheme: match[0].split('://')[0] },
+      }, seen)
+    }
+  }
+
+  return {
+    conversationId: conversation.conversationId,
+    title: conversation.title,
+    items,
+  }
+}
