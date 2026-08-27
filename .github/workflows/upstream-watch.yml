@@ -1,0 +1,101 @@
+name: Upstream Watch
+
+on:
+  # GitHub Actions 不能原生订阅“别人仓库”的 push；每日轮询只做低成本兜底。
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+  # 未来若部署 GitHub App / Cloudflare webhook，可即时向本仓库发此事件，
+  # 无需修改下面的检测、测试和 PR 流程。
+  repository_dispatch:
+    types: [chatgpt-upstream-changed]
+
+concurrency:
+  group: chatgpt-upstream-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check upstream repositories
+        id: upstream
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-upstreams.mjs --update-pins
+
+      # 即使变化只碰到我们没有显式 tracked 的文件，也先跑完整回归。
+      # 原因是 ChatGPT 前端的跨模块重构经常会间接改变 schema/DOM 行为。
+      - name: Typecheck
+        if: steps.upstream.outputs.changed == 'true'
+        run: npm run typecheck
+
+      - name: Contract tests
+        if: steps.upstream.outputs.changed == 'true'
+        run: npm test
+
+      - name: Build Userscript
+        if: steps.upstream.outputs.changed == 'true'
+        run: npm run build:userscript
+
+      - name: Build Chrome
+        if: steps.upstream.outputs.changed == 'true'
+        run: npm run build:chrome
+
+      - name: Build Edge
+        if: steps.upstream.outputs.changed == 'true'
+        run: npm run build:edge
+
+      - name: Build Firefox
+        if: steps.upstream.outputs.changed == 'true'
+        run: npm run build:firefox
+
+      - name: Prepare review branch
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          CHANGED_COUNT: ${{ steps.upstream.outputs.changed_count }}
+          RELEVANT_COUNT: ${{ steps.upstream.outputs.relevant_count }}
+        run: |
+          git config user.name 'chatgpt-upstream-watch[bot]'
+          git config user.email 'chatgpt-upstream-watch[bot]@users.noreply.github.com'
+          git switch -C bot/chatgpt-upstream-watch
+          git add upstream/*.json
+          git commit -m "chore(upstream): refresh tracked ChatGPT projects" \
+            -m "Changed upstreams: ${CHANGED_COUNT}; tracked-path changes: ${RELEVANT_COUNT}."
+          git push --force-with-lease origin HEAD:bot/chatgpt-upstream-watch
+
+      - name: Open or refresh review PR
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh pr view --head bot/chatgpt-upstream-watch >/dev/null 2>&1; then
+            gh pr comment bot/chatgpt-upstream-watch --body \
+              "Upstream watch detected a new change and refreshed this branch. Typecheck, contract tests, and all four builds passed. Review the upstream diff before porting any code."
+          else
+            gh pr create \
+              --head bot/chatgpt-upstream-watch \
+              --base "${{ github.event.repository.default_branch }}" \
+              --title "chore(upstream): review ChatGPT ecosystem changes" \
+              --body "Automated upstream watch detected new commits. Pins were refreshed only after typecheck, contract tests, Userscript, Chrome, Edge, and Firefox builds passed. **No upstream source code is merged automatically.** Review the job summary/compare links and port only relevant changes behind local adapters."
+          fi
