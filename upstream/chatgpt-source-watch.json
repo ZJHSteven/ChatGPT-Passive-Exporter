@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/0xdevalias/chatgpt-source-watch.git",
+  "branch": "main",
+  "pinnedSha": "b52c4c06c2ec943ddb167929219fb1e57c1aad9b",
+  "observedAt": "2026-08-27",
+  "trackedPaths": [
+    "CHANGELOG.md",
+    "scripts/",
+    "unpacked/"
+  ],
+  "policy": "early-warning/research: use changelog and frontend bundle diffs to detect ChatGPT UI/API/schema changes; do not vendor archived ChatGPT bundles into this project"
+}
