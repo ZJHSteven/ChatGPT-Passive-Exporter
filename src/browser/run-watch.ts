@@ -1,4 +1,5 @@
 import { diagnoseLatestRun, type RunDiagnostic } from '../core/run-diagnostics'
+import { analyzeWidgetPressure, type WidgetPressureReport } from '../core/widget-pressure'
 import type { RawConversationPayload } from '../core/types'
 
 /**
@@ -73,6 +74,7 @@ export interface RunWatchSnapshot {
   iframe: IframeStats
   performance: PerformanceStats
   generation: GenerationUiStats
+  widgetPressure?: WidgetPressureReport
   latestDiagnostic?: RunDiagnostic
   lastServerStatus?: ServerStatusResult
   severity: WatchSeverity
@@ -245,6 +247,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
   let longTaskCount = 0
   let longTaskDurationMs = 0
   let latestDiagnostic: RunDiagnostic | undefined
+  let widgetPressure: WidgetPressureReport | undefined
   let lastServerStatus: ServerStatusResult | undefined
   let lastHref = location.href
   let lastPersistAt = 0
@@ -450,6 +453,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
       iframe: currentIframeStats,
       performance: perf,
       generation: currentGenerationStats,
+      widgetPressure,
       latestDiagnostic,
       lastServerStatus,
       severity: severityFor(currentIframeStats, perf, currentGenerationStats, latestDiagnostic, lastServerStatus),
@@ -478,6 +482,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
       pushEvent('route-change', { from: sanitizeUrl(lastHref), to: sanitizeUrl(location.href) })
       lastHref = location.href
       latestDiagnostic = undefined
+      widgetPressure = undefined
       lastServerStatus = undefined
       generationActiveSince = undefined
       lastAssistantSignature = ''
@@ -549,6 +554,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
   const noteConversationPayload = (payload: RawConversationPayload) => {
     markProgress()
     latestDiagnostic = diagnoseLatestRun(payload)
+    widgetPressure = analyzeWidgetPressure(payload)
     pushEvent('conversation-diagnostic', {
       outcome: latestDiagnostic.outcome,
       summary: latestDiagnostic.summary,
@@ -557,6 +563,10 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
       interruptedReason: latestDiagnostic.interruptedReason,
       assistantToolCalls: latestDiagnostic.assistantToolCalls,
       toolResults: latestDiagnostic.toolResults,
+      sdkNodeCount: widgetPressure.sdkNodeCount,
+      devspaceSdkNodeCount: widgetPressure.devspaceSdkNodeCount,
+      maxSdkNodesInOneTurn: widgetPressure.maxSdkNodesInOneTurn,
+      widgetPressure: widgetPressure.interpretation,
     })
     persist()
     notifyUpdate()
@@ -636,6 +646,18 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
       `Generation UI: ${snap.generation.active ? 'ACTIVE' : 'idle'} / stalled ${Math.round(snap.generation.stalledForMs / 1000)} s / last progress ${new Date(snap.generation.lastProgressAt).toLocaleTimeString()}`,
     ]
     if (snap.latestDiagnostic) lines.push(`Last run: ${snap.latestDiagnostic.outcome} — ${snap.latestDiagnostic.summary}`)
+    if (snap.widgetPressure) {
+      lines.push(
+        `Raw widget pressure: ${snap.widgetPressure.sdkNodeCount} SDK nodes / ${snap.widgetPressure.devspaceSdkNodeCount} DevSpace / max ${snap.widgetPressure.maxSdkNodesInOneTurn} in one turn / ${snap.widgetPressure.interpretation.toUpperCase()}`,
+      )
+      const live = snap.iframe.oaiSandbox || snap.iframe.sandboxed || snap.iframe.total
+      if (snap.widgetPressure.interpretation === 'extreme' && live >= 50) {
+        lines.push('Widget diagnosis: 原始聊天本身已有极高 SDK Widget 密度，当前大量 iframe 更像“历史工具卡设计性累积”；仍需用 iframe lifecycle 排除额外 remount 泄漏。')
+      }
+      else if (snap.widgetPressure.sdkNodeCount < 20 && live >= 50) {
+        lines.push('Widget diagnosis: 原始 SDK Widget 很少但实时 iframe 很多，remount/重复 iframe 泄漏嫌疑较高。')
+      }
+    }
     if (snap.lastServerStatus) lines.push(`Server: ${snap.lastServerStatus.status ?? snap.lastServerStatus.reason ?? 'unknown'}`)
     if (snap.generation.active && snap.generation.stalledForMs >= 5 * 60_000) {
       lines.push('Suspected stall: Stop button仍可见，但页面/工具侧连续数分钟没有观察到进展；建议点“检查服务器运行状态”。')
