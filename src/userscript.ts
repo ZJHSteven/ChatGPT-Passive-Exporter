@@ -4,10 +4,11 @@ import { downloadText, safeFilename } from './core/download'
 import { conversationToMarkdown } from './core/markdown'
 import { buildRichManifest } from './core/manifest'
 import { installPassiveCapture } from './core/passive-capture'
-import type { CanonicalConversation, PassiveCaptureEnvelope } from './core/types'
-import { mountSidebarExporter } from './ui/sidebar'
+import type { CanonicalConversation, PassiveCaptureEnvelope, RawConversationPayload } from './core/types'
+import { installRunWatch, type RunWatchSnapshot } from './browser/run-watch'
+import { mountSidebarExporter, updateSidebarRunWatchBadge } from './ui/sidebar'
 
-const BUILD_VERSION = '0.1.4'
+const BUILD_VERSION = '0.2.0'
 
 // 只暴露无敏感信息的调试标记，便于 CDP/用户确认 Tampermonkey 当前实际运行版本。
 // 这能避免脚本管理器缓存旧 .user.js 时误把旧代码当成新构建测试。
@@ -17,13 +18,41 @@ Object.defineProperty(window, '__chatgptPassiveExporter', {
 })
 
 let latest: PassiveCaptureEnvelope | null = null
+let latestWatchSnapshot: RunWatchSnapshot | null = null
+
+function updateWatchBadge(snapshot: RunWatchSnapshot): void {
+  latestWatchSnapshot = snapshot
+  const iframeCount = snapshot.iframe.oaiSandbox || snapshot.iframe.total
+  const text = snapshot.severity === 'ok'
+    ? '监控'
+    : snapshot.severity === 'warning'
+      ? `⚠ ${iframeCount}`
+      : snapshot.severity === 'danger'
+        ? `⚠ ${iframeCount}`
+        : `! ${iframeCount}`
+
+  updateSidebarRunWatchBadge({
+    severity: snapshot.severity,
+    text,
+    title: snapshot.latestDiagnostic?.summary
+      ?? `iframe ${snapshot.iframe.total}（OAI sandbox ${snapshot.iframe.oaiSandbox}）`,
+  })
+}
+
+/**
+ * Run Watch 先包一层 fetch，负责“无正文”的生命周期/性能取证；随后 Passive Exporter 再包一层，
+ * 负责 conversation body 副本。两层职责严格分开：Run Watch 的持久化日志永远不含认证值或工具正文。
+ */
+const runWatch = installRunWatch({ onUpdate: updateWatchBadge })
 
 /**
  * Userscript 使用 @grant none，因此这一段直接包装宿主页面原生 fetch/XHR。
- * 和扩展版一样：不主动请求，不读取 headers/cookies，只复制页面已收到的 conversation body。
+ * 和扩展版一样：不主动请求，只复制页面已收到的 conversation body。
+ * 捕获到正文后顺手做一次“最后一轮离线归因”，用于识别 client_stopped/tool-result-missing。
  */
 installPassiveCapture((envelope) => {
   latest = envelope
+  runWatch.noteConversationPayload(envelope.payload as RawConversationPayload)
 })
 
 function currentChatId(): string | null {
@@ -91,6 +120,29 @@ function exportManifest(): void {
   )
 }
 
+function inspectRun(): void {
+  window.alert(runWatch.summaryText())
+}
+
+async function checkServerStatus(): Promise<void> {
+  const result = await runWatch.checkServerStatus()
+  const status = result.status ?? 'UNKNOWN'
+  const detail = result.ok
+    ? `服务器 stream_status：${status}`
+    : `无法确认服务器状态：${result.reason ?? `HTTP ${result.httpStatus ?? '?'}`}`
+  window.alert(`${detail}\n\n${runWatch.summaryText()}`)
+}
+
+function exportRunDiagnostics(): void {
+  const snapshot = runWatch.snapshot()
+  const title = currentConversation()?.title ?? snapshot.conversationId ?? 'chatgpt'
+  downloadText(
+    `${safeFilename(title)}.run-watch.json`,
+    JSON.stringify(snapshot, null, 2),
+    'application/json;charset=utf-8',
+  )
+}
+
 /**
  * 直接挂进 ChatGPT 普通 DOM sidebar；不使用 Shadow DOM。
  * sidebar 本身会被 React 重建，所以 mountSidebarExporter 内部负责自动重挂载。
@@ -100,7 +152,11 @@ function mountUi(): void {
     exportMarkdown,
     exportArchive,
     exportManifest,
+    inspectRun,
+    checkServerStatus,
+    exportRunDiagnostics,
   })
+  if (latestWatchSnapshot) updateWatchBadge(latestWatchSnapshot)
 }
 
 if (document.readyState === 'loading') {
