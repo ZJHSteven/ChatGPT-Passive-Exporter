@@ -375,6 +375,57 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
   }
 
   let currentIframeStats = scanIframes()
+  let currentGenerationStats: GenerationUiStats = {
+    active: false,
+    lastProgressAt,
+    stalledForMs: 0,
+  }
+
+  const readGenerationUi = (): GenerationUiStats => {
+    const stopButtons = [...document.querySelectorAll('button[data-testid="stop-button"]')]
+    const active = stopButtons.some(isVisible)
+
+    const assistantTurns = [
+      ...document.querySelectorAll<HTMLElement>(
+        '[data-testid^="conversation-turn-"][data-turn="assistant"], '
+        + '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]',
+      ),
+    ]
+    const lastAssistant = assistantTurns.at(-1)
+    const assistantTextLength = lastAssistant?.innerText?.length ?? lastAssistant?.textContent?.length
+    const assistantChildCount = lastAssistant?.childElementCount
+    const assistantIframeCount = lastAssistant?.querySelectorAll('iframe').length ?? 0
+    const signature = lastAssistant
+      ? `${assistantTextLength ?? 0}:${assistantChildCount ?? 0}:${assistantIframeCount}`
+      : ''
+
+    if (signature && signature !== lastAssistantSignature) {
+      if (lastAssistantSignature) markProgress()
+      lastAssistantSignature = signature
+    }
+
+    if (active && !generationActiveSince) {
+      generationActiveSince = now()
+      markProgress()
+      pushEvent('generation-ui-start')
+    }
+    else if (!active && generationActiveSince) {
+      pushEvent('generation-ui-stop', { durationMs: now() - generationActiveSince })
+      generationActiveSince = undefined
+      markProgress()
+    }
+
+    return {
+      active,
+      activeSince: generationActiveSince,
+      lastProgressAt,
+      stalledForMs: active ? Math.max(0, now() - lastProgressAt) : 0,
+      assistantTextLength,
+      assistantChildCount,
+    }
+  }
+
+  currentGenerationStats = readGenerationUi()
 
   const performanceStats = (): PerformanceStats => {
     const memory = (performance as PerformanceWithMemory).memory
@@ -398,9 +449,10 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
       visibility: document.visibilityState,
       iframe: currentIframeStats,
       performance: perf,
+      generation: currentGenerationStats,
       latestDiagnostic,
       lastServerStatus,
-      severity: severityFor(currentIframeStats, perf, latestDiagnostic),
+      severity: severityFor(currentIframeStats, perf, currentGenerationStats, latestDiagnostic, lastServerStatus),
       events: [...events],
     }
   }
@@ -425,9 +477,15 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     if (location.href !== lastHref) {
       pushEvent('route-change', { from: sanitizeUrl(lastHref), to: sanitizeUrl(location.href) })
       lastHref = location.href
+      latestDiagnostic = undefined
+      lastServerStatus = undefined
+      generationActiveSince = undefined
+      lastAssistantSignature = ''
+      markProgress()
     }
 
     currentIframeStats = scanIframes()
+    currentGenerationStats = readGenerationUi()
     const perf = performanceStats()
     pushEvent('sample', {
       iframeTotal: currentIframeStats.total,
@@ -436,6 +494,9 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
       usedJsHeapMb: perf.usedJsHeapMb,
       longTaskCount: perf.longTaskCount,
       longTaskDurationMs: perf.longTaskDurationMs,
+      generationActive: currentGenerationStats.active,
+      stalledForMs: currentGenerationStats.stalledForMs,
+      assistantTextLength: currentGenerationStats.assistantTextLength,
       visibility: document.visibilityState,
     })
 
