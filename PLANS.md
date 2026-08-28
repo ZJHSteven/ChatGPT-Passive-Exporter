@@ -66,6 +66,16 @@
 - 优先使用稳定的 `messageId`/conversation-turn 元数据定位，像素 scrollTop 只做 fallback。
 - 手机端需要单独验证：iOS 原生 ChatGPT App 无法直接安装网页 userscript/WebExtension，因此先验证 ChatGPT Web/PWA 可行性，再研究是否能通过同步服务把书签状态跨端保存；不承诺直接修改 iOS 原生 App。
 
+### Phase 9：Run Watch / 卡死诊断与 iframe 内存取证
+- Userscript/WebExtension 增加轻量环形日志，不保存 Authorization/cookie/tool payload 正文，只记录时间、conversationId、turn/request 标识、网络生命周期、页面生命周期、tool widget/iframe 数量与性能指标。
+- 记录 `visibilitychange / pagehide / pageshow / online / offline / error / unhandledrejection`，用于验证“切聊天、切后台、页面重载是否与 client_stopped/stream 丢失相关”。
+- 对 DOM 中 iframe 做增量跟踪：创建/移除时间、`sandbox` 属性、src hostname/路径、是否仍 connected；按 Apps SDK/DevSpace widget 与普通 iframe 分类。严禁周期性全 DOM 深扫造成额外卡顿。
+- 采样 Chrome 可提供的 `performance.memory`、iframe 数、长任务（Long Tasks）数量/耗时；达到预警阈值时在 sidebar 显示黄色/红色状态，而不是再给页面增加大型 iframe UI。
+- 当会话正文再次被页面正常加载时，用已有 `finish_details`、`reasoning_status`、`turn_exchange_id` 对最近一轮做离线归因：normal final / `client_stopped` / tool call 无 result / reasoning 未结束。
+- 可选“精确状态检查”模式：只有检测到页面长时间无进展时才低频检查 `/stream_status`；认证上下文仅允许驻留内存、不得日志/持久化；遇到 401/403/429 立即停止主动检查。默认保持关闭，避免改变原“被动导出”安全边界。
+- “自动继续”必须建立在可靠诊断之上且默认关闭；第一版只提供醒目提示和一键复制/发送“继续”，避免误判后产生重复工具操作。
+- 建立 iframe budget：例如 50/100/200 档预警，并记录增长速率。复现后区分两类根因：A. 同一个 widget remount 后旧 iframe 未销毁（泄漏）；B. 每个历史 tool call 合法保留一个 iframe（设计性累积）。若是 B，后续研究仅卸载离屏 widget iframe/替换为静态占位的可逆实验，绝不先粗暴删除正在运行的 tool iframe。
+
 ## 验收
 
 - 浏览正常打开某聊天时，扩展可被动获得页面自身返回的 conversation payload；网络面板中不出现由本插件额外发起的 conversation API 请求。
