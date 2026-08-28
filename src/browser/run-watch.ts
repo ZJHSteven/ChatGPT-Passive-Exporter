@@ -144,6 +144,24 @@ function interestingNetworkPath(input: string): boolean {
   }
 }
 
+function progressNetworkPath(input: string): boolean {
+  try {
+    const url = new URL(input, location.href)
+    if (url.origin !== location.origin) return false
+    return /^\/backend-api\/(?:f\/conversation|aip\/|ecosystem\/|connectors?\/|mcp\/)/u.test(url.pathname)
+  }
+  catch {
+    return false
+  }
+}
+
+function isVisible(element: Element): boolean {
+  if (!(element instanceof HTMLElement)) return false
+  if (element.hidden) return false
+  const style = getComputedStyle(element)
+  return style.display !== 'none' && style.visibility !== 'hidden' && element.getClientRects().length > 0
+}
+
 function headersFromRequest(input: RequestInfo | URL, init?: RequestInit): Headers {
   try {
     if (init?.headers) return new Headers(init.headers)
@@ -243,6 +261,10 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     if (events.length > maxEvents) events.splice(0, events.length - maxEvents)
   }
 
+  const markProgress = () => {
+    lastProgressAt = now()
+  }
+
   const originalFetch = window.fetch
   window.fetch = function runWatchFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const url = input instanceof Request ? input.url : String(input)
@@ -258,8 +280,10 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     }
 
     const shouldLog = interestingNetworkPath(url)
+    const countsAsProgress = progressNetworkPath(url)
     const started = performance.now()
     if (shouldLog) {
+      if (countsAsProgress) markProgress()
       pushEvent('fetch-start', {
         method: init?.method ?? (input instanceof Request ? input.method : 'GET'),
         url: sanitizeUrl(url),
@@ -277,11 +301,14 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
 
     if (shouldLog) {
       void promise.then(
-        response => pushEvent('fetch-response', {
-          url: sanitizeUrl(url),
-          status: response.status,
-          elapsedMs: Math.round(performance.now() - started),
-        }),
+        response => {
+          if (countsAsProgress) markProgress()
+          pushEvent('fetch-response', {
+            url: sanitizeUrl(url),
+            status: response.status,
+            elapsedMs: Math.round(performance.now() - started),
+          })
+        },
         error => pushEvent('fetch-reject', {
           url: sanitizeUrl(url),
           elapsedMs: Math.round(performance.now() - started),
@@ -307,6 +334,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
         id = nextIframeId++
         iframeIds.set(frame, id)
         addedTotal += 1
+        markProgress()
         pushEvent('iframe-added', {
           iframeId: id,
           fingerprint: iframeFingerprint(frame),
@@ -324,6 +352,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     for (const oldId of previousIframeIds) {
       if (!currentIds.has(oldId)) {
         removedTotal += 1
+        markProgress()
         pushEvent('iframe-removed', { iframeId: oldId })
       }
     }
