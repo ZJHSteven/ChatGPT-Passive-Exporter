@@ -45,6 +45,17 @@ function updateWatchBadge(snapshot: RunWatchSnapshot): void {
  */
 const runWatch = installRunWatch({ onUpdate: updateWatchBadge })
 
+// 只暴露“去敏后的只读诊断接口”，方便 CDP/OpenCLI 在页面卡顿时快速取样。
+// 注意：Run Watch 闭包中的临时 Authorization 永远不在这个对象上暴露。
+Object.defineProperty(window, '__chatgptRunWatch', {
+  configurable: true,
+  value: {
+    version: BUILD_VERSION,
+    snapshot: () => runWatch.snapshot(),
+    summary: () => runWatch.summaryText(),
+  },
+})
+
 /**
  * Userscript 使用 @grant none，因此这一段直接包装宿主页面原生 fetch/XHR。
  * 和扩展版一样：不主动请求，只复制页面已收到的 conversation body。
