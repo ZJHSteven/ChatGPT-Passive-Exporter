@@ -547,6 +547,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
   sample()
 
   const noteConversationPayload = (payload: RawConversationPayload) => {
+    markProgress()
     latestDiagnostic = diagnoseLatestRun(payload)
     pushEvent('conversation-diagnostic', {
       outcome: latestDiagnostic.outcome,
@@ -632,9 +633,16 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
       `iframe lifecycle: +${snap.iframe.addedTotal} / -${snap.iframe.removedTotal}`,
       `JS heap: ${snap.performance.usedJsHeapMb ?? '?'} MB used / ${snap.performance.totalJsHeapMb ?? '?'} MB total`,
       `Long tasks: ${snap.performance.longTaskCount}, ${snap.performance.longTaskDurationMs} ms`,
+      `Generation UI: ${snap.generation.active ? 'ACTIVE' : 'idle'} / stalled ${Math.round(snap.generation.stalledForMs / 1000)} s / last progress ${new Date(snap.generation.lastProgressAt).toLocaleTimeString()}`,
     ]
     if (snap.latestDiagnostic) lines.push(`Last run: ${snap.latestDiagnostic.outcome} — ${snap.latestDiagnostic.summary}`)
     if (snap.lastServerStatus) lines.push(`Server: ${snap.lastServerStatus.status ?? snap.lastServerStatus.reason ?? 'unknown'}`)
+    if (snap.generation.active && snap.generation.stalledForMs >= 5 * 60_000) {
+      lines.push('Suspected stall: Stop button仍可见，但页面/工具侧连续数分钟没有观察到进展；建议点“检查服务器运行状态”。')
+    }
+    if (snap.lastServerStatus?.status === 'COMPLETE' && snap.generation.active) {
+      lines.push('Confirmed stale UI: 服务器已 COMPLETE，但页面仍显示生成中。')
+    }
     if (snap.iframe.topFingerprints[0]) {
       lines.push('Top iframe fingerprints:')
       for (const item of snap.iframe.topFingerprints.slice(0, 5)) {
