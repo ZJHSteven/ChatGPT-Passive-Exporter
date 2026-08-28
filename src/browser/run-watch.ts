@@ -54,6 +54,15 @@ export interface ServerStatusResult {
   checkedAt: number
 }
 
+export interface GenerationUiStats {
+  active: boolean
+  activeSince?: number
+  lastProgressAt: number
+  stalledForMs: number
+  assistantTextLength?: number
+  assistantChildCount?: number
+}
+
 export interface RunWatchSnapshot {
   protocol: 'chatgpt-passive-exporter/run-watch/v1'
   sessionId: string
@@ -63,6 +72,7 @@ export interface RunWatchSnapshot {
   visibility: DocumentVisibilityState
   iframe: IframeStats
   performance: PerformanceStats
+  generation: GenerationUiStats
   latestDiagnostic?: RunDiagnostic
   lastServerStatus?: ServerStatusResult
   severity: WatchSeverity
@@ -175,12 +185,23 @@ function mb(bytes: number | undefined): number | undefined {
     : undefined
 }
 
-function severityFor(iframe: IframeStats, perf: PerformanceStats, diagnostic?: RunDiagnostic): WatchSeverity {
+function severityFor(
+  iframe: IframeStats,
+  perf: PerformanceStats,
+  generation: GenerationUiStats,
+  diagnostic?: RunDiagnostic,
+  serverStatus?: ServerStatusResult,
+): WatchSeverity {
   if (diagnostic?.outcome === 'client-stopped' || diagnostic?.outcome === 'interrupted') return 'critical'
+  if (serverStatus?.status === 'COMPLETE' && generation.active) return 'critical'
   if (diagnostic?.outcome === 'tool-result-missing') return 'danger'
   if (iframe.total >= 200 || iframe.oaiSandbox >= 200) return 'critical'
   if (iframe.total >= 100 || iframe.oaiSandbox >= 100 || (perf.usedJsHeapMb ?? 0) >= 3000) return 'danger'
   if (iframe.total >= 50 || iframe.oaiSandbox >= 50 || (perf.usedJsHeapMb ?? 0) >= 1500) return 'warning'
+
+  // Stop 按钮还在但连续 5 分钟没有回答长度/工具网络/iframe 生命周期变化，只标“疑似”。
+  // Extended reasoning 本来就可能长时间不吐可见文本，所以不能据此直接判定中断。
+  if (generation.active && generation.stalledForMs >= 5 * 60_000) return 'warning'
   return 'ok'
 }
 
@@ -210,6 +231,9 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
   let lastHref = location.href
   let lastPersistAt = 0
   let disposed = false
+  let lastProgressAt = now()
+  let generationActiveSince: number | undefined
+  let lastAssistantSignature = ''
 
   // 只驻留内存的临时认证上下文。绝不进入 event / snapshot / localStorage。
   const ephemeralHeaders = new Map<string, string>()
