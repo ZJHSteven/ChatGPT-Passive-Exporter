@@ -14,10 +14,20 @@ export interface SidebarExportActions {
   exportMarkdown: () => unknown | Promise<unknown>
   exportArchive: () => unknown | Promise<unknown>
   exportManifest?: () => unknown | Promise<unknown>
+  inspectRun?: () => unknown | Promise<unknown>
+  checkServerStatus?: () => unknown | Promise<unknown>
+  exportRunDiagnostics?: () => unknown | Promise<unknown>
+}
+
+export interface SidebarRunWatchBadge {
+  severity: 'ok' | 'warning' | 'danger' | 'critical'
+  text: string
+  title?: string
 }
 
 const ITEM_MARKER = 'data-chatgpt-passive-exporter-item'
 const MENU_MARKER = 'data-chatgpt-passive-exporter-menu'
+const RUN_WATCH_BADGE_MARKER = 'data-chatgpt-run-watch-badge'
 
 /**
  * 找一个当前页面真实存在的“标准 sidebar item”当模板。
@@ -132,6 +142,9 @@ function createMenu(actions: SidebarExportActions): HTMLDivElement {
     ['导出安全归档 JSON', actions.exportArchive],
   ]
   if (actions.exportManifest) entries.push(['导出富媒体清单', actions.exportManifest])
+  if (actions.inspectRun) entries.push(['查看运行诊断', actions.inspectRun])
+  if (actions.checkServerStatus) entries.push(['检查服务器运行状态', actions.checkServerStatus])
+  if (actions.exportRunDiagnostics) entries.push(['导出运行诊断 JSON', actions.exportRunDiagnostics])
 
   for (const [label, action] of entries) {
     const button = document.createElement('button')
@@ -193,6 +206,46 @@ function positionMenu(item: HTMLElement, menu: HTMLElement): void {
  * 挂载 sidebar 入口并持续守护 SPA 重渲染。
  * 返回清理函数，便于扩展 hot reload / 测试卸载。
  */
+/**
+ * Run Watch 用同一个 sidebar item 展示极轻量状态，不额外创建 iframe/widget。
+ * `ok` 时默认只显示一个小圆点；iframe 暴涨或最后一轮明确中断时显示数量/警告。
+ */
+export function updateSidebarRunWatchBadge(input: SidebarRunWatchBadge): void {
+  const item = document.querySelector<HTMLElement>(`[${ITEM_MARKER}]`)
+  if (!item) return
+
+  let badge = item.querySelector<HTMLElement>(`[${RUN_WATCH_BADGE_MARKER}]`)
+  if (!badge) {
+    badge = document.createElement('span')
+    badge.setAttribute(RUN_WATCH_BADGE_MARKER, 'true')
+    badge.style.cssText = [
+      'margin-left:auto',
+      'padding:1px 6px',
+      'border-radius:999px',
+      'font-size:11px',
+      'line-height:18px',
+      'white-space:nowrap',
+      'font-variant-numeric:tabular-nums',
+    ].join(';')
+    item.append(badge)
+  }
+
+  badge.textContent = input.text
+  badge.title = input.title ?? ''
+  badge.dataset.severity = input.severity
+
+  // 不硬编码主题色；使用 ChatGPT 现有 CSS 变量，并仅通过透明度/outline 表达级别。
+  badge.style.background = input.severity === 'ok'
+    ? 'var(--surface-tertiary,rgba(127,127,127,.10))'
+    : 'var(--surface-secondary,rgba(127,127,127,.18))'
+  badge.style.outline = input.severity === 'critical'
+    ? '2px solid currentColor'
+    : input.severity === 'danger'
+      ? '1px solid currentColor'
+      : 'none'
+  badge.style.opacity = input.severity === 'ok' ? '0.65' : '1'
+}
+
 export function mountSidebarExporter(actions: SidebarExportActions): () => void {
   let menu: HTMLDivElement | null = null
   let stopped = false
