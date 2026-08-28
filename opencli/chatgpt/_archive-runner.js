@@ -66,3 +66,28 @@ export function runArchiveJson(commandArgs) {
         throw new CommandExecutionError(`ChatGPT local archive returned invalid JSON: ${error.message}`);
     }
 }
+
+export function runSyncJson(conversationId, numTurns = 100) {
+    const config = archiveConfig();
+    const syncPath = path.resolve(config.projectRoot, 'scripts', 'sync-chatgpt.mjs');
+    if (!fs.existsSync(syncPath)) throw new ConfigError(`Archive sync CLI not found: ${syncPath}`);
+    const rawDir = path.resolve(config.projectRoot, 'data', 'raw');
+    try {
+        const output = execFileSync(
+            process.execPath,
+            [syncPath, 'one', conversationId, '--num-turns', String(numTurns), '--db', config.dbPath, '--raw-dir', rawDir],
+            {
+                cwd: config.projectRoot,
+                encoding: 'utf8',
+                maxBuffer: 128 * 1024 * 1024,
+                env: { ...process.env, NODE_NO_WARNINGS: '1' },
+            },
+        );
+        return JSON.parse(output);
+    }
+    catch (error) {
+        const stderr = typeof error?.stderr === 'string' ? error.stderr.trim() : '';
+        const stdout = typeof error?.stdout === 'string' ? error.stdout.trim() : '';
+        throw new CommandExecutionError(`ChatGPT archive sync failed: ${stderr || stdout || error?.message || String(error)}`);
+    }
+}
