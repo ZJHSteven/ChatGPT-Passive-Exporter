@@ -44,7 +44,8 @@ export interface FleetConversationEntry {
 }
 
 export interface FleetAlert {
-  kind: 'abnormal'
+  /** abnormal 才允许进入恢复候选；suspected-stall 只能提醒，绝不自动续跑。 */
+  kind: 'abnormal' | 'suspected-stall'
   conversationId: string
   title: string
   reason: string
@@ -71,6 +72,8 @@ export interface FleetWatchOptions {
   recentWindowMs?: number
   maxStatusChecksPerPoll?: number
   maxAlerts?: number
+  /** 服务端仍声称 streaming，但 conversation update_time 长时间不变时仅发“疑似僵尸”提醒。 */
+  suspectedStallMs?: number
   onUpdate?: (snapshot: FleetWatchSnapshot) => void
   onAlert?: (alert: FleetAlert) => void
 }
@@ -176,6 +179,7 @@ export function installFleetWatch(
   const recentWindowMs = Math.max(10 * 60_000, options.recentWindowMs ?? 2 * 60 * 60_000)
   const maxStatusChecksPerPoll = Math.max(1, Math.min(12, options.maxStatusChecksPerPoll ?? 8))
   const maxAlerts = Math.max(10, options.maxAlerts ?? 100)
+  const suspectedStallMs = Math.max(30 * 60_000, options.suspectedStallMs ?? 40 * 60_000)
   const startedAt = now()
   const entries = new Map<string, FleetConversationEntry>()
   const seenUpdate = new Map<string, string>()
@@ -207,7 +211,7 @@ export function installFleetWatch(
       }
       for (const alert of stored.alerts ?? []) {
         alerts.push(alert)
-        alreadyAlerted.add(`${alert.conversationId}:${keyForUpdate(entries.get(alert.conversationId)?.updateTime)}:${alert.reason}`)
+        alreadyAlerted.add(`${alert.kind}:${alert.conversationId}:${keyForUpdate(entries.get(alert.conversationId)?.updateTime)}`)
       }
     }
     catch {
@@ -249,12 +253,13 @@ export function installFleetWatch(
 
   const notifyUpdate = () => options.onUpdate?.(buildSnapshot())
 
-  const emitAlert = (entry: FleetConversationEntry, reason: string) => {
-    const fingerprint = `${entry.id}:${keyForUpdate(entry.updateTime)}:${reason}`
+  const emitAlert = (entry: FleetConversationEntry, reason: string, kind: FleetAlert['kind'] = 'abnormal') => {
+    // 同一 conversation 同一 update_time 下，同类告警只发一次；分钟数变化不会造成通知风暴。
+    const fingerprint = `${kind}:${entry.id}:${keyForUpdate(entry.updateTime)}`
     if (alreadyAlerted.has(fingerprint)) return
     alreadyAlerted.add(fingerprint)
     const alert: FleetAlert = {
-      kind: 'abnormal',
+      kind,
       conversationId: entry.id,
       title: entry.title,
       reason,
@@ -280,7 +285,7 @@ export function installFleetWatch(
     const classified = classifyCompletedRun(diagnostic)
     entry.state = classified.state
     entry.abnormalReason = classified.reason
-    if (classified.state === 'abnormal' && classified.reason) emitAlert(entry, classified.reason)
+    if (classified.state === 'abnormal' && classified.reason) emitAlert(entry, classified.reason, 'abnormal')
   }
 
   const pollNow = async (): Promise<FleetWatchSnapshot> => {
@@ -380,6 +385,14 @@ export function installFleetWatch(
         if (evidence === 'confirmed-streaming') {
           entry.state = 'server-streaming'
           entry.abnormalReason = undefined
+          const persistedIdleMs = entry.updateEpoch === undefined ? 0 : now() - entry.updateEpoch
+          if (persistedIdleMs >= suspectedStallMs) {
+            emitAlert(
+              entry,
+              `服务器仍报告 IS_STREAMING / async_status=${String(entry.asyncStatus)}，但 conversation update_time 已 ${Math.round(persistedIdleMs / 60_000)} 分钟没有变化。仅判为疑似僵尸，不自动续跑。`,
+              'suspected-stall',
+            )
+          }
           continue
         }
 
@@ -436,16 +449,19 @@ export function installFleetWatch(
       const snap = buildSnapshot()
       const active = snap.tracked.filter(item => item.state === 'server-streaming')
       const abnormal = snap.tracked.filter(item => item.state === 'abnormal')
+      const suspected = snap.alerts.filter(item => item.kind === 'suspected-stall')
       const lines = [
         `Fleet Watch: ${snap.authReady ? 'auth-ready' : 'waiting-auth'} / ${snap.polling ? 'polling' : 'idle'}`,
         `Recent list: ${snap.recentListCount}`,
         `Active conversations: ${active.length}`,
         `Abnormal conversations: ${abnormal.length}`,
+        `Suspected stalled: ${suspected.length}`,
       ]
       if (snap.lastPollAt) lines.push(`Last poll: ${new Date(snap.lastPollAt).toLocaleTimeString()}`)
       if (snap.lastError) lines.push(`Last error: ${snap.lastError}`)
       for (const item of active.slice(0, 8)) lines.push(`STREAMING ${item.title} — ${item.rawServerStatus ?? 'IS_STREAMING'}`)
       for (const item of abnormal.slice(0, 8)) lines.push(`ERROR ${item.title} — ${item.abnormalReason ?? 'abnormal completion'}`)
+      for (const alert of suspected.slice(-8)) lines.push(`SUSPECT ${alert.title} — ${alert.reason}`)
       return lines.join('\n')
     },
     dispose: () => {

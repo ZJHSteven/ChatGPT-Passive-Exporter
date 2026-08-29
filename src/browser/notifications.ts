@@ -28,7 +28,10 @@ export async function requestDesktopNotificationPermission(): Promise<DesktopNot
 export function notifyFleetAlert(alert: FleetAlert): boolean {
   if (!('Notification' in window) || Notification.permission !== 'granted') return false
 
-  const notification = new Notification(`ChatGPT 任务异常：${alert.title}`, {
+  const title = alert.kind === 'suspected-stall'
+    ? `ChatGPT 疑似卡住：${alert.title}`
+    : `ChatGPT 任务异常：${alert.title}`
+  const notification = new Notification(title, {
     body: alert.reason,
     tag: `chatgpt-run-watch:${alert.conversationId}`,
     requireInteraction: true,

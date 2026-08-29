@@ -29,26 +29,31 @@ function renderCombinedBadge(): void {
   if (!page) return
 
   const abnormalCount = fleet?.tracked.filter(item => item.state === 'abnormal').length ?? 0
+  const suspectedCount = fleet?.alerts.filter(item => item.kind === 'suspected-stall').length ?? 0
   const activeCount = fleet?.tracked.filter(item => item.state === 'server-streaming').length ?? 0
   const iframeCount = page.iframe.oaiSandbox || page.iframe.total
 
   const severity = abnormalCount > 0
     ? 'critical'
-    : page.severity
+    : suspectedCount > 0 && page.severity === 'ok'
+      ? 'warning'
+      : page.severity
 
   const text = abnormalCount > 0
     ? `!${abnormalCount}`
     : page.severity !== 'ok'
       ? `${page.severity === 'warning' ? '⚠' : '!'}${iframeCount}`
-      : activeCount > 0
-        ? `▶${activeCount}`
-        : '•'
+      : suspectedCount > 0
+        ? `?${suspectedCount}`
+        : activeCount > 0
+          ? `▶${activeCount}`
+          : '•'
 
   const titleParts = [
     `当前页：${page.severity}；iframe ${page.iframe.total}，OAI sandbox ${page.iframe.oaiSandbox}`,
   ]
   if (fleet) {
-    titleParts.push(`全局：${activeCount} 条服务器非 COMPLETE，${abnormalCount} 条明确异常收尾`)
+    titleParts.push(`全局：${activeCount} 条服务端确认进行中，${abnormalCount} 条明确异常，${suspectedCount} 条疑似僵尸`)
     if (fleet.lastError) titleParts.push(`Fleet：${fleet.lastError}`)
   }
 
@@ -227,7 +232,7 @@ function openLatestAbnormal(): void {
   }
   const alert = fleetWatch.snapshot().alerts.at(-1)
   if (!alert) {
-    window.alert('当前没有记录到异常会话。')
+    window.alert('当前没有记录到告警会话。')
     return
   }
   window.open(`https://chatgpt.com/c/${encodeURIComponent(alert.conversationId)}`, '_blank', 'noopener,noreferrer')
@@ -238,9 +243,9 @@ async function copySafeContinue(): Promise<void> {
     window.alert('Fleet Watch 未在当前 tab 启动。')
     return
   }
-  const alert = fleetWatch.snapshot().alerts.at(-1)
+  const alert = [...fleetWatch.snapshot().alerts].reverse().find(item => item.kind === 'abnormal')
   if (!alert) {
-    window.alert('当前没有记录到异常会话。')
+    window.alert('当前没有“服务器已确认结束”的异常会话；疑似卡住告警不能生成续跑提示。')
     return
   }
 
