@@ -59,7 +59,8 @@ Object.defineProperty(window, '__chatgptRunWatch', {
 /**
  * Userscript 使用 @grant none，因此这一段直接包装宿主页面原生 fetch/XHR。
  * 和扩展版一样：不主动请求，只复制页面已收到的 conversation body。
- * 捕获到正文后顺手做一次“最后一轮离线归因”，用于识别 client_stopped/tool-result-missing。
+ * 捕获到正文后顺手做一次“最后一轮快照诊断”：只区分明确终止证据与当前尾部形态。
+ * `tool-call-open` / `reasoning-open` 本身绝不用于判死，实时存活状态由服务器层确认。
  */
 installPassiveCapture((envelope) => {
   latest = envelope

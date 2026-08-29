@@ -1,23 +1,27 @@
 import type { RawChatMessage, RawConversationPayload } from './types'
 
 /**
- * 一轮 ChatGPT Agent run 的离线诊断结果。
+ * “生命状态证据”和“当前快照尾部形态”必须严格分开。
  *
- * 这里故意只使用 conversation payload 中已经持久化的字段，不依赖网页 DOM。
- * 好处是：哪怕手机/网页 UI 仍错误地显示“正在思考”，只要再次加载到这条会话，
- * 我们就能根据服务端已经保存的 finish_details / reasoning_status / tool message
- * 判断这一轮实际上是正常结束、被客户端中止，还是死在 tool call 后没有 result。
+ * 重要原则：
+ * - final / finish_details=interrupted 属于终止证据；
+ * - 最后停在 tool call、reasoning 仍 open 只描述“快照现在长什么样”，不能证明 run 已死；
+ * - 实时是否仍在运行，需要结合 stream_status / 其它服务器侧状态判断。
  */
-export type RunOutcome =
-  | 'complete'
+export type RunTerminalEvidence =
+  | 'final'
   | 'client-stopped'
   | 'interrupted'
-  | 'tool-result-missing'
-  | 'reasoning-incomplete'
-  | 'unknown'
+  | 'none'
+
+export type RunTailShape =
+  | 'final'
+  | 'tool-call-open'
+  | 'reasoning-open'
+  | 'tool-result-returned'
+  | 'other'
 
 export interface RunDiagnostic {
-  outcome: RunOutcome
   conversationId?: string
   currentNode?: string
   turnExchangeId?: string
@@ -27,12 +31,20 @@ export interface RunDiagnostic {
   lastRole?: string
   lastContentType?: string
   lastRecipient?: string
+
+  /** 只表示 payload 本身是否含明确“已终止”证据。 */
+  terminalEvidence: RunTerminalEvidence
   interruptedReason?: string
   hasFinal: boolean
   hasReasoningEnded: boolean
+
+  /** 只描述最新持久化快照的尾部，不推断存活/死亡。 */
+  tailShape: RunTailShape
   assistantToolCalls: number
   toolResults: number
   nodeCount: number
+
+  /** 面向 UI 的保守描述。 */
   summary: string
 }
 
@@ -75,8 +87,8 @@ function isFinalAssistant(message: RawChatMessage): boolean {
   if (roleOf(message) !== 'assistant') return false
   if (message.channel === 'final') return true
 
-  // 当前 Web payload 的最终可见回答通常使用 stop token 200002。
-  // 不能把这个 token 当唯一契约，所以它只作为 channel 缺失时的兼容 fallback。
+  // 当前 Web payload 常用 200002 表示最终回答 stop token。
+  // 它只是 channel 缺失时的兼容 fallback，不作为唯一契约。
   const finish = finishDetailsOf(message)
   const stopTokens = Array.isArray(finish?.stop_tokens) ? finish.stop_tokens : []
   return stopTokens.includes(200002)
@@ -85,11 +97,7 @@ function isFinalAssistant(message: RawChatMessage): boolean {
 function isAssistantToolCall(message: RawChatMessage): boolean {
   if (roleOf(message) !== 'assistant') return false
   const recipient = typeof message.recipient === 'string' ? message.recipient : 'all'
-  if (recipient === 'all') return false
-
-  // 工具调用在新式 payload 里通常是 code；但 recipient 比 content_type 更稳定，
-  // 因为 web.run/api_tool 等不同工具的 content 表示曾发生过变化。
-  return true
+  return recipient !== 'all'
 }
 
 function isToolResult(message: RawChatMessage): boolean {
@@ -97,8 +105,7 @@ function isToolResult(message: RawChatMessage): boolean {
 }
 
 /**
- * 兼容新式 `messages[]` 和 legacy `mapping`，提取当前可见分支/顺序中的消息。
- * legacy mapping 只沿 current_node 向 parent 回溯，避免把历史重试分支混进同一轮诊断。
+ * 兼容新式 `messages[]` 和 legacy `mapping`，只取当前分支。
  */
 function orderedMessages(payload: RawConversationPayload): RawChatMessage[] {
   if (Array.isArray(payload.messages)) return payload.messages
@@ -136,19 +143,17 @@ function latestTurn(messages: RawChatMessage[]): RawChatMessage[] {
       break
     }
   }
-
   return lastUserIndex >= 0 ? messages.slice(lastUserIndex) : messages
 }
 
 /**
- * 对 conversation 当前最后一轮做后验诊断。
+ * 对 conversation 当前最后一轮做“快照诊断”。
  *
- * 判定优先级非常重要：
- * 1. 明确 `finish_details.type=interrupted` 最可信；
- * 2. 有 final 就视为完成；
- * 3. 最后停在 assistant→tool 且没有后续 tool result，视为 tool-result-missing；
- * 4. reasoning 只有 is_reasoning 而无 reasoning_ended，视为 reasoning-incomplete；
- * 5. 其余保持 unknown，不为了“给答案”而过度推断。
+ * 注意：这个函数不回答“它现在还活着吗”。它只回答：
+ * 1. payload 里有没有明确终止证据？
+ * 2. 最新持久化节点现在停在什么形态？
+ *
+ * 是否仍在运行必须交给 stream_status / 服务器状态层判断。
  */
 export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnostic {
   const messages = orderedMessages(payload)
@@ -160,6 +165,10 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
     .reverse()
     .map(message => ({ message, finish: finishDetailsOf(message) }))
     .find(item => item.finish?.type === 'interrupted')
+
+  const interruptedReason = typeof interrupted?.finish?.reason === 'string'
+    ? interrupted.finish.reason
+    : undefined
 
   const hasFinal = turn.some(isFinalAssistant)
   const hasReasoningEnded = turn.some(message => (
@@ -174,41 +183,42 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
   const hasToolResultAfterLastCall = lastAssistantToolIndex >= 0
     && turn.slice(lastAssistantToolIndex + 1).some(isToolResult)
 
-  let outcome: RunOutcome = 'unknown'
-  let summary = '最后一轮没有足够的持久化终止信息，暂时无法可靠归因。'
-  const interruptedReason = typeof interrupted?.finish?.reason === 'string'
-    ? interrupted.finish.reason
-    : undefined
+  let terminalEvidence: RunTerminalEvidence = 'none'
+  if (interruptedReason === 'client_stopped') terminalEvidence = 'client-stopped'
+  else if (interrupted) terminalEvidence = 'interrupted'
+  else if (hasFinal) terminalEvidence = 'final'
 
-  if (interrupted) {
-    if (interruptedReason === 'client_stopped') {
-      outcome = 'client-stopped'
-      summary = '最后一轮被客户端明确中止（client_stopped），不会自行继续。'
-    }
-    else {
-      outcome = 'interrupted'
-      summary = interruptedReason
-        ? `最后一轮被中止：${interruptedReason}。`
-        : '最后一轮被中止，但 payload 没有给出更具体原因。'
-    }
+  let tailShape: RunTailShape = 'other'
+  if (hasFinal) tailShape = 'final'
+  else if (lastAssistantToolIndex >= 0 && !hasToolResultAfterLastCall) tailShape = 'tool-call-open'
+  else if (hasReasoningActive && !hasReasoningEnded) tailShape = 'reasoning-open'
+  else if (lastAssistantToolIndex >= 0 && hasToolResultAfterLastCall) tailShape = 'tool-result-returned'
+
+  let summary = '当前 payload 没有明确终止证据；仅凭这份快照不能判断 run 是否仍在执行。'
+  if (terminalEvidence === 'final') {
+    summary = 'payload 已包含 final answer，可确认这一轮已经正常完成。'
   }
-  else if (hasFinal) {
-    outcome = 'complete'
-    summary = '最后一轮已经产生 final answer，可视为正常完成。'
+  else if (terminalEvidence === 'client-stopped') {
+    summary = 'payload 明确记录 client_stopped，可确认这一轮被客户端中止。'
   }
-  else if (lastAssistantToolIndex >= 0 && !hasToolResultAfterLastCall) {
-    outcome = 'tool-result-missing'
-    summary = '最后一轮停在工具调用之后，没有对应 tool result；很像工具已发出但回传/stream 丢失。'
+  else if (terminalEvidence === 'interrupted') {
+    summary = interruptedReason
+      ? `payload 明确记录 interrupted：${interruptedReason}。`
+      : 'payload 明确记录 interrupted，但没有更具体原因。'
   }
-  else if (hasReasoningActive && !hasReasoningEnded) {
-    outcome = 'reasoning-incomplete'
-    summary = '最后一轮留下 is_reasoning，但没有 reasoning_ended/final，属于未完整收尾。'
+  else if (tailShape === 'tool-call-open') {
+    summary = '最新持久化节点停在 assistant→tool call，尚未看到对应 tool result；这可能只是工具仍在执行，不能据此判死。'
+  }
+  else if (tailShape === 'reasoning-open') {
+    summary = '最新快照仍有 is_reasoning 且尚无 reasoning_ended/final；这可能只是模型仍在思考，不能据此判死。'
+  }
+  else if (tailShape === 'tool-result-returned') {
+    summary = '最新工具结果已经回来，但当前 payload 尚无明确终止证据；仍需服务器状态确认是否继续运行。'
   }
 
   const representative = last ?? user
 
   return {
-    outcome,
     conversationId: typeof payload.conversation_id === 'string' ? payload.conversation_id : undefined,
     currentNode: typeof payload.current_node === 'string' ? payload.current_node : undefined,
     turnExchangeId: [...turn].reverse().map(turnExchangeIdOf).find(Boolean),
@@ -218,9 +228,11 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
     lastRole: representative ? roleOf(representative) : undefined,
     lastContentType: representative ? contentTypeOf(representative) : undefined,
     lastRecipient: typeof representative?.recipient === 'string' ? representative.recipient : undefined,
+    terminalEvidence,
     interruptedReason,
     hasFinal,
     hasReasoningEnded,
+    tailShape,
     assistantToolCalls,
     toolResults,
     nodeCount: turn.length,

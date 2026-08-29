@@ -121,6 +121,56 @@ function replaceTemplateContents(item: HTMLElement): void {
   item.append(icon, grow)
 }
 
+/**
+ * ChatGPT 2026-08 的 sidebar 有两种完全不同的容器：
+ * - 展开的宽 sidebar；
+ * - `#stage-sidebar-tiny-bar`，实际宽度只有约 52px。
+ *
+ * 旧版直接把 138px 的 menu item 插进 tiny rail，DOM 虽然存在，却会被外层
+ * `overflow:hidden` 裁掉，用户视觉上等于“没有 UI”。这里在插入后根据真实容器
+ * 做一次布局收缩：tiny rail 只显示 36×36 图标，状态 badge 叠在右上角；宽 sidebar
+ * 才显示“归档 / 监控”文字。
+ */
+function applySidebarLayout(item: HTMLElement, reference: Element): void {
+  const tinyRail = reference.closest('#stage-sidebar-tiny-bar')
+    ?? reference.closest('nav[aria-label="侧边栏"]')
+  const compact = Boolean(tinyRail && tinyRail.getBoundingClientRect().width < 80)
+
+  item.dataset.chatgptPassiveExporterCompact = compact ? 'true' : 'false'
+  item.title = compact ? 'ChatGPT 归档 / 运行监控' : ''
+
+  const text = item.querySelector<HTMLElement>('.truncate')
+  if (text) {
+    text.textContent = compact ? '' : '归档 / 监控'
+    text.style.display = compact ? 'none' : ''
+  }
+
+  if (compact) {
+    item.style.width = '36px'
+    item.style.minWidth = '36px'
+    item.style.maxWidth = '36px'
+    item.style.height = '36px'
+    item.style.marginInline = '6px'
+    item.style.padding = '0'
+    item.style.justifyContent = 'center'
+    item.style.position = 'relative'
+    item.style.overflow = 'visible'
+
+    const grow = item.children[1] as HTMLElement | undefined
+    if (grow) grow.style.display = 'none'
+  }
+  else {
+    item.style.width = ''
+    item.style.minWidth = ''
+    item.style.maxWidth = ''
+    item.style.height = ''
+    item.style.marginInline = ''
+    item.style.padding = ''
+    item.style.justifyContent = ''
+    item.style.position = ''
+  }
+}
+
 function createMenu(actions: SidebarExportActions): HTMLDivElement {
   const menu = document.createElement('div')
   menu.setAttribute(MENU_MARKER, 'true')
@@ -226,6 +276,7 @@ export function updateSidebarRunWatchBadge(input: SidebarRunWatchBadge): void {
       'line-height:18px',
       'white-space:nowrap',
       'font-variant-numeric:tabular-nums',
+      'pointer-events:none',
     ].join(';')
     item.append(badge)
   }
@@ -244,6 +295,31 @@ export function updateSidebarRunWatchBadge(input: SidebarRunWatchBadge): void {
       ? '1px solid currentColor'
       : 'none'
   badge.style.opacity = input.severity === 'ok' ? '0.65' : '1'
+
+  if (item.dataset.chatgptPassiveExporterCompact === 'true') {
+    badge.style.position = 'absolute'
+    badge.style.right = '-3px'
+    badge.style.top = '-5px'
+    badge.style.marginLeft = '0'
+    badge.style.minWidth = '14px'
+    badge.style.height = '14px'
+    badge.style.lineHeight = '14px'
+    badge.style.padding = '0 3px'
+    badge.style.fontSize = '9px'
+    badge.style.textAlign = 'center'
+  }
+  else {
+    badge.style.position = ''
+    badge.style.right = ''
+    badge.style.top = ''
+    badge.style.marginLeft = 'auto'
+    badge.style.minWidth = ''
+    badge.style.height = ''
+    badge.style.lineHeight = '18px'
+    badge.style.padding = '1px 6px'
+    badge.style.fontSize = '11px'
+    badge.style.textAlign = ''
+  }
 }
 
 export function mountSidebarExporter(actions: SidebarExportActions): () => void {
@@ -271,6 +347,7 @@ export function mountSidebarExporter(actions: SidebarExportActions): () => void 
     clone.className = template.className
     clone.style.cssText = template.style.cssText
     replaceTemplateContents(clone)
+    applySidebarLayout(clone, reference)
 
     // 页面重建 body 时，旧 menu 引用可能仍在变量里但节点已经断开。
     // 此时必须重新创建，而不能因为 `menu !== null` 就误以为它还活着。

@@ -212,16 +212,14 @@ function severityFor(
   diagnostic?: RunDiagnostic,
   serverStatus?: ServerStatusResult,
 ): WatchSeverity {
-  if (diagnostic?.outcome === 'client-stopped' || diagnostic?.outcome === 'interrupted') return 'critical'
+  if (diagnostic?.terminalEvidence === 'client-stopped' || diagnostic?.terminalEvidence === 'interrupted') return 'critical'
   if (serverStatus?.status === 'COMPLETE' && generation.active) return 'critical'
-  if (diagnostic?.outcome === 'tool-result-missing') return 'danger'
   if (iframe.total >= 200 || iframe.oaiSandbox >= 200) return 'critical'
   if (iframe.total >= 100 || iframe.oaiSandbox >= 100 || (perf.usedJsHeapMb ?? 0) >= 3000) return 'danger'
   if (iframe.total >= 50 || iframe.oaiSandbox >= 50 || (perf.usedJsHeapMb ?? 0) >= 1500) return 'warning'
 
-  // Stop 按钮还在但连续 5 分钟没有回答长度/工具网络/iframe 生命周期变化，只标“疑似”。
-  // Extended reasoning 本来就可能长时间不吐可见文本，所以不能据此直接判定中断。
-  if (generation.active && generation.stalledForMs >= 5 * 60_000) return 'warning'
+  // “静默多久”不参与故障 severity。reasoning/tool 本来就可能长时间没有可见变化；
+  // stalledForMs 只作为取证信息展示，绝不能单独触发“疑似死亡”。
   return 'ok'
 }
 
@@ -556,7 +554,8 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     latestDiagnostic = diagnoseLatestRun(payload)
     widgetPressure = analyzeWidgetPressure(payload)
     pushEvent('conversation-diagnostic', {
-      outcome: latestDiagnostic.outcome,
+      terminalEvidence: latestDiagnostic.terminalEvidence,
+      tailShape: latestDiagnostic.tailShape,
       summary: latestDiagnostic.summary,
       turnExchangeId: latestDiagnostic.turnExchangeId,
       requestId: latestDiagnostic.requestId,
@@ -645,7 +644,11 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
       `Long tasks: ${snap.performance.longTaskCount}, ${snap.performance.longTaskDurationMs} ms`,
       `Generation UI: ${snap.generation.active ? 'ACTIVE' : 'idle'} / stalled ${Math.round(snap.generation.stalledForMs / 1000)} s / last progress ${new Date(snap.generation.lastProgressAt).toLocaleTimeString()}`,
     ]
-    if (snap.latestDiagnostic) lines.push(`Last run: ${snap.latestDiagnostic.outcome} — ${snap.latestDiagnostic.summary}`)
+    if (snap.latestDiagnostic) {
+      lines.push(`Payload terminal evidence: ${snap.latestDiagnostic.terminalEvidence}`)
+      lines.push(`Payload tail: ${snap.latestDiagnostic.tailShape}`)
+      lines.push(`Payload note: ${snap.latestDiagnostic.summary}`)
+    }
     if (snap.widgetPressure) {
       lines.push(
         `Raw widget pressure: ${snap.widgetPressure.sdkNodeCount} SDK nodes / ${snap.widgetPressure.devspaceSdkNodeCount} DevSpace / max ${snap.widgetPressure.maxSdkNodesInOneTurn} in one turn / ${snap.widgetPressure.interpretation.toUpperCase()}`,
