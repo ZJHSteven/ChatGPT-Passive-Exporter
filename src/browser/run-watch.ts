@@ -671,8 +671,10 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
   }
 
   const listRecentConversations = async (limit = 20): Promise<RecentConversationSummary[]> => {
-    const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)))
-    const path = `/backend-api/conversations?offset=0&limit=${safeLimit}&order=updated`
+    // 当前 ChatGPT Web sidebar 实测使用 limit=28 + is_archived/is_starred 过滤。
+    // Fleet 固定复用同一只读请求形状，再在本地 slice；避免人为创造一个独特的 limit=20 query 指纹。
+    const safeLimit = Math.max(1, Math.min(28, Math.trunc(limit)))
+    const path = '/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=false&is_starred=false'
     const result = await authenticatedJson(path, '/backend-api/conversations')
     if (!result.ok) return []
 
@@ -699,7 +701,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
           : undefined,
       })
     }
-    return summaries
+    return summaries.slice(0, safeLimit)
   }
 
   /**

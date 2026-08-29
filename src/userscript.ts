@@ -7,6 +7,7 @@ import { installPassiveCapture } from './core/passive-capture'
 import type { CanonicalConversation, PassiveCaptureEnvelope, RawConversationPayload } from './core/types'
 import { installRunWatch, type RunWatchSnapshot } from './browser/run-watch'
 import { installFleetWatch, type FleetWatchSnapshot } from './browser/fleet-watch'
+import { installFleetLeadership, type FleetLeaderRole } from './browser/fleet-leader'
 import { notifyFleetAlert, requestDesktopNotificationPermission } from './browser/notifications'
 import { mountSidebarExporter, updateSidebarRunWatchBadge } from './ui/sidebar'
 
@@ -22,6 +23,7 @@ Object.defineProperty(window, '__chatgptPassiveExporter', {
 let latest: PassiveCaptureEnvelope | null = null
 let latestWatchSnapshot: RunWatchSnapshot | null = null
 let latestFleetSnapshot: FleetWatchSnapshot | null = null
+let fleetLeaderRole: FleetLeaderRole = location.pathname === '/' ? 'waiting' : 'unsupported'
 
 function renderCombinedBadge(): void {
   const page = latestWatchSnapshot
@@ -81,13 +83,32 @@ const runWatch = installRunWatch({ onUpdate: updateWatchBadge })
  * 普通 conversation tab 仍保留本页性能取证，但不会各自再发一套全局轮询，避免监控器本身
  * 放大网络/内存成本。用户如果主要从手机启动任务，只需在桌面保留一张首页监控站。
  */
-const fleetWatch = location.pathname === '/'
-  ? installFleetWatch(runWatch, {
-      onUpdate: updateFleetBadge,
-      onAlert: (alert) => {
-        notifyFleetAlert(alert)
+let fleetWatch: ReturnType<typeof installFleetWatch> | null = null
+const fleetLeadership = location.pathname === '/'
+  ? installFleetLeadership(
+      () => {
+        fleetWatch = installFleetWatch(runWatch, {
+          onUpdate: updateFleetBadge,
+          onAlert: (alert) => {
+            notifyFleetAlert(alert)
+          },
+        })
+        latestFleetSnapshot = fleetWatch.snapshot()
+        renderCombinedBadge()
+        return () => {
+          fleetWatch?.dispose()
+          fleetWatch = null
+          latestFleetSnapshot = null
+          renderCombinedBadge()
+        }
       },
-    })
+      {
+        onRoleChange: (role) => {
+          fleetLeaderRole = role
+          renderCombinedBadge()
+        },
+      },
+    )
   : null
 
 // 只暴露“去敏后的只读诊断接口”，方便 CDP/OpenCLI 在页面卡顿时快速取样。
@@ -99,7 +120,11 @@ Object.defineProperty(window, '__chatgptRunWatch', {
     snapshot: () => runWatch.snapshot(),
     summary: () => runWatch.summaryText(),
     fleetSnapshot: () => fleetWatch?.snapshot() ?? null,
-    fleetSummary: () => fleetWatch?.summaryText() ?? 'Fleet Watch 未在此 tab 启动；请保留一张 ChatGPT 首页作为轻量监控站。',
+    fleetSummary: () => fleetWatch?.summaryText()
+      ?? (location.pathname === '/'
+        ? `Fleet Watch 当前为 ${fleetLeaderRole}；同一浏览器 profile 只允许一张首页成为主动监控 leader。`
+        : 'Fleet Watch 未在此 tab 启动；请保留一张 ChatGPT 首页作为轻量监控站。'),
+    fleetLeaderRole: () => fleetLeaderRole,
   },
 })
 

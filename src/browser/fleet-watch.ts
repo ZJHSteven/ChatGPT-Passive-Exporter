@@ -71,6 +71,8 @@ export interface FleetWatchOptions {
   recentLimit?: number
   recentWindowMs?: number
   maxStatusChecksPerPoll?: number
+  /** 已确认 streaming 时的低频交叉复核；steady-state 不需要每分钟重复打 stream_status。 */
+  streamRecheckMs?: number
   maxAlerts?: number
   /** 服务端仍声称 streaming，但 conversation update_time 长时间不变时仅发“疑似僵尸”提醒。 */
   suspectedStallMs?: number
@@ -178,6 +180,7 @@ export function installFleetWatch(
   const recentLimit = Math.max(5, Math.min(50, options.recentLimit ?? 20))
   const recentWindowMs = Math.max(10 * 60_000, options.recentWindowMs ?? 2 * 60 * 60_000)
   const maxStatusChecksPerPoll = Math.max(1, Math.min(12, options.maxStatusChecksPerPoll ?? 8))
+  const streamRecheckMs = Math.max(5 * 60_000, options.streamRecheckMs ?? 10 * 60_000)
   const maxAlerts = Math.max(10, options.maxAlerts ?? 100)
   const suspectedStallMs = Math.max(30 * 60_000, options.suspectedStallMs ?? 40 * 60_000)
   const startedAt = now()
@@ -310,7 +313,10 @@ export function installFleetWatch(
         const updateKey = keyForUpdate(item.updateTime)
         const previousUpdate = seenUpdate.get(item.id)
         const existing = entries.get(item.id)
-        const changed = previousUpdate !== undefined && previousUpdate !== updateKey
+        const previousAsyncStatus = existing?.asyncStatus
+        const updateChanged = previousUpdate !== undefined && previousUpdate !== updateKey
+        const asyncChanged = existing !== undefined && previousAsyncStatus !== item.asyncStatus
+        const changed = updateChanged || asyncChanged
         const newlySeen = previousUpdate === undefined
         const recentlyUpdated = updateEpoch !== undefined && currentTime - updateEpoch <= recentWindowMs
 
@@ -336,23 +342,33 @@ export function installFleetWatch(
         }
         entries.set(item.id, entry)
 
-        // 首次启动不把 20~50 条历史记录全打 status；只检查最近窗口内的前几条。
-        // 后续任何 update_time 变化都会进入 candidate；已经 server-active 的条目持续跟踪到结束。
+        const asyncLooksRunning = item.asyncStatus === 3 || item.asyncStatus === 5
+        const streamingRecheckDue = entry.state === 'server-streaming'
+          && (
+            !asyncLooksRunning
+            || entry.lastStatusAt === undefined
+            || currentTime - entry.lastStatusAt >= streamRecheckMs
+            || (updateEpoch !== undefined && currentTime - updateEpoch >= suspectedStallMs)
+          )
+
+        // 流量控制：conversation list 是主要低频观测面；stream_status 只做交叉确认。
+        // 新发现的 async 进行态查一次；steady-state 默认 10 分钟才复核一次；
+        // update/async 发生变化则立即复核；网络错误/未知状态继续重试。
         if (
-          entry.state === 'server-streaming'
-          || entry.state === 'status-error'
+          entry.state === 'status-error'
           || entry.state === 'status-unknown'
           || changed
-          || (newlySeen && recentlyUpdated)
-          || item.asyncStatus === 3
-          || item.asyncStatus === 5
+          || (asyncLooksRunning && entry.state !== 'server-streaming')
+          || streamingRecheckDue
         ) {
           candidates.push({
             entry,
-            // 首次启动只建立服务器状态基线，不读取 COMPLETE 历史会话尾部、更不报警。
-            // 只有已观察到运行态，或 update_time 在基线之后发生变化，结束时才做后验归因。
             inspectOnComplete: entry.state === 'server-streaming' || changed,
           })
+        }
+        else if (newlySeen && recentlyUpdated && (item.asyncStatus === null || item.asyncStatus === 4)) {
+          // 首次看到普通完成态只建立 baseline；不额外打 stream_status，也不翻旧账。
+          entry.state = 'complete'
         }
       }
 
