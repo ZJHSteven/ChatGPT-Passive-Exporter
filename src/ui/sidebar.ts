@@ -55,7 +55,13 @@ function findNativeSidebarItem(): HTMLElement | null {
 }
 
 function findInsertionReference(): Element | null {
-  // 优先完全跟随 ChatGPT Exporter 的成熟位置：个人资料按钮之前。
+  // 2026-08 的 ChatGPT sidebar tiny rail 顶部有一个稳定的“新聊天”按钮；把 Companion
+  // 放在它下面比塞到最底部 profile 旁边更容易被用户真正看到，而且不受历史列表滚动位置影响。
+  const newChat = document.querySelector('[data-testid="create-new-chat-button"]')
+  const tinyRail = newChat?.closest('#stage-sidebar-tiny-bar')
+  if (newChat && tinyRail) return newChat.parentElement ?? newChat
+
+  // fallback：跟随 ChatGPT Exporter 的成熟位置——个人资料按钮之前。
   // 当前 ChatGPT 会把 data-sidebar-item 的 <a> 交给全局路由事件处理；我们若伪装成链接，
   // 点击会触发侧栏自己的关闭/重建逻辑。所以只借样式，不借路由语义。
   const profile = document.querySelector('[data-testid="accounts-profile-button"]')
@@ -376,8 +382,11 @@ export function mountSidebarExporter(actions: SidebarExportActions): () => void 
       if (event.key === 'Enter' || event.key === ' ') toggle(event)
     })
 
-    // 优先插在个人资料按钮之前；fallback 才放到其它一级入口之前。
-    reference.before(clone)
+    // tiny rail 中固定放在“新聊天”下面；其它 fallback 仍放到 reference 之前。
+    const referencesNewChat = reference.matches('[data-testid="create-new-chat-button"]')
+      || Boolean(reference.querySelector('[data-testid="create-new-chat-button"]'))
+    if (referencesNewChat) reference.after(clone)
+    else reference.before(clone)
   }
 
   const observer = new MutationObserver(mount)
