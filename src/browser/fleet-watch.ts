@@ -223,7 +223,7 @@ export function installFleetWatch(
       const recent = await runWatch.listRecentConversations(recentLimit)
       recentListCount = recent.length
       const currentTime = now()
-      const candidates: FleetConversationEntry[] = []
+      const candidates: Array<{ entry: FleetConversationEntry, inspectOnComplete: boolean }> = []
 
       for (const item of recent) {
         const updateEpoch = timeToEpoch(item.updateTime)
@@ -258,13 +258,19 @@ export function installFleetWatch(
         // 首次启动不把 20~50 条历史记录全打 status；只检查最近窗口内的前几条。
         // 后续任何 update_time 变化都会进入 candidate；已经 server-active 的条目持续跟踪到结束。
         if (entry.state === 'server-active' || changed || (newlySeen && recentlyUpdated)) {
-          candidates.push(entry)
+          candidates.push({
+            entry,
+            // 首次启动只建立服务器状态基线，不读取 COMPLETE 历史会话尾部、更不报警。
+            // 只有已观察到运行态，或 update_time 在基线之后发生变化，结束时才做后验归因。
+            inspectOnComplete: entry.state === 'server-active' || changed,
+          })
         }
       }
 
-      candidates.sort((a, b) => (b.updateEpoch ?? b.lastChangedAt) - (a.updateEpoch ?? a.lastChangedAt))
+      candidates.sort((a, b) => (b.entry.updateEpoch ?? b.entry.lastChangedAt) - (a.entry.updateEpoch ?? a.entry.lastChangedAt))
 
-      for (const entry of candidates.slice(0, maxStatusChecksPerPoll)) {
+      for (const candidate of candidates.slice(0, maxStatusChecksPerPoll)) {
+        const { entry, inspectOnComplete } = candidate
         const previousState = entry.state
         const status = await runWatch.checkConversationServerStatus(entry.id)
         entry.lastStatusAt = now()
@@ -277,13 +283,9 @@ export function installFleetWatch(
         }
 
         if (serverLooksComplete(status)) {
-          // 只有“最近有变化 / 之前确实在运行”的 conversation 才读尾部，避免无意义下载历史正文。
-          if (previousState === 'server-active' || previousState === 'tracking') {
-            await inspectCompleted(entry)
-          }
-          else {
-            entry.state = 'complete'
-          }
+          // 首次 baseline 中的 COMPLETE 只记完成；不读正文、不通知历史故障。
+          if (inspectOnComplete || previousState === 'server-active') await inspectCompleted(entry)
+          else entry.state = 'complete'
         }
         else {
           // 对所有非 COMPLETE 值保留原始 status，不擅自解释具体枚举含义。
