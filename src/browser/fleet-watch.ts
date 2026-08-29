@@ -144,8 +144,9 @@ export type ServerEvidence = 'confirmed-streaming' | 'confirmed-complete' | 'con
 
 /**
  * 把两个彼此独立的服务端视图合并成一个“证据等级”。
- * 当前 2026-08-30 实测：async_status=3 ↔ IS_STREAMING；async_status=null ↔ COMPLETE。
- * 其它枚举/缺字段全部保守处理，不把未来 schema 变化误判成结束。
+ * 当前 2026-08-30 实测：文本/Agent 轮次可见 3→4 对应 IS_STREAMING→COMPLETE；
+ * 普通已完成历史常为 null。近期独立逆向还观察到 async 流程 3/5→4。
+ * 因此 3/5 仅作为“进行态佐证”，4/null 仅作为“完成态佐证”；其它值保守处理。
  */
 export function classifyServerEvidence(
   asyncStatus: number | string | null | undefined,
@@ -153,10 +154,10 @@ export function classifyServerEvidence(
 ): ServerEvidence {
   if (!streamStatus.ok || !streamStatus.status) return 'unknown'
   if (streamStatus.status === 'IS_STREAMING') {
-    return asyncStatus === 3 ? 'confirmed-streaming' : 'conflict'
+    return asyncStatus === 3 || asyncStatus === 5 ? 'confirmed-streaming' : 'conflict'
   }
   if (streamStatus.status === 'COMPLETE') {
-    return asyncStatus === null ? 'confirmed-complete' : 'conflict'
+    return asyncStatus === null || asyncStatus === 4 ? 'confirmed-complete' : 'conflict'
   }
   return 'unknown'
 }
@@ -338,6 +339,7 @@ export function installFleetWatch(
           || changed
           || (newlySeen && recentlyUpdated)
           || item.asyncStatus === 3
+          || item.asyncStatus === 5
         ) {
           candidates.push({
             entry,

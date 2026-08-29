@@ -22,14 +22,18 @@ function server(status?: string, ok = true): ServerStatusResult {
 }
 
 describe('Fleet Watch 服务端双信号', () => {
-  test('async_status=3 + IS_STREAMING 才是已确认 streaming', () => {
+  test('async_status=3/5 + IS_STREAMING 是已确认 streaming', () => {
     expect(classifyServerEvidence(3, server('IS_STREAMING'))).toBe('confirmed-streaming')
+    expect(classifyServerEvidence(5, server('IS_STREAMING'))).toBe('confirmed-streaming')
     expect(classifyServerEvidence(null, server('IS_STREAMING'))).toBe('conflict')
+    expect(classifyServerEvidence(4, server('IS_STREAMING'))).toBe('conflict')
   })
 
-  test('async_status=null + COMPLETE 才是已确认 complete', () => {
+  test('async_status=4/null + COMPLETE 是已确认 complete', () => {
     expect(classifyServerEvidence(null, server('COMPLETE'))).toBe('confirmed-complete')
+    expect(classifyServerEvidence(4, server('COMPLETE'))).toBe('confirmed-complete')
     expect(classifyServerEvidence(3, server('COMPLETE'))).toBe('conflict')
+    expect(classifyServerEvidence(5, server('COMPLETE'))).toBe('conflict')
   })
 
   test('网络错误、缺字段和未知枚举都保持 unknown', () => {
