@@ -82,7 +82,8 @@ export interface FleetWatchController {
   dispose: () => void
 }
 
-const STORAGE_KEY = 'chatgpt-passive-exporter/fleet-watch/state/v1'
+// v2 起采用“双服务端信号 + COMPLETE 二次确认”判据；不继承 v1 时代可能误报的历史告警。
+const STORAGE_KEY = 'chatgpt-passive-exporter/fleet-watch/state/v2'
 
 function now(): number {
   return Date.now()
