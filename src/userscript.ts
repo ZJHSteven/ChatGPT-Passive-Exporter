@@ -233,6 +233,27 @@ function openLatestAbnormal(): void {
   window.open(`https://chatgpt.com/c/${encodeURIComponent(alert.conversationId)}`, '_blank', 'noopener,noreferrer')
 }
 
+async function copySafeContinue(): Promise<void> {
+  if (!fleetWatch) {
+    window.alert('Fleet Watch 未在当前 tab 启动。')
+    return
+  }
+  const alert = fleetWatch.snapshot().alerts.at(-1)
+  if (!alert) {
+    window.alert('当前没有记录到异常会话。')
+    return
+  }
+
+  const text = '继续。上一轮已经确认服务器结束且异常收尾。先检查最后一个工具调用是否已经实际执行成功或产生副作用，再从当前真实状态继续；不要无条件重复上一个写入、删除、安装、上传或 git commit 操作。'
+  try {
+    await navigator.clipboard.writeText(text)
+    window.alert(`已复制安全续跑提示。\n\n异常会话：${alert.title}\n原因：${alert.reason}`)
+  }
+  catch {
+    window.prompt('复制下面这段安全续跑提示：', text)
+  }
+}
+
 function exportFleetDiagnostics(): void {
   if (!fleetWatch) {
     window.alert('Fleet Watch 未在当前 tab 启动。')
@@ -261,6 +282,7 @@ function mountUi(): void {
     pollFleetNow,
     enableNotifications,
     openLatestAbnormal,
+    copySafeContinue,
     exportFleetDiagnostics,
   })
   if (latestWatchSnapshot) updateWatchBadge(latestWatchSnapshot)
