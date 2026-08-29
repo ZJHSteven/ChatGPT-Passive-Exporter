@@ -48,6 +48,7 @@ export interface FleetAlert {
   reason: string
   diagnostic?: RunDiagnostic
   at: number
+  acknowledged?: boolean
 }
 
 export interface FleetWatchSnapshot {
@@ -78,6 +79,8 @@ export interface FleetWatchController {
   summaryText: () => string
   dispose: () => void
 }
+
+const STORAGE_KEY = 'chatgpt-passive-exporter/fleet-watch/state/v1'
 
 function now(): number {
   return Date.now()
@@ -165,6 +168,51 @@ export function installFleetWatch(
 
   const keyForUpdate = (value: string | number | undefined) => String(value ?? '')
 
+  const restore = () => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (!raw) return
+      const stored = JSON.parse(raw) as {
+        seenUpdate?: Array<[string, string]>
+        tracked?: FleetConversationEntry[]
+        alerts?: FleetAlert[]
+      }
+      for (const [id, update] of stored.seenUpdate ?? []) seenUpdate.set(id, update)
+      for (const entry of stored.tracked ?? []) {
+        // 只恢复真正需要跨 reload 延续的状态；普通 complete 历史不占长期内存。
+        if (entry.state === 'server-streaming' || entry.state === 'abnormal' || entry.state === 'complete-indeterminate') {
+          entries.set(entry.id, entry)
+        }
+      }
+      for (const alert of stored.alerts ?? []) {
+        alerts.push(alert)
+        alreadyAlerted.add(`${alert.conversationId}:${keyForUpdate(entries.get(alert.conversationId)?.updateTime)}:${alert.reason}`)
+      }
+    }
+    catch {
+      // 本地状态损坏时从空基线重建，不影响 ChatGPT 页面。
+    }
+  }
+
+  const persist = () => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        seenUpdate: [...seenUpdate.entries()].slice(0, 100),
+        tracked: [...entries.values()].filter(entry => (
+          entry.state === 'server-streaming'
+          || entry.state === 'abnormal'
+          || entry.state === 'complete-indeterminate'
+        )),
+        alerts: alerts.slice(-maxAlerts),
+      }))
+    }
+    catch {
+      // localStorage 不可用时保留当前内存状态即可。
+    }
+  }
+
+  restore()
+
   const buildSnapshot = (): FleetWatchSnapshot => ({
     protocol: 'chatgpt-passive-exporter/fleet-watch/v1',
     startedAt,
@@ -194,6 +242,7 @@ export function installFleetWatch(
     }
     alerts.push(alert)
     if (alerts.length > maxAlerts) alerts.splice(0, alerts.length - maxAlerts)
+    persist()
     options.onAlert?.(alert)
   }
 
@@ -305,15 +354,18 @@ export function installFleetWatch(
       }
 
       lastPollAt = now()
+      persist()
       return buildSnapshot()
     }
     catch (error) {
       lastError = String(error).slice(0, 300)
+      persist()
       return buildSnapshot()
     }
     finally {
       polling = false
       lastPollAt = now()
+      persist()
       notifyUpdate()
     }
   }
@@ -349,6 +401,7 @@ export function installFleetWatch(
     },
     dispose: () => {
       disposed = true
+      persist()
       window.clearInterval(timer)
       window.clearTimeout(initialTimer)
     },
