@@ -220,6 +220,19 @@ async function enableNotifications(): Promise<void> {
   window.alert(`异常桌面通知权限：${state.permission}`)
 }
 
+function openLatestAbnormal(): void {
+  if (!fleetWatch) {
+    window.alert('Fleet Watch 未在当前 tab 启动。')
+    return
+  }
+  const alert = fleetWatch.snapshot().alerts.at(-1)
+  if (!alert) {
+    window.alert('当前没有记录到异常会话。')
+    return
+  }
+  window.open(`https://chatgpt.com/c/${encodeURIComponent(alert.conversationId)}`, '_blank', 'noopener,noreferrer')
+}
+
 function exportFleetDiagnostics(): void {
   if (!fleetWatch) {
     window.alert('Fleet Watch 未在当前 tab 启动。')
@@ -247,6 +260,7 @@ function mountUi(): void {
     inspectFleet,
     pollFleetNow,
     enableNotifications,
+    openLatestAbnormal,
     exportFleetDiagnostics,
   })
   if (latestWatchSnapshot) updateWatchBadge(latestWatchSnapshot)

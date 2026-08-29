@@ -20,6 +20,7 @@ export interface SidebarExportActions {
   inspectFleet?: () => unknown | Promise<unknown>
   pollFleetNow?: () => unknown | Promise<unknown>
   enableNotifications?: () => unknown | Promise<unknown>
+  openLatestAbnormal?: () => unknown | Promise<unknown>
   exportFleetDiagnostics?: () => unknown | Promise<unknown>
 }
 
@@ -202,6 +203,7 @@ function createMenu(actions: SidebarExportActions): HTMLDivElement {
   if (actions.inspectFleet) entries.push(['查看全局运行监控', actions.inspectFleet])
   if (actions.pollFleetNow) entries.push(['立即扫描最近会话', actions.pollFleetNow])
   if (actions.enableNotifications) entries.push(['启用异常桌面通知', actions.enableNotifications])
+  if (actions.openLatestAbnormal) entries.push(['打开最近异常会话', actions.openLatestAbnormal])
   if (actions.exportFleetDiagnostics) entries.push(['导出全局监控 JSON', actions.exportFleetDiagnostics])
 
   for (const [label, action] of entries) {
