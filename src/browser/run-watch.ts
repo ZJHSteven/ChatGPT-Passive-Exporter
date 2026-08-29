@@ -60,7 +60,11 @@ export interface RecentConversationSummary {
   title: string
   updateTime?: string | number
   createTime?: string | number
-  asyncStatus?: string
+  /**
+   * ChatGPT 会话列表里的原始 async_status。当前实测运行中的 thinking/agent 轮次常为 3，
+   * 已完成会话常为 null；其它数值保留原样，不擅自解释枚举语义。
+   */
+  asyncStatus?: number | string | null
 }
 
 export interface ConversationTailResult {
@@ -690,7 +694,9 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
         title: typeof row.title === 'string' && row.title ? row.title : id,
         updateTime: typeof row.update_time === 'string' || typeof row.update_time === 'number' ? row.update_time : undefined,
         createTime: typeof row.create_time === 'string' || typeof row.create_time === 'number' ? row.create_time : undefined,
-        asyncStatus: typeof row.async_status === 'string' ? row.async_status : undefined,
+        asyncStatus: typeof row.async_status === 'string' || typeof row.async_status === 'number' || row.async_status === null
+          ? row.async_status
+          : undefined,
       })
     }
     return summaries

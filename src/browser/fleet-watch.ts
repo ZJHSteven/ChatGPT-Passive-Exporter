@@ -33,6 +33,8 @@ export interface FleetConversationEntry {
   title: string
   updateTime?: string | number
   updateEpoch?: number
+  /** 原样保存列表中的 async_status；只把已实测到的 3/null 当交叉证据。 */
+  asyncStatus?: number | string | null
   state: FleetConversationState
   rawServerStatus?: string
   lastStatusAt?: number
@@ -138,12 +140,29 @@ export function classifyCompletedRun(diagnostic: RunDiagnostic): {
   }
 }
 
-function serverLooksComplete(status: ServerStatusResult): boolean {
-  return status.ok && status.status === 'COMPLETE'
+export type ServerEvidence = 'confirmed-streaming' | 'confirmed-complete' | 'conflict' | 'unknown'
+
+/**
+ * 把两个彼此独立的服务端视图合并成一个“证据等级”。
+ * 当前 2026-08-30 实测：async_status=3 ↔ IS_STREAMING；async_status=null ↔ COMPLETE。
+ * 其它枚举/缺字段全部保守处理，不把未来 schema 变化误判成结束。
+ */
+export function classifyServerEvidence(
+  asyncStatus: number | string | null | undefined,
+  streamStatus: ServerStatusResult,
+): ServerEvidence {
+  if (!streamStatus.ok || !streamStatus.status) return 'unknown'
+  if (streamStatus.status === 'IS_STREAMING') {
+    return asyncStatus === 3 ? 'confirmed-streaming' : 'conflict'
+  }
+  if (streamStatus.status === 'COMPLETE') {
+    return asyncStatus === null ? 'confirmed-complete' : 'conflict'
+  }
+  return 'unknown'
 }
 
-function serverLooksStreaming(status: ServerStatusResult): boolean {
-  return status.ok && status.status === 'IS_STREAMING'
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, ms))
 }
 
 export function installFleetWatch(
@@ -301,6 +320,7 @@ export function installFleetWatch(
         entry.title = item.title
         entry.updateTime = item.updateTime
         entry.updateEpoch = updateEpoch
+        entry.asyncStatus = item.asyncStatus
         if (changed) {
           entry.lastChangedAt = currentTime
           entry.state = 'tracking'
@@ -311,7 +331,14 @@ export function installFleetWatch(
 
         // 首次启动不把 20~50 条历史记录全打 status；只检查最近窗口内的前几条。
         // 后续任何 update_time 变化都会进入 candidate；已经 server-active 的条目持续跟踪到结束。
-        if (entry.state === 'server-streaming' || changed || (newlySeen && recentlyUpdated)) {
+        if (
+          entry.state === 'server-streaming'
+          || entry.state === 'status-error'
+          || entry.state === 'status-unknown'
+          || changed
+          || (newlySeen && recentlyUpdated)
+          || item.asyncStatus === 3
+        ) {
           candidates.push({
             entry,
             // 首次启动只建立服务器状态基线，不读取 COMPLETE 历史会话尾部、更不报警。
@@ -328,29 +355,48 @@ export function installFleetWatch(
         const previousState = entry.state
         const status = await runWatch.checkConversationServerStatus(entry.id)
         entry.lastStatusAt = now()
-        entry.rawServerStatus = status.status
+        if (status.status) entry.rawServerStatus = status.status
 
-        if (!status.ok || !status.status) {
-          entry.state = 'status-error'
-          entry.abnormalReason = status.reason ?? `stream_status HTTP ${status.httpStatus ?? '?'}`
+        const evidence = classifyServerEvidence(entry.asyncStatus, status)
+        if (evidence === 'unknown') {
+          // 网络失败、401/403/429、解析失败、未来未知枚举都只是 UNKNOWN。
+          // 绝不能把上一轮 streaming 直接升级成“异常结束”，而且下一轮必须继续重试。
+          entry.state = status.ok ? 'status-unknown' : 'status-error'
+          entry.abnormalReason = status.ok
+            ? `未识别/不完整的服务端状态：${status.status ?? 'missing status'}`
+            : status.reason ?? `stream_status HTTP ${status.httpStatus ?? '?'}`
           continue
         }
 
-        if (serverLooksComplete(status)) {
-          // 首次 baseline 中的 COMPLETE 只记完成；不读正文、不通知历史故障。
-          if (inspectOnComplete || previousState === 'server-streaming') await inspectCompleted(entry)
-          else entry.state = 'complete'
+        if (evidence === 'conflict') {
+          entry.state = 'status-unknown'
+          entry.abnormalReason = `两套服务端信号不一致：stream_status=${status.status ?? 'missing'}，async_status=${String(entry.asyncStatus)}`
+          continue
         }
-        else if (serverLooksStreaming(status)) {
+
+        if (evidence === 'confirmed-streaming') {
           entry.state = 'server-streaming'
           entry.abnormalReason = undefined
+          continue
         }
-        else {
-          // 只把实测/公开观察到的 IS_STREAMING 当“明确运行中”。其它未知枚举原样保留，
-          // 不把“非 COMPLETE”粗暴等价成“仍在运行”。
-          entry.state = 'status-unknown'
-          entry.abnormalReason = `未识别的 stream_status：${status.status}`
+
+        // 到这里才是 async_status=null + stream_status=COMPLETE。
+        // 为自动恢复预留更严格的终止证据：短暂等待后再次读取 stream_status；
+        // 若第二次不再 COMPLETE 或请求失败，退回 UNKNOWN，绝不做后验异常判断。
+        await sleep(3_000)
+        const confirm = await runWatch.checkConversationServerStatus(entry.id)
+        entry.lastStatusAt = now()
+        if (!confirm.ok || confirm.status !== 'COMPLETE') {
+          entry.state = confirm.ok ? 'status-unknown' : 'status-error'
+          entry.abnormalReason = confirm.ok
+            ? `COMPLETE 二次确认失败：${confirm.status ?? 'missing status'}`
+            : confirm.reason ?? `二次确认 HTTP ${confirm.httpStatus ?? '?'}`
+          continue
         }
+
+        // 首次 baseline 中的 COMPLETE 只记完成；不读正文、不通知历史故障。
+        if (inspectOnComplete || previousState === 'server-streaming') await inspectCompleted(entry)
+        else entry.state = 'complete'
       }
 
       lastPollAt = now()

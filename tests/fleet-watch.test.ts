@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
-import { classifyCompletedRun } from '../src/browser/fleet-watch'
+import { classifyCompletedRun, classifyServerEvidence } from '../src/browser/fleet-watch'
+import type { ServerStatusResult } from '../src/browser/run-watch'
 import type { RunDiagnostic } from '../src/core/run-diagnostics'
 
 function diagnostic(overrides: Partial<RunDiagnostic>): RunDiagnostic {
@@ -15,6 +16,28 @@ function diagnostic(overrides: Partial<RunDiagnostic>): RunDiagnostic {
     ...overrides,
   }
 }
+
+function server(status?: string, ok = true): ServerStatusResult {
+  return { ok, status, checkedAt: Date.now(), httpStatus: ok ? 200 : 503 }
+}
+
+describe('Fleet Watch 服务端双信号', () => {
+  test('async_status=3 + IS_STREAMING 才是已确认 streaming', () => {
+    expect(classifyServerEvidence(3, server('IS_STREAMING'))).toBe('confirmed-streaming')
+    expect(classifyServerEvidence(null, server('IS_STREAMING'))).toBe('conflict')
+  })
+
+  test('async_status=null + COMPLETE 才是已确认 complete', () => {
+    expect(classifyServerEvidence(null, server('COMPLETE'))).toBe('confirmed-complete')
+    expect(classifyServerEvidence(3, server('COMPLETE'))).toBe('conflict')
+  })
+
+  test('网络错误、缺字段和未知枚举都保持 unknown', () => {
+    expect(classifyServerEvidence(3, server(undefined, false))).toBe('unknown')
+    expect(classifyServerEvidence(undefined, server('COMPLETE'))).toBe('conflict')
+    expect(classifyServerEvidence(5, server('SOMETHING_NEW'))).toBe('unknown')
+  })
+})
 
 describe('Fleet Watch COMPLETE 后验分类', () => {
   test('COMPLETE + final 是正常完成', () => {
