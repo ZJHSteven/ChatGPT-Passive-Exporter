@@ -17,6 +17,10 @@ export interface SidebarExportActions {
   inspectRun?: () => unknown | Promise<unknown>
   checkServerStatus?: () => unknown | Promise<unknown>
   exportRunDiagnostics?: () => unknown | Promise<unknown>
+  inspectFleet?: () => unknown | Promise<unknown>
+  pollFleetNow?: () => unknown | Promise<unknown>
+  enableNotifications?: () => unknown | Promise<unknown>
+  exportFleetDiagnostics?: () => unknown | Promise<unknown>
 }
 
 export interface SidebarRunWatchBadge {
@@ -192,9 +196,13 @@ function createMenu(actions: SidebarExportActions): HTMLDivElement {
     ['导出安全归档 JSON', actions.exportArchive],
   ]
   if (actions.exportManifest) entries.push(['导出富媒体清单', actions.exportManifest])
-  if (actions.inspectRun) entries.push(['查看运行诊断', actions.inspectRun])
-  if (actions.checkServerStatus) entries.push(['检查服务器运行状态', actions.checkServerStatus])
-  if (actions.exportRunDiagnostics) entries.push(['导出运行诊断 JSON', actions.exportRunDiagnostics])
+  if (actions.inspectRun) entries.push(['查看当前页性能诊断', actions.inspectRun])
+  if (actions.checkServerStatus) entries.push(['检查当前会话服务器状态', actions.checkServerStatus])
+  if (actions.exportRunDiagnostics) entries.push(['导出当前页诊断 JSON', actions.exportRunDiagnostics])
+  if (actions.inspectFleet) entries.push(['查看全局运行监控', actions.inspectFleet])
+  if (actions.pollFleetNow) entries.push(['立即扫描最近会话', actions.pollFleetNow])
+  if (actions.enableNotifications) entries.push(['启用异常桌面通知', actions.enableNotifications])
+  if (actions.exportFleetDiagnostics) entries.push(['导出全局监控 JSON', actions.exportFleetDiagnostics])
 
   for (const [label, action] of entries) {
     const button = document.createElement('button')
