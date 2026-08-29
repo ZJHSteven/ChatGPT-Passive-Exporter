@@ -55,6 +55,22 @@ export interface ServerStatusResult {
   checkedAt: number
 }
 
+export interface RecentConversationSummary {
+  id: string
+  title: string
+  updateTime?: string | number
+  createTime?: string | number
+  asyncStatus?: string
+}
+
+export interface ConversationTailResult {
+  ok: boolean
+  httpStatus?: number
+  reason?: string
+  payload?: RawConversationPayload
+  checkedAt: number
+}
+
 export interface GenerationUiStats {
   active: boolean
   activeSince?: number
@@ -83,7 +99,13 @@ export interface RunWatchSnapshot {
 
 export interface RunWatchController {
   noteConversationPayload: (payload: RawConversationPayload) => void
+  /** 当前页面 conversation 的便捷检查。 */
   checkServerStatus: () => Promise<ServerStatusResult>
+  /** Fleet Watch 使用：无需打开目标 conversation 页面。 */
+  checkConversationServerStatus: (conversationId: string) => Promise<ServerStatusResult>
+  listRecentConversations: (limit?: number) => Promise<RecentConversationSummary[]>
+  fetchConversationTail: (conversationId: string, numTurns?: number) => Promise<ConversationTailResult>
+  hasEphemeralAuth: () => boolean
   snapshot: () => RunWatchSnapshot
   summaryText: () => string
   dispose: () => void
@@ -571,26 +593,20 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     notifyUpdate()
   }
 
-  /**
-   * 只在用户主动点“检查运行状态”时调用一次。
-   * endpoint 本身很轻量；若认证头尚未从页面正常请求中捕获，则直接返回 unknown，
-   * 不尝试登录、不读取 cookie，也不循环重试。
-   */
-  const checkServerStatus = async (): Promise<ServerStatusResult> => {
-    const conversationId = currentConversationId()
-    const authorization = ephemeralHeaders.get('authorization')
-    if (!conversationId) {
-      return { ok: false, reason: '当前页面不是 /c/<conversation-id>。', checkedAt: now() }
-    }
-    if (!authorization) {
-      return { ok: false, reason: '尚未从页面正常请求中捕获到临时认证上下文；刷新/重新进入聊天后再试。', checkedAt: now() }
+  const hasEphemeralAuth = () => ephemeralHeaders.has('authorization')
+
+  const authenticatedJson = async (
+    path: string,
+    targetRoute: string,
+  ): Promise<{ ok: boolean, httpStatus?: number, body?: unknown, reason?: string }> => {
+    if (!hasEphemeralAuth()) {
+      return { ok: false, reason: '尚未从 ChatGPT 页面正常请求中捕获到临时认证上下文。' }
     }
 
-    const path = `/backend-api/conversation/${encodeURIComponent(conversationId)}/stream_status`
     const headers = new Headers()
     for (const [name, value] of ephemeralHeaders) headers.set(name, value)
     headers.set('x-openai-target-path', path)
-    headers.set('x-openai-target-route', '/backend-api/conversation/{conversation_id}/stream_status')
+    headers.set('x-openai-target-route', targetRoute)
 
     try {
       const response = await originalFetch.call(window, path, {
@@ -598,37 +614,105 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
         headers,
         credentials: 'include',
       })
-      const body = await response.clone().json().catch(() => null) as { status?: unknown } | null
-      const status = typeof body?.status === 'string' ? body.status : undefined
-      lastServerStatus = {
-        ok: response.ok,
-        status,
-        httpStatus: response.status,
-        reason: response.ok ? undefined : `stream_status HTTP ${response.status}`,
-        checkedAt: now(),
-      }
+      const body = await response.clone().json().catch(() => null)
 
-      // 认证过期/限流时不保留旧 auth，防止用户连续点击造成请求风暴。
+      // 认证过期/限流时不保留旧 auth，防止 Fleet Watch 持续重试旧上下文。
       if (response.status === 401 || response.status === 403 || response.status === 429) {
         ephemeralHeaders.clear()
       }
-      pushEvent('server-status', {
-        ok: lastServerStatus.ok,
-        status: lastServerStatus.status,
-        httpStatus: lastServerStatus.httpStatus,
-      })
-      persist()
-      notifyUpdate()
-      return lastServerStatus
+
+      return {
+        ok: response.ok,
+        httpStatus: response.status,
+        body,
+        reason: response.ok ? undefined : `HTTP ${response.status}`,
+      }
     }
     catch (error) {
-      lastServerStatus = {
-        ok: false,
-        reason: `stream_status 请求失败：${String(error).slice(0, 180)}`,
-        checkedAt: now(),
-      }
-      pushEvent('server-status-error', { reason: lastServerStatus.reason })
-      return lastServerStatus
+      return { ok: false, reason: String(error).slice(0, 220) }
+    }
+  }
+
+  const checkConversationServerStatus = async (conversationId: string): Promise<ServerStatusResult> => {
+    const path = `/backend-api/conversation/${encodeURIComponent(conversationId)}/stream_status`
+    const result = await authenticatedJson(path, '/backend-api/conversation/{conversation_id}/stream_status')
+    const record = result.body && typeof result.body === 'object' ? result.body as Record<string, unknown> : null
+    const status = typeof record?.status === 'string' ? record.status : undefined
+    const serverResult: ServerStatusResult = {
+      ok: result.ok,
+      status,
+      httpStatus: result.httpStatus,
+      reason: result.ok ? undefined : result.reason,
+      checkedAt: now(),
+    }
+    pushEvent('server-status', {
+      conversationId,
+      ok: serverResult.ok,
+      status: serverResult.status,
+      httpStatus: serverResult.httpStatus,
+    })
+    return serverResult
+  }
+
+  /** 当前页面 conversation 的便捷检查。 */
+  const checkServerStatus = async (): Promise<ServerStatusResult> => {
+    const conversationId = currentConversationId()
+    if (!conversationId) {
+      return { ok: false, reason: '当前页面不是 /c/<conversation-id>。', checkedAt: now() }
+    }
+    lastServerStatus = await checkConversationServerStatus(conversationId)
+    persist()
+    notifyUpdate()
+    return lastServerStatus
+  }
+
+  const listRecentConversations = async (limit = 20): Promise<RecentConversationSummary[]> => {
+    const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)))
+    const path = `/backend-api/conversations?offset=0&limit=${safeLimit}&order=updated`
+    const result = await authenticatedJson(path, '/backend-api/conversations')
+    if (!result.ok) return []
+
+    const record = result.body && typeof result.body === 'object' ? result.body as Record<string, unknown> : null
+    const items = Array.isArray(record?.items) ? record.items : []
+    const summaries: RecentConversationSummary[] = []
+
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue
+      const row = item as Record<string, unknown>
+      const id = typeof row.id === 'string'
+        ? row.id
+        : typeof row.conversation_id === 'string'
+          ? row.conversation_id
+          : undefined
+      if (!id) continue
+      summaries.push({
+        id,
+        title: typeof row.title === 'string' && row.title ? row.title : id,
+        updateTime: typeof row.update_time === 'string' || typeof row.update_time === 'number' ? row.update_time : undefined,
+        createTime: typeof row.create_time === 'string' || typeof row.create_time === 'number' ? row.create_time : undefined,
+        asyncStatus: typeof row.async_status === 'string' ? row.async_status : undefined,
+      })
+    }
+    return summaries
+  }
+
+  /**
+   * 仅在某条 conversation 已经结束、需要做后验归因时读取最后少量 turns。
+   * 默认 2 turns，避免像 50MB 巨型聊天那样每次全量拉取。
+   */
+  const fetchConversationTail = async (conversationId: string, numTurns = 2): Promise<ConversationTailResult> => {
+    const safeTurns = Math.max(1, Math.min(5, Math.trunc(numTurns)))
+    const path = `/backend-api/conversations/${encodeURIComponent(conversationId)}?num_turns=${safeTurns}`
+    const result = await authenticatedJson(path, '/backend-api/conversations/{conversation_id}')
+    const payload = result.ok && result.body && typeof result.body === 'object'
+      ? result.body as RawConversationPayload
+      : undefined
+    return {
+      ok: result.ok,
+      httpStatus: result.httpStatus,
+      reason: result.reason,
+      payload,
+      checkedAt: now(),
     }
   }
 
@@ -663,7 +747,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     }
     if (snap.lastServerStatus) lines.push(`Server: ${snap.lastServerStatus.status ?? snap.lastServerStatus.reason ?? 'unknown'}`)
     if (snap.generation.active && snap.generation.stalledForMs >= 5 * 60_000) {
-      lines.push('Suspected stall: Stop button仍可见，但页面/工具侧连续数分钟没有观察到进展；建议点“检查服务器运行状态”。')
+      lines.push('Quiet-period note: 页面 UI 仍显示生成中，且本 tab 一段时间没有观察到可见进展；这不是死亡证据，只用于取证。')
     }
     if (snap.lastServerStatus?.status === 'COMPLETE' && snap.generation.active) {
       lines.push('Confirmed stale UI: 服务器已 COMPLETE，但页面仍显示生成中。')
@@ -680,6 +764,10 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
   return {
     noteConversationPayload,
     checkServerStatus,
+    checkConversationServerStatus,
+    listRecentConversations,
+    fetchConversationTail,
+    hasEphemeralAuth,
     snapshot: buildSnapshot,
     summaryText,
     dispose: () => {
