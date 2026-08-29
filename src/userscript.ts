@@ -29,7 +29,7 @@ function renderCombinedBadge(): void {
   if (!page) return
 
   const abnormalCount = fleet?.tracked.filter(item => item.state === 'abnormal').length ?? 0
-  const activeCount = fleet?.tracked.filter(item => item.state === 'server-active').length ?? 0
+  const activeCount = fleet?.tracked.filter(item => item.state === 'server-streaming').length ?? 0
   const iframeCount = page.iframe.oaiSandbox || page.iframe.total
 
   const severity = abnormalCount > 0
