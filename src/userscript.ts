@@ -6,9 +6,11 @@ import { buildRichManifest } from './core/manifest'
 import { installPassiveCapture } from './core/passive-capture'
 import type { CanonicalConversation, PassiveCaptureEnvelope, RawConversationPayload } from './core/types'
 import { installRunWatch, type RunWatchSnapshot } from './browser/run-watch'
+import { installFleetWatch, type FleetWatchSnapshot } from './browser/fleet-watch'
+import { notifyFleetAlert, requestDesktopNotificationPermission } from './browser/notifications'
 import { mountSidebarExporter, updateSidebarRunWatchBadge } from './ui/sidebar'
 
-const BUILD_VERSION = '0.2.2'
+const BUILD_VERSION = '0.3.0'
 
 // 只暴露无敏感信息的调试标记，便于 CDP/用户确认 Tampermonkey 当前实际运行版本。
 // 这能避免脚本管理器缓存旧 .user.js 时误把旧代码当成新构建测试。
@@ -19,24 +21,48 @@ Object.defineProperty(window, '__chatgptPassiveExporter', {
 
 let latest: PassiveCaptureEnvelope | null = null
 let latestWatchSnapshot: RunWatchSnapshot | null = null
+let latestFleetSnapshot: FleetWatchSnapshot | null = null
+
+function renderCombinedBadge(): void {
+  const page = latestWatchSnapshot
+  const fleet = latestFleetSnapshot
+  if (!page) return
+
+  const abnormalCount = fleet?.tracked.filter(item => item.state === 'abnormal').length ?? 0
+  const activeCount = fleet?.tracked.filter(item => item.state === 'server-active').length ?? 0
+  const iframeCount = page.iframe.oaiSandbox || page.iframe.total
+
+  const severity = abnormalCount > 0
+    ? 'critical'
+    : page.severity
+
+  const text = abnormalCount > 0
+    ? `!${abnormalCount}`
+    : page.severity !== 'ok'
+      ? `${page.severity === 'warning' ? '⚠' : '!'}${iframeCount}`
+      : activeCount > 0
+        ? `▶${activeCount}`
+        : '•'
+
+  const titleParts = [
+    `当前页：${page.severity}；iframe ${page.iframe.total}，OAI sandbox ${page.iframe.oaiSandbox}`,
+  ]
+  if (fleet) {
+    titleParts.push(`全局：${activeCount} 条服务器非 COMPLETE，${abnormalCount} 条明确异常收尾`)
+    if (fleet.lastError) titleParts.push(`Fleet：${fleet.lastError}`)
+  }
+
+  updateSidebarRunWatchBadge({ severity, text, title: titleParts.join('\n') })
+}
 
 function updateWatchBadge(snapshot: RunWatchSnapshot): void {
   latestWatchSnapshot = snapshot
-  const iframeCount = snapshot.iframe.oaiSandbox || snapshot.iframe.total
-  const text = snapshot.severity === 'ok'
-    ? '监控'
-    : snapshot.severity === 'warning'
-      ? `⚠ ${iframeCount}`
-      : snapshot.severity === 'danger'
-        ? `⚠ ${iframeCount}`
-        : `! ${iframeCount}`
+  renderCombinedBadge()
+}
 
-  updateSidebarRunWatchBadge({
-    severity: snapshot.severity,
-    text,
-    title: snapshot.latestDiagnostic?.summary
-      ?? `iframe ${snapshot.iframe.total}（OAI sandbox ${snapshot.iframe.oaiSandbox}）`,
-  })
+function updateFleetBadge(snapshot: FleetWatchSnapshot): void {
+  latestFleetSnapshot = snapshot
+  renderCombinedBadge()
 }
 
 /**
@@ -44,6 +70,20 @@ function updateWatchBadge(snapshot: RunWatchSnapshot): void {
  * 负责 conversation body 副本。两层职责严格分开：Run Watch 的持久化日志永远不含认证值或工具正文。
  */
 const runWatch = installRunWatch({ onUpdate: updateWatchBadge })
+
+/**
+ * 全局 Fleet Watch 只在“轻量 ChatGPT 首页”启动。
+ * 普通 conversation tab 仍保留本页性能取证，但不会各自再发一套全局轮询，避免监控器本身
+ * 放大网络/内存成本。用户如果主要从手机启动任务，只需在桌面保留一张首页监控站。
+ */
+const fleetWatch = location.pathname === '/'
+  ? installFleetWatch(runWatch, {
+      onUpdate: updateFleetBadge,
+      onAlert: (alert) => {
+        notifyFleetAlert(alert)
+      },
+    })
+  : null
 
 // 只暴露“去敏后的只读诊断接口”，方便 CDP/OpenCLI 在页面卡顿时快速取样。
 // 注意：Run Watch 闭包中的临时 Authorization 永远不在这个对象上暴露。
@@ -53,6 +93,8 @@ Object.defineProperty(window, '__chatgptRunWatch', {
     version: BUILD_VERSION,
     snapshot: () => runWatch.snapshot(),
     summary: () => runWatch.summaryText(),
+    fleetSnapshot: () => fleetWatch?.snapshot() ?? null,
+    fleetSummary: () => fleetWatch?.summaryText() ?? 'Fleet Watch 未在此 tab 启动；请保留一张 ChatGPT 首页作为轻量监控站。',
   },
 })
 
@@ -155,6 +197,41 @@ function exportRunDiagnostics(): void {
   )
 }
 
+function inspectFleet(): void {
+  window.alert(fleetWatch?.summaryText()
+    ?? 'Fleet Watch 只在轻量 ChatGPT 首页启动。请保留一张 https://chatgpt.com/ 首页作为监控站；无需为每条长聊天开标签页。')
+}
+
+async function pollFleetNow(): Promise<void> {
+  if (!fleetWatch) {
+    window.alert('当前不是 Fleet Watch 首页监控站。请在一个 ChatGPT 首页 tab 中执行此操作。')
+    return
+  }
+  await fleetWatch.pollNow()
+  window.alert(fleetWatch.summaryText())
+}
+
+async function enableNotifications(): Promise<void> {
+  const state = await requestDesktopNotificationPermission()
+  if (!state.supported) {
+    window.alert('当前浏览器不支持 Notification API。')
+    return
+  }
+  window.alert(`异常桌面通知权限：${state.permission}`)
+}
+
+function exportFleetDiagnostics(): void {
+  if (!fleetWatch) {
+    window.alert('Fleet Watch 未在当前 tab 启动。')
+    return
+  }
+  downloadText(
+    'chatgpt-fleet-watch.json',
+    JSON.stringify(fleetWatch.snapshot(), null, 2),
+    'application/json;charset=utf-8',
+  )
+}
+
 /**
  * 直接挂进 ChatGPT 普通 DOM sidebar；不使用 Shadow DOM。
  * sidebar 本身会被 React 重建，所以 mountSidebarExporter 内部负责自动重挂载。
@@ -167,6 +244,10 @@ function mountUi(): void {
     inspectRun,
     checkServerStatus,
     exportRunDiagnostics,
+    inspectFleet,
+    pollFleetNow,
+    enableNotifications,
+    exportFleetDiagnostics,
   })
   if (latestWatchSnapshot) updateWatchBadge(latestWatchSnapshot)
 }
