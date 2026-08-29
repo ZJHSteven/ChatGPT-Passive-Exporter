@@ -68,13 +68,35 @@
 
 ### Phase 9：Run Watch / 卡死诊断与 iframe 内存取证
 - Userscript/WebExtension 增加轻量环形日志，不保存 Authorization/cookie/tool payload 正文，只记录时间、conversationId、turn/request 标识、网络生命周期、页面生命周期、tool widget/iframe 数量与性能指标。
+- **严格分开“生命状态”和“快照尾部形态”**：`final`、`finish_details=interrupted` 是终止证据；`tool-call-open`、`reasoning-open` 只描述当前 payload 停在哪里，绝不能单独判死。
+- 实时生命状态以服务器 `stream_status` 为主：当前实测 `IS_STREAMING` 表示仍在生成，`COMPLETE` 表示流已结束；其它未知枚举保持 unknown，不把“非 COMPLETE”偷换成“仍在运行”。
+- 只有服务器已经 `COMPLETE` 后，`tool-call-open` / `reasoning-open` 才能升级为“异常收尾”证据；这避免把长工具执行或长 reasoning 误判为卡死。
+- Stop/Thinking 按钮、静默时长、最后回答长度只作为 UI/性能取证，不参与“死亡”判定。
 - 记录 `visibilitychange / pagehide / pageshow / online / offline / error / unhandledrejection`，用于验证“切聊天、切后台、页面重载是否与 client_stopped/stream 丢失相关”。
 - 对 DOM 中 iframe 做增量跟踪：创建/移除时间、`sandbox` 属性、src hostname/路径、是否仍 connected；按 Apps SDK/DevSpace widget 与普通 iframe 分类。严禁周期性全 DOM 深扫造成额外卡顿。
 - 采样 Chrome 可提供的 `performance.memory`、iframe 数、长任务（Long Tasks）数量/耗时；达到预警阈值时在 sidebar 显示黄色/红色状态，而不是再给页面增加大型 iframe UI。
-- 当会话正文再次被页面正常加载时，用已有 `finish_details`、`reasoning_status`、`turn_exchange_id` 对最近一轮做离线归因：normal final / `client_stopped` / tool call 无 result / reasoning 未结束。
-- 可选“精确状态检查”模式：只有检测到页面长时间无进展时才低频检查 `/stream_status`；认证上下文仅允许驻留内存、不得日志/持久化；遇到 401/403/429 立即停止主动检查。默认保持关闭，避免改变原“被动导出”安全边界。
-- “自动继续”必须建立在可靠诊断之上且默认关闭；第一版只提供醒目提示和一键复制/发送“继续”，避免误判后产生重复工具操作。
+- 异常事件进入持久队列，并提供桌面通知、最近异常会话入口、诊断 JSON；手机 Push 由后续 Companion daemon/Webhook 层统一转发，不在页面脚本里硬塞第三方 push token。
+- “自动继续”必须建立在可靠诊断之上且默认关闭；待积累足够样本后，仅对明确安全的异常类型提供 opt-in 自动续跑，避免重复执行有副作用的 DevSpace 工具。
 - 建立 iframe budget：例如 50/100/200 档预警，并记录增长速率。复现后区分两类根因：A. 同一个 widget remount 后旧 iframe 未销毁（泄漏）；B. 每个历史 tool call 合法保留一个 iframe（设计性累积）。若是 B，后续研究仅卸载离屏 widget iframe/替换为静态占位的可逆实验，绝不先粗暴删除正在运行的 tool iframe。
+
+### Phase 10：Fleet Watch — 一张轻量首页监控所有会话
+- 面向“手机端同时启动 4～6 条长任务、桌面不能开 4～6 个巨型 ChatGPT tab”的真实使用方式。
+- 桌面只保留一张轻量 `https://chatgpt.com/` 首页作为监控站；低频读取最近更新 conversation 列表，只对新变化和已观察到 `IS_STREAMING` 的少量会话查询 `stream_status`。
+- 首次启动只建立基线，不扫描/通知历史故障；只有 `update_time` 新变化或从 `IS_STREAMING`→`COMPLETE` 后才读取最后 1～2 turns 做后验归因。
+- 正常 `COMPLETE + final` 静默；明确异常进入持久事件队列并通知。未知 status、429、认证丢失都保持 unknown/error，不猜测。
+- Fleet Watch 不能在每个 ChatGPT tab 各跑一份；Userscript 首版只在首页监控站启用。WebExtension/Companion 阶段再升级为单实例 leader/background worker。
+
+### Phase 11：ChatGPT Companion — 最终单运行时整合
+- 开发期允许 Exporter / Run Watch / Fleet Watch / Reader 独立演化和测试；稳定后合并为**一个 ChatGPT Companion**，浏览器端只注入一份 runtime，不让多个 userscript 重复 patch fetch、扫描 DOM、占用内存。
+- 内部分模块而不是多脚本：`capture`、`archive`、`fleet`、`run-diagnostics`、`widget-pressure`、`reader-bookmark`、`notification`、`sidebar-ui` 共享同一事件总线和持久状态。
+- 浏览器页面只承担轻量当前页观察与交互；长期 Fleet、手机 Push、SQLite/FTS、归档同步逐步迁到本地 Companion daemon，减少 ChatGPT 页面常驻负担。
+- 最终 sidebar 只有一个 Companion 入口，按需展开“归档 / 监控 / 搜索 / 阅读位置 / 故障”。
+
+### Phase 12：轻量历史 Reader / 手机端友好阅读
+- 巨型历史会话默认从本地 archive/SQLite 渲染，不再要求 ChatGPT Web 同时恢复上千个 Apps SDK iframe。
+- DevSpace/Web/App tool history 在本地 Reader 里渲染为普通可折叠文本卡，不启动真实 sandbox runtime；只有用户显式要求交互时才加载对应资源。
+- Reader 支持全文搜索、conversation/turn 锚点、阅读位置同步、工具轨迹折叠、附件/图片引用；目标是在手机端打开 3000+ message / 2000+ widget 的聊天也不因 iframe 数量崩溃。
+- 后续把阅读位置、异常事件、Fleet 状态通过 Companion daemon 同步到手机；iOS 原生 ChatGPT App 本身不做注入。
 
 ## 验收
 
