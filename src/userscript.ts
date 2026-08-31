@@ -9,7 +9,7 @@ import { buildRichManifest } from './core/manifest'
 import { installPassiveCapture } from './core/passive-capture'
 import type { CanonicalConversation, PassiveCaptureEnvelope, RawConversationPayload } from './core/types'
 import { installRunWatch, type RunWatchSnapshot } from './browser/run-watch'
-import { installFleetWatch, type FleetWatchSnapshot } from './browser/fleet-watch'
+import { installFleetWatch, readPersistedFleetState, type FleetWatchSnapshot } from './browser/fleet-watch'
 import { installFleetLeadership, type FleetLeaderRole } from './browser/fleet-leader'
 import { notifyFleetAlert, requestDesktopNotificationPermission } from './browser/notifications'
 import { loadCompanionSettings, saveCompanionSettings, type CompanionSettings } from './browser/companion-settings'
@@ -399,7 +399,7 @@ async function checkServerStatus(): Promise<void> {
 
 function exportRunDiagnostics(): void {
   const snapshot = runWatch.snapshot()
-  const title = currentConversation()?.title ?? snapshot.conversationId ?? 'chatgpt'
+  const title = snapshot.conversationId ?? 'chatgpt'
   downloadText(
     `${safeFilename(title)}.run-watch.json`,
     JSON.stringify(snapshot, null, 2),
@@ -465,15 +465,49 @@ async function copySafeContinue(): Promise<void> {
 }
 
 function exportFleetDiagnostics(): void {
-  if (!fleetWatch) {
-    window.alert('Fleet Watch 未在当前 tab 启动。')
+  const snapshot = fleetWatch?.snapshot()
+  if (!snapshot) {
+    const persisted = readPersistedFleetState()
+    downloadText(
+      'chatgpt-fleet-watch.json',
+      JSON.stringify({ persisted: true, ...persisted }, null, 2),
+      'application/json;charset=utf-8',
+    )
     return
   }
   downloadText(
     'chatgpt-fleet-watch.json',
-    JSON.stringify(fleetWatch.snapshot(), null, 2),
+    JSON.stringify(snapshot, null, 2),
     'application/json;charset=utf-8',
   )
+}
+
+function getMonitorSummary() {
+  const page = latestWatchSnapshot ?? runWatch.snapshot()
+  const liveFleet = latestFleetSnapshot ?? fleetWatch?.snapshot() ?? null
+  const persisted = liveFleet ? null : readPersistedFleetState()
+  const tracked = liveFleet?.tracked ?? persisted?.tracked ?? []
+  const alerts = liveFleet?.alerts ?? persisted?.alerts ?? []
+
+  const activeCount = tracked.filter(item => item.state === 'server-streaming').length
+  const abnormalCount = tracked.filter(item => item.state === 'abnormal').length
+  const suspectedCount = alerts.filter(item => item.kind === 'suspected-stall').length
+  const latestAlert = alerts.at(-1)
+
+  return {
+    activeCount,
+    abnormalCount,
+    suspectedCount,
+    leaderRole: location.pathname === '/'
+      ? fleetLeaderRole
+      : '由 ChatGPT 首页监控站负责；本页只读取共享状态',
+    pageSeverity: page.severity,
+    iframeCount: page.iframe.total,
+    oaiSandboxCount: page.iframe.oaiSandbox,
+    usedJsHeapMb: page.performance.usedJsHeapMb,
+    lastError: liveFleet?.lastError,
+    latestAlertTitle: latestAlert?.title,
+  }
 }
 
 /**
