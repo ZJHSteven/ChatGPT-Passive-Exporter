@@ -408,10 +408,19 @@ export function mountSidebarExporter(actions: SidebarExportActions): () => void 
   }
 
   const mount = () => {
-    if (stopped || document.querySelector(`[${ITEM_MARKER}]`)) return
+    if (stopped) return
+
+    // ChatGPT 会同时保留展开/折叠两套 sidebar。若 Companion 当前所在那套已经变成隐藏备用 rail，
+    // 不能因为“DOM 里已经有 item”就提前 return；必须删除旧挂载并迁到当前可见 sidebar。
+    const existing = document.querySelector<HTMLElement>(`[${ITEM_MARKER}]`)
+    const reference = findInsertionReference()
+    if (existing) {
+      if (reference && isUsableSidebarElement(existing)) return
+      removeMountedSidebarItem(existing)
+      if (menu) menu.hidden = true
+    }
 
     const template = findNativeSidebarItem()
-    const reference = findInsertionReference()
     if (!template || !reference?.parentElement) return
 
     // 不 clone <a> 标签本身：只复制 ChatGPT 当前 menu-item 的 class/style 到自己的 div。
@@ -439,15 +448,45 @@ export function mountSidebarExporter(actions: SidebarExportActions): () => void 
       if (event.key === 'Enter' || event.key === ' ') toggle(event)
     })
 
-    // tiny rail 中固定放在“新聊天”下面；其它 fallback 仍放到 reference 之前。
+    // 新聊天在展开 sidebar 中位于 <li> 内。为了不向 <ul> 塞一个裸 <div>，这里补一个最薄的
+    // list wrapper；tiny rail 本来就是普通 <div> 布局，继续直接插入即可。
     const referencesNewChat = reference.matches('[data-testid="create-new-chat-button"]')
       || Boolean(reference.querySelector('[data-testid="create-new-chat-button"]'))
-    if (referencesNewChat) reference.after(clone)
+    if (referencesNewChat && reference instanceof HTMLLIElement && reference.parentElement?.tagName === 'UL') {
+      const wrapper = document.createElement('li')
+      wrapper.className = 'list-none'
+      wrapper.setAttribute(ITEM_WRAPPER_MARKER, 'true')
+      wrapper.append(clone)
+      reference.after(wrapper)
+    }
+    else if (referencesNewChat) reference.after(clone)
     else reference.before(clone)
   }
 
-  const observer = new MutationObserver(mount)
+  // 主 observer 继续只看 childList，避免监听整棵超长聊天 DOM 的 attributes；另外只对 52px tiny rail
+  // 建一个极小的 mode observer。展开/折叠切换一定会改变它的 class/inert，因此可以及时迁移 Companion，
+  // 又不会为了一个 sidebar 开关去监听几千条 conversation 节点的样式变化。
+  let observedTinyRail: Element | null = null
+  const modeObserver = new MutationObserver(mount)
+  const bindModeObserver = () => {
+    const tinyRail = document.querySelector('#stage-sidebar-tiny-bar')
+    if (tinyRail === observedTinyRail) return
+    modeObserver.disconnect()
+    observedTinyRail = tinyRail
+    if (tinyRail) {
+      modeObserver.observe(tinyRail, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'inert'],
+      })
+    }
+  }
+
+  const observer = new MutationObserver(() => {
+    bindModeObserver()
+    mount()
+  })
   observer.observe(document.documentElement, { childList: true, subtree: true })
+  bindModeObserver()
   window.addEventListener('resize', () => {
     const item = document.querySelector<HTMLElement>(`[${ITEM_MARKER}]`)
     if (item && menu && !menu.hidden) positionMenu(item, menu)
@@ -459,8 +498,9 @@ export function mountSidebarExporter(actions: SidebarExportActions): () => void 
   return () => {
     stopped = true
     observer.disconnect()
+    modeObserver.disconnect()
     document.removeEventListener('pointerdown', closeMenu, true)
-    document.querySelector(`[${ITEM_MARKER}]`)?.remove()
+    for (const item of document.querySelectorAll<HTMLElement>(`[${ITEM_MARKER}]`)) removeMountedSidebarItem(item)
     menu?.remove()
     menu = null
   }
