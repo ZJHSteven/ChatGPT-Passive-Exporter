@@ -428,8 +428,9 @@ export function createCompanionPanel(actions: CompanionPanelActions): HTMLDivEle
     panel.append(facts)
 
     const grid = makeGrid()
+    const refreshLabel = summary.leaderRole === 'leader' ? '立即刷新' : '打开监控站'
     grid.append(
-      makeButton('立即刷新', { code: '↻', onClick: () => runAction(actions.pollFleetNow, { rerender: true }) }),
+      makeButton(refreshLabel, { code: '↻', onClick: () => runAction(actions.pollFleetNow, { rerender: true }) }),
       makeButton('打开最近告警', { code: '!', onClick: () => runAction(actions.openLatestAbnormal) }),
       makeButton('桌面通知', { code: '🔔', onClick: () => runAction(actions.enableNotifications) }),
       makeButton('高级诊断', { code: '…', onClick: () => { view = 'advanced'; render() } }),
