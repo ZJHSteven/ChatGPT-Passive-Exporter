@@ -1,9 +1,10 @@
 # 项目状态快照
 
 ## 当前版本
-- 当前 Userscript：`0.3.7`。
+- 当前 Userscript：`0.3.8`，Tampermonkey 显示名正式改为 `ChatGPT Companion`；更新文件名仍沿用 `chatgpt-passive-exporter.user.js`，避免破坏既有更新链。
 - 当前项目路径：`D:\Workspace\ChatGPT-Passive-Exporter`。
-- 当前浏览器实测：Tampermonkey 已运行 `0.3.7`；ChatGPT sidebar 顶部有 36×36 Companion 入口。
+- 当前浏览器实测基线：脚本安装在 `D:\AppData\Chrome\Chrome-CDP\User Data\Default` 这套独立 CDP profile；普通 `C:\Users\ZJHSteven\AppData\Local\Google\Chrome\User Data\Default` 虽也装有 Tampermonkey，但未发现 Companion userscript 数据。
+- UI：ChatGPT sidebar 顶部为 36×36 Companion 入口；0.3.8 将容易误认成“下载”的箭头改为圆形 `C` 标识，展开 sidebar 显示 `ChatGPT Companion`。
 - 回归：TypeScript 通过；Vitest 6 files / 25 tests 全通过；Userscript 构建通过。
 
 ## 已落地能力
@@ -62,6 +63,8 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 风险仍不能宣称为零：服务器可观察请求频率、访问多个 conversation id 的模式和 query 时序；因此当前策略是“减少不必要请求、单 leader、只读、低频交叉确认”，而不是声称完全不可区分。
 
 ## 已确认的坑
+- Chrome profile 是完全独立的安装边界：当前机器磁盘上同时存在普通 Chrome `C:\Users\ZJHSteven\AppData\Local\Google\Chrome\User Data\Default` 与 CDP Chrome `D:\AppData\Chrome\Chrome-CDP\User Data\Default`。两边 Tampermonkey 扩展本体互不共享 userscript 数据；当前 Companion 只安装在 CDP profile。
+- 0.3.7 以前 Tampermonkey 仍显示 `ChatGPT Passive Exporter`，虽然 Run Watch/Fleet 已合并其中，容易让人误以为监控脚本没有安装；0.3.8 已改名 `ChatGPT Companion`。
 - Tampermonkey 更新后，已经打开的老 ChatGPT tab 可能继续运行旧 userscript，必须 reload/新开页面才能加载新版本。
 - Chrome 151 的“允许运行用户脚本”总开关可能关闭；Tampermonkey 显示已安装不代表实际注入成功。
 - ChatGPT tiny sidebar rail 只有约 52px；宽文本 item 会被 overflow 裁掉，因此紧凑模式必须使用 36×36 图标按钮。
