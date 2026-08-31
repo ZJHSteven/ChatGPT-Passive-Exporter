@@ -1,10 +1,10 @@
 # 项目状态快照
 
 ## 当前版本
-- 当前 Userscript：`0.3.8`，Tampermonkey 显示名正式改为 `ChatGPT Companion`；更新文件名仍沿用 `chatgpt-passive-exporter.user.js`，避免破坏既有更新链。
+- 当前 Userscript：`0.3.9`，Tampermonkey 显示名为 `ChatGPT Companion`；更新文件名仍沿用 `chatgpt-passive-exporter.user.js`，避免破坏既有更新链。
 - 当前项目路径：`D:\Workspace\ChatGPT-Passive-Exporter`。
 - 当前浏览器实测基线：脚本安装在 `D:\AppData\Chrome\Chrome-CDP\User Data\Default` 这套独立 CDP profile；普通 `C:\Users\ZJHSteven\AppData\Local\Google\Chrome\User Data\Default` 虽也装有 Tampermonkey，但未发现 Companion userscript 数据。
-- UI：ChatGPT sidebar 顶部为 36×36 Companion 入口；0.3.8 将容易误认成“下载”的箭头改为圆形 `C` 标识，展开 sidebar 显示 `ChatGPT Companion`。
+- UI：0.3.9 修复 ChatGPT 同时保留“展开 sidebar + 隐藏 tiny rail”时 `querySelector()` 误选透明副本的问题；展开 sidebar 实测入口为 233×36 并位于“新聊天”下一行，折叠后自动迁移为 36×36 圆形 `C`，再展开会自动迁回宽 sidebar。
 - 回归：TypeScript 通过；Vitest 6 files / 25 tests 全通过；Userscript 构建通过。
 
 ## 已落地能力
@@ -68,6 +68,7 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - Tampermonkey 更新后，已经打开的老 ChatGPT tab 可能继续运行旧 userscript，必须 reload/新开页面才能加载新版本。
 - Chrome 151 的“允许运行用户脚本”总开关可能关闭；Tampermonkey 显示已安装不代表实际注入成功。
 - ChatGPT tiny sidebar rail 只有约 52px；宽文本 item 会被 overflow 裁掉，因此紧凑模式必须使用 36×36 图标按钮。
+- ChatGPT 展开 sidebar 时不会删除 tiny rail，而是把它设为 `inert / pointer-events:none / opacity:0`；所有 sidebar template/anchor 选择必须检查完整祖先链的真实可交互性，不能使用裸 `querySelector()`。0.3.9 已加入可见性过滤及仅监听 tiny rail 模式属性的轻量迁移 observer。
 - page-world 包装 `window.fetch` 会让 DevTools initiator stack 顶层显示 userscript；服务器不会看到 DevTools initiator stack，但页面 JS 理论上可检测 fetch 被包装。
 - CDP 多 target/iframe 时调试 session 可能串到其它 page；曾误读到 Owlbear HTML，故所有诊断必须校验 origin/content-type，不能把调试控制面错误当 ChatGPT 状态。
 - 多张旧版 ChatGPT 首页会各自运行 Fleet；0.3.7 已用 Web Locks 修复，但旧 tab 必须 reload 或关闭。
