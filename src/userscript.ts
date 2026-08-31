@@ -421,17 +421,30 @@ function exportRunDiagnostics(): void {
 }
 
 function inspectFleet(): void {
-  window.alert(fleetWatch?.summaryText()
-    ?? 'Fleet Watch 只在轻量 ChatGPT 首页启动。请保留一张 https://chatgpt.com/ 首页作为监控站；无需为每条长聊天开标签页。')
+  if (fleetWatch) {
+    window.alert(fleetWatch.summaryText())
+    return
+  }
+  const persisted = readPersistedFleetState()
+  const active = persisted.tracked.filter(item => item.state === 'server-streaming').length
+  const abnormal = persisted.tracked.filter(item => item.state === 'abnormal').length
+  const suspected = persisted.alerts.filter(item => item.kind === 'suspected-stall').length
+  window.alert([
+    '全局监控共享状态',
+    `运行中：${active}`,
+    `异常：${abnormal}`,
+    `疑似卡住：${suspected}`,
+    '',
+    '主动轮询只由一张 ChatGPT 首页监控站执行；当前聊天页只读取共享状态，不额外发请求。',
+  ].join('\n'))
 }
 
 async function pollFleetNow(): Promise<void> {
   if (!fleetWatch) {
-    window.alert('当前不是 Fleet Watch 首页监控站。请在一个 ChatGPT 首页 tab 中执行此操作。')
+    window.open('https://chatgpt.com/?companion-monitor=1', '_blank', 'noopener,noreferrer')
     return
   }
   await fleetWatch.pollNow()
-  window.alert(fleetWatch.summaryText())
 }
 
 async function enableNotifications(): Promise<void> {
@@ -444,11 +457,8 @@ async function enableNotifications(): Promise<void> {
 }
 
 function openLatestAbnormal(): void {
-  if (!fleetWatch) {
-    window.alert('Fleet Watch 未在当前 tab 启动。')
-    return
-  }
-  const alert = fleetWatch.snapshot().alerts.at(-1)
+  const alerts = fleetWatch?.snapshot().alerts ?? readPersistedFleetState().alerts
+  const alert = alerts.at(-1)
   if (!alert) {
     window.alert('当前没有记录到告警会话。')
     return
@@ -457,11 +467,8 @@ function openLatestAbnormal(): void {
 }
 
 async function copySafeContinue(): Promise<void> {
-  if (!fleetWatch) {
-    window.alert('Fleet Watch 未在当前 tab 启动。')
-    return
-  }
-  const alert = [...fleetWatch.snapshot().alerts].reverse().find(item => item.kind === 'abnormal')
+  const alerts = fleetWatch?.snapshot().alerts ?? readPersistedFleetState().alerts
+  const alert = [...alerts].reverse().find(item => item.kind === 'abnormal')
   if (!alert) {
     window.alert('当前没有“服务器已确认结束”的异常会话；疑似卡住告警不能生成续跑提示。')
     return
