@@ -9,20 +9,47 @@
  *    不干扰 ChatGPT 正常页面。
  */
 
+export interface CompanionUiSettings {
+  includeReasoning: boolean
+  includeRichAppendix: boolean
+  batchLimit: 5 | 10 | 20 | 28
+  screenshotScale: 1 | 1.5 | 2
+}
+
+export interface CompanionMonitorSummary {
+  activeCount: number
+  abnormalCount: number
+  suspectedCount: number
+  leaderRole: string
+  pageSeverity: string
+  iframeCount: number
+  oaiSandboxCount: number
+  usedJsHeapMb?: number
+  lastError?: string
+  latestAlertTitle?: string
+}
+
 export interface SidebarExportActions {
-  // UI 只关心动作是否可调用，不消费返回值；扩展工具栏版本会顺带返回 boolean 状态。
+  copyText: () => unknown | Promise<unknown>
+  screenshot: () => unknown | Promise<unknown>
   exportMarkdown: () => unknown | Promise<unknown>
+  exportHtml: () => unknown | Promise<unknown>
   exportArchive: () => unknown | Promise<unknown>
-  exportManifest?: () => unknown | Promise<unknown>
-  inspectRun?: () => unknown | Promise<unknown>
-  checkServerStatus?: () => unknown | Promise<unknown>
-  exportRunDiagnostics?: () => unknown | Promise<unknown>
-  inspectFleet?: () => unknown | Promise<unknown>
-  pollFleetNow?: () => unknown | Promise<unknown>
-  enableNotifications?: () => unknown | Promise<unknown>
-  openLatestAbnormal?: () => unknown | Promise<unknown>
-  copySafeContinue?: () => unknown | Promise<unknown>
-  exportFleetDiagnostics?: () => unknown | Promise<unknown>
+  exportRawJson: () => unknown | Promise<unknown>
+  exportManifest: () => unknown | Promise<unknown>
+  batchExport: (format: 'markdown' | 'html' | 'json', limit: number) => unknown | Promise<unknown>
+  getSettings: () => CompanionUiSettings
+  updateSettings: (settings: Partial<CompanionUiSettings>) => unknown | Promise<unknown>
+  getMonitorSummary: () => CompanionMonitorSummary
+  inspectRun: () => unknown | Promise<unknown>
+  checkServerStatus: () => unknown | Promise<unknown>
+  exportRunDiagnostics: () => unknown | Promise<unknown>
+  inspectFleet: () => unknown | Promise<unknown>
+  pollFleetNow: () => unknown | Promise<unknown>
+  enableNotifications: () => unknown | Promise<unknown>
+  openLatestAbnormal: () => unknown | Promise<unknown>
+  copySafeContinue: () => unknown | Promise<unknown>
+  exportFleetDiagnostics: () => unknown | Promise<unknown>
 }
 
 export interface SidebarRunWatchBadge {
