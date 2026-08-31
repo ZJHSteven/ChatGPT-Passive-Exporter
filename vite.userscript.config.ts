@@ -10,9 +10,9 @@ export default defineConfig({
     monkey({
       entry: 'src/userscript.ts',
       userscript: {
-        name: 'ChatGPT Passive Exporter',
+        name: 'ChatGPT Companion',
         namespace: 'https://github.com/ZJHSteven/chatgpt-passive-exporter',
-        description: '被动捕获 ChatGPT 页面自身会话响应并导出，不主动调用私有 conversation API。',
+        description: '统一的 ChatGPT 本地伴侣：被动归档、Run Watch、Fleet Watch、异常通知与本地同步入口。',
         match: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
         'run-at': 'document-start',
         grant: 'none',
