@@ -11,7 +11,7 @@ import { installFleetLeadership, type FleetLeaderRole } from './browser/fleet-le
 import { notifyFleetAlert, requestDesktopNotificationPermission } from './browser/notifications'
 import { mountSidebarExporter, updateSidebarRunWatchBadge } from './ui/sidebar'
 
-const BUILD_VERSION = '0.3.8'
+const BUILD_VERSION = '0.3.9'
 
 // 只暴露无敏感信息的调试标记，便于 CDP/用户确认 Tampermonkey 当前实际运行版本。
 // 这能避免脚本管理器缓存旧 .user.js 时误把旧代码当成新构建测试。
