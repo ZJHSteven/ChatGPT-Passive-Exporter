@@ -90,6 +90,30 @@ export interface FleetWatchController {
 // v2 起采用“双服务端信号 + COMPLETE 二次确认”判据；不继承 v1 时代可能误报的历史告警。
 const STORAGE_KEY = 'chatgpt-passive-exporter/fleet-watch/state/v2'
 
+export interface PersistedFleetState {
+  tracked: FleetConversationEntry[]
+  alerts: FleetAlert[]
+}
+
+/**
+ * 非 Fleet leader 的普通 conversation tab 也需要在 Companion 面板里展示全局状态。
+ * 只读持久化摘要即可，不启动第二份轮询，也不会产生任何网络请求。
+ */
+export function readPersistedFleetState(): PersistedFleetState {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return { tracked: [], alerts: [] }
+    const stored = JSON.parse(raw) as { tracked?: FleetConversationEntry[], alerts?: FleetAlert[] }
+    return {
+      tracked: Array.isArray(stored.tracked) ? stored.tracked : [],
+      alerts: Array.isArray(stored.alerts) ? stored.alerts : [],
+    }
+  }
+  catch {
+    return { tracked: [], alerts: [] }
+  }
+}
+
 function now(): number {
   return Date.now()
 }
