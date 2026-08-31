@@ -115,21 +115,22 @@ function findNativeSidebarItem(): HTMLElement | null {
 }
 
 function findInsertionReference(): Element | null {
-  // 优先使用用户当前真正看得见的“新聊天”。展开 sidebar 时返回它的 <li>，折叠 tiny rail
-  // 则返回按钮 wrapper；两种模式都能把 Companion 固定在顶部，而不会插进透明备用 rail。
-  const newChat = findVisibleSidebarElement<HTMLElement>(['[data-testid="create-new-chat-button"]'])
-  if (newChat) {
-    const tinyRail = newChat.closest('#stage-sidebar-tiny-bar')
-    if (tinyRail) return newChat.parentElement ?? newChat
-    return newChat.closest('li') ?? newChat
-  }
-
-  // fallback：个人资料按钮之前。这里同样只允许当前可交互的那一份 profile button。
+  // UX 基线回归 ChatGPT Exporter：Companion 属于“账户/工具”层，而不是“创建内容”层。
+  // 因此优先紧贴当前真正可见的个人账户按钮上方；这样用户会自然把它理解成一个全局助手，
+  // 而不是把它误认为“新建聊天”的附属动作。展开/折叠两套 sidebar 仍通过可见性检查区分。
   const profile = findVisibleSidebarElement<HTMLElement>(['[data-testid="accounts-profile-button"]'])
   if (profile) {
     const wrapper = profile.parentElement
     if (wrapper?.parentElement && wrapper.children.length === 1) return wrapper
     return profile
+  }
+
+  // 极少数页面（登录中/分享页）没有 profile button，再退回当前可见的新聊天入口。
+  const newChat = findVisibleSidebarElement<HTMLElement>(['[data-testid="create-new-chat-button"]'])
+  if (newChat) {
+    const tinyRail = newChat.closest('#stage-sidebar-tiny-bar')
+    if (tinyRail) return newChat.parentElement ?? newChat
+    return newChat.closest('li') ?? newChat
   }
 
   return findVisibleSidebarElement<HTMLElement>([
