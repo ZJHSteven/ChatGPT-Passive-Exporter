@@ -57,6 +57,7 @@ export interface SidebarExportActions {
 export interface SidebarRunWatchBadge {
   severity: 'ok' | 'warning' | 'danger' | 'critical'
   text: string
+  compactText?: string
   title?: string
 }
 
@@ -357,7 +358,9 @@ export function updateSidebarRunWatchBadge(input: SidebarRunWatchBadge): void {
     item.append(badge)
   }
 
-  badge.textContent = input.text
+  badge.textContent = item.dataset.chatgptPassiveExporterCompact === 'true'
+    ? (input.compactText ?? input.text)
+    : input.text
   badge.title = input.title ?? ''
   badge.dataset.severity = input.severity
 

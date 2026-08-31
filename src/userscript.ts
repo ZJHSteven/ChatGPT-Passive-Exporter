@@ -31,24 +31,39 @@ let fleetLeaderRole: FleetLeaderRole = location.pathname === '/' ? 'waiting' : '
 
 function renderCombinedBadge(): void {
   const page = latestWatchSnapshot
-  const fleet = latestFleetSnapshot
   if (!page) return
 
-  const abnormalCount = fleet?.tracked.filter(item => item.state === 'abnormal').length ?? 0
-  const suspectedCount = fleet?.alerts.filter(item => item.kind === 'suspected-stall').length ?? 0
-  const activeCount = fleet?.tracked.filter(item => item.state === 'server-streaming').length ?? 0
-  const iframeCount = page.iframe.oaiSandbox || page.iframe.total
+  const fleet = latestFleetSnapshot
+  const persisted = fleet ? null : readPersistedFleetState()
+  const tracked = fleet?.tracked ?? persisted?.tracked ?? []
+  const alerts = fleet?.alerts ?? persisted?.alerts ?? []
+  const abnormalCount = tracked.filter(item => item.state === 'abnormal').length
+  const suspectedCount = alerts.filter(item => item.kind === 'suspected-stall').length
+  const activeCount = tracked.filter(item => item.state === 'server-streaming').length
+  const pageOverloaded = page.severity === 'danger' || page.severity === 'critical' || page.severity === 'warning'
 
   const severity = abnormalCount > 0
     ? 'critical'
-    : suspectedCount > 0 && page.severity === 'ok'
-      ? 'warning'
-      : page.severity
+    : pageOverloaded
+      ? page.severity
+      : suspectedCount > 0
+        ? 'warning'
+        : 'ok'
 
   const text = abnormalCount > 0
+    ? `${abnormalCount} 异常`
+    : pageOverloaded
+      ? '高负载'
+      : suspectedCount > 0
+        ? `${suspectedCount} 疑似`
+        : activeCount > 0
+          ? `${activeCount} 运行`
+          : '正常'
+
+  const compactText = abnormalCount > 0
     ? `!${abnormalCount}`
-    : page.severity !== 'ok'
-      ? `${page.severity === 'warning' ? '⚠' : '!'}${iframeCount}`
+    : pageOverloaded
+      ? '⚠'
       : suspectedCount > 0
         ? `?${suspectedCount}`
         : activeCount > 0
@@ -57,13 +72,11 @@ function renderCombinedBadge(): void {
 
   const titleParts = [
     `当前页：${page.severity}；iframe ${page.iframe.total}，OAI sandbox ${page.iframe.oaiSandbox}`,
+    `全局：${activeCount} 条服务端确认进行中，${abnormalCount} 条明确异常，${suspectedCount} 条疑似卡住`,
   ]
-  if (fleet) {
-    titleParts.push(`全局：${activeCount} 条服务端确认进行中，${abnormalCount} 条明确异常，${suspectedCount} 条疑似僵尸`)
-    if (fleet.lastError) titleParts.push(`Fleet：${fleet.lastError}`)
-  }
+  if (fleet?.lastError) titleParts.push(`Fleet：${fleet.lastError}`)
 
-  updateSidebarRunWatchBadge({ severity, text, title: titleParts.join('\n') })
+  updateSidebarRunWatchBadge({ severity, text, compactText, title: titleParts.join('\n') })
 }
 
 function updateWatchBadge(snapshot: RunWatchSnapshot): void {
