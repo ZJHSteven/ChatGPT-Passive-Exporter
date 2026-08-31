@@ -77,7 +77,7 @@ function findInsertionReference(): Element | null {
     ?? document.querySelector('[data-testid="sidebar-item-recall"]')
 }
 
-function downloadIcon(): SVGSVGElement {
+function companionIcon(): SVGSVGElement {
   const ns = 'http://www.w3.org/2000/svg'
   const svg = document.createElementNS(ns, 'svg')
   svg.setAttribute('width', '20')
@@ -87,13 +87,27 @@ function downloadIcon(): SVGSVGElement {
   svg.setAttribute('class', 'icon')
   svg.setAttribute('aria-hidden', 'true')
 
-  const path = document.createElementNS(ns, 'path')
-  path.setAttribute('d', 'M10 2.75v9m0 0 3.25-3.25M10 11.75 6.75 8.5M4 14.25v1.5A1.25 1.25 0 0 0 5.25 17h9.5A1.25 1.25 0 0 0 16 15.75v-1.5')
-  path.setAttribute('stroke', 'currentColor')
-  path.setAttribute('stroke-width', '1.5')
-  path.setAttribute('stroke-linecap', 'round')
-  path.setAttribute('stroke-linejoin', 'round')
-  svg.append(path)
+  // 折叠 sidebar 只有 36×36px，原来的“下载箭头”太像 ChatGPT 自带动作，用户很难意识到
+  // 这是整套 Companion。这里改成一个带 C 字母的圆形标识：既不冒充 ChatGPT 原生图标，
+  // 又能在 tiny rail 中一眼辨认；状态 badge 仍叠在右上角。
+  const circle = document.createElementNS(ns, 'circle')
+  circle.setAttribute('cx', '10')
+  circle.setAttribute('cy', '10')
+  circle.setAttribute('r', '7.1')
+  circle.setAttribute('stroke', 'currentColor')
+  circle.setAttribute('stroke-width', '1.4')
+
+  const text = document.createElementNS(ns, 'text')
+  text.setAttribute('x', '10')
+  text.setAttribute('y', '13')
+  text.setAttribute('text-anchor', 'middle')
+  text.setAttribute('font-size', '8.5')
+  text.setAttribute('font-weight', '700')
+  text.setAttribute('font-family', 'system-ui, sans-serif')
+  text.setAttribute('fill', 'currentColor')
+  text.textContent = 'C'
+
+  svg.append(circle, text)
   return svg
 }
 
@@ -108,7 +122,7 @@ function replaceTemplateContents(item: HTMLElement): void {
   item.removeAttribute('aria-expanded')
   item.setAttribute('role', 'button')
   item.setAttribute('tabindex', '0')
-  item.setAttribute('aria-label', '导出 / 归档当前聊天')
+  item.setAttribute('aria-label', 'ChatGPT Companion：归档 / 运行监控')
   item.setAttribute(ITEM_MARKER, 'true')
   item.removeAttribute('data-sidebar-item')
 
@@ -120,14 +134,14 @@ function replaceTemplateContents(item: HTMLElement): void {
   icon.className = 'relative flex items-center justify-center [opacity:var(--menu-item-icon-opacity,1)] icon'
   const iconInner = document.createElement('div')
   iconInner.className = 'absolute inset-0 flex items-center justify-center'
-  iconInner.append(downloadIcon())
+  iconInner.append(companionIcon())
   icon.append(iconInner)
 
   const grow = document.createElement('div')
   grow.className = 'flex min-w-0 grow items-center gap-2.5'
   const text = document.createElement('div')
   text.className = 'truncate'
-  text.textContent = '归档 / 导出'
+  text.textContent = 'ChatGPT Companion'
   grow.append(text)
 
   item.append(icon, grow)
@@ -149,11 +163,11 @@ function applySidebarLayout(item: HTMLElement, reference: Element): void {
   const compact = Boolean(tinyRail && tinyRail.getBoundingClientRect().width < 80)
 
   item.dataset.chatgptPassiveExporterCompact = compact ? 'true' : 'false'
-  item.title = compact ? 'ChatGPT 归档 / 运行监控' : ''
+  item.title = compact ? 'ChatGPT Companion：归档 / 运行监控' : ''
 
   const text = item.querySelector<HTMLElement>('.truncate')
   if (text) {
-    text.textContent = compact ? '' : '归档 / 监控'
+    text.textContent = compact ? '' : 'ChatGPT Companion'
     text.style.display = compact ? 'none' : ''
   }
 
