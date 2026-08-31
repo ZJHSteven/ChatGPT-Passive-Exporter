@@ -471,11 +471,15 @@ export function mountSidebarExporter(actions: SidebarExportActions): () => void 
     else reference.before(clone)
   }
 
-  // 主 observer 继续只看 childList，避免监听整棵超长聊天 DOM 的 attributes；另外只对 52px tiny rail
-  // 建一个极小的 mode observer。展开/折叠切换一定会改变它的 class/inert，因此可以及时迁移 Companion，
-  // 又不会为了一个 sidebar 开关去监听几千条 conversation 节点的样式变化。
+  // 0.4.0 之前为了防 SPA 重建，监听了 document.documentElement 的整个 childList subtree。
+  // ChatGPT 在恢复一个包含数百 DevSpace widget 的长会话时会产生海量 DOM 插入；每一批 mutation
+  // 都会触发 mount()，而 mount() 为了找“当前可见 sidebar”需要做 layout/style 读取。CPU profile
+  // 已实测这条路径能吃掉约 5% 的 hydration 主线程时间，因此这里彻底取消全树 observer。
+  //
+  // sidebar 本身不是高频交互区域：1.5 秒一次的自检已经足以应对 React SPA 重建；展开/折叠
+  // 则继续只观察 tiny rail 自身 3 个属性，保持即时迁移。这样聊天正文产生多少节点都不会唤醒 UI 挂载器。
   let observedTinyRail: Element | null = null
-  const modeObserver = new MutationObserver(mount)
+  const modeObserver = new MutationObserver(() => mount())
   const bindModeObserver = () => {
     const tinyRail = document.querySelector('#stage-sidebar-tiny-bar')
     if (tinyRail === observedTinyRail) return
@@ -489,24 +493,27 @@ export function mountSidebarExporter(actions: SidebarExportActions): () => void 
     }
   }
 
-  const observer = new MutationObserver(() => {
+  const maintain = () => {
+    if (stopped) return
     bindModeObserver()
     mount()
-  })
-  observer.observe(document.documentElement, { childList: true, subtree: true })
-  bindModeObserver()
-  window.addEventListener('resize', () => {
+  }
+  const maintenanceTimer = window.setInterval(maintain, 1_500)
+
+  const onResize = () => {
     const item = document.querySelector<HTMLElement>(`[${ITEM_MARKER}]`)
     if (item && menu && !menu.hidden) positionMenu(item, menu)
-  })
+  }
+  window.addEventListener('resize', onResize)
   document.addEventListener('pointerdown', closeMenu, true)
 
-  mount()
+  maintain()
 
   return () => {
     stopped = true
-    observer.disconnect()
+    window.clearInterval(maintenanceTimer)
     modeObserver.disconnect()
+    window.removeEventListener('resize', onResize)
     document.removeEventListener('pointerdown', closeMenu, true)
     for (const item of document.querySelectorAll<HTMLElement>(`[${ITEM_MARKER}]`)) removeMountedSidebarItem(item)
     menu?.remove()
