@@ -109,6 +109,8 @@ export interface RunWatchController {
   checkConversationServerStatus: (conversationId: string) => Promise<ServerStatusResult>
   listRecentConversations: (limit?: number) => Promise<RecentConversationSummary[]>
   fetchConversationTail: (conversationId: string, numTurns?: number) => Promise<ConversationTailResult>
+  /** 用户明确触发批量导出时使用；与 Fleet 的低频尾部检查分离。 */
+  fetchConversation: (conversationId: string, numTurns?: number) => Promise<ConversationTailResult>
   hasEphemeralAuth: () => boolean
   snapshot: () => RunWatchSnapshot
   summaryText: () => string
@@ -708,9 +710,8 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
    * 仅在某条 conversation 已经结束、需要做后验归因时读取最后少量 turns。
    * 默认 2 turns，避免像 50MB 巨型聊天那样每次全量拉取。
    */
-  const fetchConversationTail = async (conversationId: string, numTurns = 2): Promise<ConversationTailResult> => {
-    const safeTurns = Math.max(1, Math.min(5, Math.trunc(numTurns)))
-    const path = `/backend-api/conversations/${encodeURIComponent(conversationId)}?num_turns=${safeTurns}`
+  const fetchConversationByTurns = async (conversationId: string, numTurns: number): Promise<ConversationTailResult> => {
+    const path = `/backend-api/conversations/${encodeURIComponent(conversationId)}?num_turns=${numTurns}`
     const result = await authenticatedJson(path, '/backend-api/conversations/{conversation_id}')
     const payload = result.ok && result.body && typeof result.body === 'object'
       ? result.body as RawConversationPayload
@@ -722,6 +723,18 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
       payload,
       checkedAt: now(),
     }
+  }
+
+  const fetchConversationTail = async (conversationId: string, numTurns = 2): Promise<ConversationTailResult> => {
+    return fetchConversationByTurns(conversationId, Math.max(1, Math.min(5, Math.trunc(numTurns))))
+  }
+
+  /**
+   * 批量导出属于用户明确触发的主动操作，因此允许读取更完整的 conversation。
+   * 这里仍保留 100 turns 上限，避免无界请求；当前实测超长聊天在 num_turns=100 时可返回完整分页。
+   */
+  const fetchConversation = async (conversationId: string, numTurns = 100): Promise<ConversationTailResult> => {
+    return fetchConversationByTurns(conversationId, Math.max(1, Math.min(100, Math.trunc(numTurns))))
   }
 
   const summaryText = (): string => {
@@ -775,6 +788,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     checkConversationServerStatus,
     listRecentConversations,
     fetchConversationTail,
+    fetchConversation,
     hasEphemeralAuth,
     snapshot: buildSnapshot,
     summaryText,
