@@ -1,3 +1,5 @@
+import { createCompanionPanel, resetCompanionPanel } from './companion-panel'
+
 /*
  * ChatGPT 侧栏原生风格入口。
  *
@@ -60,7 +62,6 @@ export interface SidebarRunWatchBadge {
 
 const ITEM_MARKER = 'data-chatgpt-passive-exporter-item'
 const ITEM_WRAPPER_MARKER = 'data-chatgpt-companion-item-wrapper'
-const MENU_MARKER = 'data-chatgpt-passive-exporter-menu'
 const RUN_WATCH_BADGE_MARKER = 'data-chatgpt-run-watch-badge'
 
 /**
@@ -267,71 +268,7 @@ function applySidebarLayout(item: HTMLElement, reference: Element): void {
 }
 
 function createMenu(actions: SidebarExportActions): HTMLDivElement {
-  const menu = document.createElement('div')
-  menu.setAttribute(MENU_MARKER, 'true')
-  menu.hidden = true
-  menu.style.cssText = [
-    'position:fixed',
-    'z-index:2147483000',
-    'min-width:220px',
-    'padding:6px',
-    'border:1px solid var(--border-default,rgba(127,127,127,.22))',
-    'border-radius:14px',
-    'background:var(--main-surface-primary,var(--token-main-surface-primary,#fff))',
-    'color:var(--text-primary,var(--token-text-primary,#111))',
-    'box-shadow:0 12px 36px rgba(0,0,0,.18)',
-  ].join(';')
-
-  const entries: Array<[string, () => unknown | Promise<unknown>]> = [
-    ['导出 Markdown', actions.exportMarkdown],
-    ['导出安全归档 JSON', actions.exportArchive],
-  ]
-  if (actions.exportManifest) entries.push(['导出富媒体清单', actions.exportManifest])
-  if (actions.inspectRun) entries.push(['查看当前页性能诊断', actions.inspectRun])
-  if (actions.checkServerStatus) entries.push(['检查当前会话服务器状态', actions.checkServerStatus])
-  if (actions.exportRunDiagnostics) entries.push(['导出当前页诊断 JSON', actions.exportRunDiagnostics])
-  if (actions.inspectFleet) entries.push(['查看全局运行监控', actions.inspectFleet])
-  if (actions.pollFleetNow) entries.push(['立即扫描最近会话', actions.pollFleetNow])
-  if (actions.enableNotifications) entries.push(['启用异常桌面通知', actions.enableNotifications])
-  if (actions.openLatestAbnormal) entries.push(['打开最近告警会话', actions.openLatestAbnormal])
-  if (actions.copySafeContinue) entries.push(['复制安全续跑提示', actions.copySafeContinue])
-  if (actions.exportFleetDiagnostics) entries.push(['导出全局监控 JSON', actions.exportFleetDiagnostics])
-
-  for (const [label, action] of entries) {
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.textContent = label
-    button.style.cssText = [
-      'display:block',
-      'width:100%',
-      'border:0',
-      'border-radius:10px',
-      'padding:9px 10px',
-      'background:transparent',
-      'color:inherit',
-      'text-align:left',
-      'font:inherit',
-      'cursor:pointer',
-    ].join(';')
-    button.addEventListener('mouseenter', () => {
-      button.style.background = 'var(--surface-hover,var(--token-surface-hover,rgba(127,127,127,.12)))'
-    })
-    button.addEventListener('mouseleave', () => {
-      button.style.background = 'transparent'
-    })
-    button.addEventListener('click', async (event) => {
-      event.preventDefault()
-      event.stopPropagation()
-      menu.hidden = true
-      await action()
-    })
-    menu.append(button)
-  }
-
-  // ChatGPT 的 React 根偶尔会重建/清理 body 直属的未知节点；挂到 documentElement
-  // 可以避免菜单在 sidebar 状态变化后被页面顺手移除。它是 position:fixed，不参与布局。
-  document.documentElement.append(menu)
-  return menu
+  return createCompanionPanel(actions)
 }
 
 function positionMenu(item: HTMLElement, menu: HTMLElement): void {
@@ -467,6 +404,8 @@ export function mountSidebarExporter(actions: SidebarExportActions): () => void 
       event.preventDefault()
       event.stopPropagation()
       if (!menu) return
+      const opening = menu.hidden
+      if (opening) resetCompanionPanel(menu)
       menu.hidden = !menu.hidden
       if (!menu.hidden) positionMenu(clone, menu)
     }
