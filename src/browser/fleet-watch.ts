@@ -93,6 +93,7 @@ const STORAGE_KEY = 'chatgpt-passive-exporter/fleet-watch/state/v2'
 export interface PersistedFleetState {
   tracked: FleetConversationEntry[]
   alerts: FleetAlert[]
+  lastPollAt?: number
 }
 
 /**
@@ -103,10 +104,11 @@ export function readPersistedFleetState(): PersistedFleetState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return { tracked: [], alerts: [] }
-    const stored = JSON.parse(raw) as { tracked?: FleetConversationEntry[], alerts?: FleetAlert[] }
+    const stored = JSON.parse(raw) as { tracked?: FleetConversationEntry[], alerts?: FleetAlert[], lastPollAt?: number }
     return {
       tracked: Array.isArray(stored.tracked) ? stored.tracked : [],
       alerts: Array.isArray(stored.alerts) ? stored.alerts : [],
+      lastPollAt: typeof stored.lastPollAt === 'number' ? stored.lastPollAt : undefined,
     }
   }
   catch {
@@ -228,7 +230,9 @@ export function installFleetWatch(
         seenUpdate?: Array<[string, string]>
         tracked?: FleetConversationEntry[]
         alerts?: FleetAlert[]
+        lastPollAt?: number
       }
+      if (typeof stored.lastPollAt === 'number') lastPollAt = stored.lastPollAt
       for (const [id, update] of stored.seenUpdate ?? []) seenUpdate.set(id, update)
       for (const entry of stored.tracked ?? []) {
         // 只恢复真正需要跨 reload 延续的状态；普通 complete 历史不占长期内存。
@@ -250,6 +254,7 @@ export function installFleetWatch(
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         seenUpdate: [...seenUpdate.entries()].slice(0, 100),
+        lastPollAt,
         tracked: [...entries.values()].filter(entry => (
           entry.state === 'server-streaming'
           || entry.state === 'abnormal'

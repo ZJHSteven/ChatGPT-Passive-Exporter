@@ -5,17 +5,27 @@ export interface CompanionPanelSettings {
   screenshotScale: 1 | 1.5 | 2
 }
 
+export interface CompanionMonitorItem {
+  conversationId: string
+  title: string
+  detail?: string
+}
+
 export interface CompanionPanelMonitorSummary {
   activeCount: number
   abnormalCount: number
   suspectedCount: number
+  active: CompanionMonitorItem[]
+  abnormal: CompanionMonitorItem[]
+  suspected: CompanionMonitorItem[]
+  monitorFresh: boolean
+  lastPollAt?: number
   leaderRole: string
   pageSeverity: string
   iframeCount: number
   oaiSandboxCount: number
   usedJsHeapMb?: number
   lastError?: string
-  latestAlertTitle?: string
 }
 
 export interface CompanionPanelActions {
@@ -30,6 +40,7 @@ export interface CompanionPanelActions {
   getSettings: () => CompanionPanelSettings
   updateSettings: (settings: Partial<CompanionPanelSettings>) => unknown | Promise<unknown>
   getMonitorSummary: () => CompanionPanelMonitorSummary
+  openConversation: (conversationId: string) => unknown | Promise<unknown>
   inspectRun: () => unknown | Promise<unknown>
   checkServerStatus: () => unknown | Promise<unknown>
   exportRunDiagnostics: () => unknown | Promise<unknown>
@@ -309,7 +320,15 @@ export function createCompanionPanel(actions: CompanionPanelActions): HTMLDivEle
     const detail = el('div')
     detail.textContent = summary.lastError
       ? `监控暂时不可用：${summary.lastError}`
-      : `当前页 ${summary.oaiSandboxCount || summary.iframeCount} 个工具/iframe · 点击查看详情`
+      : !summary.monitorFresh
+        ? '监控站当前未在线；点击查看上次记录'
+        : summary.abnormalCount > 0
+        ? `点击查看 ${summary.abnormalCount} 条异常会话`
+        : summary.suspectedCount > 0
+          ? `点击查看 ${summary.suspectedCount} 条疑似卡住会话`
+          : summary.activeCount > 0
+            ? `点击查看 ${summary.activeCount} 条正在运行的会话`
+            : '点击查看会话监控列表'
     detail.style.cssText = 'font-size:10px;opacity:.58;margin-top:8px;padding:0 2px'
     monitorCard.append(metrics, detail)
     monitorCard.addEventListener('click', () => {
@@ -406,6 +425,7 @@ export function createCompanionPanel(actions: CompanionPanelActions): HTMLDivEle
   const renderMonitor = () => {
     const summary = actions.getMonitorSummary()
     panel.append(makeBackHeader('运行监控', statusSentence(summary)))
+
     const metrics = el('div')
     metrics.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:2px 2px 10px'
     metrics.append(
@@ -415,25 +435,88 @@ export function createCompanionPanel(actions: CompanionPanelActions): HTMLDivEle
     )
     panel.append(metrics)
 
-    const facts = el('div')
-    facts.style.cssText = 'padding:9px 10px;border-radius:11px;background:var(--surface-secondary,rgba(127,127,127,.08));font-size:10px;line-height:1.55;margin-bottom:6px'
-    facts.textContent = [
-      `Fleet：${summary.leaderRole}`,
-      `当前页：${summary.pageSeverity} · iframe ${summary.iframeCount} · OAI sandbox ${summary.oaiSandboxCount}`,
-      summary.usedJsHeapMb == null ? '' : `JS heap：${summary.usedJsHeapMb} MB`,
-      summary.latestAlertTitle ? `最近告警：${summary.latestAlertTitle}` : '',
-      summary.lastError ? `错误：${summary.lastError}` : '',
-    ].filter(Boolean).join('\n')
-    facts.style.whiteSpace = 'pre-line'
-    panel.append(facts)
+    if (summary.lastError || !summary.monitorFresh) {
+      const error = el('div')
+      const lastPoll = summary.lastPollAt ? new Date(summary.lastPollAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null
+      error.textContent = summary.lastError
+        ? `监控暂时不可用：${summary.lastError}`
+        : `实时监控站当前未在线；下面显示${lastPoll ? ` ${lastPoll} 的` : ''}上次记录。`
+      error.style.cssText = 'padding:9px 10px;border-radius:10px;background:var(--surface-secondary,rgba(127,127,127,.08));font-size:10px;line-height:1.45;margin:0 2px 8px'
+      panel.append(error)
+    }
+
+    const renderConversationGroup = (
+      title: string,
+      symbol: string,
+      items: CompanionMonitorItem[],
+      emptyText: string,
+    ) => {
+      panel.append(sectionTitle(title))
+      const list = el('div')
+      list.style.cssText = 'display:flex;flex-direction:column;gap:2px;margin-bottom:7px'
+
+      if (items.length === 0) {
+        const empty = el('div')
+        empty.textContent = emptyText
+        empty.style.cssText = 'padding:7px 8px;font-size:10px;opacity:.45'
+        list.append(empty)
+      }
+      else {
+        for (const item of items) {
+          const row = el('button')
+          row.type = 'button'
+          row.style.cssText = [
+            'display:flex',
+            'align-items:flex-start',
+            'gap:8px',
+            'width:100%',
+            'border:0',
+            'border-radius:10px',
+            'padding:8px',
+            'background:transparent',
+            'color:inherit',
+            'font:inherit',
+            'text-align:left',
+            'cursor:pointer',
+          ].join(';')
+          applyHover(row)
+
+          const icon = el('span')
+          icon.textContent = symbol
+          icon.style.cssText = 'display:block;width:18px;flex:0 0 18px;text-align:center;font-weight:700;line-height:18px'
+          const body = el('span')
+          body.style.cssText = 'display:block;min-width:0;flex:1'
+          const name = el('span')
+          name.textContent = item.title || item.conversationId
+          name.style.cssText = 'display:block;font-size:12px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'
+          body.append(name)
+          if (item.detail) {
+            const detail = el('span')
+            detail.textContent = item.detail
+            detail.style.cssText = 'display:block;font-size:9px;opacity:.5;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'
+            body.append(detail)
+          }
+          const arrow = el('span')
+          arrow.textContent = '›'
+          arrow.style.cssText = 'opacity:.35;font-size:16px;line-height:18px'
+          row.append(icon, body, arrow)
+          row.addEventListener('click', () => void runAction(() => actions.openConversation(item.conversationId)))
+          list.append(row)
+        }
+      }
+      panel.append(list)
+    }
+
+    renderConversationGroup('正在运行', '▶', summary.active, '没有服务端确认正在运行的会话')
+    renderConversationGroup('异常结束', '!', summary.abnormal, '没有确认异常结束的会话')
+    renderConversationGroup('疑似卡住', '?', summary.suspected, '没有疑似卡住的会话')
 
     const grid = makeGrid()
     const refreshLabel = summary.leaderRole === 'leader' ? '立即刷新' : '打开监控站'
     grid.append(
       makeButton(refreshLabel, { code: '↻', onClick: () => runAction(actions.pollFleetNow, { rerender: true }) }),
-      makeButton('打开最近告警', { code: '!', onClick: () => runAction(actions.openLatestAbnormal) }),
       makeButton('桌面通知', { code: '🔔', onClick: () => runAction(actions.enableNotifications) }),
-      makeButton('高级诊断', { code: '…', onClick: () => { view = 'advanced'; render() } }),
+      makeButton('高级诊断', { code: '…', full: true, onClick: () => { view = 'advanced'; render() } }),
     )
     panel.append(grid)
   }

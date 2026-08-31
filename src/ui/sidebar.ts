@@ -18,17 +18,27 @@ export interface CompanionUiSettings {
   screenshotScale: 1 | 1.5 | 2
 }
 
+export interface CompanionMonitorItem {
+  conversationId: string
+  title: string
+  detail?: string
+}
+
 export interface CompanionMonitorSummary {
   activeCount: number
   abnormalCount: number
   suspectedCount: number
+  active: CompanionMonitorItem[]
+  abnormal: CompanionMonitorItem[]
+  suspected: CompanionMonitorItem[]
+  monitorFresh: boolean
+  lastPollAt?: number
   leaderRole: string
   pageSeverity: string
   iframeCount: number
   oaiSandboxCount: number
   usedJsHeapMb?: number
   lastError?: string
-  latestAlertTitle?: string
 }
 
 export interface SidebarExportActions {
@@ -43,6 +53,7 @@ export interface SidebarExportActions {
   getSettings?: () => CompanionUiSettings
   updateSettings?: (settings: Partial<CompanionUiSettings>) => unknown | Promise<unknown>
   getMonitorSummary?: () => CompanionMonitorSummary
+  openConversation?: (conversationId: string) => unknown | Promise<unknown>
   inspectRun?: () => unknown | Promise<unknown>
   checkServerStatus?: () => unknown | Promise<unknown>
   exportRunDiagnostics?: () => unknown | Promise<unknown>
@@ -280,6 +291,10 @@ function createMenu(actions: SidebarExportActions): HTMLDivElement {
     activeCount: 0,
     abnormalCount: 0,
     suspectedCount: 0,
+    active: [],
+    abnormal: [],
+    suspected: [],
+    monitorFresh: false,
     leaderRole: '此构建未启用 Fleet Watch',
     pageSeverity: 'unknown',
     iframeCount: 0,
@@ -298,6 +313,7 @@ function createMenu(actions: SidebarExportActions): HTMLDivElement {
     getSettings: actions.getSettings ?? (() => ({ ...defaultSettings })),
     updateSettings: actions.updateSettings ?? (() => unavailable()),
     getMonitorSummary: actions.getMonitorSummary ?? (() => ({ ...defaultMonitor })),
+    openConversation: actions.openConversation ?? (() => unavailable()),
     inspectRun: actions.inspectRun ?? unavailable,
     checkServerStatus: actions.checkServerStatus ?? unavailable,
     exportRunDiagnostics: actions.exportRunDiagnostics ?? unavailable,

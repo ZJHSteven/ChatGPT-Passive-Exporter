@@ -40,35 +40,29 @@ function renderCombinedBadge(): void {
   const abnormalCount = tracked.filter(item => item.state === 'abnormal').length
   const suspectedCount = alerts.filter(item => item.kind === 'suspected-stall').length
   const activeCount = tracked.filter(item => item.state === 'server-streaming').length
-  const pageOverloaded = page.severity === 'danger' || page.severity === 'critical' || page.severity === 'warning'
-
+  // Sidebar 只表达“任务监控”状态。当前页 250 个 iframe / 2GB heap 之类的性能数据
+  // 只放高级诊断，避免把“高负载”和“某条会话异常结束”混成同一种告警。
   const severity = abnormalCount > 0
     ? 'critical'
-    : pageOverloaded
-      ? page.severity
-      : suspectedCount > 0
-        ? 'warning'
-        : 'ok'
+    : suspectedCount > 0
+      ? 'warning'
+      : 'ok'
 
   const text = abnormalCount > 0
     ? `${abnormalCount} 异常`
-    : pageOverloaded
-      ? '高负载'
-      : suspectedCount > 0
-        ? `${suspectedCount} 疑似`
-        : activeCount > 0
-          ? `${activeCount} 运行`
-          : '正常'
+    : suspectedCount > 0
+      ? `${suspectedCount} 疑似`
+      : activeCount > 0
+        ? `${activeCount} 运行`
+        : '正常'
 
   const compactText = abnormalCount > 0
     ? `!${abnormalCount}`
-    : pageOverloaded
-      ? '⚠'
-      : suspectedCount > 0
-        ? `?${suspectedCount}`
-        : activeCount > 0
-          ? `▶${activeCount}`
-          : '•'
+    : suspectedCount > 0
+      ? `?${suspectedCount}`
+      : activeCount > 0
+        ? `▶${activeCount}`
+        : '•'
 
   const titleParts = [
     `当前页：${page.severity}；iframe ${page.iframe.total}，OAI sandbox ${page.iframe.oaiSandbox}`,
@@ -508,16 +502,53 @@ function getMonitorSummary() {
   const persisted = liveFleet ? null : readPersistedFleetState()
   const tracked = liveFleet?.tracked ?? persisted?.tracked ?? []
   const alerts = liveFleet?.alerts ?? persisted?.alerts ?? []
+  const lastPollAt = liveFleet?.lastPollAt ?? persisted?.lastPollAt
+  const monitorFresh = typeof lastPollAt === 'number' && Date.now() - lastPollAt <= 150_000
 
-  const activeCount = tracked.filter(item => item.state === 'server-streaming').length
-  const abnormalCount = tracked.filter(item => item.state === 'abnormal').length
-  const suspectedCount = alerts.filter(item => item.kind === 'suspected-stall').length
-  const latestAlert = alerts.at(-1)
+  const timeLabel = (value?: number | string) => {
+    if (value == null) return ''
+    const epoch = typeof value === 'number'
+      ? (value < 10_000_000_000 ? value * 1000 : value)
+      : Date.parse(value)
+    if (!Number.isFinite(epoch)) return ''
+    return new Date(epoch).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }
+
+  const activeEntries = tracked.filter(item => item.state === 'server-streaming')
+  const abnormalEntries = tracked.filter(item => item.state === 'abnormal')
+  const latestSuspectedByConversation = new Map<string, (typeof alerts)[number]>()
+  for (const alert of alerts) {
+    if (alert.kind !== 'suspected-stall') continue
+    const previous = latestSuspectedByConversation.get(alert.conversationId)
+    if (!previous || alert.at >= previous.at) latestSuspectedByConversation.set(alert.conversationId, alert)
+  }
+  const suspectedAlerts = [...latestSuspectedByConversation.values()].sort((a, b) => b.at - a.at)
 
   return {
-    activeCount,
-    abnormalCount,
-    suspectedCount,
+    activeCount: activeEntries.length,
+    abnormalCount: abnormalEntries.length,
+    suspectedCount: suspectedAlerts.length,
+    active: activeEntries.map(item => ({
+      conversationId: item.id,
+      title: item.title,
+      detail: [
+        item.rawServerStatus ?? 'IS_STREAMING',
+        item.asyncStatus == null ? '' : `async=${String(item.asyncStatus)}`,
+        timeLabel(item.updateTime) ? `更新 ${timeLabel(item.updateTime)}` : '',
+      ].filter(Boolean).join(' · '),
+    })),
+    abnormal: abnormalEntries.map(item => ({
+      conversationId: item.id,
+      title: item.title,
+      detail: [item.abnormalReason ?? '服务器已结束但异常收尾', timeLabel(item.lastStatusAt)].filter(Boolean).join(' · '),
+    })),
+    suspected: suspectedAlerts.map(alert => ({
+      conversationId: alert.conversationId,
+      title: alert.title,
+      detail: alert.reason,
+    })),
+    monitorFresh,
+    lastPollAt,
     leaderRole: location.pathname === '/'
       ? fleetLeaderRole
       : '由 ChatGPT 首页监控站负责；本页只读取共享状态',
@@ -526,8 +557,11 @@ function getMonitorSummary() {
     oaiSandboxCount: page.iframe.oaiSandbox,
     usedJsHeapMb: page.performance.usedJsHeapMb,
     lastError: liveFleet?.lastError,
-    latestAlertTitle: latestAlert?.title,
   }
+}
+
+function openConversation(conversationId: string): void {
+  window.open(`https://chatgpt.com/c/${encodeURIComponent(conversationId)}`, '_blank', 'noopener,noreferrer')
 }
 
 /**
@@ -547,6 +581,7 @@ function mountUi(): void {
     getSettings,
     updateSettings,
     getMonitorSummary,
+    openConversation,
     inspectRun,
     checkServerStatus,
     exportRunDiagnostics,
