@@ -156,38 +156,102 @@ function capturedChatId(envelope: PassiveCaptureEnvelope): string | null {
   }
 }
 
-function currentConversation(): CanonicalConversation | null {
-  if (!latest) {
-    window.alert('还没有被动捕获到当前会话。请刷新聊天，或切换聊天后再试。')
-    return null
-  }
+let companionSettings: CompanionSettings = loadCompanionSettings()
 
+function getSettings(): CompanionSettings {
+  return { ...companionSettings }
+}
+
+function updateSettings(partial: Partial<CompanionSettings>): void {
+  companionSettings = { ...companionSettings, ...partial }
+  saveCompanionSettings(companionSettings)
+}
+
+function latestPayloadForCurrentChat(): RawConversationPayload | null {
+  if (!latest) return null
   const pageId = currentChatId()
   const captureId = capturedChatId(latest)
-  if (pageId && captureId && pageId !== captureId) {
-    window.alert('当前聊天尚未捕获；最近一次数据属于另一条聊天。请刷新/重新进入当前聊天。')
-    return null
-  }
+  if (pageId && captureId && pageId !== captureId) return null
+  return latest.payload as RawConversationPayload
+}
 
+function adaptPayload(payload: RawConversationPayload): CanonicalConversation | null {
   try {
-    return adaptConversation(latest.payload)
+    return adaptConversation(payload)
   }
   catch (error) {
-    console.error('[ChatGPT Passive Exporter] parse failed', error)
+    console.error('[ChatGPT Companion] parse failed', error)
     window.alert(`解析失败：${error instanceof Error ? error.message : String(error)}`)
     return null
   }
 }
 
-function exportMarkdown(): void {
-  const conversation = currentConversation()
-  if (!conversation) return
-  const base = safeFilename(conversation.title)
-  downloadText(`${base}.md`, conversationToMarkdown(conversation), 'text/markdown;charset=utf-8')
+/**
+ * 日常捕获仍然坚持 passive-first；只有用户明确点击“复制/导出”且当前页没有可用被动快照时，
+ * 才用已经存在的页面认证上下文主动补取一次当前 conversation。这样 SSR 首屏也能正常导出，
+ * 同时不会把每次页面访问都变成额外正文请求。
+ */
+async function resolveCurrentPayload(): Promise<RawConversationPayload | null> {
+  const passive = latestPayloadForCurrentChat()
+  if (passive) return passive
+
+  const id = currentChatId()
+  if (!id) {
+    window.alert('当前页面还没有聊天内容。')
+    return null
+  }
+  const result = await runWatch.fetchConversation(id, 100)
+  if (!result.ok || !result.payload) {
+    window.alert(`当前聊天尚未捕获，也无法补取正文：${result.reason ?? `HTTP ${result.httpStatus ?? '?'}`}`)
+    return null
+  }
+  return result.payload
 }
 
-function exportArchive(): void {
-  const conversation = currentConversation()
+async function resolveCurrentConversation(): Promise<CanonicalConversation | null> {
+  const payload = await resolveCurrentPayload()
+  return payload ? adaptPayload(payload) : null
+}
+
+async function copyText(): Promise<void> {
+  const conversation = await resolveCurrentConversation()
+  if (!conversation) return
+  const text = conversationToPlainText(conversation, { includeReasoning: companionSettings.includeReasoning })
+  try {
+    await navigator.clipboard.writeText(text)
+  }
+  catch {
+    window.prompt('复制聊天文字：', text)
+  }
+}
+
+async function exportMarkdown(): Promise<void> {
+  const conversation = await resolveCurrentConversation()
+  if (!conversation) return
+  const base = safeFilename(conversation.title)
+  downloadText(
+    `${base}.md`,
+    conversationToMarkdown(conversation, {
+      includeReasoning: companionSettings.includeReasoning,
+      includeRichAppendix: companionSettings.includeRichAppendix,
+    }),
+    'text/markdown;charset=utf-8',
+  )
+}
+
+async function exportHtml(): Promise<void> {
+  const conversation = await resolveCurrentConversation()
+  if (!conversation) return
+  const base = safeFilename(conversation.title)
+  downloadText(
+    `${base}.html`,
+    conversationToHtml(conversation, { includeReasoning: companionSettings.includeReasoning }),
+    'text/html;charset=utf-8',
+  )
+}
+
+async function exportArchive(): Promise<void> {
+  const conversation = await resolveCurrentConversation()
   if (!conversation) return
   const base = safeFilename(conversation.title)
   downloadText(
@@ -197,8 +261,16 @@ function exportArchive(): void {
   )
 }
 
-function exportManifest(): void {
-  const conversation = currentConversation()
+async function exportRawJson(): Promise<void> {
+  const payload = await resolveCurrentPayload()
+  if (!payload) return
+  const conversation = adaptPayload(payload)
+  const base = safeFilename(conversation?.title ?? currentChatId() ?? 'ChatGPT Conversation')
+  downloadText(`${base}.raw.json`, JSON.stringify(payload, null, 2), 'application/json;charset=utf-8')
+}
+
+async function exportManifest(): Promise<void> {
+  const conversation = await resolveCurrentConversation()
   if (!conversation) return
   const base = safeFilename(conversation.title)
   downloadText(
@@ -206,6 +278,110 @@ function exportManifest(): void {
     JSON.stringify(buildRichManifest(conversation), null, 2),
     'application/json;charset=utf-8',
   )
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('浏览器没有生成 PNG Blob。')), 'image/png')
+  })
+}
+
+async function screenshot(): Promise<void> {
+  const conversation = await resolveCurrentConversation()
+  if (!conversation) return
+
+  const thread = document.querySelector<HTMLElement>('#thread div:has(> [data-testid^="conversation-turn-"])')
+    ?? document.querySelector<HTMLElement>('#thread')
+    ?? document.querySelector<HTMLElement>('main')
+  if (!thread || thread.scrollHeight < 50) {
+    window.alert('没有找到可截图的聊天区域。')
+    return
+  }
+
+  const canvas = await html2canvas(thread, {
+    scale: companionSettings.screenshotScale,
+    useCORS: true,
+    scrollX: -window.scrollX,
+    scrollY: -window.scrollY,
+    windowWidth: Math.max(thread.scrollWidth, window.innerWidth),
+    windowHeight: Math.max(thread.scrollHeight, window.innerHeight),
+    ignoreElements: element => element.hasAttribute('data-chatgpt-passive-exporter-menu') || Boolean((element as HTMLElement).shadowRoot),
+  })
+  const blob = await canvasToBlob(canvas)
+  downloadBlob(`${safeFilename(conversation.title)}.png`, blob)
+}
+
+function uniqueBatchFilename(existing: Set<string>, base: string, extension: string): string {
+  const root = safeFilename(base)
+  let filename = `${root}.${extension}`
+  let index = 2
+  while (existing.has(filename)) filename = `${root} (${index++}).${extension}`
+  existing.add(filename)
+  return filename
+}
+
+async function batchExport(format: 'markdown' | 'html' | 'json', limit: number): Promise<void> {
+  const conversations = await runWatch.listRecentConversations(limit)
+  if (conversations.length === 0) {
+    window.alert('暂时无法读取最近会话列表。请确认当前 ChatGPT 页面已登录并正常加载。')
+    return
+  }
+
+  const files: Record<string, Uint8Array> = {}
+  const usedNames = new Set<string>()
+  const errors: string[] = []
+  let exported = 0
+
+  for (const [index, summary] of conversations.entries()) {
+    const result = await runWatch.fetchConversation(summary.id, 100)
+    if (!result.ok || !result.payload) {
+      errors.push(`${summary.title}: ${result.reason ?? `HTTP ${result.httpStatus ?? '?'}`}`)
+      continue
+    }
+    const conversation = adaptPayload(result.payload)
+    if (!conversation) {
+      errors.push(`${summary.title}: 解析失败`)
+      continue
+    }
+
+    let extension: 'md' | 'html' | 'json'
+    let content: string
+    if (format === 'markdown') {
+      extension = 'md'
+      content = conversationToMarkdown(conversation, {
+        includeReasoning: companionSettings.includeReasoning,
+        includeRichAppendix: companionSettings.includeRichAppendix,
+      })
+    }
+    else if (format === 'html') {
+      extension = 'html'
+      content = conversationToHtml(conversation, { includeReasoning: companionSettings.includeReasoning })
+    }
+    else {
+      extension = 'json'
+      content = JSON.stringify(buildPortableArchive(conversation), null, 2)
+    }
+
+    files[uniqueBatchFilename(usedNames, conversation.title, extension)] = strToU8(content)
+    exported += 1
+
+    // 批量导出是显式主动操作，但仍串行并留一点间隔，避免瞬间把最近 N 条 conversation 并发打满。
+    if (index < conversations.length - 1) await new Promise(resolve => window.setTimeout(resolve, 350))
+  }
+
+  if (errors.length > 0) files['_errors.txt'] = strToU8(errors.join('\n'))
+  if (exported === 0) {
+    window.alert(`批量导出失败：\n${errors.join('\n')}`)
+    return
+  }
+
+  const zipped = zipSync(files, { level: 6 })
+  const stamp = new Date().toISOString().slice(0, 10)
+  downloadBlob(
+    `ChatGPT-${format}-${stamp}-${exported}.zip`,
+    new Blob([zipped], { type: 'application/zip' }),
+  )
+  if (errors.length > 0) window.alert(`已导出 ${exported} 条；另有 ${errors.length} 条失败，详情已写入 ZIP 内的 _errors.txt。`)
 }
 
 function inspectRun(): void {
