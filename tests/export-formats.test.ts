@@ -22,11 +22,16 @@ describe('Companion 可读导出格式', () => {
   })
 
   test('HTML 为独立可打开文档并转义模型 HTML', () => {
+    let replaced = false
     const mutated = {
       ...conversation,
-      messages: conversation.messages.map((message, index) => index === 0
-        ? { ...message, text: '<script>alert(1)</script> **hello**' }
-        : message),
+      messages: conversation.messages.map((message) => {
+        if (!replaced && message.role === 'user' && !message.hidden) {
+          replaced = true
+          return { ...message, text: '<script>alert(1)</script> **hello**' }
+        }
+        return message
+      }),
     }
     const html = conversationToHtml(mutated)
     expect(html).toContain('<!doctype html>')
