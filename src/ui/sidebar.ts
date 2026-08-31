@@ -32,26 +32,26 @@ export interface CompanionMonitorSummary {
 }
 
 export interface SidebarExportActions {
-  copyText: () => unknown | Promise<unknown>
-  screenshot: () => unknown | Promise<unknown>
-  exportMarkdown: () => unknown | Promise<unknown>
-  exportHtml: () => unknown | Promise<unknown>
-  exportArchive: () => unknown | Promise<unknown>
-  exportRawJson: () => unknown | Promise<unknown>
-  exportManifest: () => unknown | Promise<unknown>
-  batchExport: (format: 'markdown' | 'html' | 'json', limit: number) => unknown | Promise<unknown>
-  getSettings: () => CompanionUiSettings
-  updateSettings: (settings: Partial<CompanionUiSettings>) => unknown | Promise<unknown>
-  getMonitorSummary: () => CompanionMonitorSummary
-  inspectRun: () => unknown | Promise<unknown>
-  checkServerStatus: () => unknown | Promise<unknown>
-  exportRunDiagnostics: () => unknown | Promise<unknown>
-  inspectFleet: () => unknown | Promise<unknown>
-  pollFleetNow: () => unknown | Promise<unknown>
-  enableNotifications: () => unknown | Promise<unknown>
-  openLatestAbnormal: () => unknown | Promise<unknown>
-  copySafeContinue: () => unknown | Promise<unknown>
-  exportFleetDiagnostics: () => unknown | Promise<unknown>
+  copyText?: () => unknown | Promise<unknown>
+  screenshot?: () => unknown | Promise<unknown>
+  exportMarkdown?: () => unknown | Promise<unknown>
+  exportHtml?: () => unknown | Promise<unknown>
+  exportArchive?: () => unknown | Promise<unknown>
+  exportRawJson?: () => unknown | Promise<unknown>
+  exportManifest?: () => unknown | Promise<unknown>
+  batchExport?: (format: 'markdown' | 'html' | 'json', limit: number) => unknown | Promise<unknown>
+  getSettings?: () => CompanionUiSettings
+  updateSettings?: (settings: Partial<CompanionUiSettings>) => unknown | Promise<unknown>
+  getMonitorSummary?: () => CompanionMonitorSummary
+  inspectRun?: () => unknown | Promise<unknown>
+  checkServerStatus?: () => unknown | Promise<unknown>
+  exportRunDiagnostics?: () => unknown | Promise<unknown>
+  inspectFleet?: () => unknown | Promise<unknown>
+  pollFleetNow?: () => unknown | Promise<unknown>
+  enableNotifications?: () => unknown | Promise<unknown>
+  openLatestAbnormal?: () => unknown | Promise<unknown>
+  copySafeContinue?: () => unknown | Promise<unknown>
+  exportFleetDiagnostics?: () => unknown | Promise<unknown>
 }
 
 export interface SidebarRunWatchBadge {
@@ -268,7 +268,45 @@ function applySidebarLayout(item: HTMLElement, reference: Element): void {
 }
 
 function createMenu(actions: SidebarExportActions): HTMLDivElement {
-  return createCompanionPanel(actions)
+  const unavailable = () => window.alert('当前构建暂未提供这个功能。')
+  const defaultSettings: CompanionUiSettings = {
+    includeReasoning: false,
+    includeRichAppendix: false,
+    batchLimit: 10,
+    screenshotScale: 1.5,
+  }
+  const defaultMonitor: CompanionMonitorSummary = {
+    activeCount: 0,
+    abnormalCount: 0,
+    suspectedCount: 0,
+    leaderRole: '此构建未启用 Fleet Watch',
+    pageSeverity: 'unknown',
+    iframeCount: 0,
+    oaiSandboxCount: 0,
+  }
+
+  return createCompanionPanel({
+    copyText: actions.copyText ?? unavailable,
+    screenshot: actions.screenshot ?? unavailable,
+    exportMarkdown: actions.exportMarkdown ?? unavailable,
+    exportHtml: actions.exportHtml ?? unavailable,
+    exportArchive: actions.exportArchive ?? unavailable,
+    exportRawJson: actions.exportRawJson ?? unavailable,
+    exportManifest: actions.exportManifest ?? unavailable,
+    batchExport: actions.batchExport ?? ((_format, _limit) => unavailable()),
+    getSettings: actions.getSettings ?? (() => ({ ...defaultSettings })),
+    updateSettings: actions.updateSettings ?? (() => unavailable()),
+    getMonitorSummary: actions.getMonitorSummary ?? (() => ({ ...defaultMonitor })),
+    inspectRun: actions.inspectRun ?? unavailable,
+    checkServerStatus: actions.checkServerStatus ?? unavailable,
+    exportRunDiagnostics: actions.exportRunDiagnostics ?? unavailable,
+    inspectFleet: actions.inspectFleet ?? unavailable,
+    pollFleetNow: actions.pollFleetNow ?? unavailable,
+    enableNotifications: actions.enableNotifications ?? unavailable,
+    openLatestAbnormal: actions.openLatestAbnormal ?? unavailable,
+    copySafeContinue: actions.copySafeContinue ?? unavailable,
+    exportFleetDiagnostics: actions.exportFleetDiagnostics ?? unavailable,
+  })
 }
 
 function positionMenu(item: HTMLElement, menu: HTMLElement): void {
