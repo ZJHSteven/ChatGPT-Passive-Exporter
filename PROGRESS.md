@@ -1,11 +1,12 @@
 # 项目状态快照
 
 ## 当前版本
-- 当前 Userscript：`0.3.9`，Tampermonkey 显示名为 `ChatGPT Companion`；更新文件名仍沿用 `chatgpt-passive-exporter.user.js`，避免破坏既有更新链。
+- 当前 Userscript：`0.4.1`，Tampermonkey 显示名为 `ChatGPT Companion`；更新文件名仍沿用 `chatgpt-passive-exporter.user.js`，避免破坏既有更新链。
 - 当前项目路径：`D:\Workspace\ChatGPT-Passive-Exporter`。
 - 当前浏览器实测基线：脚本安装在 `D:\AppData\Chrome\Chrome-CDP\User Data\Default` 这套独立 CDP profile；普通 `C:\Users\ZJHSteven\AppData\Local\Google\Chrome\User Data\Default` 虽也装有 Tampermonkey，但未发现 Companion userscript 数据。
-- UI：0.3.9 修复 ChatGPT 同时保留“展开 sidebar + 隐藏 tiny rail”时 `querySelector()` 误选透明副本的问题；展开 sidebar 实测入口为 233×36 并位于“新聊天”下一行，折叠后自动迁移为 36×36 圆形 `C`，再展开会自动迁回宽 sidebar。
-- 回归：TypeScript 通过；Vitest 6 files / 25 tests 全通过；Userscript 构建通过。
+- UI：入口已移到个人账户按钮正上方；主面板按“导出当前聊天 / 运行监控 / 设置”组织，工程诊断收进二级页。支持复制文字、PNG、Markdown、HTML、JSON、批量 ZIP。
+- 性能：0.4.1 移除全 document subtree 的 sidebar MutationObserver，改为 1.5 秒低频自检 + 仅监听 tiny rail 模式属性。
+- 回归：TypeScript 通过；Vitest 7 files / 27 tests 全通过；Chrome/Edge/Firefox/Userscript 构建通过。
 
 ## 已落地能力
 - Passive Export：只复制 ChatGPT 页面自身已经收到的 conversation `fetch`/XHR 响应，不额外请求 conversation 正文；兼容新 `messages[]` 与 legacy `mapping`。
@@ -17,6 +18,13 @@
 - 本地归档：Node 24 `node:sqlite` + FTS5/trigram + 中文短词 LIKE fallback；真实 Travel 样本已导入验证。
 - OpenCLI：已安装 `archive-import / archive-list / archive-search / archive-read / archive-sync` 薄 adapter，统一调用项目实现。
 - Upstream Watch：跟踪 ChatGPT Exporter、chatgpt-sync、chatgpt-source-watch；CI 检测变化并跑测试/构建后开审查 PR，不自动 merge。
+
+## Chrome 长会话性能取证（2026-08-31）
+- 目标会话 `6a8ed5ab-4574-83eb-a626-a35eb773a651` 在 Chromium 中稳定会恢复约 220–227 个 iframe；Companion 禁用时同样如此，因此 iframe 数量不是插件制造的。
+- 同一 CDP Chrome、同一账号、同一会话、同一完成条件（iframe ≥220 且正文稳定）A/B：Companion 0.4.0 开启约 `33.45s`，禁用约 `33.10s`，总加载时差约 1%，页面主体卡顿来自 ChatGPT/DevSpace hydration。
+- 但 0.4.0 确实有自身性能浪费：CPU profiler 20,355 个采样中，1,072 个采样的调用栈包含 Companion，inclusive CPU 约 `5.27%`；其中 1,004 个归因到 sidebar `isUsableSidebarElement → getBoundingClientRect`。
+- 0.4.1 移除全树 sidebar MutationObserver 后，同一 profiler 复测：Companion inclusive CPU `82 / 21,510 = 0.381%`，约降低 14 倍；sidebar 可见性路径降到 59 个采样。
+- 因此当前结论是“双重成立”：ChatGPT/DevSpace 的数百 iframe 是三十秒级卡顿主因；Companion 0.4.0 的 observer 是额外约 5% 主线程浪费，0.4.1 已修复到接近噪声水平。
 
 ## 运行状态判据（2026-08-30 实测）
 - `stream_status` 是服务端 endpoint，不依赖 Stop button/手机 UI/当前 conversation DOM。
@@ -68,7 +76,7 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - Tampermonkey 更新后，已经打开的老 ChatGPT tab 可能继续运行旧 userscript，必须 reload/新开页面才能加载新版本。
 - Chrome 151 的“允许运行用户脚本”总开关可能关闭；Tampermonkey 显示已安装不代表实际注入成功。
 - ChatGPT tiny sidebar rail 只有约 52px；宽文本 item 会被 overflow 裁掉，因此紧凑模式必须使用 36×36 图标按钮。
-- ChatGPT 展开 sidebar 时不会删除 tiny rail，而是把它设为 `inert / pointer-events:none / opacity:0`；所有 sidebar template/anchor 选择必须检查完整祖先链的真实可交互性，不能使用裸 `querySelector()`。0.3.9 已加入可见性过滤及仅监听 tiny rail 模式属性的轻量迁移 observer。
+- ChatGPT 展开 sidebar 时不会删除 tiny rail，而是把它设为 `inert / pointer-events:none / opacity:0`；所有 sidebar template/anchor 选择必须检查完整祖先链的真实可交互性，不能使用裸 `querySelector()`。0.3.9 加入可见性过滤；0.4.1 又移除了为 SPA 重挂载而监听整棵 document subtree 的 observer，避免 hydration 期间反复触发布局读取。
 - page-world 包装 `window.fetch` 会让 DevTools initiator stack 顶层显示 userscript；服务器不会看到 DevTools initiator stack，但页面 JS 理论上可检测 fetch 被包装。
 - CDP 多 target/iframe 时调试 session 可能串到其它 page；曾误读到 Owlbear HTML，故所有诊断必须校验 origin/content-type，不能把调试控制面错误当 ChatGPT 状态。
 - 多张旧版 ChatGPT 首页会各自运行 Fleet；0.3.7 已用 Web Locks 修复，但旧 tab 必须 reload 或关闭。
