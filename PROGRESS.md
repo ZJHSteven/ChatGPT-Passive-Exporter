@@ -1,10 +1,10 @@
 # 项目状态快照
 
 ## 当前版本
-- 当前 Userscript：`0.4.1`，Tampermonkey 显示名为 `ChatGPT Companion`；更新文件名仍沿用 `chatgpt-passive-exporter.user.js`，避免破坏既有更新链。
+- 当前 Userscript：`0.4.2`，Tampermonkey 显示名为 `ChatGPT Companion`；更新文件名仍沿用 `chatgpt-passive-exporter.user.js`，避免破坏既有更新链。
 - 当前项目路径：`D:\Workspace\ChatGPT-Passive-Exporter`。
 - 当前浏览器实测基线：脚本安装在 `D:\AppData\Chrome\Chrome-CDP\User Data\Default` 这套独立 CDP profile；普通 `C:\Users\ZJHSteven\AppData\Local\Google\Chrome\User Data\Default` 虽也装有 Tampermonkey，但未发现 Companion userscript 数据。
-- UI：入口已移到个人账户按钮正上方；主面板按“导出当前聊天 / 运行监控 / 设置”组织，工程诊断收进二级页。支持复制文字、PNG、Markdown、HTML、JSON、批量 ZIP。
+- UI：入口已移到个人账户按钮正上方；主面板按“导出当前聊天 / 运行监控 / 设置”组织，工程诊断收进二级页。支持复制文字、PNG、Markdown、HTML、JSON、批量 ZIP。0.4.2 的运行监控直接列出运行中 / 异常 / 疑似会话标题并可点击进入，不再只显示计数。
 - 性能：0.4.1 移除全 document subtree 的 sidebar MutationObserver，改为 1.5 秒低频自检 + 仅监听 tiny rail 模式属性。
 - 回归：TypeScript 通过；Vitest 7 files / 27 tests 全通过；Chrome/Edge/Firefox/Userscript 构建通过。
 
@@ -25,6 +25,7 @@
 - 但 0.4.0 确实有自身性能浪费：CPU profiler 20,355 个采样中，1,072 个采样的调用栈包含 Companion，inclusive CPU 约 `5.27%`；其中 1,004 个归因到 sidebar `isUsableSidebarElement → getBoundingClientRect`。
 - 0.4.1 移除全树 sidebar MutationObserver 后，同一 profiler 复测：Companion inclusive CPU `82 / 21,510 = 0.381%`，约降低 14 倍；sidebar 可见性路径降到 59 个采样。
 - 因此当前结论是“双重成立”：ChatGPT/DevSpace 的数百 iframe 是三十秒级卡顿主因；Companion 0.4.0 的 observer 是额外约 5% 主线程浪费，0.4.1 已修复到接近噪声水平。
+- 稳态交互对照：`核查模型说法可信度` 实测约 250 iframe / 249 DevSpace sandbox / 1.5–2.0GB JS heap / 481 SDK widget（单轮峰值 189）；`配置 iframe 显示模式` 约 25 iframe / 131–138MB JS heap。25ms 心跳测试中，轻页 5s 跑满 200 tick、最大延迟 13ms；重页 6.6s 只执行 3 tick，分别延迟约 2.60s / 2.02s / 1.92s，直接解释拖选文字、滚动和输入焦点的秒级卡顿。
 
 ## 运行状态判据（2026-08-30 实测）
 - `stream_status` 是服务端 endpoint，不依赖 Stop button/手机 UI/当前 conversation DOM。
