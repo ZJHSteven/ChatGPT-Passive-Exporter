@@ -32,49 +32,90 @@ export interface SidebarRunWatchBadge {
 }
 
 const ITEM_MARKER = 'data-chatgpt-passive-exporter-item'
+const ITEM_WRAPPER_MARKER = 'data-chatgpt-companion-item-wrapper'
 const MENU_MARKER = 'data-chatgpt-passive-exporter-menu'
 const RUN_WATCH_BADGE_MARKER = 'data-chatgpt-run-watch-badge'
 
 /**
- * 找一个当前页面真实存在的“标准 sidebar item”当模板。
- * 这样颜色、圆角、hover、暗色模式、折叠状态都由 ChatGPT 自己的 CSS 控制。
+ * ChatGPT 2026-08 会同时把“展开 sidebar”和“52px tiny rail”留在 DOM 中，只通过
+ * `opacity / pointer-events / inert` 切换哪一套真正可交互。单纯 `querySelector()` 会稳定拿到
+ * DOM 顺序更靠前、但完全透明的 tiny rail——这正是 0.3.8 “脚本已运行但用户看不到入口”的根因。
+ *
+ * 因此所有 sidebar anchor/template 都必须经过祖先链可见性检查，而不能只检查元素自身尺寸。
+ */
+function isUsableSidebarElement(element: Element): boolean {
+  if (!element.isConnected) return false
+  const rect = element.getBoundingClientRect()
+  if (rect.width < 1 || rect.height < 1) return false
+
+  for (let node: Element | null = element; node; node = node.parentElement) {
+    if (!(node instanceof HTMLElement)) continue
+    if (node.hidden || node.hasAttribute('inert')) return false
+
+    const style = window.getComputedStyle(node)
+    if (style.display === 'none') return false
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') return false
+    if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
+    if (style.pointerEvents === 'none') return false
+    if (node === document.documentElement) break
+  }
+
+  return true
+}
+
+function findVisibleSidebarElement<T extends Element>(selectors: string[]): T | null {
+  for (const selector of selectors) {
+    for (const element of document.querySelectorAll<T>(selector)) {
+      if (isUsableSidebarElement(element)) return element
+    }
+  }
+  return null
+}
+
+/**
+ * 找一个“当前真正可见”的标准 sidebar item 当模板。
+ * 这样颜色、圆角、hover、暗色模式、展开/折叠尺寸都来自用户眼前正在使用的 sidebar，
+ * 而不是 DOM 中备用的隐藏副本。
  */
 function findNativeSidebarItem(): HTMLElement | null {
-  const selectors = [
+  return findVisibleSidebarElement<HTMLElement>([
     '[data-testid="sidebar-item-recall"]',
     '[data-testid="sidebar-item-tasks"]',
     '[data-testid="plugins-button"]',
     '[data-testid="create-new-chat-button"]',
     '[data-sidebar-item="true"].__menu-item',
-  ]
-
-  for (const selector of selectors) {
-    const element = document.querySelector<HTMLElement>(selector)
-    if (element) return element
-  }
-  return null
+  ])
 }
 
 function findInsertionReference(): Element | null {
-  // 2026-08 的 ChatGPT sidebar tiny rail 顶部有一个稳定的“新聊天”按钮；把 Companion
-  // 放在它下面比塞到最底部 profile 旁边更容易被用户真正看到，而且不受历史列表滚动位置影响。
-  const newChat = document.querySelector('[data-testid="create-new-chat-button"]')
-  const tinyRail = newChat?.closest('#stage-sidebar-tiny-bar')
-  if (newChat && tinyRail) return newChat.parentElement ?? newChat
+  // 优先使用用户当前真正看得见的“新聊天”。展开 sidebar 时返回它的 <li>，折叠 tiny rail
+  // 则返回按钮 wrapper；两种模式都能把 Companion 固定在顶部，而不会插进透明备用 rail。
+  const newChat = findVisibleSidebarElement<HTMLElement>(['[data-testid="create-new-chat-button"]'])
+  if (newChat) {
+    const tinyRail = newChat.closest('#stage-sidebar-tiny-bar')
+    if (tinyRail) return newChat.parentElement ?? newChat
+    return newChat.closest('li') ?? newChat
+  }
 
-  // fallback：跟随 ChatGPT Exporter 的成熟位置——个人资料按钮之前。
-  // 当前 ChatGPT 会把 data-sidebar-item 的 <a> 交给全局路由事件处理；我们若伪装成链接，
-  // 点击会触发侧栏自己的关闭/重建逻辑。所以只借样式，不借路由语义。
-  const profile = document.querySelector('[data-testid="accounts-profile-button"]')
+  // fallback：个人资料按钮之前。这里同样只允许当前可交互的那一份 profile button。
+  const profile = findVisibleSidebarElement<HTMLElement>(['[data-testid="accounts-profile-button"]'])
   if (profile) {
     const wrapper = profile.parentElement
     if (wrapper?.parentElement && wrapper.children.length === 1) return wrapper
     return profile
   }
 
-  return document.querySelector('[data-testid="plugins-button"]')
-    ?? document.querySelector('[data-testid="sidebar-item-tasks"]')
-    ?? document.querySelector('[data-testid="sidebar-item-recall"]')
+  return findVisibleSidebarElement<HTMLElement>([
+    '[data-testid="plugins-button"]',
+    '[data-testid="sidebar-item-tasks"]',
+    '[data-testid="sidebar-item-recall"]',
+  ])
+}
+
+function removeMountedSidebarItem(item: HTMLElement): void {
+  const wrapper = item.closest<HTMLElement>(`[${ITEM_WRAPPER_MARKER}]`)
+  if (wrapper) wrapper.remove()
+  else item.remove()
 }
 
 function companionIcon(): SVGSVGElement {
