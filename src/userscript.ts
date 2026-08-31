@@ -516,9 +516,17 @@ function getMonitorSummary() {
  */
 function mountUi(): void {
   mountSidebarExporter({
+    copyText,
+    screenshot,
     exportMarkdown,
+    exportHtml,
     exportArchive,
+    exportRawJson,
     exportManifest,
+    batchExport,
+    getSettings,
+    updateSettings,
+    getMonitorSummary,
     inspectRun,
     checkServerStatus,
     exportRunDiagnostics,
