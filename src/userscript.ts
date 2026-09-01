@@ -17,6 +17,7 @@ import { loadCompanionSettings, saveCompanionSettings, type CompanionSettings } 
 import { mountSidebarExporter, updateSidebarRunWatchBadge } from './ui/sidebar'
 
 const BUILD_VERSION = '0.4.2'
+const HISTORY_AUDIT_REQUEST_KEY = 'chatgpt-companion/history-audit-request/v1'
 
 // 只暴露无敏感信息的调试标记，便于 CDP/用户确认 Tampermonkey 当前实际运行版本。
 // 这能避免脚本管理器缓存旧 .user.js 时误把旧代码当成新构建测试。
@@ -103,6 +104,25 @@ const runWatch = installRunWatch({ onUpdate: updateWatchBadge })
  * 放大网络/内存成本。用户如果主要从手机启动任务，只需在桌面保留一张首页监控站。
  */
 let fleetWatch: ReturnType<typeof installFleetWatch> | null = null
+
+function consumeHistoryAuditRequest(): void {
+  if (!fleetWatch || fleetLeaderRole !== 'leader') return
+  try {
+    const raw = localStorage.getItem(HISTORY_AUDIT_REQUEST_KEY)
+    if (!raw) return
+    const request = JSON.parse(raw) as { at?: number, maxConversations?: number }
+    if (typeof request.at !== 'number' || Date.now() - request.at > 10 * 60_000) {
+      localStorage.removeItem(HISTORY_AUDIT_REQUEST_KEY)
+      return
+    }
+    localStorage.removeItem(HISTORY_AUDIT_REQUEST_KEY)
+    void fleetWatch.auditHistory(request.maxConversations ?? 200)
+  }
+  catch {
+    localStorage.removeItem(HISTORY_AUDIT_REQUEST_KEY)
+  }
+}
+
 const fleetLeadership = location.pathname === '/'
   ? installFleetLeadership(
       () => {
@@ -114,6 +134,7 @@ const fleetLeadership = location.pathname === '/'
         })
         latestFleetSnapshot = fleetWatch.snapshot()
         renderCombinedBadge()
+        consumeHistoryAuditRequest()
         return () => {
           fleetWatch?.dispose()
           fleetWatch = null
@@ -125,6 +146,7 @@ const fleetLeadership = location.pathname === '/'
         onRoleChange: (role) => {
           fleetLeaderRole = role
           renderCombinedBadge()
+          if (role === 'leader') consumeHistoryAuditRequest()
         },
       },
     )
@@ -514,6 +536,7 @@ function getMonitorSummary() {
   const tracked = liveFleet?.tracked ?? persisted?.tracked ?? []
   const alerts = liveFleet?.alerts ?? persisted?.alerts ?? []
   const incidents = liveFleet?.incidents ?? persisted?.incidents ?? []
+  const audit = liveFleet?.historyAudit
   const lastPollAt = liveFleet?.lastPollAt ?? persisted?.lastPollAt
   const monitorFresh = typeof lastPollAt === 'number' && Date.now() - lastPollAt <= 150_000
 
@@ -573,6 +596,10 @@ function getMonitorSummary() {
         incident.reason,
       ].filter(Boolean).join(' · '),
     })),
+    historyAuditRunning: audit?.running ?? false,
+    historyAuditScanned: audit?.scanned ?? 0,
+    historyAuditFound: audit?.incidentCount ?? 0,
+    historyAuditErrors: audit?.errorCount ?? 0,
     monitorFresh,
     lastPollAt,
     leaderRole: location.pathname === '/'
@@ -588,6 +615,21 @@ function getMonitorSummary() {
 
 function openConversation(conversationId: string): void {
   window.open(`https://chatgpt.com/c/${encodeURIComponent(conversationId)}`, '_blank', 'noopener,noreferrer')
+}
+
+async function auditHistory(): Promise<void> {
+  if (fleetWatch && fleetLeaderRole === 'leader') {
+    await fleetWatch.auditHistory(200)
+    return
+  }
+
+  // 普通 conversation tab 不自己启动第二份 Fleet/audit。把请求写入同源 localStorage，
+  // 已存在的 leader 会通过 storage event/下次启动读取；没有监控站时再打开一张轻量首页。
+  localStorage.setItem(HISTORY_AUDIT_REQUEST_KEY, JSON.stringify({
+    at: Date.now(),
+    maxConversations: 200,
+  }))
+  window.open('https://chatgpt.com/?companion-monitor=1', '_blank', 'noopener,noreferrer')
 }
 
 /**
@@ -608,6 +650,7 @@ function mountUi(): void {
     updateSettings,
     getMonitorSummary,
     openConversation,
+    auditHistory,
     inspectRun,
     checkServerStatus,
     exportRunDiagnostics,
