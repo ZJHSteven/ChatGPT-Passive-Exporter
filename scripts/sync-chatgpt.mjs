@@ -91,11 +91,57 @@ function sanitizeCapturedHeaders(headers) {
   return Object.fromEntries(Object.entries(headers || {}).filter(([key]) => allowed.has(key)))
 }
 
-async function selectChatgptTab(cdpHttp) {
+/**
+ * 为后台同步选择一个“绝不会打断工作会话”的 ChatGPT target。
+ *
+ * 旧实现会优先选择任意 `/c/<id>` tab，然后 captureBackendHeaders() 为了拿真实认证上下文
+ * 直接 Page.reload。对长 Agent/DevSpace 会话来说，这等于同步器主动刷新正在工作的页面，
+ * 是不能接受的副作用。
+ *
+ * 新策略：
+ * 1. 优先复用专用 `?companion-cli=1` helper tab；
+ * 2. 没有就通过 CDP `/json/new` 创建一个轻量 ChatGPT 首页；
+ * 3. helper 用完即关闭；
+ * 4. 永远不 fallback 到 `/c/<id>`。
+ */
+async function selectSafeChatgptTab(cdpHttp) {
   const tabs = await fetch(`${cdpHttp}/json/list`).then(response => response.json())
-  const candidates = tabs.filter(tab => tab.type === 'page' && /^https:\/\/chatgpt\.com\//u.test(tab.url || ''))
-  if (candidates.length === 0) throw new Error(`No logged-in ChatGPT page found at ${cdpHttp}`)
-  return candidates.find(tab => /\/c\//u.test(tab.url)) || candidates[0]
+  const helper = tabs.find((tab) => {
+    if (tab.type !== 'page') return false
+    try {
+      const url = new URL(tab.url || '')
+      return url.origin === 'https://chatgpt.com'
+        && url.pathname === '/'
+        && url.searchParams.get('companion-cli') === '1'
+    }
+    catch {
+      return false
+    }
+  })
+  if (helper) return { tab: helper, closeWhenDone: false }
+
+  const helperUrl = 'https://chatgpt.com/?companion-cli=1'
+  const createdResponse = await fetch(`${cdpHttp}/json/new?${encodeURIComponent(helperUrl)}`, {
+    method: 'PUT',
+  })
+  if (!createdResponse.ok) {
+    throw new Error(`Could not create safe ChatGPT helper tab: HTTP ${createdResponse.status}`)
+  }
+  const created = await createdResponse.json()
+  if (!created?.webSocketDebuggerUrl || !created?.id) {
+    throw new Error('CDP /json/new did not return a usable ChatGPT helper target')
+  }
+  return { tab: created, closeWhenDone: true }
+}
+
+async function closeTarget(cdpHttp, targetId) {
+  if (!targetId) return
+  try {
+    await fetch(`${cdpHttp}/json/close/${encodeURIComponent(targetId)}`)
+  }
+  catch {
+    // Helper 清理失败不应掩盖已经完成的 archive sync 结果。
+  }
 }
 
 async function captureBackendHeaders(client, timeoutMs = 12_000) {
@@ -194,7 +240,7 @@ async function syncOne(id, flags) {
   const dbPath = path.resolve(String(flags.get('db') || 'data/chatgpt-archive.sqlite'))
   const rawDir = path.resolve(String(flags.get('raw-dir') || 'data/raw'))
 
-  const tab = await selectChatgptTab(cdpHttp)
+  const { tab, closeWhenDone } = await selectSafeChatgptTab(cdpHttp)
   const client = new CdpClient(tab.webSocketDebuggerUrl)
   await client.connect()
   try {
@@ -222,6 +268,7 @@ async function syncOne(id, flags) {
   }
   finally {
     client.close()
+    if (closeWhenDone) await closeTarget(cdpHttp, tab.id)
   }
 }
 
