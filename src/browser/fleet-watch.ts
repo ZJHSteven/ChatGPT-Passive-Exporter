@@ -85,7 +85,19 @@ export interface FleetWatchSnapshot {
   tracked: FleetConversationEntry[]
   alerts: FleetAlert[]
   incidents: FleetIncident[]
+  historyAudit: FleetHistoryAuditState
   lastError?: string
+}
+
+export interface FleetHistoryAuditState {
+  running: boolean
+  startedAt?: number
+  finishedAt?: number
+  scanned: number
+  incidentCount: number
+  indeterminateCount: number
+  errorCount: number
+  maxConversations?: number
 }
 
 export interface FleetWatchOptions {
@@ -105,6 +117,8 @@ export interface FleetWatchOptions {
 
 export interface FleetWatchController {
   pollNow: () => Promise<FleetWatchSnapshot>
+  /** 用户显式触发的低速历史事故审计；不会在实时 Fleet 中自动运行。 */
+  auditHistory: (maxConversations?: number) => Promise<FleetWatchSnapshot>
   snapshot: () => FleetWatchSnapshot
   summaryText: () => string
   dispose: () => void
@@ -267,6 +281,13 @@ export function installFleetWatch(
   let recentListCount = 0
   let lastError: string | undefined
   let disposed = false
+  let historyAudit: FleetHistoryAuditState = {
+    running: false,
+    scanned: 0,
+    incidentCount: 0,
+    indeterminateCount: 0,
+    errorCount: 0,
+  }
 
   const keyForUpdate = (value: string | number | undefined) => String(value ?? '')
 
@@ -349,15 +370,16 @@ export function installFleetWatch(
       .sort((a, b) => (b.updateEpoch ?? b.lastChangedAt) - (a.updateEpoch ?? a.lastChangedAt)),
     alerts: [...alerts],
     incidents: [...incidents].sort((a, b) => b.detectedAt - a.detectedAt),
+    historyAudit: { ...historyAudit },
     lastError,
   })
 
   const notifyUpdate = () => options.onUpdate?.(buildSnapshot())
 
-  const recordIncident = (entry: FleetConversationEntry, reason: string) => {
+  const recordIncident = (entry: FleetConversationEntry, reason: string): boolean => {
     const updateKey = keyForUpdate(entry.updateTime)
     const fingerprint = `${entry.id}:${updateKey}:${reason}`
-    if (knownIncidentFingerprints.has(fingerprint)) return
+    if (knownIncidentFingerprints.has(fingerprint)) return false
     knownIncidentFingerprints.add(fingerprint)
     incidents.push({
       id: `${entry.id}:${updateKey || 'no-update'}:${now()}`,
@@ -370,6 +392,7 @@ export function installFleetWatch(
       status: 'open',
     })
     if (incidents.length > maxIncidents) incidents.splice(0, incidents.length - maxIncidents)
+    return true
   }
 
   const markIncidentsResumed = (conversationId: string) => {
@@ -597,8 +620,119 @@ export function installFleetWatch(
     void pollNow()
   }, 15_000)
 
+  /**
+   * 用户显式历史审计。
+   *
+   * 请求控制：
+   * - 每页沿用 ChatGPT sidebar 的 28 条 history 请求形状；
+   * - 每条只读最后 2 turns；
+   * - explicit interrupted/client_stopped 本身就是终止证据，直接进事故账；
+   * - 普通 final 不再请求 stream_status；
+   * - 只有 open tool/reasoning tail 才做双服务端 COMPLETE 确认；
+   * - 每条之间留 350ms，避免把一次审计变成突发 API flood。
+   *
+   * 历史审计只记 ledger，不调用 onAlert，避免第一次补扫历史时给用户轰几十条旧通知。
+   */
+  const auditHistory = async (maxConversations = 100): Promise<FleetWatchSnapshot> => {
+    if (disposed || historyAudit.running) return buildSnapshot()
+    const safeMax = Math.max(1, Math.min(1000, Math.trunc(maxConversations)))
+    historyAudit = {
+      running: true,
+      startedAt: now(),
+      scanned: 0,
+      incidentCount: 0,
+      indeterminateCount: 0,
+      errorCount: 0,
+      maxConversations: safeMax,
+    }
+    notifyUpdate()
+
+    try {
+      if (!runWatch.hasEphemeralAuth()) {
+        historyAudit.errorCount += 1
+        lastError = '历史审计需要 ChatGPT 临时认证上下文；请先让首页正常加载一次。'
+        return buildSnapshot()
+      }
+
+      let offset = 0
+      while (!disposed && historyAudit.scanned < safeMax) {
+        const page = await runWatch.listConversationPage(offset, 28)
+        if (page.length === 0) break
+
+        for (const item of page) {
+          if (historyAudit.scanned >= safeMax) break
+          historyAudit.scanned += 1
+
+          // 当前仍是 async 进行态的会话属于实时 Fleet 责任，不在历史审计里碰它。
+          if (item.asyncStatus === 3 || item.asyncStatus === 5) continue
+
+          const tail = await runWatch.fetchConversationTail(item.id, 2)
+          if (!tail.ok || !tail.payload) {
+            historyAudit.errorCount += 1
+            await sleep(350)
+            continue
+          }
+
+          const diagnostic = diagnoseLatestRun(tail.payload)
+          let classification: ReturnType<typeof classifyCompletedRun> | null = null
+
+          if (diagnostic.terminalEvidence === 'client-stopped' || diagnostic.terminalEvidence === 'interrupted') {
+            classification = classifyCompletedRun(diagnostic)
+          }
+          else if (diagnostic.terminalEvidence !== 'final'
+            && (diagnostic.tailShape === 'tool-call-open' || diagnostic.tailShape === 'reasoning-open')) {
+            // 仅对“看起来残缺”的尾部支付 status 成本；正常 final 不需要额外查询。
+            const first = await runWatch.checkConversationServerStatus(item.id)
+            if (classifyServerEvidence(item.asyncStatus, first) === 'confirmed-complete') {
+              await sleep(3_000)
+              const second = await runWatch.checkConversationServerStatus(item.id)
+              if (second.ok && second.status === 'COMPLETE') classification = classifyCompletedRun(diagnostic)
+            }
+          }
+
+          if (classification?.state === 'abnormal' && classification.reason) {
+            const auditEntry: FleetConversationEntry = {
+              id: item.id,
+              title: item.title,
+              updateTime: item.updateTime,
+              updateEpoch: timeToEpoch(item.updateTime),
+              asyncStatus: item.asyncStatus,
+              state: 'abnormal',
+              lastChangedAt: now(),
+              diagnostic,
+              abnormalReason: classification.reason,
+            }
+            if (recordIncident(auditEntry, classification.reason)) historyAudit.incidentCount += 1
+          }
+          else if (diagnostic.terminalEvidence !== 'final' && diagnostic.tailShape !== 'final') {
+            historyAudit.indeterminateCount += 1
+          }
+
+          persist()
+          notifyUpdate()
+          await sleep(350)
+        }
+
+        if (page.length < 28) break
+        offset += 28
+      }
+    }
+    catch (error) {
+      historyAudit.errorCount += 1
+      lastError = `历史审计失败：${String(error).slice(0, 260)}`
+    }
+    finally {
+      historyAudit.running = false
+      historyAudit.finishedAt = now()
+      persist()
+      notifyUpdate()
+    }
+    return buildSnapshot()
+  }
+
   return {
     pollNow,
+    auditHistory,
     snapshot: buildSnapshot,
     summaryText: () => {
       const snap = buildSnapshot()
@@ -614,6 +748,9 @@ export function installFleetWatch(
         `Incident history: ${snap.incidents.length}`,
       ]
       if (snap.lastPollAt) lines.push(`Last poll: ${new Date(snap.lastPollAt).toLocaleTimeString()}`)
+      if (snap.historyAudit.startedAt) {
+        lines.push(`History audit: ${snap.historyAudit.running ? 'RUNNING' : 'idle'} / scanned ${snap.historyAudit.scanned} / incidents ${snap.historyAudit.incidentCount} / indeterminate ${snap.historyAudit.indeterminateCount} / errors ${snap.historyAudit.errorCount}`)
+      }
       if (snap.lastError) lines.push(`Last error: ${snap.lastError}`)
       for (const item of active.slice(0, 8)) lines.push(`STREAMING ${item.title} — ${item.rawServerStatus ?? 'IS_STREAMING'}`)
       for (const item of abnormal.slice(0, 8)) lines.push(`ERROR ${item.title} — ${item.abnormalReason ?? 'abnormal completion'}`)
