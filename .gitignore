@@ -7,6 +7,8 @@ dist/
 # Local archive database/runtime state
 data/*.sqlite
 data/*.sqlite-*
+data/raw/
+data/recovery-ledger.json
 
 # Temporary research clones, test downloads and local HTTP server state
 .tmp/
