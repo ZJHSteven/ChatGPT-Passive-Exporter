@@ -33,6 +33,10 @@ export interface CompanionMonitorSummary {
   abnormal: CompanionMonitorItem[]
   suspected: CompanionMonitorItem[]
   incidents: CompanionMonitorItem[]
+  historyAuditRunning: boolean
+  historyAuditScanned: number
+  historyAuditFound: number
+  historyAuditErrors: number
   monitorFresh: boolean
   lastPollAt?: number
   leaderRole: string
@@ -56,6 +60,7 @@ export interface SidebarExportActions {
   updateSettings?: (settings: Partial<CompanionUiSettings>) => unknown | Promise<unknown>
   getMonitorSummary?: () => CompanionMonitorSummary
   openConversation?: (conversationId: string) => unknown | Promise<unknown>
+  auditHistory?: () => unknown | Promise<unknown>
   inspectRun?: () => unknown | Promise<unknown>
   checkServerStatus?: () => unknown | Promise<unknown>
   exportRunDiagnostics?: () => unknown | Promise<unknown>
@@ -298,6 +303,10 @@ function createMenu(actions: SidebarExportActions): HTMLDivElement {
     abnormal: [],
     suspected: [],
     incidents: [],
+    historyAuditRunning: false,
+    historyAuditScanned: 0,
+    historyAuditFound: 0,
+    historyAuditErrors: 0,
     monitorFresh: false,
     leaderRole: '此构建未启用 Fleet Watch',
     pageSeverity: 'unknown',
@@ -318,6 +327,7 @@ function createMenu(actions: SidebarExportActions): HTMLDivElement {
     updateSettings: actions.updateSettings ?? (() => unavailable()),
     getMonitorSummary: actions.getMonitorSummary ?? (() => ({ ...defaultMonitor })),
     openConversation: actions.openConversation ?? (() => unavailable()),
+    auditHistory: actions.auditHistory ?? (() => unavailable()),
     inspectRun: actions.inspectRun ?? unavailable,
     checkServerStatus: actions.checkServerStatus ?? unavailable,
     exportRunDiagnostics: actions.exportRunDiagnostics ?? unavailable,

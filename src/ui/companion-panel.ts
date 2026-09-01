@@ -20,6 +20,10 @@ export interface CompanionPanelMonitorSummary {
   abnormal: CompanionMonitorItem[]
   suspected: CompanionMonitorItem[]
   incidents: CompanionMonitorItem[]
+  historyAuditRunning: boolean
+  historyAuditScanned: number
+  historyAuditFound: number
+  historyAuditErrors: number
   monitorFresh: boolean
   lastPollAt?: number
   leaderRole: string
@@ -43,6 +47,7 @@ export interface CompanionPanelActions {
   updateSettings: (settings: Partial<CompanionPanelSettings>) => unknown | Promise<unknown>
   getMonitorSummary: () => CompanionPanelMonitorSummary
   openConversation: (conversationId: string) => unknown | Promise<unknown>
+  auditHistory: () => unknown | Promise<unknown>
   inspectRun: () => unknown | Promise<unknown>
   checkServerStatus: () => unknown | Promise<unknown>
   exportRunDiagnostics: () => unknown | Promise<unknown>
@@ -524,6 +529,14 @@ export function createCompanionPanel(actions: CompanionPanelActions): HTMLDivEle
     grid.append(
       makeButton(refreshLabel, { code: '↻', onClick: () => runAction(actions.pollFleetNow, { rerender: true }) }),
       makeButton('桌面通知', { code: '🔔', onClick: () => runAction(actions.enableNotifications) }),
+      makeButton(summary.historyAuditRunning ? '历史审计进行中' : '审计历史会话', {
+        code: 'AUDIT',
+        full: true,
+        subtitle: summary.historyAuditRunning
+          ? `已扫 ${summary.historyAuditScanned} 条 · 新事故 ${summary.historyAuditFound} · 错误 ${summary.historyAuditErrors}`
+          : '显式低速扫描旧会话；正常 final 不查 status，只对残缺尾部做二次确认',
+        onClick: () => runAction(actions.auditHistory, { rerender: true }),
+      }),
       makeButton('高级诊断', { code: '…', full: true, onClick: () => { view = 'advanced'; render() } }),
     )
     panel.append(grid)
