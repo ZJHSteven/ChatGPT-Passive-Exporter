@@ -1,5 +1,6 @@
 import { diagnoseLatestRun, type RunDiagnostic } from '../core/run-diagnostics'
 import { analyzeWidgetPressure, type WidgetPressureReport } from '../core/widget-pressure'
+import { assessConversationPayload } from '../core/conversation-snapshot'
 import type { RawConversationPayload } from '../core/types'
 
 /**
@@ -111,6 +112,12 @@ export interface RunWatchController {
   fetchConversationTail: (conversationId: string, numTurns?: number) => Promise<ConversationTailResult>
   /** 用户明确触发批量导出时使用；与 Fleet 的低频尾部检查分离。 */
   fetchConversation: (conversationId: string, numTurns?: number) => Promise<ConversationTailResult>
+  /**
+   * 用户明确要求“完整导出/完整读取”时使用。
+   * 只有能证明 payload 已覆盖到最早历史时才返回 ok=true；否则 fallback singular mapping，
+   * 仍无法证明完整就明确失败，绝不静默返回最近几轮。
+   */
+  fetchCompleteConversation: (conversationId: string) => Promise<ConversationTailResult>
   hasEphemeralAuth: () => boolean
   snapshot: () => RunWatchSnapshot
   summaryText: () => string
@@ -734,7 +741,55 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
    * 这里仍保留 100 turns 上限，避免无界请求；当前实测超长聊天在 num_turns=100 时可返回完整分页。
    */
   const fetchConversation = async (conversationId: string, numTurns = 100): Promise<ConversationTailResult> => {
-    return fetchConversationByTurns(conversationId, Math.max(1, Math.min(100, Math.trunc(numTurns))))
+    return fetchConversationByTurns(conversationId, Math.max(1, Math.min(1000, Math.trunc(numTurns))))
+  }
+
+  /**
+   * 完整 conversation 读取。
+   *
+   * 为什么不能简单 `num_turns=100`：ChatGPT Web 会对同一个 endpoint 返回分页/尾部窗口，
+   * 而过去导出器曾把这种 partial payload 直接当完整聊天导出。这里首先请求一个足够大的
+   * plural 窗口；只有 `page_info.has_previous_page=false` 才接受。若 plural 仍明确/疑似不完整，
+   * 再退回 legacy singular mapping。两条路径都无法证明完整时宁可报错，也不截断用户历史。
+   */
+  const fetchCompleteConversation = async (conversationId: string): Promise<ConversationTailResult> => {
+    const plural = await fetchConversationByTurns(conversationId, 1000)
+    if (plural.ok && plural.payload) {
+      const assessment = assessConversationPayload(plural.payload)
+      if (assessment.completeness === 'complete') return plural
+    }
+
+    const singularPath = `/backend-api/conversation/${encodeURIComponent(conversationId)}`
+    const singular = await authenticatedJson(singularPath, '/backend-api/conversation/{conversation_id}')
+    const payload = singular.ok && singular.body && typeof singular.body === 'object'
+      ? singular.body as RawConversationPayload
+      : undefined
+
+    if (payload) {
+      const assessment = assessConversationPayload(payload)
+      if (assessment.completeness === 'complete') {
+        return {
+          ok: true,
+          httpStatus: singular.httpStatus,
+          payload,
+          checkedAt: now(),
+        }
+      }
+    }
+
+    const pluralReason = plural.ok && plural.payload
+      ? assessConversationPayload(plural.payload).reason
+      : plural.reason ?? `plural HTTP ${plural.httpStatus ?? '?'}`
+    const singularReason = singular.ok && payload
+      ? assessConversationPayload(payload).reason
+      : singular.reason ?? `singular HTTP ${singular.httpStatus ?? '?'}`
+
+    return {
+      ok: false,
+      httpStatus: singular.httpStatus ?? plural.httpStatus,
+      reason: `无法证明 conversation 已完整读取。plural: ${pluralReason}; singular: ${singularReason}`,
+      checkedAt: now(),
+    }
   }
 
   const summaryText = (): string => {
@@ -789,6 +844,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     listRecentConversations,
     fetchConversationTail,
     fetchConversation,
+    fetchCompleteConversation,
     hasEphemeralAuth,
     snapshot: buildSnapshot,
     summaryText,
