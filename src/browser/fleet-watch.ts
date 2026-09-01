@@ -70,6 +70,8 @@ export interface FleetIncident {
   detectedAt: number
   /** 事故发生时 conversation list 的 update_time，用于区分同一聊天里的多次故障。 */
   updateKey: string
+  /** 自动恢复只允许消费 realtime；历史补扫/旧版迁移永远只做取证。 */
+  source: 'realtime' | 'history-audit' | 'legacy'
   status: 'open' | 'resumed' | 'resolved'
   resumedAt?: number
   resolvedAt?: number
@@ -161,6 +163,7 @@ export function readPersistedFleetState(): PersistedFleetState {
             diagnostic: alert.diagnostic,
             detectedAt: alert.at,
             updateKey: '',
+            source: 'legacy',
             status: 'open',
           }))
     return {
@@ -326,6 +329,7 @@ export function installFleetWatch(
               diagnostic: alert.diagnostic,
               detectedAt: alert.at,
               updateKey: '',
+              source: 'legacy',
               status: 'open',
             }))
       for (const incident of restoredIncidents) {
@@ -376,7 +380,11 @@ export function installFleetWatch(
 
   const notifyUpdate = () => options.onUpdate?.(buildSnapshot())
 
-  const recordIncident = (entry: FleetConversationEntry, reason: string): boolean => {
+  const recordIncident = (
+    entry: FleetConversationEntry,
+    reason: string,
+    source: FleetIncident['source'] = 'realtime',
+  ): boolean => {
     const updateKey = keyForUpdate(entry.updateTime)
     const fingerprint = `${entry.id}:${updateKey}:${reason}`
     if (knownIncidentFingerprints.has(fingerprint)) return false
@@ -389,6 +397,7 @@ export function installFleetWatch(
       diagnostic: entry.diagnostic,
       detectedAt: now(),
       updateKey,
+      source,
       status: 'open',
     })
     if (incidents.length > maxIncidents) incidents.splice(0, incidents.length - maxIncidents)
@@ -702,7 +711,7 @@ export function installFleetWatch(
               diagnostic,
               abnormalReason: classification.reason,
             }
-            if (recordIncident(auditEntry, classification.reason)) historyAudit.incidentCount += 1
+            if (recordIncident(auditEntry, classification.reason, 'history-audit')) historyAudit.incidentCount += 1
           }
           else if (diagnostic.terminalEvidence !== 'final' && diagnostic.tailShape !== 'final') {
             historyAudit.indeterminateCount += 1
