@@ -6,6 +6,7 @@ import { downloadBlob, downloadText, safeFilename } from './core/download'
 import { conversationToHtml, conversationToPlainText } from './core/export-formats'
 import { conversationToMarkdown } from './core/markdown'
 import { buildRichManifest } from './core/manifest'
+import { assessPassiveEnvelope, preferPassiveSnapshot } from './core/conversation-snapshot'
 import { installPassiveCapture } from './core/passive-capture'
 import type { CanonicalConversation, PassiveCaptureEnvelope, RawConversationPayload } from './core/types'
 import { installRunWatch, type RunWatchSnapshot } from './browser/run-watch'
@@ -24,7 +25,14 @@ Object.defineProperty(window, '__chatgptPassiveExporter', {
   value: { version: BUILD_VERSION, loadedAt: Date.now() },
 })
 
-let latest: PassiveCaptureEnvelope | null = null
+/**
+ * 每条 conversation 保存一份“当前最值得信任的被动 snapshot”。
+ *
+ * 过去这里只有一个 `latest`：ChatGPT 先返回完整正文、随后再请求最近 2 turns 时，
+ * tail 会无条件覆盖完整 snapshot，最终 Markdown/JSON 就只剩最后两轮。现在完整性优先，
+ * partial/unknown 只能在没有更好 snapshot 时暂存，绝不能覆盖已证明完整的数据。
+ */
+const passiveSnapshots = new Map<string, PassiveCaptureEnvelope>()
 let latestWatchSnapshot: RunWatchSnapshot | null = null
 let latestFleetSnapshot: FleetWatchSnapshot | null = null
 let fleetLeaderRole: FleetLeaderRole = location.pathname === '/' ? 'waiting' : 'unsupported'
@@ -146,21 +154,18 @@ Object.defineProperty(window, '__chatgptRunWatch', {
  * `tool-call-open` / `reasoning-open` 本身绝不用于判死，实时存活状态由服务器层确认。
  */
 installPassiveCapture((envelope) => {
-  latest = envelope
+  const assessment = assessPassiveEnvelope(envelope)
+  if (assessment.conversationId) {
+    passiveSnapshots.set(
+      assessment.conversationId,
+      preferPassiveSnapshot(passiveSnapshots.get(assessment.conversationId), envelope),
+    )
+  }
   runWatch.noteConversationPayload(envelope.payload as RawConversationPayload)
 })
 
 function currentChatId(): string | null {
   return location.pathname.match(/^\/c\/([^/?#]+)/u)?.[1] ?? null
-}
-
-function capturedChatId(envelope: PassiveCaptureEnvelope): string | null {
-  try {
-    return new URL(envelope.url, location.href).pathname.match(/^\/backend-api\/conversations?\/([^/?#]+)/u)?.[1] ?? null
-  }
-  catch {
-    return null
-  }
 }
 
 let companionSettings: CompanionSettings = loadCompanionSettings()
@@ -175,11 +180,17 @@ function updateSettings(partial: Partial<CompanionSettings>): void {
 }
 
 function latestPayloadForCurrentChat(): RawConversationPayload | null {
-  if (!latest) return null
   const pageId = currentChatId()
-  const captureId = capturedChatId(latest)
-  if (pageId && captureId && pageId !== captureId) return null
-  return latest.payload as RawConversationPayload
+  if (!pageId) return null
+  const snapshot = passiveSnapshots.get(pageId)
+  if (!snapshot) return null
+
+  // “被动抓到了 JSON”不代表“抓到了完整聊天”。只有完整性已证明时才直接导出；
+  // partial/unknown 会在用户点击导出后走 fetchCompleteConversation() 补全。
+  const assessment = assessPassiveEnvelope(snapshot)
+  return assessment.completeness === 'complete'
+    ? snapshot.payload as RawConversationPayload
+    : null
 }
 
 function adaptPayload(payload: RawConversationPayload): CanonicalConversation | null {
@@ -207,7 +218,7 @@ async function resolveCurrentPayload(): Promise<RawConversationPayload | null> {
     window.alert('当前页面还没有聊天内容。')
     return null
   }
-  const result = await runWatch.fetchConversation(id, 100)
+  const result = await runWatch.fetchCompleteConversation(id)
   if (!result.ok || !result.payload) {
     window.alert(`当前聊天尚未捕获，也无法补取正文：${result.reason ?? `HTTP ${result.httpStatus ?? '?'}`}`)
     return null
@@ -340,7 +351,7 @@ async function batchExport(format: 'markdown' | 'html' | 'json', limit: number):
   let exported = 0
 
   for (const [index, summary] of conversations.entries()) {
-    const result = await runWatch.fetchConversation(summary.id, 100)
+    const result = await runWatch.fetchCompleteConversation(summary.id)
     if (!result.ok || !result.payload) {
       errors.push(`${summary.title}: ${result.reason ?? `HTTP ${result.httpStatus ?? '?'}`}`)
       continue
