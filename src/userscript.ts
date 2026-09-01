@@ -513,6 +513,7 @@ function getMonitorSummary() {
   const persisted = liveFleet ? null : readPersistedFleetState()
   const tracked = liveFleet?.tracked ?? persisted?.tracked ?? []
   const alerts = liveFleet?.alerts ?? persisted?.alerts ?? []
+  const incidents = liveFleet?.incidents ?? persisted?.incidents ?? []
   const lastPollAt = liveFleet?.lastPollAt ?? persisted?.lastPollAt
   const monitorFresh = typeof lastPollAt === 'number' && Date.now() - lastPollAt <= 150_000
 
@@ -539,6 +540,7 @@ function getMonitorSummary() {
     activeCount: activeEntries.length,
     abnormalCount: abnormalEntries.length,
     suspectedCount: suspectedAlerts.length,
+    incidentCount: incidents.length,
     active: activeEntries.map(item => ({
       conversationId: item.id,
       title: item.title,
@@ -557,6 +559,19 @@ function getMonitorSummary() {
       conversationId: alert.conversationId,
       title: alert.title,
       detail: alert.reason,
+    })),
+    incidents: incidents.slice(0, 30).map(incident => ({
+      conversationId: incident.conversationId,
+      title: incident.title,
+      detail: [
+        incident.status === 'open'
+          ? '未恢复'
+          : incident.status === 'resumed'
+            ? '已继续，等待正常完成'
+            : '后续已正常完成',
+        new Date(incident.detectedAt).toLocaleString(),
+        incident.reason,
+      ].filter(Boolean).join(' · '),
     })),
     monitorFresh,
     lastPollAt,

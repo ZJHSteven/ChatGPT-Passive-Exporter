@@ -15,9 +15,11 @@ export interface CompanionPanelMonitorSummary {
   activeCount: number
   abnormalCount: number
   suspectedCount: number
+  incidentCount: number
   active: CompanionMonitorItem[]
   abnormal: CompanionMonitorItem[]
   suspected: CompanionMonitorItem[]
+  incidents: CompanionMonitorItem[]
   monitorFresh: boolean
   lastPollAt?: number
   leaderRole: string
@@ -510,6 +512,12 @@ export function createCompanionPanel(actions: CompanionPanelActions): HTMLDivEle
     renderConversationGroup('正在运行', '▶', summary.active, '没有服务端确认正在运行的会话')
     renderConversationGroup('异常结束', '!', summary.abnormal, '没有确认异常结束的会话')
     renderConversationGroup('疑似卡住', '?', summary.suspected, '没有疑似卡住的会话')
+    renderConversationGroup(
+      `事故历史${summary.incidentCount > 0 ? `（${summary.incidentCount}）` : ''}`,
+      '•',
+      summary.incidents,
+      '还没有记录到已确认的异常事故',
+    )
 
     const grid = makeGrid()
     const refreshLabel = summary.leaderRole === 'leader' ? '立即刷新' : '打开监控站'

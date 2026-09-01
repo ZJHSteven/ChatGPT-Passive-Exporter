@@ -28,9 +28,11 @@ export interface CompanionMonitorSummary {
   activeCount: number
   abnormalCount: number
   suspectedCount: number
+  incidentCount: number
   active: CompanionMonitorItem[]
   abnormal: CompanionMonitorItem[]
   suspected: CompanionMonitorItem[]
+  incidents: CompanionMonitorItem[]
   monitorFresh: boolean
   lastPollAt?: number
   leaderRole: string
@@ -291,9 +293,11 @@ function createMenu(actions: SidebarExportActions): HTMLDivElement {
     activeCount: 0,
     abnormalCount: 0,
     suspectedCount: 0,
+    incidentCount: 0,
     active: [],
     abnormal: [],
     suspected: [],
+    incidents: [],
     monitorFresh: false,
     leaderRole: '此构建未启用 Fleet Watch',
     pageSeverity: 'unknown',
