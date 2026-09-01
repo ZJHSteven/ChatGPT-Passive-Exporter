@@ -340,7 +340,7 @@ function incidentByIdOrLatest(state, id) {
     .sort((a, b) => Number(b.detectedAt || 0) - Number(a.detectedAt || 0))[0] ?? null
 }
 
-async function reviewOne(state, incidentId, ledger, { execute = false } = {}) {
+async function reviewOne(state, incidentId, ledger, { execute = false, cdpHttp = DEFAULT_CDP } = {}) {
   const incident = incidentByIdOrLatest(state, incidentId)
   if (!incident) throw new Error(incidentId ? `找不到 incident：${incidentId}` : '没有待处理 realtime open incident')
 
@@ -382,7 +382,7 @@ async function reviewOne(state, incidentId, ledger, { execute = false } = {}) {
   }
 
   // 发送前再次执行硬门，防止 Luna 调用期间事故已经在浏览器里被继续/解决。
-  const freshState = await readFleetState(DEFAULT_CDP)
+  const freshState = await readFleetState(cdpHttp)
   const freshIncident = (freshState.incidents ?? []).find(item => item.id === incident.id)
   const freshEligibility = freshIncident ? evaluateRecoveryEligibility(freshIncident) : { eligible: false, reason: '事故已从当前 ledger 消失' }
   if (!freshEligibility.eligible) {
@@ -433,7 +433,7 @@ async function watchLoop(cdpHttp, auto, intervalSeconds) {
           console.error(`[Companion] pending incident: ${incident.title} (${incident.id})`)
           continue
         }
-        const result = await reviewOne(state, incident.id, ledger, { execute: true })
+        const result = await reviewOne(state, incident.id, ledger, { execute: true, cdpHttp })
         console.error(`[Companion] recovery ${incident.id}: ${result.executed ? 'sent' : result.attempt?.outcome ?? 'skipped'}`)
       }
     }
@@ -479,7 +479,7 @@ async function main() {
     const state = await readFleetState(cdpHttp)
     const ledger = await readLedger()
     const execute = command === 'recover' && flags.get('execute') === true
-    jsonOutput(await reviewOne(state, positionals[0], ledger, { execute }))
+    jsonOutput(await reviewOne(state, positionals[0], ledger, { execute, cdpHttp }))
     return
   }
 
