@@ -123,6 +123,10 @@ function consumeHistoryAuditRequest(): void {
   }
 }
 
+window.addEventListener('storage', (event) => {
+  if (event.key === HISTORY_AUDIT_REQUEST_KEY && event.newValue) consumeHistoryAuditRequest()
+})
+
 const fleetLeadership = location.pathname === '/'
   ? installFleetLeadership(
       () => {
