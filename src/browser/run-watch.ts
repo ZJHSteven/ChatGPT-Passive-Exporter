@@ -108,6 +108,8 @@ export interface RunWatchController {
   checkServerStatus: () => Promise<ServerStatusResult>
   /** Fleet Watch 使用：无需打开目标 conversation 页面。 */
   checkConversationServerStatus: (conversationId: string) => Promise<ServerStatusResult>
+  /** 用户显式历史审计使用；实时 Fleet 仍只读 offset=0 的最近页。 */
+  listConversationPage: (offset: number, limit?: number) => Promise<RecentConversationSummary[]>
   listRecentConversations: (limit?: number) => Promise<RecentConversationSummary[]>
   fetchConversationTail: (conversationId: string, numTurns?: number) => Promise<ConversationTailResult>
   /** 用户明确触发批量导出时使用；与 Fleet 的低频尾部检查分离。 */
@@ -679,11 +681,12 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     return lastServerStatus
   }
 
-  const listRecentConversations = async (limit = 20): Promise<RecentConversationSummary[]> => {
+  const listConversationPage = async (offset: number, limit = 28): Promise<RecentConversationSummary[]> => {
     // 当前 ChatGPT Web sidebar 实测使用 limit=28 + is_archived/is_starred 过滤。
-    // Fleet 固定复用同一只读请求形状，再在本地 slice；避免人为创造一个独特的 limit=20 query 指纹。
+    // 历史审计沿用同一形状，只改变 offset；这样不会为了后台工具制造新的 query 结构。
+    const safeOffset = Math.max(0, Math.trunc(offset))
     const safeLimit = Math.max(1, Math.min(28, Math.trunc(limit)))
-    const path = '/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=false&is_starred=false'
+    const path = `/backend-api/conversations?offset=${safeOffset}&limit=28&order=updated&is_archived=false&is_starred=false`
     const result = await authenticatedJson(path, '/backend-api/conversations')
     if (!result.ok) return []
 
@@ -711,6 +714,10 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
       })
     }
     return summaries.slice(0, safeLimit)
+  }
+
+  const listRecentConversations = async (limit = 20): Promise<RecentConversationSummary[]> => {
+    return listConversationPage(0, limit)
   }
 
   /**
@@ -841,6 +848,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     noteConversationPayload,
     checkServerStatus,
     checkConversationServerStatus,
+    listConversationPage,
     listRecentConversations,
     fetchConversationTail,
     fetchConversation,
