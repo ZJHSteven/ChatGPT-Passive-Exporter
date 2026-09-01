@@ -54,6 +54,27 @@ export interface FleetAlert {
   acknowledged?: boolean
 }
 
+/**
+ * 一次已经被服务端证据确认的异常事故。
+ *
+ * `FleetConversationEntry.state` 只描述“这条 conversation 现在是什么状态”；同一 conversation
+ * 后续继续运行时它当然会从 abnormal 变回 streaming/complete。但历史事故是事实，不能因此
+ * 被覆盖，所以单独进入 incident ledger。
+ */
+export interface FleetIncident {
+  id: string
+  conversationId: string
+  title: string
+  reason: string
+  diagnostic?: RunDiagnostic
+  detectedAt: number
+  /** 事故发生时 conversation list 的 update_time，用于区分同一聊天里的多次故障。 */
+  updateKey: string
+  status: 'open' | 'resumed' | 'resolved'
+  resumedAt?: number
+  resolvedAt?: number
+}
+
 export interface FleetWatchSnapshot {
   protocol: 'chatgpt-passive-exporter/fleet-watch/v1'
   startedAt: number
@@ -63,6 +84,7 @@ export interface FleetWatchSnapshot {
   recentListCount: number
   tracked: FleetConversationEntry[]
   alerts: FleetAlert[]
+  incidents: FleetIncident[]
   lastError?: string
 }
 
@@ -74,6 +96,7 @@ export interface FleetWatchOptions {
   /** 已确认 streaming 时的低频交叉复核；steady-state 不需要每分钟重复打 stream_status。 */
   streamRecheckMs?: number
   maxAlerts?: number
+  maxIncidents?: number
   /** 服务端仍声称 streaming，但 conversation update_time 长时间不变时仅发“疑似僵尸”提醒。 */
   suspectedStallMs?: number
   onUpdate?: (snapshot: FleetWatchSnapshot) => void
@@ -93,6 +116,7 @@ const STORAGE_KEY = 'chatgpt-passive-exporter/fleet-watch/state/v2'
 export interface PersistedFleetState {
   tracked: FleetConversationEntry[]
   alerts: FleetAlert[]
+  incidents: FleetIncident[]
   lastPollAt?: number
 }
 
@@ -103,16 +127,37 @@ export interface PersistedFleetState {
 export function readPersistedFleetState(): PersistedFleetState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return { tracked: [], alerts: [] }
-    const stored = JSON.parse(raw) as { tracked?: FleetConversationEntry[], alerts?: FleetAlert[], lastPollAt?: number }
+    if (!raw) return { tracked: [], alerts: [], incidents: [] }
+    const stored = JSON.parse(raw) as {
+      tracked?: FleetConversationEntry[]
+      alerts?: FleetAlert[]
+      incidents?: FleetIncident[]
+      lastPollAt?: number
+    }
+    const alerts = Array.isArray(stored.alerts) ? stored.alerts : []
+    const incidents = Array.isArray(stored.incidents)
+      ? stored.incidents
+      : alerts
+          .filter(alert => alert.kind === 'abnormal')
+          .map((alert, index): FleetIncident => ({
+            id: `legacy:${alert.conversationId}:${alert.at}:${index}`,
+            conversationId: alert.conversationId,
+            title: alert.title,
+            reason: alert.reason,
+            diagnostic: alert.diagnostic,
+            detectedAt: alert.at,
+            updateKey: '',
+            status: 'open',
+          }))
     return {
       tracked: Array.isArray(stored.tracked) ? stored.tracked : [],
-      alerts: Array.isArray(stored.alerts) ? stored.alerts : [],
+      alerts,
+      incidents,
       lastPollAt: typeof stored.lastPollAt === 'number' ? stored.lastPollAt : undefined,
     }
   }
   catch {
-    return { tracked: [], alerts: [] }
+    return { tracked: [], alerts: [], incidents: [] }
   }
 }
 
@@ -208,12 +253,15 @@ export function installFleetWatch(
   const maxStatusChecksPerPoll = Math.max(1, Math.min(12, options.maxStatusChecksPerPoll ?? 8))
   const streamRecheckMs = Math.max(5 * 60_000, options.streamRecheckMs ?? 10 * 60_000)
   const maxAlerts = Math.max(10, options.maxAlerts ?? 100)
+  const maxIncidents = Math.max(20, options.maxIncidents ?? 300)
   const suspectedStallMs = Math.max(30 * 60_000, options.suspectedStallMs ?? 40 * 60_000)
   const startedAt = now()
   const entries = new Map<string, FleetConversationEntry>()
   const seenUpdate = new Map<string, string>()
   const alerts: FleetAlert[] = []
+  const incidents: FleetIncident[] = []
   const alreadyAlerted = new Set<string>()
+  const knownIncidentFingerprints = new Set<string>()
   let polling = false
   let lastPollAt: number | undefined
   let recentListCount = 0
@@ -230,6 +278,7 @@ export function installFleetWatch(
         seenUpdate?: Array<[string, string]>
         tracked?: FleetConversationEntry[]
         alerts?: FleetAlert[]
+        incidents?: FleetIncident[]
         lastPollAt?: number
       }
       if (typeof stored.lastPollAt === 'number') lastPollAt = stored.lastPollAt
@@ -243,6 +292,24 @@ export function installFleetWatch(
       for (const alert of stored.alerts ?? []) {
         alerts.push(alert)
         alreadyAlerted.add(`${alert.kind}:${alert.conversationId}:${keyForUpdate(entries.get(alert.conversationId)?.updateTime)}`)
+      }
+      const restoredIncidents = Array.isArray(stored.incidents)
+        ? stored.incidents
+        : (stored.alerts ?? [])
+            .filter(alert => alert.kind === 'abnormal')
+            .map((alert, index): FleetIncident => ({
+              id: `legacy:${alert.conversationId}:${alert.at}:${index}`,
+              conversationId: alert.conversationId,
+              title: alert.title,
+              reason: alert.reason,
+              diagnostic: alert.diagnostic,
+              detectedAt: alert.at,
+              updateKey: '',
+              status: 'open',
+            }))
+      for (const incident of restoredIncidents) {
+        incidents.push(incident)
+        knownIncidentFingerprints.add(`${incident.conversationId}:${incident.updateKey}:${incident.reason}`)
       }
     }
     catch {
@@ -261,6 +328,7 @@ export function installFleetWatch(
           || entry.state === 'complete-indeterminate'
         )),
         alerts: alerts.slice(-maxAlerts),
+        incidents: incidents.slice(-maxIncidents),
       }))
     }
     catch {
@@ -280,10 +348,47 @@ export function installFleetWatch(
     tracked: [...entries.values()]
       .sort((a, b) => (b.updateEpoch ?? b.lastChangedAt) - (a.updateEpoch ?? a.lastChangedAt)),
     alerts: [...alerts],
+    incidents: [...incidents].sort((a, b) => b.detectedAt - a.detectedAt),
     lastError,
   })
 
   const notifyUpdate = () => options.onUpdate?.(buildSnapshot())
+
+  const recordIncident = (entry: FleetConversationEntry, reason: string) => {
+    const updateKey = keyForUpdate(entry.updateTime)
+    const fingerprint = `${entry.id}:${updateKey}:${reason}`
+    if (knownIncidentFingerprints.has(fingerprint)) return
+    knownIncidentFingerprints.add(fingerprint)
+    incidents.push({
+      id: `${entry.id}:${updateKey || 'no-update'}:${now()}`,
+      conversationId: entry.id,
+      title: entry.title,
+      reason,
+      diagnostic: entry.diagnostic,
+      detectedAt: now(),
+      updateKey,
+      status: 'open',
+    })
+    if (incidents.length > maxIncidents) incidents.splice(0, incidents.length - maxIncidents)
+  }
+
+  const markIncidentsResumed = (conversationId: string) => {
+    const changedAt = now()
+    for (const incident of incidents) {
+      if (incident.conversationId !== conversationId || incident.status !== 'open') continue
+      incident.status = 'resumed'
+      incident.resumedAt = changedAt
+    }
+  }
+
+  const markIncidentsResolved = (conversationId: string) => {
+    const resolvedAt = now()
+    for (const incident of incidents) {
+      if (incident.conversationId !== conversationId || incident.status === 'resolved') continue
+      incident.status = 'resolved'
+      incident.resolvedAt = resolvedAt
+    }
+  }
 
   const emitAlert = (entry: FleetConversationEntry, reason: string, kind: FleetAlert['kind'] = 'abnormal') => {
     // 同一 conversation 同一 update_time 下，同类告警只发一次；分钟数变化不会造成通知风暴。
@@ -300,6 +405,7 @@ export function installFleetWatch(
     }
     alerts.push(alert)
     if (alerts.length > maxAlerts) alerts.splice(0, alerts.length - maxAlerts)
+    if (kind === 'abnormal') recordIncident(entry, reason)
     persist()
     options.onAlert?.(alert)
   }
@@ -318,6 +424,7 @@ export function installFleetWatch(
     entry.state = classified.state
     entry.abnormalReason = classified.reason
     if (classified.state === 'abnormal' && classified.reason) emitAlert(entry, classified.reason, 'abnormal')
+    else if (classified.state === 'complete') markIncidentsResolved(entry.id)
   }
 
   const pollNow = async (): Promise<FleetWatchSnapshot> => {
@@ -364,6 +471,9 @@ export function installFleetWatch(
         entry.updateEpoch = updateEpoch
         entry.asyncStatus = item.asyncStatus
         if (changed) {
+          // 当前 conversation 继续产生新 update 时，只改变“当前状态”；旧事故进入 resumed，
+          // 但永远保留在 incident ledger，避免“点继续以后异常历史凭空消失”。
+          markIncidentsResumed(item.id)
           entry.lastChangedAt = currentTime
           entry.state = 'tracking'
           entry.diagnostic = undefined
@@ -501,6 +611,7 @@ export function installFleetWatch(
         `Active conversations: ${active.length}`,
         `Abnormal conversations: ${abnormal.length}`,
         `Suspected stalled: ${suspected.length}`,
+        `Incident history: ${snap.incidents.length}`,
       ]
       if (snap.lastPollAt) lines.push(`Last poll: ${new Date(snap.lastPollAt).toLocaleTimeString()}`)
       if (snap.lastError) lines.push(`Last error: ${snap.lastError}`)
