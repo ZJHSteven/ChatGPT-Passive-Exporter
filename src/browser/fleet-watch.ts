@@ -264,11 +264,14 @@ export function installFleetWatch(
   runWatch: RunWatchController,
   options: FleetWatchOptions = {},
 ): FleetWatchController {
-  const pollIntervalMs = Math.max(30_000, options.pollIntervalMs ?? 60_000)
+  // Fleet 只做“发现状态变化”，不是心跳压力测试。
+  // 过去 60 秒一次虽然流量不大，但这是 ChatGPT 私有 API；在用户同时多端/多 Agent 使用时，
+  // 任何额外固定轮询都可能叠加到服务端限流。默认改为 5 分钟一次。
+  const pollIntervalMs = Math.max(60_000, options.pollIntervalMs ?? 5 * 60_000)
   const recentLimit = Math.max(5, Math.min(50, options.recentLimit ?? 20))
   const recentWindowMs = Math.max(10 * 60_000, options.recentWindowMs ?? 2 * 60 * 60_000)
-  const maxStatusChecksPerPoll = Math.max(1, Math.min(12, options.maxStatusChecksPerPoll ?? 8))
-  const streamRecheckMs = Math.max(5 * 60_000, options.streamRecheckMs ?? 10 * 60_000)
+  const maxStatusChecksPerPoll = Math.max(1, Math.min(12, options.maxStatusChecksPerPoll ?? 2))
+  const streamRecheckMs = Math.max(30 * 60_000, options.streamRecheckMs ?? 60 * 60_000)
   const maxAlerts = Math.max(10, options.maxAlerts ?? 100)
   const maxIncidents = Math.max(20, options.maxIncidents ?? 300)
   const suspectedStallMs = Math.max(30 * 60_000, options.suspectedStallMs ?? 40 * 60_000)
@@ -466,6 +469,12 @@ export function installFleetWatch(
     notifyUpdate()
 
     try {
+      const backoffUntil = runWatch.activeRequestBackoffUntil()
+      if (backoffUntil) {
+        lastError = `Companion 主动 API 因限流暂停到 ${new Date(backoffUntil).toLocaleTimeString()}；期间不做 Fleet 轮询。`
+        return buildSnapshot()
+      }
+
       if (!runWatch.hasEphemeralAuth()) {
         lastError = '尚未捕获 ChatGPT 临时认证上下文；保留一张已登录 ChatGPT 首页并刷新一次。'
         return buildSnapshot()
@@ -517,14 +526,14 @@ export function installFleetWatch(
         const streamingRecheckDue = entry.state === 'server-streaming'
           && (
             !asyncLooksRunning
-            || entry.lastStatusAt === undefined
-            || currentTime - entry.lastStatusAt >= streamRecheckMs
-            || (updateEpoch !== undefined && currentTime - updateEpoch >= suspectedStallMs)
+            // 健康 streaming 不再因为“时间到了”周期性打 status；只有状态冲突或疑似长期卡住才复核。
+            || (updateEpoch !== undefined && currentTime - updateEpoch >= suspectedStallMs
+              && (entry.lastStatusAt === undefined || currentTime - entry.lastStatusAt >= streamRecheckMs))
           )
 
         // 流量控制：conversation list 是主要低频观测面；stream_status 只做交叉确认。
-        // 新发现的 async 进行态查一次；steady-state 默认 10 分钟才复核一次；
-        // update/async 发生变化则立即复核；网络错误/未知状态继续重试。
+        // 新发现的 async 进行态查一次；healthy streaming 不做周期性 status；
+        // update/async 发生变化则复核；疑似长期卡住最多每小时复核一次。
         if (
           entry.state === 'status-error'
           || entry.state === 'status-unknown'
@@ -642,7 +651,7 @@ export function installFleetWatch(
    *
    * 历史审计只记 ledger，不调用 onAlert，避免第一次补扫历史时给用户轰几十条旧通知。
    */
-  const auditHistory = async (maxConversations = 100): Promise<FleetWatchSnapshot> => {
+  const auditHistory = async (maxConversations = 50): Promise<FleetWatchSnapshot> => {
     if (disposed || historyAudit.running) return buildSnapshot()
     const safeMax = Math.max(1, Math.min(1000, Math.trunc(maxConversations)))
     historyAudit = {
@@ -665,6 +674,12 @@ export function installFleetWatch(
 
       let offset = 0
       while (!disposed && historyAudit.scanned < safeMax) {
+        const backoffUntil = runWatch.activeRequestBackoffUntil()
+        if (backoffUntil) {
+          lastError = `历史审计已因限流停止；Companion 主动 API 暂停到 ${new Date(backoffUntil).toLocaleTimeString()}。`
+          break
+        }
+
         const page = await runWatch.listConversationPage(offset, 28)
         if (page.length === 0) break
 
@@ -678,7 +693,11 @@ export function installFleetWatch(
           const tail = await runWatch.fetchConversationTail(item.id, 2)
           if (!tail.ok || !tail.payload) {
             historyAudit.errorCount += 1
-            await sleep(350)
+            if (runWatch.activeRequestBackoffUntil()) {
+              lastError = '历史审计命中 429，已立即停止并进入 1 小时主动 API 退避。'
+              break
+            }
+            await sleep(5_000)
             continue
           }
 
@@ -692,9 +711,17 @@ export function installFleetWatch(
             && (diagnostic.tailShape === 'tool-call-open' || diagnostic.tailShape === 'reasoning-open')) {
             // 仅对“看起来残缺”的尾部支付 status 成本；正常 final 不需要额外查询。
             const first = await runWatch.checkConversationServerStatus(item.id)
+            if (runWatch.activeRequestBackoffUntil()) {
+              lastError = '历史审计命中 429，已立即停止并进入 1 小时主动 API 退避。'
+              break
+            }
             if (classifyServerEvidence(item.asyncStatus, first) === 'confirmed-complete') {
               await sleep(3_000)
               const second = await runWatch.checkConversationServerStatus(item.id)
+              if (runWatch.activeRequestBackoffUntil()) {
+                lastError = '历史审计命中 429，已立即停止并进入 1 小时主动 API 退避。'
+                break
+              }
               if (second.ok && second.status === 'COMPLETE') classification = classifyCompletedRun(diagnostic)
             }
           }
@@ -719,7 +746,9 @@ export function installFleetWatch(
 
           persist()
           notifyUpdate()
-          await sleep(350)
+          // 历史审计是低优先级取证任务。5 秒/条意味着 200 条约需 17 分钟，
+          // 但它不会再形成几百毫秒一次的 burst，更不应该与正常 ChatGPT 使用争抢限流预算。
+          await sleep(5_000)
         }
 
         if (page.length < 28) break
