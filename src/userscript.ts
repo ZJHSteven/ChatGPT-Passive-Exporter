@@ -16,7 +16,7 @@ import { notifyFleetAlert, requestDesktopNotificationPermission } from './browse
 import { loadCompanionSettings, saveCompanionSettings, type CompanionSettings } from './browser/companion-settings'
 import { mountSidebarExporter, updateSidebarRunWatchBadge } from './ui/sidebar'
 
-const BUILD_VERSION = '0.5.1'
+const BUILD_VERSION = '0.5.2'
 const HISTORY_AUDIT_REQUEST_KEY = 'chatgpt-companion/history-audit-request/v1'
 
 // 只暴露无敏感信息的调试标记，便于 CDP/用户确认 Tampermonkey 当前实际运行版本。
@@ -37,6 +37,7 @@ const passiveSnapshots = new Map<string, PassiveCaptureEnvelope>()
 let latestWatchSnapshot: RunWatchSnapshot | null = null
 let latestFleetSnapshot: FleetWatchSnapshot | null = null
 let fleetLeaderRole: FleetLeaderRole = location.pathname === '/' ? 'waiting' : 'unsupported'
+let companionSettings: CompanionSettings = loadCompanionSettings()
 
 function renderCombinedBadge(): void {
   const page = latestWatchSnapshot
@@ -96,7 +97,10 @@ function updateFleetBadge(snapshot: FleetWatchSnapshot): void {
  * Run Watch 先包一层 fetch，负责“无正文”的生命周期/性能取证；随后 Passive Exporter 再包一层，
  * 负责 conversation body 副本。两层职责严格分开：Run Watch 的持久化日志永远不含认证值或工具正文。
  */
-const runWatch = installRunWatch({ onUpdate: updateWatchBadge })
+const runWatch = installRunWatch({
+  onUpdate: updateWatchBadge,
+  getRateLimitBackoffMs: () => companionSettings.rateLimitBackoffMs,
+})
 
 /**
  * 全局 Fleet Watch 只在“轻量 ChatGPT 首页”启动。
@@ -104,6 +108,31 @@ const runWatch = installRunWatch({ onUpdate: updateWatchBadge })
  * 放大网络/内存成本。用户如果主要从手机启动任务，只需在桌面保留一张首页监控站。
  */
 let fleetWatch: ReturnType<typeof installFleetWatch> | null = null
+
+function stopFleetWatch(): void {
+  fleetWatch?.dispose()
+  fleetWatch = null
+  latestFleetSnapshot = null
+  renderCombinedBadge()
+}
+
+function startFleetWatchFromSettings(): void {
+  stopFleetWatch()
+  if (fleetLeaderRole !== 'leader' || !companionSettings.fleetEnabled) return
+  fleetWatch = installFleetWatch(runWatch, {
+    pollIntervalMs: companionSettings.fleetPollIntervalMs,
+    streamRecheckMs: companionSettings.fleetStreamRecheckMs,
+    maxStatusChecksPerPoll: companionSettings.fleetMaxStatusChecksPerPoll,
+    historyAuditDelayMs: companionSettings.historyAuditDelayMs,
+    onUpdate: updateFleetBadge,
+    onAlert: (alert) => {
+      notifyFleetAlert(alert)
+    },
+  })
+  latestFleetSnapshot = fleetWatch.snapshot()
+  renderCombinedBadge()
+  consumeHistoryAuditRequest()
+}
 
 function consumeHistoryAuditRequest(): void {
   if (!fleetWatch || fleetLeaderRole !== 'leader') return
@@ -116,7 +145,7 @@ function consumeHistoryAuditRequest(): void {
       return
     }
     localStorage.removeItem(HISTORY_AUDIT_REQUEST_KEY)
-    void fleetWatch.auditHistory(request.maxConversations ?? 50)
+    void fleetWatch.auditHistory(request.maxConversations ?? companionSettings.historyAuditDefaultLimit)
   }
   catch {
     localStorage.removeItem(HISTORY_AUDIT_REQUEST_KEY)
@@ -130,21 +159,8 @@ window.addEventListener('storage', (event) => {
 const fleetLeadership = location.pathname === '/'
   ? installFleetLeadership(
       () => {
-        fleetWatch = installFleetWatch(runWatch, {
-          onUpdate: updateFleetBadge,
-          onAlert: (alert) => {
-            notifyFleetAlert(alert)
-          },
-        })
-        latestFleetSnapshot = fleetWatch.snapshot()
-        renderCombinedBadge()
-        consumeHistoryAuditRequest()
-        return () => {
-          fleetWatch?.dispose()
-          fleetWatch = null
-          latestFleetSnapshot = null
-          renderCombinedBadge()
-        }
+        startFleetWatchFromSettings()
+        return stopFleetWatch
       },
       {
         onRoleChange: (role) => {
@@ -194,15 +210,21 @@ function currentChatId(): string | null {
   return location.pathname.match(/^\/c\/([^/?#]+)/u)?.[1] ?? null
 }
 
-let companionSettings: CompanionSettings = loadCompanionSettings()
-
 function getSettings(): CompanionSettings {
   return { ...companionSettings }
 }
 
 function updateSettings(partial: Partial<CompanionSettings>): void {
+  const shouldRestartFleet = (
+    'fleetEnabled' in partial
+    || 'fleetPollIntervalMs' in partial
+    || 'fleetStreamRecheckMs' in partial
+    || 'fleetMaxStatusChecksPerPoll' in partial
+    || 'historyAuditDelayMs' in partial
+  )
   companionSettings = { ...companionSettings, ...partial }
   saveCompanionSettings(companionSettings)
+  if (shouldRestartFleet && fleetLeaderRole === 'leader') startFleetWatchFromSettings()
 }
 
 function latestPayloadForCurrentChat(): RawConversationPayload | null {
@@ -623,7 +645,7 @@ function openConversation(conversationId: string): void {
 
 async function auditHistory(): Promise<void> {
   if (fleetWatch && fleetLeaderRole === 'leader') {
-    await fleetWatch.auditHistory(50)
+    await fleetWatch.auditHistory(companionSettings.historyAuditDefaultLimit)
     return
   }
 
@@ -631,7 +653,7 @@ async function auditHistory(): Promise<void> {
   // 已存在的 leader 会通过 storage event/下次启动读取；没有监控站时再打开一张轻量首页。
   localStorage.setItem(HISTORY_AUDIT_REQUEST_KEY, JSON.stringify({
     at: Date.now(),
-    maxConversations: 200,
+    maxConversations: companionSettings.historyAuditDefaultLimit,
   }))
   window.open('https://chatgpt.com/?companion-monitor=1', '_blank', 'noopener,noreferrer')
 }

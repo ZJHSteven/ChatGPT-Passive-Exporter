@@ -135,6 +135,8 @@ export interface RunWatchOptions {
   sampleIntervalMs?: number
   persistIntervalMs?: number
   maxEvents?: number
+  /** 429 后的跨标签主动 API 冷却时长；读取 Companion 当前设置。 */
+  getRateLimitBackoffMs?: () => number
   onUpdate?: (snapshot: RunWatchSnapshot) => void
 }
 
@@ -150,7 +152,6 @@ interface PerformanceWithMemory extends Performance {
 
 const STORAGE_KEY = 'chatgpt-passive-exporter/run-watch/latest/v1'
 const ACTIVE_API_BACKOFF_KEY = 'chatgpt-passive-exporter/active-api-backoff/v1'
-const RATE_LIMIT_BACKOFF_MS = 60 * 60_000
 const AUTH_HEADER_ALLOWLIST = [
   'authorization',
   'oai-session-id',
@@ -640,7 +641,11 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
   }
 
   const enterRateLimitBackoff = () => {
-    const until = now() + RATE_LIMIT_BACKOFF_MS
+    const configured = options.getRateLimitBackoffMs?.()
+    const backoffMs = typeof configured === 'number' && Number.isFinite(configured)
+      ? Math.max(60_000, configured)
+      : 60 * 60_000
+    const until = now() + backoffMs
     try {
       localStorage.setItem(ACTIVE_API_BACKOFF_KEY, JSON.stringify({
         until,

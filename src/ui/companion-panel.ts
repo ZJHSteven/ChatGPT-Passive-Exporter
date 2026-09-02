@@ -3,6 +3,13 @@ export interface CompanionPanelSettings {
   includeRichAppendix: boolean
   batchLimit: 5 | 10 | 20 | 28
   screenshotScale: 1 | 1.5 | 2
+  fleetEnabled: boolean
+  fleetPollIntervalMs: 30_000 | 60_000 | 120_000 | 300_000 | 600_000
+  fleetStreamRecheckMs: 0 | 60_000 | 120_000 | 300_000 | 600_000
+  fleetMaxStatusChecksPerPoll: 1 | 2 | 4 | 8
+  historyAuditDelayMs: 1_000 | 2_000 | 5_000 | 10_000
+  historyAuditDefaultLimit: 25 | 50 | 100 | 200
+  rateLimitBackoffMs: 900_000 | 1_800_000 | 3_600_000 | 7_200_000
 }
 
 export interface CompanionMonitorItem {
@@ -293,10 +300,10 @@ export function createCompanionPanel(actions: CompanionPanelActions): HTMLDivEle
     )
     panel.append(exportGrid)
 
-    const settings = makeButton('导出设置', {
+    const settings = makeButton('设置', {
       code: '⚙',
       full: true,
-      subtitle: '推理过程、富媒体附录、批量数量、截图清晰度',
+      subtitle: '导出、监控频率、历史审计、429 冷却',
       onClick: () => { view = 'settings'; render() },
     })
     settings.style.marginTop = '4px'
@@ -374,7 +381,7 @@ export function createCompanionPanel(actions: CompanionPanelActions): HTMLDivEle
 
   const renderSettings = () => {
     const settings = actions.getSettings()
-    panel.append(makeBackHeader('导出设置'))
+    panel.append(makeBackHeader('Companion 设置'))
 
     const toggle = (label: string, description: string, checked: boolean, onChange: (checked: boolean) => void) => {
       const row = el('label')
@@ -396,6 +403,7 @@ export function createCompanionPanel(actions: CompanionPanelActions): HTMLDivEle
     }
 
     panel.append(
+      sectionTitle('导出'),
       toggle('包含推理过程', '默认关闭；开启后 Markdown / HTML / 复制文字会包含 reasoning 节点。', settings.includeReasoning, checked => void runAction(() => actions.updateSettings({ includeReasoning: checked }), { rerender: true })),
       toggle('Markdown 富媒体附录', '在 Markdown 末尾加入 Web Search / App / Widget / 文件等结构摘要。', settings.includeRichAppendix, checked => void runAction(() => actions.updateSettings({ includeRichAppendix: checked }), { rerender: true })),
       divider(),
@@ -426,6 +434,39 @@ export function createCompanionPanel(actions: CompanionPanelActions): HTMLDivEle
     panel.append(
       selectRow('批量导出数量', settings.batchLimit, [5, 10, 20, 28].map(value => ({ value: value as 5 | 10 | 20 | 28, label: `最近 ${value} 条` })), value => void runAction(() => actions.updateSettings({ batchLimit: value }), { rerender: true })),
       selectRow('截图清晰度', settings.screenshotScale, [1, 1.5, 2].map(value => ({ value: value as 1 | 1.5 | 2, label: `${value}×` })), value => void runAction(() => actions.updateSettings({ screenshotScale: value }), { rerender: true })),
+      divider(),
+      sectionTitle('运行监控 · 主动请求'),
+      toggle('启用 Fleet 监控', '只在一张 ChatGPT 首页 leader 上运行；关闭后不做后台 discovery / stream_status 请求。', settings.fleetEnabled, checked => void runAction(() => actions.updateSettings({ fleetEnabled: checked }), { rerender: true })),
+      selectRow('Discovery 间隔', settings.fleetPollIntervalMs, [
+        { value: 30_000 as const, label: '30 秒（激进）' },
+        { value: 60_000 as const, label: '1 分钟' },
+        { value: 120_000 as const, label: '2 分钟（默认）' },
+        { value: 300_000 as const, label: '5 分钟' },
+        { value: 600_000 as const, label: '10 分钟' },
+      ], value => void runAction(() => actions.updateSettings({ fleetPollIntervalMs: value }), { rerender: true })),
+      selectRow('运行态复核', settings.fleetStreamRecheckMs, [
+        { value: 0 as const, label: '仅状态变化时（默认）' },
+        { value: 60_000 as const, label: '每 1 分钟' },
+        { value: 120_000 as const, label: '每 2 分钟' },
+        { value: 300_000 as const, label: '每 5 分钟' },
+        { value: 600_000 as const, label: '每 10 分钟' },
+      ], value => void runAction(() => actions.updateSettings({ fleetStreamRecheckMs: value }), { rerender: true })),
+      selectRow('每轮最多 status', settings.fleetMaxStatusChecksPerPoll, [1, 2, 4, 8].map(value => ({ value: value as 1 | 2 | 4 | 8, label: `${value} 条` })), value => void runAction(() => actions.updateSettings({ fleetMaxStatusChecksPerPoll: value }), { rerender: true })),
+      divider(),
+      sectionTitle('历史审计 / 限流保护'),
+      selectRow('历史审计间隔', settings.historyAuditDelayMs, [
+        { value: 1_000 as const, label: '1 秒/条（激进）' },
+        { value: 2_000 as const, label: '2 秒/条' },
+        { value: 5_000 as const, label: '5 秒/条（默认）' },
+        { value: 10_000 as const, label: '10 秒/条' },
+      ], value => void runAction(() => actions.updateSettings({ historyAuditDelayMs: value }), { rerender: true })),
+      selectRow('默认审计数量', settings.historyAuditDefaultLimit, [25, 50, 100, 200].map(value => ({ value: value as 25 | 50 | 100 | 200, label: `${value} 条` })), value => void runAction(() => actions.updateSettings({ historyAuditDefaultLimit: value }), { rerender: true })),
+      selectRow('429 冷却时间', settings.rateLimitBackoffMs, [
+        { value: 900_000 as const, label: '15 分钟' },
+        { value: 1_800_000 as const, label: '30 分钟' },
+        { value: 3_600_000 as const, label: '60 分钟（默认）' },
+        { value: 7_200_000 as const, label: '120 分钟' },
+      ], value => void runAction(() => actions.updateSettings({ rateLimitBackoffMs: value }), { rerender: true })),
     )
   }
 

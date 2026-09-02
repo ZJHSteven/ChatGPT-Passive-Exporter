@@ -107,8 +107,10 @@ export interface FleetWatchOptions {
   recentLimit?: number
   recentWindowMs?: number
   maxStatusChecksPerPoll?: number
-  /** 已确认 streaming 时的低频交叉复核；steady-state 不需要每分钟重复打 stream_status。 */
+  /** 已确认 streaming 时的低频交叉复核；0 表示只在状态变化/疑似卡住时复核。 */
   streamRecheckMs?: number
+  /** 用户显式历史审计时，每条 conversation 之间至少等待多久。 */
+  historyAuditDelayMs?: number
   maxAlerts?: number
   maxIncidents?: number
   /** 服务端仍声称 streaming，但 conversation update_time 长时间不变时仅发“疑似僵尸”提醒。 */
@@ -264,14 +266,14 @@ export function installFleetWatch(
   runWatch: RunWatchController,
   options: FleetWatchOptions = {},
 ): FleetWatchController {
-  // Fleet 只做“发现状态变化”，不是心跳压力测试。
-  // 过去 60 秒一次虽然流量不大，但这是 ChatGPT 私有 API；在用户同时多端/多 Agent 使用时，
-  // 任何额外固定轮询都可能叠加到服务端限流。默认改为 5 分钟一次。
-  const pollIntervalMs = Math.max(60_000, options.pollIntervalMs ?? 5 * 60_000)
+  // Fleet 只做“发现状态变化”，不是心跳压力测试。默认值由 Companion 设置传入；
+  // 底层允许用户明确选择 30 秒，但不会再把频率写死在实现里。
+  const pollIntervalMs = Math.max(30_000, options.pollIntervalMs ?? 2 * 60_000)
   const recentLimit = Math.max(5, Math.min(50, options.recentLimit ?? 20))
   const recentWindowMs = Math.max(10 * 60_000, options.recentWindowMs ?? 2 * 60 * 60_000)
   const maxStatusChecksPerPoll = Math.max(1, Math.min(12, options.maxStatusChecksPerPoll ?? 2))
-  const streamRecheckMs = Math.max(30 * 60_000, options.streamRecheckMs ?? 60 * 60_000)
+  const streamRecheckMs = Math.max(0, options.streamRecheckMs ?? 0)
+  const historyAuditDelayMs = Math.max(1_000, options.historyAuditDelayMs ?? 5_000)
   const maxAlerts = Math.max(10, options.maxAlerts ?? 100)
   const maxIncidents = Math.max(20, options.maxIncidents ?? 300)
   const suspectedStallMs = Math.max(30 * 60_000, options.suspectedStallMs ?? 40 * 60_000)
@@ -526,14 +528,16 @@ export function installFleetWatch(
         const streamingRecheckDue = entry.state === 'server-streaming'
           && (
             !asyncLooksRunning
-            // 健康 streaming 不再因为“时间到了”周期性打 status；只有状态冲突或疑似长期卡住才复核。
-            || (updateEpoch !== undefined && currentTime - updateEpoch >= suspectedStallMs
+            // 用户可选周期复核；0 表示关闭。疑似长期卡住仍会触发一次复核。
+            || (streamRecheckMs > 0
               && (entry.lastStatusAt === undefined || currentTime - entry.lastStatusAt >= streamRecheckMs))
+            || (updateEpoch !== undefined && currentTime - updateEpoch >= suspectedStallMs
+              && (entry.lastStatusAt === undefined || currentTime - entry.lastStatusAt >= Math.max(streamRecheckMs, 5 * 60_000)))
           )
 
         // 流量控制：conversation list 是主要低频观测面；stream_status 只做交叉确认。
-        // 新发现的 async 进行态查一次；healthy streaming 不做周期性 status；
-        // update/async 发生变化则复核；疑似长期卡住最多每小时复核一次。
+        // 新发现的 async 进行态查一次；healthy streaming 是否周期复核由设置决定；
+        // update/async 发生变化则立即复核；疑似长期卡住也会复核。
         if (
           entry.state === 'status-error'
           || entry.state === 'status-unknown'
@@ -697,7 +701,7 @@ export function installFleetWatch(
               lastError = '历史审计命中 429，已立即停止并进入 1 小时主动 API 退避。'
               break
             }
-            await sleep(5_000)
+            await sleep(historyAuditDelayMs)
             continue
           }
 
@@ -746,9 +750,8 @@ export function installFleetWatch(
 
           persist()
           notifyUpdate()
-          // 历史审计是低优先级取证任务。5 秒/条意味着 200 条约需 17 分钟，
-          // 但它不会再形成几百毫秒一次的 burst，更不应该与正常 ChatGPT 使用争抢限流预算。
-          await sleep(5_000)
+          // 历史审计是低优先级取证任务；具体节奏由设置控制，底层至少 1 秒/条。
+          await sleep(historyAuditDelayMs)
         }
 
         if (page.length < 28) break

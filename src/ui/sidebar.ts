@@ -16,6 +16,13 @@ export interface CompanionUiSettings {
   includeRichAppendix: boolean
   batchLimit: 5 | 10 | 20 | 28
   screenshotScale: 1 | 1.5 | 2
+  fleetEnabled: boolean
+  fleetPollIntervalMs: 30_000 | 60_000 | 120_000 | 300_000 | 600_000
+  fleetStreamRecheckMs: 0 | 60_000 | 120_000 | 300_000 | 600_000
+  fleetMaxStatusChecksPerPoll: 1 | 2 | 4 | 8
+  historyAuditDelayMs: 1_000 | 2_000 | 5_000 | 10_000
+  historyAuditDefaultLimit: 25 | 50 | 100 | 200
+  rateLimitBackoffMs: 900_000 | 1_800_000 | 3_600_000 | 7_200_000
 }
 
 export interface CompanionMonitorItem {
@@ -293,6 +300,13 @@ function createMenu(actions: SidebarExportActions): HTMLDivElement {
     includeRichAppendix: false,
     batchLimit: 10,
     screenshotScale: 1.5,
+    fleetEnabled: true,
+    fleetPollIntervalMs: 120_000,
+    fleetStreamRecheckMs: 0,
+    fleetMaxStatusChecksPerPoll: 2,
+    historyAuditDelayMs: 5_000,
+    historyAuditDefaultLimit: 50,
+    rateLimitBackoffMs: 3_600_000,
   }
   const defaultMonitor: CompanionMonitorSummary = {
     activeCount: 0,
