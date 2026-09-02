@@ -16,7 +16,7 @@ import { notifyFleetAlert, requestDesktopNotificationPermission } from './browse
 import { loadCompanionSettings, saveCompanionSettings, type CompanionSettings } from './browser/companion-settings'
 import { mountSidebarExporter, updateSidebarRunWatchBadge } from './ui/sidebar'
 
-const BUILD_VERSION = '0.5.0'
+const BUILD_VERSION = '0.5.1'
 const HISTORY_AUDIT_REQUEST_KEY = 'chatgpt-companion/history-audit-request/v1'
 
 // 只暴露无敏感信息的调试标记，便于 CDP/用户确认 Tampermonkey 当前实际运行版本。
