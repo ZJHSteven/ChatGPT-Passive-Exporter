@@ -120,6 +120,11 @@ export interface RunWatchController {
    * 仍无法证明完整就明确失败，绝不静默返回最近几轮。
    */
   fetchCompleteConversation: (conversationId: string) => Promise<ConversationTailResult>
+  /**
+   * Companion 自己的主动 backend-api 请求如果曾收到 429，会进入跨标签共享退避。
+   * Fleet/历史审计在退避期间必须完全停止主动请求，而不是等下一次捕获到 auth 后继续撞限流。
+   */
+  activeRequestBackoffUntil: () => number | undefined
   hasEphemeralAuth: () => boolean
   snapshot: () => RunWatchSnapshot
   summaryText: () => string
@@ -144,6 +149,8 @@ interface PerformanceWithMemory extends Performance {
 }
 
 const STORAGE_KEY = 'chatgpt-passive-exporter/run-watch/latest/v1'
+const ACTIVE_API_BACKOFF_KEY = 'chatgpt-passive-exporter/active-api-backoff/v1'
+const RATE_LIMIT_BACKOFF_MS = 60 * 60_000
 const AUTH_HEADER_ALLOWLIST = [
   'authorization',
   'oai-session-id',
@@ -610,10 +617,57 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
 
   const hasEphemeralAuth = () => ephemeralHeaders.has('authorization')
 
+  /**
+   * 只约束 Companion 自己主动补发的私有 API 请求，不干预 ChatGPT 网页原生网络流量。
+   * localStorage 是同 origin / 同 profile 跨 tab 共享的，因此任意一张 Companion 页撞到 429 后，
+   * 其它首页/会话页也会一起停手，避免多 tab 轮番重试。
+   */
+  const activeRequestBackoffUntil = (): number | undefined => {
+    try {
+      const raw = localStorage.getItem(ACTIVE_API_BACKOFF_KEY)
+      if (!raw) return undefined
+      const parsed = JSON.parse(raw) as { until?: number }
+      if (typeof parsed.until !== 'number') return undefined
+      if (parsed.until <= now()) {
+        localStorage.removeItem(ACTIVE_API_BACKOFF_KEY)
+        return undefined
+      }
+      return parsed.until
+    }
+    catch {
+      return undefined
+    }
+  }
+
+  const enterRateLimitBackoff = () => {
+    const until = now() + RATE_LIMIT_BACKOFF_MS
+    try {
+      localStorage.setItem(ACTIVE_API_BACKOFF_KEY, JSON.stringify({
+        until,
+        reason: 'HTTP 429',
+        createdAt: now(),
+      }))
+    }
+    catch {
+      // localStorage 不可用时至少清空本 tab 的 auth，阻止当前实例立即重试。
+    }
+    ephemeralHeaders.clear()
+    pushEvent('active-api-backoff', { until, reason: 'HTTP 429' })
+  }
+
   const authenticatedJson = async (
     path: string,
     targetRoute: string,
   ): Promise<{ ok: boolean, httpStatus?: number, body?: unknown, reason?: string }> => {
+    const backoffUntil = activeRequestBackoffUntil()
+    if (backoffUntil) {
+      return {
+        ok: false,
+        httpStatus: 429,
+        reason: `Companion 主动 API 已因限流暂停到 ${new Date(backoffUntil).toLocaleTimeString()}。`,
+      }
+    }
+
     if (!hasEphemeralAuth()) {
       return { ok: false, reason: '尚未从 ChatGPT 页面正常请求中捕获到临时认证上下文。' }
     }
@@ -631,8 +685,10 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
       })
       const body = await response.clone().json().catch(() => null)
 
-      // 认证过期/限流时不保留旧 auth，防止 Fleet Watch 持续重试旧上下文。
-      if (response.status === 401 || response.status === 403 || response.status === 429) {
+      // 429 不能只“清 auth”然后等网页下一条正常请求把 auth 补回来继续撞墙。
+      // 一旦收到限流，整个 ChatGPT origin 下的 Companion 主动请求统一停 1 小时。
+      if (response.status === 429) enterRateLimitBackoff()
+      else if (response.status === 401 || response.status === 403) {
         ephemeralHeaders.clear()
       }
 
@@ -853,6 +909,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     fetchConversationTail,
     fetchConversation,
     fetchCompleteConversation,
+    activeRequestBackoffUntil,
     hasEphemeralAuth,
     snapshot: buildSnapshot,
     summaryText,
