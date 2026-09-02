@@ -1,12 +1,12 @@
 # 项目状态快照
 
 ## 当前版本
-- 当前 Userscript：`0.4.2`，Tampermonkey 显示名为 `ChatGPT Companion`；更新文件名仍沿用 `chatgpt-passive-exporter.user.js`，避免破坏既有更新链。
+- 当前 Userscript：`0.5.1`，Tampermonkey 显示名为 `ChatGPT Companion`；更新文件名仍沿用 `chatgpt-passive-exporter.user.js`，避免破坏既有更新链。
 - 当前项目路径：`D:\Workspace\ChatGPT-Passive-Exporter`。
 - 当前浏览器实测基线：脚本安装在 `D:\AppData\Chrome\Chrome-CDP\User Data\Default` 这套独立 CDP profile；普通 `C:\Users\ZJHSteven\AppData\Local\Google\Chrome\User Data\Default` 虽也装有 Tampermonkey，但未发现 Companion userscript 数据。
 - UI：入口已移到个人账户按钮正上方；主面板按“导出当前聊天 / 运行监控 / 设置”组织，工程诊断收进二级页。支持复制文字、PNG、Markdown、HTML、JSON、批量 ZIP。0.4.2 的运行监控直接列出运行中 / 异常 / 疑似会话标题并可点击进入，不再只显示计数。
 - 性能：0.4.1 移除全 document subtree 的 sidebar MutationObserver，改为 1.5 秒低频自检 + 仅监听 tiny rail 模式属性。
-- 回归：TypeScript 通过；Vitest 7 files / 27 tests 全通过；Chrome/Edge/Firefox/Userscript 构建通过。
+- 回归：TypeScript 通过；Vitest 9 files / 37 tests 全通过；0.5.0 全端构建已通过；0.5.1 为限流止损补丁。
 
 ## 已落地能力
 - Passive Export：只复制 ChatGPT 页面自身已经收到的 conversation `fetch`/XHR 响应，不额外请求 conversation 正文；兼容新 `messages[]` 与 legacy `mapping`。
@@ -56,12 +56,22 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 2. 少量 `stream_status`；
 3. 仅在确认终止后读取最后约 2 turns。
 
-`0.3.7` 已做流量收敛：
+`0.5.1` 在原有单 leader 基础上进一步收紧主动流量：
 - 同一 profile 只有 1 个 Fleet leader。
-- 默认 conversation list 约每 60 秒 1 次。
+- 默认 conversation list 从约每 60 秒 1 次降到约每 5 分钟 1 次。
 - list query 固定复用当前 ChatGPT sidebar 实测的一等请求形状：`offset=0&limit=28&order=updated&is_archived=false&is_starred=false`，再本地 slice。
-- 新发现 async 进行态时查一次 `stream_status`；steady-state streaming 默认约 10 分钟才交叉复核一次，而不是每分钟对每条 active conversation 查询。
+- 新发现 async 进行态时可查一次 `stream_status`；健康的 steady-state streaming 不再按固定周期查询 status。只有 async/update 变化或超过疑似卡住阈值时才复核，且疑似卡住最多约每小时复核一次。
 - `async_status`/`update_time` 变化时立即复核；终止时额外二次 COMPLETE + 尾部约 2 turns。
+- 任意 Companion 主动请求若收到 HTTP 429，会在 `chatgpt.com` localStorage 写入跨标签共享 circuit breaker；之后至少 1 小时内所有 Fleet/历史审计/主动补取请求直接本地拒绝，不再“清 auth 后下一轮继续撞限流”。
+- 历史审计从 350ms/条降到至少 5s/条，默认上限从 200 条降到 50 条；任意一步命中 429 立即停止审计并进入 1 小时退避。
+
+### 2026-09-02 限流现场取证
+- 用户报告 ChatGPT 多页面出现“请求次数过多 / 暂时无法看到对话内容”类错误后，优先检查 Companion 是否仍在主动打私有 API。
+- 现场 Chrome 当时没有 `https://chatgpt.com/` 空白首页，唯一 ChatGPT conversation tab 的 `fleetRole=unsupported`，因此 Fleet 当时并未运行。
+- Fleet 持久状态 `lastPollAt=2026-09-01 17:46:03Z`；用户本次报告约在 2026-09-02 03:51Z，说明当前异常发生时 Fleet 已停约 10 小时。
+- 在当前 conversation tab 连续 70 秒抓 CDP Network：没有观察到 4xx/429，也没有 Companion conversation 主动请求；切回前台时 ChatGPT 自己的 `/backend-api/conversations` 返回 HTTP 200，但耗时约 27 秒。
+- 同一页面 Run Watch 在 Fleet 已停数小时后仍记录到页面自身约每分钟一次 `TypeError: Failed to fetch`，说明当前网络/服务异常不能归因于“Fleet 仍在持续轮询”。
+- 结论：没有证据证明本次用户可见限流就是 Fleet 直接造成；但旧的 60s list + 350ms 历史审计策略对私有 API 仍然过于激进，因此 0.5.1 按严重风险主动收紧，并在现场手动设置 1 小时 Companion 主动 API 暂停，期间不影响 ChatGPT 网页原生请求。
 
 ## 请求头对照
 - Fleet 不自己保存固定 token；只从 ChatGPT 页面真实 backend 请求中临时捕获允许列表，驻留闭包内存。
