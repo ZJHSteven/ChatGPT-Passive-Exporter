@@ -81,9 +81,10 @@
 
 ### Phase 10：Fleet Watch — 一张轻量首页监控所有会话
 - 面向“手机端同时启动 4～6 条长任务、桌面不能开 4～6 个巨型 ChatGPT tab”的真实使用方式。
-- 桌面只保留一张轻量 `https://chatgpt.com/` 首页作为监控站；低频读取最近更新 conversation 列表，只对新变化和已观察到 `IS_STREAMING` 的少量会话查询 `stream_status`。
+- 桌面只保留一张轻量 `https://chatgpt.com/` 首页作为监控站；默认 discovery 不高于约 5 分钟一次。健康 streaming 不做固定周期 `stream_status` 心跳，只对首次发现、状态变化、疑似长期卡住和终止候选做交叉确认。
 - 首次启动只建立基线，不扫描/通知历史故障；只有 `update_time` 新变化或从 `IS_STREAMING`→`COMPLETE` 后才读取最后 1～2 turns 做后验归因。
 - 正常 `COMPLETE + final` 静默；明确异常进入持久事件队列并通知。未知 status、429、认证丢失都保持 unknown/error，不猜测。
+- **限流是硬安全边界**：任意 Companion 主动私有 API 请求收到 429 后，所有 tab 共享至少 1 小时 circuit breaker；退避期间不允许 Fleet、历史审计、主动补取继续请求。不得采用“清 auth，等网页下一次正常请求后继续重试”的策略。
 - Fleet Watch 不能在每个 ChatGPT tab 各跑一份；Userscript 首版只在首页监控站启用。WebExtension/Companion 阶段再升级为单实例 leader/background worker。
 
 ### Phase 11：ChatGPT Companion — 最终单运行时整合
@@ -103,7 +104,7 @@
 - **完整性契约**：plural `messages[]` 优先依据 `page_info.has_previous_page` 判断是否缺历史；legacy `mapping` 作为完整分支 fallback。显式补取优先使用大 `num_turns` plural，并在仍有 previous page 时 fallback 到 singular mapping；无法证明完整时必须报错而不是静默导出尾部。
 - **CLI 控制面**：保留 `archive-import/list/read/search/sync`，并复用 OpenCLI 现有 `chatgpt read/detail/history` 能力。任何后台 sync/auth capture 都不得 reload 正在工作的 `/c/<id>` tab；优先使用 `?companion-monitor=1` / `?companion-cli=1` / 空白 ChatGPT 首页，必要时单独创建轻量 tab。
 - **当前状态与历史事故分离**：Fleet `tracked` 只表示“现在是什么状态”；另建不可因后续继续而删除的 incident ledger。一次 `COMPLETE + abnormal tail` 形成独立事故记录，即使同一 conversation 后来继续、成功 final，也只把事故标为 resumed/resolved，不删除历史事实。
-- **历史审计**：正常实时 Fleet 仍只看最近/变化会话，避免高流量；另提供用户显式触发的慢速 audit，分页扫描历史 conversation，并对候选 COMPLETE 会话低速读取最后少量 turns，建立过去的 incomplete/abnormal 事故清单。已有本地 raw archive 优先离线审计。
+- **历史审计**：正常实时 Fleet 仍只看最近/变化会话，避免高流量；另提供用户显式触发的慢速 audit，分页扫描历史 conversation，并对候选 COMPLETE 会话低速读取最后少量 turns，建立过去的 incomplete/abnormal 事故清单。已有本地 raw archive 优先离线审计。在线审计默认最多 50 条、至少约 5 秒/条；任意 429 立即停止，不与用户正常 ChatGPT 使用争抢请求预算。
 - **通知与恢复闭环**：明确 abnormal incident → 持久化 → 桌面/手机通知 → 恢复审批。手机通知和长期执行迁到 Companion daemon；页面 Userscript 不保存第三方 push token。
 - **Luna 审批门**：无人值守恢复先把事故摘要、最后工具动作、是否可能有副作用、仓库/设备真实状态检查结果交给 PI `openai-codex/gpt-5.6-luna`。只有 Luna 明确判定可安全继续时才发送续跑；写入/删除/安装/上传/git 等副作用状态不明时必须先核验，禁止盲目重复上一工具。
 - Reader / iframe lazy load 在上述闭环完成后继续；Reader 仍以“不创建历史 Apps SDK iframe”为目标，但不再抢占当前主线。
