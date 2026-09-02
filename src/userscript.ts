@@ -116,7 +116,7 @@ function consumeHistoryAuditRequest(): void {
       return
     }
     localStorage.removeItem(HISTORY_AUDIT_REQUEST_KEY)
-    void fleetWatch.auditHistory(request.maxConversations ?? 200)
+    void fleetWatch.auditHistory(request.maxConversations ?? 50)
   }
   catch {
     localStorage.removeItem(HISTORY_AUDIT_REQUEST_KEY)
@@ -623,7 +623,7 @@ function openConversation(conversationId: string): void {
 
 async function auditHistory(): Promise<void> {
   if (fleetWatch && fleetLeaderRole === 'leader') {
-    await fleetWatch.auditHistory(200)
+    await fleetWatch.auditHistory(50)
     return
   }
 
