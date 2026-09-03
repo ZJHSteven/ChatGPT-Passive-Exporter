@@ -151,11 +151,18 @@ export function summarizeFrame(payloadData) {
 
   try {
     const parsed = JSON.parse(text)
-    // 只记录字段名，不记录未知字段的值。这样既方便反推协议 envelope，
-    // 又不会把 conversation_id、消息正文、token 等业务值泄漏进日志。
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    // ChatGPT 当前协议的首帧实际是“对象数组”，不是单个对象。
+    // 这里只记录容器形状与字段名，不保存未知字段的值。
+    safe.topLevelType = Array.isArray(parsed) ? 'array' : typeof parsed
+    if (Array.isArray(parsed)) {
+      safe.arrayLength = parsed.length
+      const firstObject = parsed.find(value => value && typeof value === 'object' && !Array.isArray(value))
+      if (firstObject) safe.firstObjectKeys = Object.keys(firstObject).slice(0, 24)
+    }
+    else if (parsed && typeof parsed === 'object') {
       safe.topLevelKeys = Object.keys(parsed).slice(0, 24)
     }
+
     const allowedKeys = new Set([
       'type',
       'action',
@@ -171,20 +178,38 @@ export function summarizeFrame(payloadData) {
       'recovered',
       'update_type',
     ])
-    const fields = {}
+    const controls = []
 
-    // 只看浅层和常见的 payload/data 包装层，避免递归碰到业务正文。
-    for (const candidate of [parsed, parsed?.payload, parsed?.data]) {
-      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue
-      for (const [key, value] of Object.entries(candidate)) {
-        if (!allowedKeys.has(key)) continue
-        if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) {
-          fields[key] = value
+    /**
+     * 最多向下看 4 层，只抽取白名单控制字段。
+     * 例如：[{ command:{type:'connect'} }, { command:{type:'subscribe', topic:'conversations'} }]
+     * 会留下 type/topic，但 conversation_id、正文、认证信息等其它键值全部跳过。
+     */
+    const visit = (value, depth = 0) => {
+      if (!value || depth > 4) return
+      if (Array.isArray(value)) {
+        for (const child of value.slice(0, 32)) visit(child, depth + 1)
+        return
+      }
+      if (typeof value !== 'object') return
+
+      const fields = {}
+      for (const [key, child] of Object.entries(value)) {
+        if (allowedKeys.has(key)
+          && (typeof child === 'string' || typeof child === 'number' || typeof child === 'boolean' || child === null)) {
+          fields[key] = child
         }
+      }
+      if (Object.keys(fields).length > 0) controls.push(fields)
+
+      // 递归仍然遍历对象结构，但不会保存非白名单字段的值。
+      for (const child of Object.values(value)) {
+        if (child && typeof child === 'object') visit(child, depth + 1)
       }
     }
 
-    if (Object.keys(fields).length > 0) safe.control = fields
+    visit(parsed)
+    if (controls.length > 0) safe.controls = controls.slice(0, 32)
     return safe
   }
   catch {
@@ -303,7 +328,13 @@ async function main() {
   let wsCreatedCount = 0
   let wsClosedCount = 0
   let loadingFailedCount = 0
+  let frameErrorCount = 0
   let faultInjected = false
+  let faultOfflineStartedAtMs = null
+  let faultOfflineEndedAtMs = null
+  let firstCloseAfterFaultAtMs = null
+  let firstCreateAfterFaultAtMs = null
+  let firstHandshakeAfterFaultAtMs = null
 
   const write = (event, details = {}) => {
     stream.write(`${JSON.stringify({ ts: nowIso(), event, ...details })}\n`)
@@ -348,6 +379,24 @@ async function main() {
       }
     }
 
+    const faultSummary = faultOfflineStartedAtMs === null ? null : {
+      offlineStartedAt: new Date(faultOfflineStartedAtMs).toISOString(),
+      offlineEndedAt: faultOfflineEndedAtMs === null ? null : new Date(faultOfflineEndedAtMs).toISOString(),
+      firstCloseAfterFaultAt: firstCloseAfterFaultAtMs === null ? null : new Date(firstCloseAfterFaultAtMs).toISOString(),
+      firstCreateAfterFaultAt: firstCreateAfterFaultAtMs === null ? null : new Date(firstCreateAfterFaultAtMs).toISOString(),
+      firstHandshakeAfterFaultAt: firstHandshakeAfterFaultAtMs === null ? null : new Date(firstHandshakeAfterFaultAtMs).toISOString(),
+      closeDetectionMsFromOffline: firstCloseAfterFaultAtMs === null ? null : firstCloseAfterFaultAtMs - faultOfflineStartedAtMs,
+      closeDetectionMsFromOnline: firstCloseAfterFaultAtMs === null || faultOfflineEndedAtMs === null
+        ? null
+        : firstCloseAfterFaultAtMs - faultOfflineEndedAtMs,
+      reconnectCreateMsAfterClose: firstCloseAfterFaultAtMs === null || firstCreateAfterFaultAtMs === null
+        ? null
+        : firstCreateAfterFaultAtMs - firstCloseAfterFaultAtMs,
+      reconnectHandshakeMsAfterClose: firstCloseAfterFaultAtMs === null || firstHandshakeAfterFaultAtMs === null
+        ? null
+        : firstHandshakeAfterFaultAtMs - firstCloseAfterFaultAtMs,
+    }
+
     const summary = {
       startedAt: new Date(startedAtMs).toISOString(),
       endedAt: nowIso(),
@@ -358,7 +407,9 @@ async function main() {
       wsCreatedCount,
       wsClosedCount,
       loadingFailedCount,
+      frameErrorCount,
       lastAnyWsFrameAt: lastAnyWsFrameAt ? new Date(lastAnyWsFrameAt).toISOString() : null,
+      fault: faultSummary,
       sockets: snapshot(),
     }
     write('probe_end', summary)
@@ -397,6 +448,9 @@ async function main() {
       sockets.set(params.requestId, state)
       trackedRequestUrls.set(params.requestId, url)
       wsCreatedCount += 1
+      if (firstCloseAfterFaultAtMs !== null && firstCreateAfterFaultAtMs === null) {
+        firstCreateAfterFaultAtMs = Date.now()
+      }
       write('ws_created', { requestId: params.requestId, url: redactedUrl })
     })
 
@@ -404,6 +458,9 @@ async function main() {
       const state = sockets.get(params.requestId)
       if (!state) return
       state.handshakeAt = nowIso()
+      if (firstCreateAfterFaultAtMs !== null && firstHandshakeAfterFaultAtMs === null) {
+        firstHandshakeAfterFaultAtMs = Date.now()
+      }
       write('ws_handshake', {
         requestId: params.requestId,
         status: params.response?.status ?? null,
@@ -423,7 +480,7 @@ async function main() {
       state.lastFrameAt = timestamp
       lastAnyWsFrameAt = timestamp
       state.opcodeCounts[opcodeKey] = (state.opcodeCounts[opcodeKey] || 0) + 1
-      if (summary.control) state.controlFrames += 1
+      if (summary.controls?.length || summary.controlText) state.controlFrames += 1
 
       if (direction === 'sent') {
         state.lastSentAt = timestamp
@@ -442,7 +499,9 @@ async function main() {
         opcode: frame.opcode ?? null,
         mask: frame.mask ?? null,
         bytes: summary.bytes,
-        control: summary.control || summary.controlText || null,
+        topLevelType: summary.topLevelType || null,
+        arrayLength: summary.arrayLength ?? null,
+        controls: summary.controls || (summary.controlText ? [{ text: summary.controlText }] : null),
       })
     }
 
@@ -454,9 +513,22 @@ async function main() {
       if (!state) return
       state.closedAt = nowIso()
       wsClosedCount += 1
+      if (faultOfflineStartedAtMs !== null && firstCloseAfterFaultAtMs === null) {
+        firstCloseAfterFaultAtMs = Date.now()
+      }
       write('ws_closed', {
         requestId: params.requestId,
         lifetimeMs: Date.now() - Date.parse(state.createdAt),
+      })
+    })
+
+    client.on('Network.webSocketFrameError', (params) => {
+      const state = sockets.get(params.requestId)
+      if (!state) return
+      frameErrorCount += 1
+      write('ws_frame_error', {
+        requestId: params.requestId,
+        errorMessage: params.errorMessage || null,
       })
     })
 
@@ -514,12 +586,14 @@ async function main() {
         try {
           await setTargetOffline(client, true)
           faultInjected = true
+          faultOfflineStartedAtMs = Date.now()
           write('fault_offline_begin', { offlineSeconds })
 
           recoveryTimer = setTimeout(async () => {
             try {
               await setTargetOffline(client, false)
               faultInjected = false
+              faultOfflineEndedAtMs = Date.now()
               write('fault_offline_end')
             }
             catch (error) {
