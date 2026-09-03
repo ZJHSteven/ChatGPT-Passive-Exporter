@@ -17,6 +17,7 @@ Usage:
   node scripts/archive-cli.mjs stats [--db <path>]
   node scripts/archive-cli.mjs sources [--db <path>]
   node scripts/archive-cli.mjs schema [--source ID] [--db <path>]
+  node scripts/archive-cli.mjs reindex [--all] [--db <path>]
 
 Default DB: data/chatgpt-archive.sqlite
 
@@ -148,6 +149,12 @@ async function main() {
       const sourceId = sourceFlag === undefined ? undefined : Number(sourceFlag)
       if (sourceId !== undefined && (!Number.isInteger(sourceId) || sourceId <= 0)) throw new Error('--source must be a positive integer')
       console.log(JSON.stringify(archive.schemaFields(sourceId), null, 2))
+      return
+    }
+
+    if (command === 'reindex') {
+      archive.rebuildSearchIndexes({ includeAuditText: flags.has('all') })
+      console.log(JSON.stringify({ database: archive.filePath, includeAuditText: flags.has('all'), stats: archive.stats() }, null, 2))
       return
     }
 

@@ -860,7 +860,7 @@ export class ChatArchiveDb {
    * 在线增量同步以后可以再加“只重建 dirty conversation”的 overload；全量 Genesis 先走最快、
    * 最容易证明一致性的全 rebuild。
    */
-  rebuildSearchIndexes(): void {
+  rebuildSearchIndexes(options: { includeAuditText?: boolean } = {}): void {
     const messages = this.db.prepare(`
       SELECT
         m.conversation_id AS conversationId,
@@ -899,7 +899,7 @@ export class ChatArchiveDb {
         DELETE FROM message_fts_all;
       `)
       for (const message of messages) {
-        if (message.text.trim()) {
+        if (options.includeAuditText && message.text.trim()) {
           insertAll.run(
             message.conversationId,
             message.messageId,
@@ -926,6 +926,14 @@ export class ChatArchiveDb {
       this.db.exec('ROLLBACK')
       throw error
     }
+  }
+
+  /**
+   * 只为一次显式的“全审计搜索”建立巨大 tool/reasoning 索引。
+   * 默认 Genesis 不调用它，避免长 Agent 工具返回把常驻数据库构建拉到数 GB 内存。
+   */
+  rebuildAuditSearchIndex(): void {
+    this.rebuildSearchIndexes({ includeAuditText: true })
   }
 
   importRaw(payload: unknown, capturedAt = Date.now()): ArchiveImportResult {

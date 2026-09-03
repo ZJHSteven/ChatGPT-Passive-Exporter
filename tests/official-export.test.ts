@@ -135,6 +135,9 @@ describe('official Data Export importer', () => {
       const snapshot = db.db.prepare('SELECT length(raw_json_gzip) AS n FROM conversation_snapshots').get() as { n: number }
       expect(Number(snapshot.n)).toBeGreaterThan(20)
       expect(db.schemaFields().some(item => item.entityKind === 'metadata' && item.fieldName === 'request_id')).toBe(true)
+      // Genesis 默认只建“可读正文”索引，巨大 tool/reasoning 审计索引是显式 opt-in。
+      expect(db.stats().allIndexedMessageCount).toBe(0)
+      db.rebuildSearchIndexes({ includeAuditText: true })
       expect(db.stats().allIndexedMessageCount).toBeGreaterThanOrEqual(2)
     }
     finally {
