@@ -22,6 +22,7 @@
 - 共同消息字符串 text parts 变化 0；但 1095 个 `content` 对象和 1003 个 message metadata 出现结构化变化，说明规范化 current state 与 raw snapshot history 都需要保留。
 - Asset manifest 3313 → 3486；旧包有 9 个 asset 在新包中消失，且按 ZIP size+CRC 无同内容改名副本。Genesis 数据库应合并多份 ZIP，而不是只导入最新一份。
 - 当前正在做：重构 SQLite schema/importer，把两份 ZIP 直接作为 Genesis sources 合并导入，并建立字段覆盖/无损性/FTS/来源历史验证。
+- 已开始落地 Archive DB v2 schema：新增 `archive_sources / conversation_snapshots / mapping_nodes / message_parts / archive_assets / asset_snapshots / source_documents / schema_field_stats / message_fts_all`，并为 conversation/message 增加模型、终止状态、request/turn、source observation、raw content/metadata 等列。官方 mapping 导入路径按所有 branch node 做 union/upsert，不再先删 conversation；每个 conversation 同时保存 gzip raw snapshot。
 
 ## 已落地能力
 - Passive Export：只复制 ChatGPT 页面自身已经收到的 conversation `fetch`/XHR 响应，不额外请求 conversation 正文；兼容新 `messages[]` 与 legacy `mapping`。
