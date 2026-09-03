@@ -1,5 +1,9 @@
 # Node / build artifacts
 node_modules/
+
+# WSS 稳定性探针会持续写本地 JSONL；其中虽已主动脱敏，但仍属于一次性诊断产物。
+data/wss-probe-*.jsonl
+data/wss-probe-*.jsonl.summary.json
 .output/
 .wxt/
 dist/

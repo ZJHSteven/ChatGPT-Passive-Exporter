@@ -151,12 +151,21 @@ export function summarizeFrame(payloadData) {
 
   try {
     const parsed = JSON.parse(text)
+    // 只记录字段名，不记录未知字段的值。这样既方便反推协议 envelope，
+    // 又不会把 conversation_id、消息正文、token 等业务值泄漏进日志。
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      safe.topLevelKeys = Object.keys(parsed).slice(0, 24)
+    }
     const allowedKeys = new Set([
       'type',
       'action',
+      'command',
+      'operation',
       'event',
+      'event_type',
       'topic',
       'topic_id',
+      'topic_name',
       'channel',
       'status',
       'recovered',
@@ -194,6 +203,25 @@ function isChatgptRealtimeUrl(url) {
   }
   catch {
     return false
+  }
+}
+
+/**
+ * WSS URL 自身带有用户路径和一次性 verify 查询参数。
+ * 对稳定性测试来说这些值完全没用，因此日志只保留 host 与固定路由形状。
+ */
+function redactRealtimeUrl(url) {
+  try {
+    const parsed = new URL(url)
+    const parts = parsed.pathname.split('/').filter(Boolean)
+    const redactedParts = parts.map((part, index) => {
+      if (index > 0 && parts[index - 1] === 'user') return '<redacted-user>'
+      return part
+    })
+    return `${parsed.protocol}//${parsed.host}/${redactedParts.join('/')}`
+  }
+  catch {
+    return 'wss://<redacted>'
   }
 }
 
@@ -364,11 +392,12 @@ async function main() {
       const url = String(params.url || '')
       if (!isChatgptRealtimeUrl(url)) return
       const timestamp = nowIso()
-      const state = makeSocketState(params.requestId, url, timestamp)
+      const redactedUrl = redactRealtimeUrl(url)
+      const state = makeSocketState(params.requestId, redactedUrl, timestamp)
       sockets.set(params.requestId, state)
       trackedRequestUrls.set(params.requestId, url)
       wsCreatedCount += 1
-      write('ws_created', { requestId: params.requestId, url })
+      write('ws_created', { requestId: params.requestId, url: redactedUrl })
     })
 
     client.on('Network.webSocketHandshakeResponseReceived', (params) => {
