@@ -24,6 +24,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
+import { pathToFileURL } from 'node:url'
 
 const DEFAULT_CDP = 'http://127.0.0.1:9222'
 const DEFAULT_DURATION_SECONDS = 3600
@@ -515,7 +516,7 @@ async function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]?.replaceAll('\\', '/')}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   void main()
 }
 
