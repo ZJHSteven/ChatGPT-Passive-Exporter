@@ -202,6 +202,7 @@ async function forEachJsonEntry(
 export async function importOfficialExportZip(
   db: ChatArchiveDb,
   inputPath: string,
+  options: { rebuildSearchIndexes?: boolean } = {},
 ): Promise<OfficialExportImportResult> {
   const absolute = path.resolve(inputPath)
   const file = await stat(absolute)
@@ -274,6 +275,7 @@ export async function importOfficialExportZip(
     conversationCount: totals.conversationCount,
     assetCount,
   })
+  if (options.rebuildSearchIndexes !== false) db.rebuildSearchIndexes()
 
   return {
     zipPath: absolute,
@@ -299,7 +301,10 @@ export async function importOfficialExportZips(
   candidates.sort((a, b) => a.observedAt - b.observedAt || a.absolute.localeCompare(b.absolute))
 
   const results: OfficialExportImportResult[] = []
-  for (const candidate of candidates) results.push(await importOfficialExportZip(db, candidate.absolute))
+  for (const candidate of candidates) {
+    results.push(await importOfficialExportZip(db, candidate.absolute, { rebuildSearchIndexes: false }))
+  }
+  db.rebuildSearchIndexes()
   return results
 }
 

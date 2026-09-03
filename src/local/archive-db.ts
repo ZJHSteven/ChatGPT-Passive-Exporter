@@ -702,7 +702,6 @@ export class ChatArchiveDb {
         snapshotCount += 1
         conversationCount += 1
 
-        this.reindexConversation(conversationId)
       }
       this.db.exec('COMMIT')
     }
@@ -851,16 +850,35 @@ export class ChatArchiveDb {
     }
   }
 
-  /** FTS 是派生索引，统一从当前 canonical message 行重建，避免 snapshot 重复产生 FTS 重复项。 */
-  private reindexConversation(conversationId: string): void {
-    const conversation = this.db.prepare('SELECT title FROM conversations WHERE id = ?').get(conversationId) as { title: string } | undefined
-    if (!conversation) return
+  /**
+   * 重建全文索引。
+   *
+   * Genesis 导入故意把 FTS 放到所有 ZIP merge 完以后一次性执行。旧实现每导一个 conversation
+   * 就对三张 FTS 表做 DELETE/SELECT/INSERT，真实 5000+ conversation 上会退化成非常慢的
+   * O(N × FTS-maintenance) 工作。这里直接清空派生索引并顺序扫描 canonical messages 一次。
+   *
+   * 在线增量同步以后可以再加“只重建 dirty conversation”的 overload；全量 Genesis 先走最快、
+   * 最容易证明一致性的全 rebuild。
+   */
+  rebuildSearchIndexes(): void {
     const messages = this.db.prepare(`
-      SELECT message_id AS messageId, role, channel, content_type AS contentType, text, hidden, recipient
-      FROM messages
-      WHERE conversation_id = ?
-    `).all(conversationId) as Array<{
+      SELECT
+        m.conversation_id AS conversationId,
+        m.message_id AS messageId,
+        c.title AS title,
+        m.role,
+        m.channel,
+        m.content_type AS contentType,
+        m.text,
+        m.hidden,
+        m.recipient
+      FROM messages m
+      JOIN conversations c ON c.id = m.conversation_id
+      ORDER BY m.row_id
+    `).iterate() as Iterable<{
+      conversationId: string
       messageId: string
+      title: string
       role: string
       channel: string | null
       contentType: string
@@ -869,26 +887,44 @@ export class ChatArchiveDb {
       recipient: string
     }>
 
-    this.db.prepare('DELETE FROM message_fts WHERE conversation_id = ?').run(conversationId)
-    this.db.prepare('DELETE FROM message_fts_trigram WHERE conversation_id = ?').run(conversationId)
-    this.db.prepare('DELETE FROM message_fts_all WHERE conversation_id = ?').run(conversationId)
     const insertFts = this.db.prepare('INSERT INTO message_fts (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
     const insertTrigram = this.db.prepare('INSERT INTO message_fts_trigram (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
     const insertAll = this.db.prepare('INSERT INTO message_fts_all (conversation_id, message_id, title, role, channel, content_type, text) VALUES (?, ?, ?, ?, ?, ?, ?)')
 
-    for (const message of messages) {
-      if (message.text.trim()) {
-        insertAll.run(conversationId, message.messageId, conversation.title, message.role, message.channel, message.contentType, message.text)
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.exec(`
+        DELETE FROM message_fts;
+        DELETE FROM message_fts_trigram;
+        DELETE FROM message_fts_all;
+      `)
+      for (const message of messages) {
+        if (message.text.trim()) {
+          insertAll.run(
+            message.conversationId,
+            message.messageId,
+            message.title,
+            message.role,
+            message.channel,
+            message.contentType,
+            message.text,
+          )
+        }
+        if (
+          message.hidden === 0
+          && message.recipient === 'all'
+          && (message.role === 'user' || message.role === 'assistant')
+          && message.text.trim()
+        ) {
+          insertFts.run(message.conversationId, message.messageId, message.title, message.role, message.text)
+          insertTrigram.run(message.conversationId, message.messageId, message.title, message.role, message.text)
+        }
       }
-      if (
-        message.hidden === 0
-        && message.recipient === 'all'
-        && (message.role === 'user' || message.role === 'assistant')
-        && message.text.trim()
-      ) {
-        insertFts.run(conversationId, message.messageId, conversation.title, message.role, message.text)
-        insertTrigram.run(conversationId, message.messageId, conversation.title, message.role, message.text)
-      }
+      this.db.exec('COMMIT')
+    }
+    catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
     }
   }
 
