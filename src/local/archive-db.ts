@@ -1143,12 +1143,88 @@ export class ChatArchiveDb {
     return rows.map(({ dataJson, ...row }) => ({ ...row, data: JSON.parse(dataJson) }))
   }
 
+  getSource(sourceId: number): ArchiveSourceRow | null {
+    const row = this.db.prepare(`
+      SELECT
+        id,
+        source_key AS sourceKey,
+        kind,
+        display_name AS displayName,
+        source_path AS sourcePath,
+        observed_at AS observedAt,
+        imported_at AS importedAt,
+        completed_at AS completedAt,
+        is_complete_snapshot AS isCompleteSnapshot,
+        conversation_count AS conversationCount,
+        asset_count AS assetCount
+      FROM archive_sources
+      WHERE id = ?
+    `).get(sourceId) as unknown as ArchiveSourceRow | undefined
+    return row ?? null
+  }
+
+  listSources(): ArchiveSourceRow[] {
+    return this.db.prepare(`
+      SELECT
+        id,
+        source_key AS sourceKey,
+        kind,
+        display_name AS displayName,
+        source_path AS sourcePath,
+        observed_at AS observedAt,
+        imported_at AS importedAt,
+        completed_at AS completedAt,
+        is_complete_snapshot AS isCompleteSnapshot,
+        conversation_count AS conversationCount,
+        asset_count AS assetCount
+      FROM archive_sources
+      ORDER BY observed_at, id
+    `).all() as unknown as ArchiveSourceRow[]
+  }
+
+  schemaFields(sourceId?: number): SchemaFieldObservation[] {
+    const rows = sourceId === undefined
+      ? this.db.prepare(`
+          SELECT entity_kind AS entityKind, field_name AS fieldName, value_type AS valueType, sum(count) AS count
+          FROM schema_field_stats
+          GROUP BY entity_kind, field_name, value_type
+          ORDER BY entity_kind, field_name, value_type
+        `).all()
+      : this.db.prepare(`
+          SELECT entity_kind AS entityKind, field_name AS fieldName, value_type AS valueType, count
+          FROM schema_field_stats
+          WHERE source_id = ?
+          ORDER BY entity_kind, field_name, value_type
+        `).all(sourceId)
+    return rows as unknown as SchemaFieldObservation[]
+  }
+
   stats(): Record<string, number> {
     const conversationCount = Number((this.db.prepare('SELECT count(*) AS n FROM conversations').get() as { n: number }).n)
     const messageCount = Number((this.db.prepare('SELECT count(*) AS n FROM messages').get() as { n: number }).n)
     const resourceCount = Number((this.db.prepare('SELECT count(*) AS n FROM resources').get() as { n: number }).n)
     const indexedMessageCount = Number((this.db.prepare('SELECT count(*) AS n FROM message_fts').get() as { n: number }).n)
     const trigramIndexedMessageCount = Number((this.db.prepare('SELECT count(*) AS n FROM message_fts_trigram').get() as { n: number }).n)
-    return { conversationCount, messageCount, resourceCount, indexedMessageCount, trigramIndexedMessageCount }
+    const mappingNodeCount = Number((this.db.prepare('SELECT count(*) AS n FROM mapping_nodes').get() as { n: number }).n)
+    const snapshotCount = Number((this.db.prepare('SELECT count(*) AS n FROM conversation_snapshots').get() as { n: number }).n)
+    const sourceCount = Number((this.db.prepare('SELECT count(*) AS n FROM archive_sources').get() as { n: number }).n)
+    const assetCount = Number((this.db.prepare('SELECT count(*) AS n FROM archive_assets').get() as { n: number }).n)
+    const sourceMissingConversationCount = Number((this.db.prepare('SELECT count(*) AS n FROM conversations WHERE source_missing = 1').get() as { n: number }).n)
+    const sourceMissingAssetCount = Number((this.db.prepare('SELECT count(*) AS n FROM archive_assets WHERE source_missing = 1').get() as { n: number }).n)
+    const allIndexedMessageCount = Number((this.db.prepare('SELECT count(*) AS n FROM message_fts_all').get() as { n: number }).n)
+    return {
+      conversationCount,
+      messageCount,
+      resourceCount,
+      indexedMessageCount,
+      trigramIndexedMessageCount,
+      mappingNodeCount,
+      snapshotCount,
+      sourceCount,
+      assetCount,
+      sourceMissingConversationCount,
+      sourceMissingAssetCount,
+      allIndexedMessageCount,
+    }
   }
 }

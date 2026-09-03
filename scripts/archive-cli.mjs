@@ -3,16 +3,20 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
+import { importOfficialExportZips } from '../src/local/official-export.ts'
 
 function usage() {
   console.log(`ChatGPT local archive prototype
 
 Usage:
   node scripts/archive-cli.mjs import <json-file...> [--db <path>]
+  node scripts/archive-cli.mjs import-official <chatgpt-export.zip...> [--db <path>]
   node scripts/archive-cli.mjs list [--limit N] [--db <path>]
   node scripts/archive-cli.mjs search <fts-query> [--limit N] [--db <path>]
   node scripts/archive-cli.mjs show <conversation-id> [--format md|json|resources] [--db <path>]
   node scripts/archive-cli.mjs stats [--db <path>]
+  node scripts/archive-cli.mjs sources [--db <path>]
+  node scripts/archive-cli.mjs schema [--source ID] [--db <path>]
 
 Default DB: data/chatgpt-archive.sqlite
 
@@ -89,6 +93,13 @@ async function main() {
       return
     }
 
+    if (command === 'import-official') {
+      if (positionals.length === 0) throw new Error('import-official requires at least one ChatGPT export ZIP')
+      const results = await importOfficialExportZips(archive, positionals)
+      console.log(JSON.stringify({ database: archive.filePath, sources: results, stats: archive.stats() }, null, 2))
+      return
+    }
+
     if (command === 'list') {
       console.log(JSON.stringify(archive.list(limit(flags, 50)), null, 2))
       return
@@ -124,6 +135,19 @@ async function main() {
 
     if (command === 'stats') {
       console.log(JSON.stringify(archive.stats(), null, 2))
+      return
+    }
+
+    if (command === 'sources') {
+      console.log(JSON.stringify(archive.listSources(), null, 2))
+      return
+    }
+
+    if (command === 'schema') {
+      const sourceFlag = flags.get('source')
+      const sourceId = sourceFlag === undefined ? undefined : Number(sourceFlag)
+      if (sourceId !== undefined && (!Number.isInteger(sourceId) || sourceId <= 0)) throw new Error('--source must be a positive integer')
+      console.log(JSON.stringify(archive.schemaFields(sourceId), null, 2))
       return
     }
 
