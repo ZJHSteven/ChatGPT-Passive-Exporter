@@ -14,6 +14,10 @@
 6. **跨端共享核心**：WXT 构建 Chrome / Edge / Firefox 扩展；vite-plugin-monkey 构建 Tampermonkey/Violentmonkey/Greasemonkey userscript；两者共用同一 capture/parser/export core。
 7. **原生侧栏 UI**：不使用 Shadow DOM；复用/跟随 ChatGPT Exporter 的 sidebar 注入思路，在 ChatGPT 侧栏直接插入导出入口，视觉上跟随页面当前导航项。
 8. **本地优先检索**：长期目标不是反复在线抓取，而是把云端 conversation 可靠搬到本地 SQLite/文件仓库，AI/用户的搜索与读取优先走本地索引。
+9. **本地 Archive 才是长期真相源**：ChatGPT 官方 Data Export 是“某一时刻的账户快照”，不是 append-only 历史账本。实测 2026-07-02 与 2026-09-01 两份官方导出存在旧包独有 conversation/asset，因此本地库不得因为新快照缺失对象就物理删除旧数据；使用 `last_seen_at / source_missing / tombstone` 一类状态表达来源消失。
+10. **结构化查询 + 原始无损并存**：conversation / mapping node / message / author / content / metadata / resource 等高价值字段进入结构化表，支持 SQL/FTS/增量合并；同时保留 raw snapshot / raw JSON，未知字段不得因当前 parser 不认识而永久丢失。
+11. **增量同步必须有 overlap 停止条件**：conversation list 从最新向旧翻页，直到与本地已知 watermark/ID 区间可靠重合；conversation body 从最新向旧补页，直到 message/node ID 与本地已有历史可靠重合。绝不能以“只取第一页”作为完整同步，也不能因云端当前缺失而删本地旧内容。
+12. **OpenCLI 不是主控制面**：项目保留独立 Archive Core 与原生 CLI。OpenCLI adapter 仅作为浏览器生命周期/登录复用能力的候选集成，以及把通用 ChatGPT API 改进贡献上游的派生物；不能成为 SQLite/监控/归档核心的必需依赖。
 
 ## 阶段
 
@@ -56,10 +60,18 @@
 - 原型阶段验证两路：A. DOM/导航触发 + 被动 response capture；B. 像 chatgpt-sync 一样观察网页真实 headers 后由 page runtime 直接请求后端。比较请求数量、接口稳定性、429/风控行为、资源完整度。
 
 ### Phase 7：本地增量归档与官方大包对账
-- 建立 SQLite conversation/message/resource/index 数据库，并保留原始 snapshot/Markdown/assets。
-- “小同步”：根据 conversation id + update_time/watermark + overlap 找新增/更新聊天，只搬变化部分。
+- 建立 SQLite conversation/node/message/resource/index/snapshot/source-observation 数据库，并保留原始 snapshot/Markdown/assets；数据库是长期 source of truth。
+- 官方 ZIP Genesis Import：允许同时导入多份历史 Data Export，按 conversation/node/message/asset identity 做 union + reconcile；较新快照更新 canonical 状态，但不得删除只存在于旧快照的数据。
+- “小同步”：conversation list 根据 conversation id + update_time/watermark + **overlap** 找新增/更新聊天；body 根据 node/message identity + cursor overlap 只搬变化部分。
 - “大同步”：用户手动从 ChatGPT 官方 Data Export 下载 15–20GB 级 ZIP 后，离线解包 `conversations.json`/assets，与本地数据库做 diff/reconcile；官方包作为低频权威基线，不要求自动触发导出。
 - 本地全文检索优先 SQLite FTS；后续再决定是否增加 embedding/向量检索。
+
+#### 2026-09-03 Genesis Ground Truth（已实测）
+- 旧包：`D:\Archive\ChatGPT-exports\ChatGPT-export-2026-07-02.zip`，5644 conversations / 90082 mapping nodes。
+- 新包：`D:\Downloads\ChatGPTExport\...2026-09-01...zip`，6153 conversations / 109409 mapping nodes。
+- 两包共同 conversation 5642；新包新增 511；旧包独有 2。共同 conversation 中旧 mapping node/message ID 缺失数均为 0，mapping 缩短数为 0；3 个共同 conversation 后续增长。
+- 旧 asset 3313、新 asset 3486；9 个旧 asset 在新包及其 manifest 中均消失，且按 size+CRC 未发现同内容改名副本。
+- 共同消息的字符串 text parts 变化数为 0；结构化 `content.parts` / metadata 可以随时间变化，因此 canonical current state 与 raw snapshot history 必须并存。
 
 ### Phase 8：聊天阅读位置书签
 - 桌面端原型：离开 conversation 前记录 `{conversationId, messageId/turnId, scroll anchor, timestamp}`；返回时恢复到最近阅读位置。

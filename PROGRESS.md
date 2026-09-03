@@ -8,6 +8,21 @@
 - 性能：0.4.1 移除全 document subtree 的 sidebar MutationObserver，改为 1.5 秒低频自检 + 仅监听 tiny rail 模式属性。
 - 回归：TypeScript 通过；Vitest 9 files / 37 tests 全通过；0.5.0 全端构建已通过；0.5.2 Userscript 构建通过。
 
+## 2026-09-03 架构重构主线
+- 项目终局已从“浏览器导出插件”调整为 **本地 ChatGPT Archive Core + SQLite + 增量同步 + WSS-first 监控 + 原生 CLI**；浏览器 Userscript/Extension 后续瘦身为 capture probe / operator UI。
+- OpenCLI 地位调整：不作为本项目主 CLI 或数据库依赖；仅保留薄 adapter、浏览器生命周期/登录复用候选，以及未来把通用 ChatGPT adapter 改进贡献上游。
+- 增量完整性规则已敲定：conversation list 必须翻到与本地可靠 overlap 才停止；conversation body 必须补到 node/message overlap 才停止。云端缺失对象只记来源消失/tombstone，不自动删除本地历史。
+- `stream_status` 后续只做 watchdog/recovery oracle；正常 `turn-complete` 触发最新 body 增量同步，并由同一次 body 写库顺便更新终止/异常状态。
+
+## 官方 Data Export Ground Truth（2026-09-03）
+- 已找回并验证两份本地官方 ZIP：旧包 `D:\Archive\ChatGPT-exports\ChatGPT-export-2026-07-02.zip`（2.593 GiB），新包位于 `D:\Downloads\ChatGPTExport\...2026-09-01...zip`（2.905 GiB）。
+- 旧包 5644 conversations / 90082 mapping nodes；新包 6153 / 109409。
+- 共同 5642；新包独有 511；**旧包独有 2**。因此新版官方导出不是旧版严格超集，官方 Data Export 是时间点快照而不是 append-only 历史账本。
+- 共同 conversation：旧 mapping nodes 丢失 0、旧 message IDs 丢失 0、mapping 缩短 0；3 个旧聊天发生后续增长。
+- 共同消息字符串 text parts 变化 0；但 1095 个 `content` 对象和 1003 个 message metadata 出现结构化变化，说明规范化 current state 与 raw snapshot history 都需要保留。
+- Asset manifest 3313 → 3486；旧包有 9 个 asset 在新包中消失，且按 ZIP size+CRC 无同内容改名副本。Genesis 数据库应合并多份 ZIP，而不是只导入最新一份。
+- 当前正在做：重构 SQLite schema/importer，把两份 ZIP 直接作为 Genesis sources 合并导入，并建立字段覆盖/无损性/FTS/来源历史验证。
+
 ## 已落地能力
 - Passive Export：只复制 ChatGPT 页面自身已经收到的 conversation `fetch`/XHR 响应，不额外请求 conversation 正文；兼容新 `messages[]` 与 legacy `mapping`。
 - 导出：Markdown、安全 archive JSON、rich manifest；识别 Web Search、App Connector、image_group、widget、sandbox 文件引用。
