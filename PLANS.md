@@ -109,6 +109,14 @@
 - **Luna 审批门**：无人值守恢复先把事故摘要、最后工具动作、是否可能有副作用、仓库/设备真实状态检查结果交给 PI `openai-codex/gpt-5.6-luna`。只有 Luna 明确判定可安全继续时才发送续跑；写入/删除/安装/上传/git 等副作用状态不明时必须先核验，禁止盲目重复上一工具。
 - Reader / iframe lazy load 在上述闭环完成后继续；Reader 仍以“不创建历史 Apps SDK iframe”为目标，但不再抢占当前主线。
 
+### Phase 14：WSS 长时可靠性与半开连接取证
+- 增加独立的**纯被动 CDP 采集器**，只观察 ChatGPT 官方页面自己的 `wss://ws.chatgpt.com/...`；不额外创建业务 WSS，不调用 conversation/list/stream_status，不保存认证头或业务正文。
+- 每条 socket 记录 `webSocketCreated / frameSent / frameReceived / webSocketClosed / loadingFailed`、close 前后时间、最后一次任意 frame 时间、connect/subscribe 发送与 subscribe ack、`recovered` 值、重连延迟与 socket lifetime。
+- 单独标记“CDP 仍未收到 closed，但 socket 长时间无任何 frame”的**半开/静默窗口**；不能把 JS `readyState=OPEN` 当成链路健康证明。
+- 提供两类实验：A. 30–60 分钟自然挂机，统计自然断线/重连率与 frame 间隔分布；B. 只对专用轻量 helper tab 注入 CDP offline/online 故障，验证网络层中断被发现的时延、自动重连是否触发、恢复后是否重新订阅。
+- 故障恢复后若 `recovered=false`，必须把断线窗口视为不可回放 gap；Fleet/Companion 只能在 gap 结束后做 reconciliation，不能假设 WSS 自动补齐历史事件。
+- 采集日志采用 JSONL + 周期摘要，便于后续按 socket/requestId 聚合；脚本可独立运行，不把测试逻辑塞进生产 Userscript。
+
 ## 验收
 
 - 浏览正常打开某聊天时，扩展可被动获得页面自身返回的 conversation payload；网络面板中不出现由本插件额外发起的 conversation API 请求。
