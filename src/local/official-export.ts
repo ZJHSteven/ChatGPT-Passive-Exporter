@@ -178,7 +178,12 @@ async function forEachJsonEntry(
     input.on('data', (chunk) => {
       if (failed) return
       try {
-        unzip.push(chunk, false)
+        // Node 的 Readable 类型允许 data 事件在设置 encoding 后返回 string；
+        // 这里虽然没有给 createReadStream 设置 encoding，运行时实际拿到的一直是 Buffer，
+        // 但 TypeScript 仍保守地把回调参数推成 `string | Buffer`。显式归一化后，
+        // fflate 的 Unzip 永远只收到 Uint8Array，也让类型契约和真实运行行为一致。
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
+        unzip.push(bytes, false)
       }
       catch (error) {
         input.destroy()
