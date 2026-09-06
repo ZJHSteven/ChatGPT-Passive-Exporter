@@ -60,8 +60,8 @@
 - 原型阶段验证两路：A. DOM/导航触发 + 被动 response capture；B. 像 chatgpt-sync 一样观察网页真实 headers 后由 page runtime 直接请求后端。比较请求数量、接口稳定性、429/风控行为、资源完整度。
 
 ### Phase 7：本地增量归档与官方大包对账
-- 建立 SQLite conversation/node/message/resource/index/snapshot/source-observation 数据库，并保留原始 snapshot/Markdown/assets；数据库是长期 source of truth。
-- 官方 ZIP Genesis Import：允许同时导入多份历史 Data Export，按 conversation/node/message/asset identity 做 union + reconcile；较新快照更新 canonical 状态，但不得删除只存在于旧快照的数据。
+- **Genesis / Archive Core 已完成（2026-09-06）**：SQLite 已建立 conversation/node/message/part/resource/index/snapshot/source-observation 等结构，并保留 gzip raw snapshot/Markdown/assets 定位信息；数据库正式作为长期 source of truth。
+- **官方 ZIP Genesis Import 已完成**：支持多份历史 Data Export 按 conversation/node/message/asset identity 做 union + reconcile；较新快照更新 canonical 状态，但不得删除只存在于旧快照的数据。当前默认主库已由两份真实官方 ZIP 合并得到 6155 conversations。
 - “小同步”：conversation list 根据 conversation id + update_time/watermark + **overlap** 找新增/更新聊天；body 根据 node/message identity + cursor overlap 只搬变化部分。
 - “大同步”：用户手动从 ChatGPT 官方 Data Export 下载 15–20GB 级 ZIP 后，离线解包 `conversations.json`/assets，与本地数据库做 diff/reconcile；官方包作为低频权威基线，不要求自动触发导出。
 - 本地全文检索优先 SQLite FTS；后续再决定是否增加 embedding/向量检索。
@@ -72,6 +72,10 @@
 - 两包共同 conversation 5642；新包新增 511；旧包独有 2。共同 conversation 中旧 mapping node/message ID 缺失数均为 0，mapping 缩短数为 0；3 个共同 conversation 后续增长。
 - 旧 asset 3313、新 asset 3486；9 个旧 asset 在新包及其 manifest 中均消失，且按 size+CRC 未发现同内容改名副本。
 - 共同消息的字符串 text parts 变化数为 0；结构化 `content.parts` / metadata 可以随时间变化，因此 canonical current state 与 raw snapshot history 必须并存。
+- 2026-09-06 正式 Genesis：6155 conversations / 109415 mapping nodes / 103260 messages / 11797 raw snapshots / 3495 assets / 10549 派生 resources；SQLite `quick_check=ok`，foreign key/orphan/duplicate 检查均为 0。
+- 默认可读正文 FTS 共 56890 条，`三峡 / DevSpace / WSS` 等真实历史关键词均可检索。全 tool/reasoning trigram 审计索引继续保持显式 opt-in，避免数 GB 内存峰值。
+- 官方 Data Export 的 message role 仅观察到 `assistant` / `user`；但 content type 明确包含 `text=46419 / thoughts=44081 / reasoning_recap=9931 / multimodal_text=2829`。当前两份大包没有 `finish_details/reasoning_status`，因此官方 ZIP 是历史正文 Ground Truth，不是事故状态 Ground Truth；终止/异常字段由后续在线 body/WSS 增量同步补齐。
+- 当前主线从 Genesis 转入“小同步”：实现 conversation-list overlap discovery、body cursor/node overlap、dirty queue 与 WSS `turn-complete` 触发的增量 merge。
 
 ### Phase 8：聊天阅读位置书签
 - 桌面端原型：离开 conversation 前记录 `{conversationId, messageId/turnId, scroll anchor, timestamp}`；返回时恢复到最近阅读位置。
