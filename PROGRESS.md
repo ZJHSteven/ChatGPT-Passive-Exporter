@@ -13,6 +13,8 @@
 - OpenCLI 地位调整：不作为本项目主 CLI 或数据库依赖；仅保留薄 adapter、浏览器生命周期/登录复用候选，以及未来把通用 ChatGPT adapter 改进贡献上游。
 - 增量完整性规则已敲定：conversation list 必须翻到与本地可靠 overlap 才停止；conversation body 必须补到 node/message overlap 才停止。云端缺失对象只记来源消失/tombstone，不自动删除本地历史。
 - `stream_status` 后续只做 watchdog/recovery oracle；正常 `turn-complete` 触发最新 body 增量同步，并由同一次 body 写库顺便更新终止/异常状态。
+- 2026-09-06 用户侧 CLI 正式命名为 **ChatGPT Archive**，可执行命令 `chatgpt-archive`；原 `scripts/archive-cli.mjs` 已改名为 `scripts/chatgpt-archive.mjs`，OpenCLI 私有 adapter 跟随新入口，旧 `npm run archive` 仅保留兼容。
+- 当前主线进入增量同步：先实现 conversation list 的 overlap discovery，再实现 conversation body 的 node/message overlap；WSS 只做 dirty/complete 实时触发，完整性仍由 overlap reconciliation 兜底。
 
 ## 官方 Data Export Ground Truth（2026-09-03）
 - 已找回并验证两份本地官方 ZIP：旧包 `D:\Archive\ChatGPT-exports\ChatGPT-export-2026-07-02.zip`（2.593 GiB），新包位于 `D:\Downloads\ChatGPTExport\...2026-09-01...zip`（2.905 GiB）。

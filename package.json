@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "被动捕获 ChatGPT 页面自身 conversation 响应并导出 Markdown/JSON/富媒体清单。",
+  "bin": {
+    "chatgpt-archive": "./scripts/chatgpt-archive.mjs"
+  },
   "scripts": {
     "dev": "wxt",
     "dev:firefox": "wxt -b firefox",
@@ -17,7 +20,8 @@
     "zip:firefox": "wxt zip -b firefox",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "archive": "node scripts/archive-cli.mjs",
+    "chatgpt-archive": "node scripts/chatgpt-archive.mjs",
+    "archive": "node scripts/chatgpt-archive.mjs",
     "opencli:install": "node scripts/install-opencli-adapter.mjs",
     "check": "npm run typecheck && npm run test && npm run build"
   },

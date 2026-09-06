@@ -26,7 +26,7 @@ export function archiveConfig() {
     return {
         projectRoot: path.resolve(projectRoot),
         dbPath: path.resolve(dbPath),
-        cliPath: path.resolve(projectRoot, 'scripts', 'archive-cli.mjs'),
+        cliPath: path.resolve(projectRoot, 'scripts', 'chatgpt-archive.mjs'),
     };
 }
 

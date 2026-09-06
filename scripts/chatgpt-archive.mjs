@@ -6,20 +6,24 @@ import { ChatArchiveDb } from '../src/local/archive-db.ts'
 import { importOfficialExportZips } from '../src/local/official-export.ts'
 
 function usage() {
-  console.log(`ChatGPT local archive prototype
+  console.log(`ChatGPT Archive CLI
 
 Usage:
-  node scripts/archive-cli.mjs import <json-file...> [--db <path>]
-  node scripts/archive-cli.mjs import-official <chatgpt-export.zip...> [--db <path>]
-  node scripts/archive-cli.mjs list [--limit N] [--db <path>]
-  node scripts/archive-cli.mjs search <fts-query> [--limit N] [--db <path>]
-  node scripts/archive-cli.mjs show <conversation-id> [--format md|json|resources] [--db <path>]
-  node scripts/archive-cli.mjs stats [--db <path>]
-  node scripts/archive-cli.mjs sources [--db <path>]
-  node scripts/archive-cli.mjs schema [--source ID] [--db <path>]
-  node scripts/archive-cli.mjs reindex [--all] [--db <path>]
+  chatgpt-archive import <json-file...> [--db <path>]
+  chatgpt-archive import-official <chatgpt-export.zip...> [--db <path>]
+  chatgpt-archive list [--limit N] [--db <path>]
+  chatgpt-archive search <fts-query> [--limit N] [--db <path>]
+  chatgpt-archive show <conversation-id> [--format md|json|resources] [--db <path>]
+  chatgpt-archive stats [--db <path>]
+  chatgpt-archive sources [--db <path>]
+  chatgpt-archive schema [--source ID] [--db <path>]
+  chatgpt-archive reindex [--all] [--db <path>]
 
 Default DB: data/chatgpt-archive.sqlite
+
+Development fallback:
+  node scripts/chatgpt-archive.mjs <command> ...
+  npm run chatgpt-archive -- <command> ...
 
 Import accepts either:
 - one conversation object (messages[] or legacy mapping)

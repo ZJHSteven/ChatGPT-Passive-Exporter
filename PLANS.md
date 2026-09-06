@@ -4,6 +4,15 @@
 
 构建一个尽量不主动调用 ChatGPT 私有后端 API 的聊天归档工具：监听页面自己已经发出的请求并复制响应，随后将不同年代/不同接口形态的 ChatGPT conversation payload 归一化，再导出可读 Markdown、原始 JSON 和附件/富媒体清单。
 
+## 当前执行主线（2026-09-06）
+
+- 用户侧正式 CLI 名称定为 **ChatGPT Archive**，可执行命令为 `chatgpt-archive`。旧 `npm run archive` 仅作为开发兼容别名保留，不再作为产品名称。
+- Genesis 已完成，当前进入增量同步阶段。同步必须坚持“从最新向历史追，直到可靠 overlap 才停止”，而不是固定抓一页或固定抓 N 条。
+- Catalog 增量：从 conversation list 第一页开始，按 `update_time + conversation_id` 与本地 `conversations` 对比；遇到新 ID 或较新 `update_time` 则标记 dirty，继续翻页直到出现足够可靠的连续 overlap 区间。
+- Body 增量：对 dirty conversation 从最新 body page 开始，按 node/message ID 与本地 `mapping_nodes/messages` 比对；只要当前页仍含本地未知节点就继续向历史翻页，直到跨页命中稳定 overlap 后停止。
+- 实时路径：WSS 只负责快速产生 dirty/turn-complete 信号；真正数据完整性由 list/body overlap 同步保证。WSS reconnect、offline→online 或 watchdog 触发 reconciliation，而不是相信事件绝不会漏。
+- 所有在线同步结果继续写入同一 `data/chatgpt-archive.sqlite`，并保留 raw source observation；云端缺失不得物理删除本地历史。
+
 ## 设计原则
 
 1. **被动捕获优先**：不自行构造 `/backend-api/conversation*` 请求，不读取或保存 Authorization/access token；只复制 ChatGPT 页面自己收到的符合白名单的响应。
