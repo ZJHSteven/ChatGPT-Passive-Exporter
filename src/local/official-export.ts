@@ -280,7 +280,10 @@ export async function importOfficialExportZip(
     conversationCount: totals.conversationCount,
     assetCount,
   })
-  if (options.rebuildSearchIndexes !== false) db.rebuildSearchIndexes()
+  if (options.rebuildSearchIndexes !== false) {
+    db.rebuildDerivedResources()
+    db.rebuildSearchIndexes()
+  }
 
   return {
     zipPath: absolute,
@@ -309,6 +312,7 @@ export async function importOfficialExportZips(
   for (const candidate of candidates) {
     results.push(await importOfficialExportZip(db, candidate.absolute, { rebuildSearchIndexes: false }))
   }
+  db.rebuildDerivedResources()
   db.rebuildSearchIndexes()
   return results
 }

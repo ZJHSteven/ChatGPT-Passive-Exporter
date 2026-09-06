@@ -936,6 +936,110 @@ export class ChatArchiveDb {
     this.rebuildSearchIndexes({ includeAuditText: true })
   }
 
+  /**
+   * 从已经落库的原始 message JSON 重建富媒体/工具资源目录。
+   *
+   * `resources` 是一个“可重建派生索引”，不是事实源：真正无损的数据仍在 messages.raw_json
+   * 和 conversation_snapshots。官方 Data Export 的导入路径会保存每条 message 的 raw_json，
+   * 因此在多份 ZIP 做完 union 后统一重建，可以避免逐 source 插入时的版本覆盖问题。
+   *
+   * 旧版 `importRaw()` 产生的行历史上可能没有 raw_json（默认 `{}`）；这些消息已有自己当时
+   * 生成的 resources，所以这里仅删除/重建“raw_json 可用”的消息资源，避免误伤旧归档。
+   */
+  rebuildDerivedResources(): number {
+    const selectMessages = this.db.prepare(`
+      SELECT
+        m.conversation_id AS conversationId,
+        m.message_id AS messageId,
+        c.title AS title,
+        m.raw_json AS rawJson
+      FROM messages m
+      JOIN conversations c ON c.id = m.conversation_id
+      WHERE m.raw_json IS NOT NULL
+        AND m.raw_json <> ''
+        AND m.raw_json <> '{}'
+      ORDER BY m.conversation_id, m.ordinal, m.message_id
+    `)
+    const insertResource = this.db.prepare(`
+      INSERT INTO resources (
+        conversation_id, message_id, ordinal, kind, label, data_json
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `)
+    const updateConversationCount = this.db.prepare(`
+      UPDATE conversations
+      SET resource_count = (
+        SELECT count(*) FROM resources r WHERE r.conversation_id = conversations.id
+      )
+    `)
+
+    let inserted = 0
+    const ordinals = new Map<string, number>()
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      // 只清理由 raw_json 可重建的 message；旧 prototype/importRaw 产生的资源保持不动。
+      this.db.exec(`
+        DELETE FROM resources
+        WHERE EXISTS (
+          SELECT 1
+          FROM messages m
+          WHERE m.conversation_id = resources.conversation_id
+            AND m.message_id = resources.message_id
+            AND m.raw_json IS NOT NULL
+            AND m.raw_json <> ''
+            AND m.raw_json <> '{}'
+        )
+      `)
+
+      for (const rawRow of selectMessages.iterate()) {
+        const row = rawRow as Record<string, unknown>
+        const conversationId = stringValue(row.conversationId)
+        const messageId = stringValue(row.messageId)
+        const title = stringValue(row.title) ?? 'ChatGPT Conversation'
+        const rawJson = stringValue(row.rawJson)
+        if (!conversationId || !messageId || !rawJson) continue
+
+        let rawMessage: unknown
+        try {
+          rawMessage = JSON.parse(rawJson)
+        }
+        catch {
+          // 某条派生索引素材损坏不应阻断整个 archive；raw snapshot 仍可用于后续修复。
+          continue
+        }
+
+        // adapter 对 messages[] 会只处理这一条消息，因此可以复用已有 manifest 逻辑，
+        // 不在 SQLite 层复制一套 Web Search / widget / asset-pointer 解析规则。
+        const oneMessage = adaptConversation({
+          title,
+          conversation_id: conversationId,
+          messages: [rawMessage],
+        })
+        const manifest = buildRichManifest(oneMessage)
+        for (const item of manifest.items) {
+          const ordinal = ordinals.get(conversationId) ?? 0
+          insertResource.run(
+            conversationId,
+            item.messageId || messageId,
+            ordinal,
+            item.kind,
+            item.label,
+            json(item.data),
+          )
+          ordinals.set(conversationId, ordinal + 1)
+          inserted += 1
+        }
+      }
+
+      updateConversationCount.run()
+      this.db.exec('COMMIT')
+    }
+    catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+    return inserted
+  }
+
   importRaw(payload: unknown, capturedAt = Date.now()): ArchiveImportResult {
     const conversation = adaptConversation(payload)
     const conversationId = conversation.conversationId

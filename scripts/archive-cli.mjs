@@ -153,8 +153,14 @@ async function main() {
     }
 
     if (command === 'reindex') {
+      const resourceCount = archive.rebuildDerivedResources()
       archive.rebuildSearchIndexes({ includeAuditText: flags.has('all') })
-      console.log(JSON.stringify({ database: archive.filePath, includeAuditText: flags.has('all'), stats: archive.stats() }, null, 2))
+      console.log(JSON.stringify({
+        database: archive.filePath,
+        includeAuditText: flags.has('all'),
+        rebuiltResources: resourceCount,
+        stats: archive.stats(),
+      }, null, 2))
       return
     }
 

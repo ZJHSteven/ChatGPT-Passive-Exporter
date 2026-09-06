@@ -27,6 +27,7 @@
 - 第一轮真实 Genesis 性能验收在约 900 conversations 时主动停止：功能正常、进程内存约 245MB，但逐 conversation 重建三套 FTS 明显过慢。已把 FTS 改为全部 ZIP merge 完后一次性顺序重建，避免 O(N×FTS-maintenance)；准备重新跑两份真实大包。
 - 第二轮真实 Genesis 已完成结构化 union：6155 conversations / 109415 mapping nodes / 103260 messages / 11797 raw snapshots / 3495 assets，且精确标出 2 个旧 conversation 与 9 个旧 asset `source_missing`。随后发现“所有 tool/reasoning 文本做 trigram FTS”会把 Node 工作集推到约 3GB；已将该审计索引改为 `reindex --all` 显式 opt-in，默认 Genesis 只构建日常找聊天所需的可读 User/Assistant FTS，raw/tool 数据仍完整保留。
 - 2026-09-06 Phase 1 收尾复核：默认正文 FTS 已确认完整建成，56890 条可读 User/Assistant message 同时进入 unicode61 与 trigram 索引；真实检索“三峡 / DevSpace / WSS”均命中历史 conversation。最新官方 source 的 schema audit 已完成，确认 conversation/node/message 主结构稳定，metadata 中还存在 attachments、content_references、search_result_groups、serialization_metadata、tool_icons、branching/targeted reply 等丰富字段，继续采用“常用字段列式化 + metadata/raw JSON 无损保留”。
+- Genesis 的 `resources` 派生目录已补齐设计：官方 ZIP 在所有 source union 完成后，从 `messages.raw_json` 统一重建 Web Search / image-group / widget / sandbox / asset-pointer 等目录并回填 `resource_count`；事实源仍是 raw JSON/snapshot，resources 可随 parser 升级随时重建。
 
 ## 已落地能力
 - Passive Export：只复制 ChatGPT 页面自身已经收到的 conversation `fetch`/XHR 响应，不额外请求 conversation 正文；兼容新 `messages[]` 与 legacy `mapping`。

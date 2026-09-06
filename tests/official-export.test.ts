@@ -53,7 +53,15 @@ function conversation(id: string, text: string, extraNodes: Record<string, unkno
           author: { role: 'assistant' },
           create_time: 102,
           content: { content_type: 'text', parts: [`回答-${text}`] },
-          metadata: { model_slug: 'gpt-test', finish_details: { type: 'stop', reason: 'end_turn' } },
+          metadata: {
+            model_slug: 'gpt-test',
+            finish_details: { type: 'stop', reason: 'end_turn' },
+            content_references: [{
+              type: 'image_group',
+              layout: 'carousel',
+              images: [{ image_ref_id: `image-${id}` }],
+            }],
+          },
           recipient: 'all',
           end_turn: true,
         },
@@ -135,6 +143,9 @@ describe('official Data Export importer', () => {
       const snapshot = db.db.prepare('SELECT length(raw_json_gzip) AS n FROM conversation_snapshots').get() as { n: number }
       expect(Number(snapshot.n)).toBeGreaterThan(20)
       expect(db.schemaFields().some(item => item.entityKind === 'metadata' && item.fieldName === 'request_id')).toBe(true)
+      // 官方 ZIP 也应能从 raw message 重建富媒体资源目录，而不是只在旧 importRaw 路径有 resources。
+      expect(db.getResources('c1').some(item => item.kind === 'image-group')).toBe(true)
+      expect(db.stats().resourceCount).toBeGreaterThan(0)
       // Genesis 默认只建“可读正文”索引，巨大 tool/reasoning 审计索引是显式 opt-in。
       expect(db.stats().allIndexedMessageCount).toBe(0)
       db.rebuildSearchIndexes({ includeAuditText: true })
