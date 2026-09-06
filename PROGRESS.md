@@ -15,6 +15,7 @@
 - `stream_status` 后续只做 watchdog/recovery oracle；正常 `turn-complete` 触发最新 body 增量同步，并由同一次 body 写库顺便更新终止/异常状态。
 - 2026-09-06 用户侧 CLI 正式命名为 **ChatGPT Archive**，可执行命令 `chatgpt-archive`；原 `scripts/archive-cli.mjs` 已改名为 `scripts/chatgpt-archive.mjs`，OpenCLI 私有 adapter 跟随新入口，旧 `npm run archive` 仅保留兼容。
 - 当前主线进入增量同步：先实现 conversation list 的 overlap discovery，再实现 conversation body 的 node/message overlap；WSS 只做 dirty/complete 实时触发，完整性仍由 overlap reconciliation 兜底。
+- 增量同步停止算法已开始独立模块化：catalog 默认要求最后变化之后连续 56 个 `conversation_id + update_time` 稳定条目；body 只在“整页 message IDs 全部已知”或 `has_previous_page=false` 时停止，宁可多跨一页，不在新增/旧数据边界上冒险截断。
 
 ## 官方 Data Export Ground Truth（2026-09-03）
 - 已找回并验证两份本地官方 ZIP：旧包 `D:\Archive\ChatGPT-exports\ChatGPT-export-2026-07-02.zip`（2.593 GiB），新包位于 `D:\Downloads\ChatGPTExport\...2026-09-01...zip`（2.905 GiB）。
