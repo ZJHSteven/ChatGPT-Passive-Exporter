@@ -66,13 +66,11 @@ public static class ChatGptArchiveWindowHider
 
         if (found == IntPtr.Zero) return null;
 
-        // SW_HIDE = 0。隐藏顶层窗口后它不再占任务栏/Alt-Tab，但 renderer/network 仍属于
-        // 原 Chrome browser process；CDP 仍可继续访问该 target。
+        // SW_HIDE = 0. The renderer/network process remains alive and CDP-accessible.
         ShowWindowAsync(found, 0);
         System.Threading.Thread.Sleep(80);
         var visibleAfter = IsWindowVisible(found);
-        // 直接返回 primitive string，避免 Windows PowerShell 5.1 对自定义 C# 对象的
-        // 管线序列化/枚举行为造成“方法成功但 stdout 为空”。
+        // Return only an ASCII-safe primitive string for Windows PowerShell 5.1.
         return found.ToInt64().ToString()
             + "\t" + visibleBefore.ToString()
             + "\t" + visibleAfter.ToString();
