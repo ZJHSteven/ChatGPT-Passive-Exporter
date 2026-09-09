@@ -1,6 +1,8 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-09：补齐 browser-process 级高可用设计：daemon 建立 Guardian 前先探测 CDP；只有整个 `9222` 不可达时，才按当前固定 Chrome executable + `D:\AppData\Chrome\Chrome-CDP\User Data\Default` 重新启动同一登录 profile，不创建第二套长期 profile。现有 Chrome 正常时是纯 no-op 探活；为避免破坏正在工作的十几个标签，本轮不主动 kill 整个 Chrome 做 destructive test。
+- 2026-09-09：新增 Windows Task Scheduler 登录自启动管理命令；计划任务直接托管 daemon，并配置非正常退出每分钟重试、`ExecutionTimeLimit=0`、`MultipleInstances=IgnoreNew`。Windows 进程监督与 ChatGPT/WSS/SQLite 业务逻辑分层；后续 AHK 可作为第二层可见性/通知监视，而不必承载核心 daemon。
 - 2026-09-09：Guardian“已休眠”根因确认是 CDP profile 中的 `Auto Tab Discard (suspend) 0.7.3`，其 discard 会留下一个 `💤 ChatGPT / （已休眠窗口） ChatGPT` 占位页；对该 target 的 `Runtime.evaluate` 可永久无响应。daemon 旧版 CDP `send()` 没有超时，因此即使业务进程在线也存在永久卡死风险。现增加 CDP connect/request 硬超时、无响应 renderer/WSS 缺失自愈，以及按已知 windowId 清理第三方睡眠占位 target。
 - 2026-09-09：Guardian UI 从“独立最小化窗口”升级为 Windows `SW_HIDE` 真隐藏：仍复用同一 Chrome browser process/profile，但顶层窗口不再占任务栏/Alt-Tab；PowerShell/Win32 helper 只在创建/接管时短暂运行，失败才回退 minimized。Auto Tab Discard 同时加入仅匹配 `?chatgpt-archive-guardian=1` 的永久 regex whitelist，不影响普通 ChatGPT 工作标签的自动休眠。
 - 2026-09-09：`--no-reconcile-on-start` 烟雾测试又暴露首轮 periodic 误触发：旧实现 `lastReconcileAt=0`，所以即使跳过 startup reconcile，第一轮主循环仍会立即认为“已超过 6 小时”。现把首次 periodic 计时锚到 daemon 启动时间，纯监听测试不再偷偷扫 conversation list。

@@ -17,7 +17,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
 
@@ -29,6 +29,9 @@ const DEFAULT_STATE = path.join(PROJECT_ROOT, 'data', 'archive-daemon-state.json
 const DEFAULT_LOG = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
 const WINDOWS_HIDE_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-hide-window.ps1')
 const DEFAULT_CDP_TIMEOUT_MS = 10_000
+const DEFAULT_CHROME_EXE = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+const DEFAULT_CHROME_USER_DATA = 'D:\\AppData\\Chrome\\Chrome-CDP\\User Data'
+const DEFAULT_CHROME_PROFILE = 'Default'
 
 class CdpClient {
   constructor(url) {
@@ -132,6 +135,66 @@ function intFlag(flags, name, fallback, min = 0) {
   const value = Number(flags.get(name) ?? fallback)
   if (!Number.isFinite(value) || value < min) throw new Error(`--${name} must be >= ${min}`)
   return Math.round(value)
+}
+
+/**
+ * Chrome 根进程级恢复。
+ *
+ * Guardian 不需要自己的浏览器/profile；它应始终复用用户已经登录的 CDP Chrome。
+ * 如果 9222 整体不可达，daemon 才用同一 executable + user-data-dir + profile 拉起 Chrome。
+ * Chrome 已经运行时该函数只是廉价探活，不会启动第二个 browser process。
+ */
+async function ensureCdpBrowser(flags, cdpHttp) {
+  try {
+    const response = await fetch(`${cdpHttp}/json/version`, { signal: AbortSignal.timeout(3000) })
+    if (response.ok) return { launched: false, version: await response.json() }
+  }
+  catch {
+    // 进入启动恢复分支。
+  }
+
+  if (flags.has('no-auto-launch-chrome')) {
+    throw new Error(`CDP browser unavailable at ${cdpHttp} and auto launch is disabled`)
+  }
+  if (process.platform !== 'win32') {
+    throw new Error(`CDP browser unavailable at ${cdpHttp}; automatic Chrome launch is currently Windows-only`)
+  }
+
+  const chromeExe = path.resolve(String(flags.get('chrome-exe') || DEFAULT_CHROME_EXE))
+  const userDataDir = path.resolve(String(flags.get('chrome-user-data') || DEFAULT_CHROME_USER_DATA))
+  const profile = String(flags.get('chrome-profile') || DEFAULT_CHROME_PROFILE)
+  const parsedCdp = new URL(cdpHttp)
+  const port = Number(parsedCdp.port || 9222)
+  const host = parsedCdp.hostname || '127.0.0.1'
+
+  const child = spawn(chromeExe, [
+    `--user-data-dir=${userDataDir}`,
+    `--profile-directory=${profile}`,
+    `--remote-debugging-port=${port}`,
+    `--remote-debugging-address=${host}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    'about:blank',
+  ], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  child.unref()
+
+  const deadline = Date.now() + intFlag(flags, 'chrome-start-timeout-ms', 30_000, 1000)
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${cdpHttp}/json/version`, { signal: AbortSignal.timeout(2000) })
+      if (response.ok) return { launched: true, version: await response.json(), pid: child.pid }
+    }
+    catch (error) {
+      lastError = error
+    }
+    await new Promise(resolve => setTimeout(resolve, 500))
+  }
+  throw new Error(`Chrome launch did not restore CDP ${cdpHttp}: ${lastError instanceof Error ? lastError.message : 'timeout'}`)
 }
 
 function chatgptTime(value) {
@@ -635,6 +698,14 @@ async function main() {
   }
 
   const establishGuardian = async (reason) => {
+    const browserAvailability = await ensureCdpBrowser(flags, cdpHttp)
+    if (browserAvailability.launched) {
+      await log('Chrome CDP browser relaunched', {
+        reason,
+        browser: browserAvailability.version?.Browser ?? null,
+        pid: browserAvailability.pid ?? null,
+      })
+    }
     const previousWindowId = guardian?.windowId ?? null
     const previousBrowser = guardian?.browser ?? null
 

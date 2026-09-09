@@ -18,6 +18,8 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const DEFAULT_DB_PATH = path.join(PROJECT_ROOT, 'data', 'chatgpt-archive.sqlite')
 const DEFAULT_DAEMON_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon-state.json')
 const DEFAULT_DAEMON_LOG_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
+const WINDOWS_STARTUP_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-archive-startup.ps1')
+const WINDOWS_STARTUP_TASK = 'ChatGPT Archive Daemon'
 
 function usage() {
   console.log(`ChatGPT Archive CLI
@@ -36,6 +38,9 @@ Usage:
   chatgpt-archive daemon start [--cdp URL] [--reconcile-hours N] [--db <path>]
   chatgpt-archive daemon status [--state <path>]
   chatgpt-archive daemon stop [--state <path>]
+  chatgpt-archive daemon install-startup
+  chatgpt-archive daemon startup-status
+  chatgpt-archive daemon uninstall-startup
 
 Default DB: <ChatGPT Archive project>/data/chatgpt-archive.sqlite
 
@@ -104,7 +109,47 @@ async function readDaemonState(flags) {
 
 async function daemonCommand(positionals, flags) {
   const action = positionals[0]
-  if (!action) throw new Error('daemon requires start|status|stop')
+  if (!action) throw new Error('daemon requires start|status|stop|install-startup|startup-status|uninstall-startup')
+
+  if (['install-startup', 'startup-status', 'uninstall-startup'].includes(action)) {
+    if (process.platform !== 'win32') throw new Error(`${action} is currently Windows-only`)
+    const helperAction = action === 'install-startup'
+      ? 'Install'
+      : action === 'uninstall-startup' ? 'Uninstall' : 'Status'
+    const args = [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy', 'Bypass',
+      '-File', WINDOWS_STARTUP_HELPER,
+      '-Action', helperAction,
+      '-TaskName', WINDOWS_STARTUP_TASK,
+    ]
+    if (helperAction === 'Install') {
+      args.push(
+        '-NodeExe', process.execPath,
+        '-DaemonScript', path.join(PROJECT_ROOT, 'scripts', 'chatgpt-archive-daemon.mjs'),
+        '-ProjectRoot', PROJECT_ROOT,
+        '-DbPath', dbPath(flags),
+      )
+    }
+    const child = spawn('powershell.exe', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    const exitCode = await new Promise((resolve, reject) => {
+      child.on('error', reject)
+      child.on('close', resolve)
+    })
+    if (exitCode !== 0) throw new Error(`Windows startup task failed (${exitCode}): ${stderr.trim() || stdout.trim()}`)
+    console.log(stdout.trim() || JSON.stringify({ action, ok: true }))
+    return
+  }
 
   if (action === 'status') {
     const current = await readDaemonState(flags)
@@ -150,11 +195,16 @@ async function daemonCommand(positionals, flags) {
       'reconcile-hours',
       'cooldown-minutes',
       'max-sync-conversations',
+      'chrome-exe',
+      'chrome-user-data',
+      'chrome-profile',
+      'chrome-start-timeout-ms',
     ]
     for (const name of passFlags) {
       if (flags.has(name)) childArgs.push(`--${name}`, String(flags.get(name)))
     }
     if (flags.has('no-reconcile-on-start')) childArgs.push('--no-reconcile-on-start')
+    if (flags.has('no-auto-launch-chrome')) childArgs.push('--no-auto-launch-chrome')
 
     const child = spawn(process.execPath, childArgs, {
       detached: true,
