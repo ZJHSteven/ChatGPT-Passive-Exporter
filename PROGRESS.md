@@ -1,6 +1,9 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-09：Guardian“已休眠”根因确认是 CDP profile 中的 `Auto Tab Discard (suspend) 0.7.3`，其 discard 会留下一个 `💤 ChatGPT / （已休眠窗口） ChatGPT` 占位页；对该 target 的 `Runtime.evaluate` 可永久无响应。daemon 旧版 CDP `send()` 没有超时，因此即使业务进程在线也存在永久卡死风险。现增加 CDP connect/request 硬超时、无响应 renderer/WSS 缺失自愈，以及按已知 windowId 清理第三方睡眠占位 target。
+- 2026-09-09：Guardian UI 从“独立最小化窗口”升级为 Windows `SW_HIDE` 真隐藏：仍复用同一 Chrome browser process/profile，但顶层窗口不再占任务栏/Alt-Tab；PowerShell/Win32 helper 只在创建/接管时短暂运行，失败才回退 minimized。Auto Tab Discard 同时加入仅匹配 `?chatgpt-archive-guardian=1` 的永久 regex whitelist，不影响普通 ChatGPT 工作标签的自动休眠。
+- 2026-09-09：`--no-reconcile-on-start` 烟雾测试又暴露首轮 periodic 误触发：旧实现 `lastReconcileAt=0`，所以即使跳过 startup reconcile，第一轮主循环仍会立即认为“已超过 6 小时”。现把首次 periodic 计时锚到 daemon 启动时间，纯监听测试不再偷偷扫 conversation list。
 - 2026-09-09：确认全局 `chatgpt-archive` 已注册在 `D:\App\npm-global\chatgpt-archive(.cmd)`。同时定位到一个高影响路径 bug：旧 CLI/daemon 的默认库与状态路径依赖调用者当前工作目录，AI 从其它项目调用时会悄悄创建并读取一份新的空 `data/chatgpt-archive.sqlite`。现改为以脚本自身 `import.meta.url` 推导项目根，默认始终指向正式主库；`CHATGPT_ARCHIVE_DB` / `--db` 仍可显式覆盖。
 - 当前 Userscript：`0.5.2`，Tampermonkey 显示名为 `ChatGPT Companion`；更新文件名仍沿用 `chatgpt-passive-exporter.user.js`，避免破坏既有更新链。
 - 当前项目路径：`D:\Workspace\ChatGPT-Passive-Exporter`。

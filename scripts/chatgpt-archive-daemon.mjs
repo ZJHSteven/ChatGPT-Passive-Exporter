@@ -17,6 +17,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
 
@@ -26,6 +27,8 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const DEFAULT_DB = path.join(PROJECT_ROOT, 'data', 'chatgpt-archive.sqlite')
 const DEFAULT_STATE = path.join(PROJECT_ROOT, 'data', 'archive-daemon-state.json')
 const DEFAULT_LOG = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
+const WINDOWS_HIDE_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-hide-window.ps1')
+const DEFAULT_CDP_TIMEOUT_MS = 10_000
 
 class CdpClient {
   constructor(url) {
@@ -45,6 +48,7 @@ class CdpClient {
         const pending = this.pending.get(message.id)
         if (!pending) return
         this.pending.delete(message.id)
+        clearTimeout(pending.timer)
         if (message.error) pending.reject(new Error(message.error.message || 'CDP error'))
         else pending.resolve(message.result || {})
         return
@@ -56,18 +60,38 @@ class CdpClient {
         }
       }
     })
-    this.ws.addEventListener('close', () => { this.closed = true })
+    this.ws.addEventListener('close', () => {
+      this.closed = true
+      for (const [id, pending] of this.pending) {
+        clearTimeout(pending.timer)
+        pending.reject(new Error(`CDP connection closed while waiting for request ${id}`))
+      }
+      this.pending.clear()
+    })
     await new Promise((resolve, reject) => {
-      this.ws.addEventListener('open', resolve, { once: true })
-      this.ws.addEventListener('error', () => reject(new Error(`CDP connect failed: ${this.url}`)), { once: true })
+      const timer = setTimeout(() => reject(new Error(`CDP connect timed out: ${this.url}`)), DEFAULT_CDP_TIMEOUT_MS)
+      this.ws.addEventListener('open', () => {
+        clearTimeout(timer)
+        resolve()
+      }, { once: true })
+      this.ws.addEventListener('error', () => {
+        clearTimeout(timer)
+        reject(new Error(`CDP connect failed: ${this.url}`))
+      }, { once: true })
     })
   }
 
-  send(method, params = {}) {
+  send(method, params = {}, timeoutMs = DEFAULT_CDP_TIMEOUT_MS) {
     if (!this.ws || this.closed) return Promise.reject(new Error('CDP client is closed'))
     const id = this.nextId++
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+      // 被 Auto Tab Discard 真正 discard 的 renderer 可能保留 CDP target/socket，却永远不再
+      // 回答 Runtime/Page 命令。没有硬超时的话 daemon 会永久挂在一次健康检查上。
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        reject(new Error(`CDP ${method} timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      this.pending.set(id, { resolve, reject, timer })
       this.ws.send(JSON.stringify({ id, method, params }))
     })
   }
@@ -204,6 +228,29 @@ async function ensureGuardian(cdpHttp) {
   let target = targets.find(isGuardianTarget)
   const { browser, version } = await connectBrowser(cdpHttp)
   let created = false
+
+  // Auto Tab Discard 等扩展可能留下“URL 仍像 Guardian、renderer 已经不响应”的半死 target。
+  // 先做一次极短的 Runtime 探活；失败就从 browser-level 关闭 target，再创建全新 Guardian。
+  if (target) {
+    let probe = null
+    try {
+      probe = new CdpClient(target.webSocketDebuggerUrl)
+      await probe.connect()
+      await probe.send('Runtime.enable', {}, 3000)
+      await probe.send('Runtime.evaluate', {
+        expression: 'document.readyState',
+        returnByValue: true,
+      }, 3000)
+    }
+    catch {
+      await browser.send('Target.closeTarget', { targetId: target.id }).catch(() => {})
+      target = null
+    }
+    finally {
+      probe?.close()
+    }
+  }
+
   if (!target) {
     const result = await browser.send('Target.createTarget', {
       url: 'about:blank',
@@ -223,11 +270,56 @@ async function ensureGuardian(cdpHttp) {
   await page.send('Page.setLifecycleEventsEnabled', { enabled: true })
 
   const window = await browser.send('Browser.getWindowForTarget', { targetId: target.id })
-  await browser.send('Browser.setWindowBounds', {
-    windowId: window.windowId,
-    bounds: { windowState: 'minimized' },
-  })
-  return { browser, page, version, targetId: target.id, windowId: window.windowId, created }
+  let nativeWindow = null
+  if (process.platform === 'win32') {
+    const titleMarker = `ChatGPT Archive Guardian ${process.pid}-${Date.now()}`
+    try {
+      // Guardian 是独立窗口里的唯一 tab；临时改 document.title 就能可靠定位对应 HWND，
+      // 隐藏后再导航/reload，页面会自行恢复正常标题。
+      await page.send('Runtime.evaluate', {
+        expression: `document.title=${JSON.stringify(titleMarker)}`,
+        returnByValue: true,
+      }, 3000)
+      const stdout = execFileSync('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', WINDOWS_HIDE_HELPER,
+        '-TitleMarker', titleMarker,
+      ], {
+        encoding: 'utf8',
+        timeout: 8000,
+        windowsHide: true,
+      }).trim()
+      const [hwnd, visibleBefore, visibleAfter] = stdout.split(/\t/u)
+      nativeWindow = stdout ? {
+        hwnd: hwnd || null,
+        visibleBefore: visibleBefore === 'True',
+        visibleAfter: visibleAfter === 'True',
+      } : {
+        hidden: false,
+        error: 'Win32 helper returned empty stdout',
+      }
+    }
+    catch (error) {
+      nativeWindow = {
+        hidden: false,
+        error: error instanceof Error ? error.message : String(error),
+      }
+      // 真隐藏失败时才退回 minimized；不会因此阻断归档功能。
+      await browser.send('Browser.setWindowBounds', {
+        windowId: window.windowId,
+        bounds: { windowState: 'minimized' },
+      })
+    }
+  }
+  else {
+    await browser.send('Browser.setWindowBounds', {
+      windowId: window.windowId,
+      bounds: { windowState: 'minimized' },
+    })
+  }
+  return { browser, page, version, targetId: target.id, windowId: window.windowId, created, nativeWindow }
 }
 
 async function pageFetchJson(page, { url, targetPath, targetRoute, headers }) {
@@ -283,6 +375,7 @@ async function main() {
   let lastWssEventAt = null
   let lastWssCreatedAt = null
   let lastWssClosedAt = null
+  let guardianReadyAt = 0
   let activeSocketIds = new Set()
   let stopping = false
   const dirty = new Map()
@@ -310,6 +403,7 @@ async function main() {
       windowId: guardian.windowId,
       browser: guardian.version?.Browser ?? null,
       pageClosed: guardian.page?.closed ?? true,
+      nativeWindow: guardian.nativeWindow ?? null,
     } : null,
     wss: {
       activeSockets: activeSocketIds.size,
@@ -330,6 +424,9 @@ async function main() {
 
   const writeState = async () => fs.writeFile(statePath, JSON.stringify(state(), null, 2)).catch(() => {})
   const startedAt = Date.now()
+  // `--no-reconcile-on-start` 的含义必须是“启动后先纯监听”。旧实现保留
+  // lastReconcileAt=0，导致第一轮主循环把 periodic 当成“已经超过 6 小时”而立刻扫 list。
+  if (!reconcileOnStart) lastReconcileAt = startedAt
 
   const tripCooldown = async (reason) => {
     cooldownUntil = Date.now() + cooldownMinutes * 60_000
@@ -538,13 +635,46 @@ async function main() {
   }
 
   const establishGuardian = async (reason) => {
+    const previousWindowId = guardian?.windowId ?? null
+    const previousBrowser = guardian?.browser ?? null
+
+    // 如果第三方 discard 扩展把原 Guardian tab 替换成自己的“睡眠占位页”，target id/URL
+    // 会变，但顶层 Chrome window id 仍是原来的。先清理这个已知 Guardian 窗口里的残留 target，
+    // 防止每次自愈都在任务栏留下一个新的“已休眠窗口”。普通用户窗口绝不会匹配该 windowId。
+    if (previousBrowser && previousWindowId !== null) {
+      try {
+        const { targetInfos = [] } = await previousBrowser.send('Target.getTargets')
+        for (const info of targetInfos) {
+          if (info.type !== 'page') continue
+          try {
+            const located = await previousBrowser.send('Browser.getWindowForTarget', { targetId: info.targetId }, 2500)
+            if (located.windowId === previousWindowId) {
+              await previousBrowser.send('Target.closeTarget', { targetId: info.targetId }, 2500).catch(() => {})
+            }
+          }
+          catch {
+            // 某个 target 正在消失不影响其它窗口清理。
+          }
+        }
+      }
+      catch {
+        // browser-level CDP 自己也断开时，后面的 ensureGuardian 会重新连接。
+      }
+    }
     guardian?.page?.close()
     guardian?.browser?.close()
     guardian = await ensureGuardian(cdpHttp)
+    guardianReadyAt = Date.now()
     activeSocketIds = new Set()
     authHeaders = null
     await attachGuardianEvents()
-    await log('guardian ready', { reason, targetId: guardian.targetId, windowId: guardian.windowId, created: guardian.created })
+    await log('guardian ready', {
+      reason,
+      targetId: guardian.targetId,
+      windowId: guardian.windowId,
+      created: guardian.created,
+      nativeHidden: guardian.nativeWindow?.visibleAfter === false,
+    })
     // listener 必须先于导航/reload 安装，才能捕获第一条真实 backend header 与 WSS 创建。
     if (guardian.created) {
       await guardian.page.send('Page.navigate', { url: `https://chatgpt.com/?${GUARDIAN_MARKER}=1` })
@@ -562,7 +692,13 @@ async function main() {
     // “daemon 已经 ready”和“首次补洞完成”是两个不同状态。先写 ready state，
     // 避免 CLI 因一次 5 页 startup reconcile 超过启动等待时间而误报 started:false。
     await writeState()
-    if (authHeaders && reconcileOnStart && lastReconcileAt === 0) await reconcileCatalog('startup')
+    if (authHeaders && reconcileOnStart && lastReconcileAt === 0) {
+      await reconcileCatalog('startup')
+    }
+    else if (authHeaders && reason !== 'startup') {
+      // Guardian 自愈意味着中间存在 WSS 盲区；只在恢复后做一次 overlap reconciliation。
+      await reconcileCatalog('guardian-recover')
+    }
   }
 
   process.on('SIGINT', () => { stopping = true })
@@ -583,10 +719,15 @@ async function main() {
       const runtime = await guardian.page.send('Runtime.evaluate', {
         expression: `({ visibility: document.visibilityState, discarded: document.wasDiscarded === true, ready: document.readyState })`,
         returnByValue: true,
-      })
+      }, 3000)
       if (runtime.result?.value?.discarded === true) {
-        await log('guardian was discarded; reloading dedicated page')
-        await guardian.page.send('Page.reload', { ignoreCache: false })
+        throw new Error('guardian renderer reports document.wasDiscarded=true')
+      }
+
+      // 正常 ChatGPT 首页加载后会维持一个 conversations WSS。若页面已经 ready/auth 可用、
+      // 但 20 秒后仍没有 socket，视作监听面失效并重建 Guardian，而不是无期限静默。
+      if (authHeaders && Date.now() - guardianReadyAt > 20_000 && activeSocketIds.size === 0) {
+        throw new Error('guardian has no active ChatGPT WSS after readiness grace period')
       }
 
       if (reconcileHours > 0 && authHeaders && Date.now() - lastReconcileAt >= reconcileHours * 3600_000) {
