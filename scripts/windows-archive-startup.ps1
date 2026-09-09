@@ -57,36 +57,40 @@ $arguments = @(
   '--db', ('"{0}"' -f $DbPath)
 ) -join ' '
 
-$taskAction = New-ScheduledTaskAction @{
+$actionParams = @{
   Execute = $NodeExe
   Argument = $arguments
   WorkingDirectory = $ProjectRoot
 }
+$taskAction = New-ScheduledTaskAction @actionParams
 
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 
 # 任务本身就是 daemon，因此可直接使用 Task Scheduler 原生失败重启。
 # ExecutionTimeLimit=0 表示允许无限运行；StartWhenAvailable 处理登录瞬间调度服务尚未准备好的情况。
-$settings = New-ScheduledTaskSettingsSet @{
+$settingsParams = @{
   StartWhenAvailable = $true
   MultipleInstances = 'IgnoreNew'
   RestartCount = 999
   RestartInterval = (New-TimeSpan -Minutes 1)
   ExecutionTimeLimit = [TimeSpan]::Zero
 }
+$settings = New-ScheduledTaskSettingsSet @settingsParams
 
-$principal = New-ScheduledTaskPrincipal @{
+$principalParams = @{
   UserId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
   LogonType = 'Interactive'
   RunLevel = 'Limited'
 }
+$principal = New-ScheduledTaskPrincipal @principalParams
 
-$task = New-ScheduledTask @{
+$taskParams = @{
   Action = $taskAction
   Trigger = $trigger
   Settings = $settings
   Principal = $principal
 }
+$task = New-ScheduledTask @taskParams
 
 Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
 
