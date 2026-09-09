@@ -7,6 +7,7 @@ import { adaptConversation } from '../core/adapter.ts'
 import { extractMessageText } from '../core/adapter.ts'
 import { buildRichManifest } from '../core/manifest.ts'
 import { conversationToMarkdown } from '../core/markdown.ts'
+import { diagnoseLatestRun, type RunDiagnostic } from '../core/run-diagnostics.ts'
 import type { CanonicalConversation } from '../core/types.ts'
 
 export interface ArchiveImportResult {
@@ -84,6 +85,30 @@ export interface SchemaFieldObservation {
   fieldName: string
   valueType: string
   count: number
+}
+
+export interface LiveMergeResult {
+  conversationId: string
+  title: string
+  pageMessageCount: number
+  newMessageCount: number
+  totalMessageCount: number
+  resourceCount: number
+  diagnostic: RunDiagnostic
+}
+
+export interface ArchiveIncidentRow {
+  id: string
+  conversationId: string
+  turnExchangeId: string | null
+  detectedAt: number
+  resolvedAt: number | null
+  status: 'open' | 'resolved'
+  reason: string
+  terminalEvidence: string
+  tailShape: string
+  source: string
+  diagnosticJson: string
 }
 
 function ensureParentDir(filePath: string): void {
@@ -350,6 +375,42 @@ export class ChatArchiveDb {
         text,
         tokenize='trigram'
       );
+
+      -- 在线 body/list/WSS 派生的原始观测单独留档。它和官方 ZIP snapshot 不同：
+      -- 同一 conversation 可以在一天里被观察很多次，因此这里使用自增 observation id，
+      -- 不能复用 conversation_snapshots 的 (source_id, conversation_id) 唯一键。
+      CREATE TABLE IF NOT EXISTS live_observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT,
+        observation_kind TEXT NOT NULL,
+        endpoint TEXT,
+        page_cursor TEXT,
+        observed_at INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        raw_json_gzip BLOB NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS live_observations_conversation_time
+        ON live_observations(conversation_id, observed_at DESC);
+
+      -- incident 是“某一轮的异常历史”，不是 conversation 永久属性。
+      -- conversations.incident_state 只保存当前快速状态；完整历史在本表。
+      CREATE TABLE IF NOT EXISTS incidents (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        turn_exchange_id TEXT,
+        detected_at INTEGER NOT NULL,
+        resolved_at INTEGER,
+        status TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        terminal_evidence TEXT NOT NULL,
+        tail_shape TEXT NOT NULL,
+        source TEXT NOT NULL,
+        diagnostic_json TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS incidents_conversation_status
+        ON incidents(conversation_id, status, detected_at DESC);
     `)
 
     // 旧 prototype 数据库已经存在于用户机器上，因此采用“增量加列”而不是粗暴 DROP/重建。
@@ -934,6 +995,389 @@ export class ChatArchiveDb {
    */
   rebuildAuditSearchIndex(): void {
     this.rebuildSearchIndexes({ includeAuditText: true })
+  }
+
+  /** 返回一页 message id 中哪些已经存在，用于 body cursor overlap 停止判定。 */
+  knownMessageIds(conversationId: string, messageIds: string[]): Set<string> {
+    const known = new Set<string>()
+    const query = this.db.prepare(`
+      SELECT 1 AS present
+      FROM messages
+      WHERE conversation_id = ? AND message_id = ?
+      LIMIT 1
+    `)
+    for (const messageId of messageIds) {
+      if (query.get(conversationId, messageId)) known.add(messageId)
+    }
+    return known
+  }
+
+  /**
+   * 合并当前 first-party plural body 的一页 messages[]。
+   *
+   * 与 importRaw() 的关键区别：这里永远不删除 conversation 历史。页面只返回最近 10 turns
+   * 也没关系；已存在 message 按 observedAt 更新 canonical，未知 message 插入，本地更老消息保留。
+   */
+  mergeLiveMessagesPage(
+    payload: unknown,
+    options: {
+      observedAt?: number
+      endpoint?: string
+      pageCursor?: string | null
+      observationKind?: string
+      /** 只有 WSS complete / watchdog terminal verification 才允许新建 incident。 */
+      classifyTerminal?: boolean
+    } = {},
+  ): LiveMergeResult {
+    const conversation = adaptConversation(payload)
+    if (conversation.sourceFormat !== 'messages') throw new Error('Live merge currently requires a plural messages[] payload')
+    const conversationId = conversation.conversationId
+    if (!conversationId) throw new Error('Live messages payload has no conversation_id')
+
+    const rawPayload = record(payload)
+    const observedAt = options.observedAt ?? Date.now()
+    const now = Date.now()
+    const rawText = json(payload)
+    const messageIds = conversation.messages.map(message => message.id)
+    const knownBefore = this.knownMessageIds(conversationId, messageIds)
+
+    const upsertConversation = this.db.prepare(`
+      INSERT INTO conversations (
+        id, title, source_format, current_node, captured_at, imported_at,
+        message_count, resource_count, markdown,
+        create_time, update_time, first_seen_at, last_seen_at, source_missing
+      ) VALUES (?, ?, 'messages', ?, ?, ?, 0, 0, '', ?, ?, ?, ?, 0)
+      ON CONFLICT(id) DO UPDATE SET
+        title=excluded.title,
+        source_format='messages',
+        current_node=COALESCE(excluded.current_node, conversations.current_node),
+        captured_at=max(conversations.captured_at, excluded.captured_at),
+        imported_at=excluded.imported_at,
+        create_time=COALESCE(conversations.create_time, excluded.create_time),
+        update_time=CASE
+          WHEN excluded.update_time IS NULL THEN conversations.update_time
+          WHEN conversations.update_time IS NULL THEN excluded.update_time
+          ELSE max(conversations.update_time, excluded.update_time)
+        END,
+        first_seen_at=min(COALESCE(conversations.first_seen_at, excluded.first_seen_at), excluded.first_seen_at),
+        last_seen_at=max(COALESCE(conversations.last_seen_at, excluded.last_seen_at), excluded.last_seen_at),
+        source_missing=0
+    `)
+    const upsertMessage = this.db.prepare(`
+      INSERT INTO messages (
+        conversation_id, message_id, ordinal, role, author_name, recipient, channel,
+        content_type, text, hidden, create_time, metadata_json,
+        node_id, role_raw, update_time, status, end_turn, weight,
+        request_id, turn_exchange_id, model_slug, resolved_model_slug,
+        finish_type, finish_reason, reasoning_status,
+        author_json, content_json, raw_json,
+        first_seen_at, last_seen_at, source_observed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(conversation_id, message_id) DO UPDATE SET
+        last_seen_at=max(COALESCE(messages.last_seen_at, excluded.last_seen_at), excluded.last_seen_at),
+        role=excluded.role,
+        author_name=excluded.author_name,
+        recipient=excluded.recipient,
+        channel=excluded.channel,
+        content_type=excluded.content_type,
+        text=excluded.text,
+        hidden=excluded.hidden,
+        create_time=COALESCE(excluded.create_time, messages.create_time),
+        metadata_json=excluded.metadata_json,
+        role_raw=excluded.role_raw,
+        update_time=COALESCE(excluded.update_time, messages.update_time),
+        status=excluded.status,
+        end_turn=excluded.end_turn,
+        weight=excluded.weight,
+        request_id=excluded.request_id,
+        turn_exchange_id=excluded.turn_exchange_id,
+        model_slug=excluded.model_slug,
+        resolved_model_slug=excluded.resolved_model_slug,
+        finish_type=excluded.finish_type,
+        finish_reason=excluded.finish_reason,
+        reasoning_status=excluded.reasoning_status,
+        author_json=excluded.author_json,
+        content_json=excluded.content_json,
+        raw_json=excluded.raw_json,
+        source_observed_at=max(COALESCE(messages.source_observed_at, 0), excluded.source_observed_at)
+    `)
+    const insertPart = this.db.prepare(`
+      INSERT INTO message_parts (
+        conversation_id, message_id, part_index, source_field, part_kind, text_value, json_value
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      upsertConversation.run(
+        conversationId,
+        conversation.title,
+        conversation.currentNode ?? null,
+        observedAt,
+        now,
+        numberValue(rawPayload.create_time),
+        numberValue(rawPayload.update_time),
+        observedAt,
+        observedAt,
+      )
+
+      conversation.messages.forEach((message, pageOrdinal) => {
+        const rawMessage = record(message.raw)
+        const author = record(rawMessage.author)
+        const content = record(rawMessage.content)
+        const metadata = record(rawMessage.metadata)
+        const finishDetails = record(metadata.finish_details)
+        upsertMessage.run(
+          conversationId,
+          message.id,
+          pageOrdinal,
+          message.role,
+          message.authorName ?? null,
+          message.recipient,
+          message.channel ?? null,
+          message.contentType,
+          message.text,
+          message.hidden ? 1 : 0,
+          numberValue(rawMessage.create_time),
+          json(metadata),
+          canonicalRole(author.role),
+          numberValue(rawMessage.update_time),
+          stringValue(rawMessage.status),
+          booleanValue(rawMessage.end_turn),
+          numberValue(rawMessage.weight),
+          stringValue(metadata.request_id),
+          stringValue(metadata.turn_exchange_id),
+          stringValue(metadata.model_slug),
+          stringValue(metadata.resolved_model_slug),
+          stringValue(finishDetails.type),
+          stringValue(finishDetails.reason),
+          stringValue(metadata.reasoning_status),
+          json(author),
+          json(content),
+          json(rawMessage),
+          observedAt,
+          observedAt,
+          observedAt,
+        )
+
+        this.db.prepare('DELETE FROM message_parts WHERE conversation_id = ? AND message_id = ?').run(conversationId, message.id)
+        if (Array.isArray(content.parts)) {
+          content.parts.forEach((part, partIndex) => {
+            const kind = part === null ? 'null' : Array.isArray(part) ? 'array' : typeof part === 'object' ? 'object' : typeof part
+            insertPart.run(
+              conversationId,
+              message.id,
+              partIndex,
+              'parts',
+              kind,
+              typeof part === 'string' ? part : null,
+              typeof part === 'string' ? null : json(part),
+            )
+          })
+        }
+      })
+
+      this.db.prepare(`
+        INSERT INTO live_observations (
+          conversation_id, observation_kind, endpoint, page_cursor, observed_at, sha256, raw_json_gzip
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        conversationId,
+        options.observationKind ?? 'body-page',
+        options.endpoint ?? null,
+        options.pageCursor ?? null,
+        observedAt,
+        sha256Text(rawText),
+        gzipSync(Buffer.from(rawText, 'utf8')),
+      )
+
+      this.rebuildConversationDerivedInsideTransaction(conversationId)
+      this.db.exec('COMMIT')
+    }
+    catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+
+    const diagnostic = diagnoseLatestRun(payload as never)
+    this.updateIncidentFromDiagnostic(conversationId, diagnostic, observedAt, options.classifyTerminal === true)
+    const counts = this.db.prepare(`
+      SELECT message_count AS messageCount, resource_count AS resourceCount
+      FROM conversations WHERE id = ?
+    `).get(conversationId) as { messageCount: number, resourceCount: number }
+    return {
+      conversationId,
+      title: conversation.title,
+      pageMessageCount: conversation.messages.length,
+      newMessageCount: messageIds.filter(id => !knownBefore.has(id)).length,
+      totalMessageCount: Number(counts.messageCount),
+      resourceCount: Number(counts.resourceCount),
+      diagnostic,
+    }
+  }
+
+  /** 在线增量只重建一个 conversation 的派生表，避免全库 FTS/资源重算。 */
+  private rebuildConversationDerivedInsideTransaction(conversationId: string): void {
+    const conversationRow = this.db.prepare('SELECT title FROM conversations WHERE id = ?').get(conversationId) as { title: string }
+    const rows = [...this.db.prepare(`
+      SELECT row_id AS rowId, message_id AS messageId, role, author_name AS authorName,
+             recipient, channel, content_type AS contentType, text, hidden,
+             create_time AS createTime, raw_json AS rawJson
+      FROM messages
+      WHERE conversation_id = ?
+      ORDER BY COALESCE(create_time, 0), row_id
+    `).iterate(conversationId)] as Array<{
+      rowId: number
+      messageId: string
+      role: string
+      authorName: string | null
+      recipient: string
+      channel: string | null
+      contentType: string
+      text: string
+      hidden: number
+      createTime: number | null
+      rawJson: string
+    }>
+
+    const updateOrdinal = this.db.prepare('UPDATE messages SET ordinal = ? WHERE row_id = ?')
+    rows.forEach((row, index) => updateOrdinal.run(index, row.rowId))
+
+    this.db.prepare('DELETE FROM message_fts WHERE conversation_id = ?').run(conversationId)
+    this.db.prepare('DELETE FROM message_fts_trigram WHERE conversation_id = ?').run(conversationId)
+    this.db.prepare('DELETE FROM resources WHERE conversation_id = ?').run(conversationId)
+    const insertFts = this.db.prepare('INSERT INTO message_fts (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
+    const insertTrigram = this.db.prepare('INSERT INTO message_fts_trigram (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
+    const insertResource = this.db.prepare('INSERT INTO resources (conversation_id, message_id, ordinal, kind, label, data_json) VALUES (?, ?, ?, ?, ?, ?)')
+
+    const rawMessages: unknown[] = []
+    let resourceOrdinal = 0
+    for (const row of rows) {
+      if (row.hidden === 0 && row.recipient === 'all' && (row.role === 'user' || row.role === 'assistant') && row.text.trim()) {
+        insertFts.run(conversationId, row.messageId, conversationRow.title, row.role, row.text)
+        insertTrigram.run(conversationId, row.messageId, conversationRow.title, row.role, row.text)
+      }
+      try {
+        const rawMessage = JSON.parse(row.rawJson)
+        rawMessages.push(rawMessage)
+        const manifest = buildRichManifest(adaptConversation({
+          title: conversationRow.title,
+          conversation_id: conversationId,
+          messages: [rawMessage],
+        }))
+        for (const item of manifest.items) {
+          insertResource.run(conversationId, item.messageId || row.messageId, resourceOrdinal++, item.kind, item.label, json(item.data))
+        }
+      }
+      catch {
+        // 单条派生 JSON 损坏不影响 canonical message；raw observation 仍保留用于以后修复。
+      }
+    }
+
+    let markdown = ''
+    if (rawMessages.length > 0) {
+      const canonical = adaptConversation({
+        title: conversationRow.title,
+        conversation_id: conversationId,
+        messages: rawMessages,
+      })
+      if (visibleForMarkdown(canonical)) markdown = conversationToMarkdown(canonical)
+    }
+    this.db.prepare(`
+      UPDATE conversations
+      SET message_count = ?, resource_count = ?, markdown = ?, imported_at = ?
+      WHERE id = ?
+    `).run(rows.length, resourceOrdinal, markdown, Date.now(), conversationId)
+  }
+
+  /**
+   * complete 事件后的最新 body 诊断会更新“当前异常”；历史 incident 永远不删除。
+   * 新 turn / 恢复 final 会把旧 open incident 标为 resolved，避免 conversation 永久红牌。
+   */
+  updateIncidentFromDiagnostic(
+    conversationId: string,
+    diagnostic: RunDiagnostic,
+    observedAt = Date.now(),
+    allowCreate = true,
+  ): void {
+    const open = this.db.prepare(`
+      SELECT id, turn_exchange_id AS turnExchangeId
+      FROM incidents
+      WHERE conversation_id = ? AND status = 'open'
+      ORDER BY detected_at DESC
+      LIMIT 1
+    `).get(conversationId) as { id: string, turnExchangeId: string | null } | undefined
+
+    const latestTurn = diagnostic.turnExchangeId ?? null
+    const recovered = diagnostic.terminalEvidence === 'final'
+      || (open && open.turnExchangeId && latestTurn && open.turnExchangeId !== latestTurn)
+    if (open && recovered) {
+      this.db.prepare(`UPDATE incidents SET status='resolved', resolved_at=? WHERE id=?`).run(observedAt, open.id)
+    }
+
+    const abnormal = diagnostic.terminalEvidence === 'client-stopped'
+      || diagnostic.terminalEvidence === 'interrupted'
+      || (diagnostic.terminalEvidence === 'none' && diagnostic.tailShape !== 'final')
+    if (allowCreate && abnormal && !recovered) {
+      const fingerprint = `${conversationId}:${latestTurn ?? diagnostic.lastMessageId ?? 'unknown'}:${diagnostic.terminalEvidence}:${diagnostic.tailShape}`
+      const incidentId = sha256Text(fingerprint).slice(0, 24)
+      const reason = diagnostic.summary
+      this.db.prepare(`
+        INSERT INTO incidents (
+          id, conversation_id, turn_exchange_id, detected_at, resolved_at, status,
+          reason, terminal_evidence, tail_shape, source, diagnostic_json
+        ) VALUES (?, ?, ?, ?, NULL, 'open', ?, ?, ?, 'realtime-body', ?)
+        ON CONFLICT(id) DO UPDATE SET
+          reason=excluded.reason,
+          terminal_evidence=excluded.terminal_evidence,
+          tail_shape=excluded.tail_shape,
+          diagnostic_json=excluded.diagnostic_json
+      `).run(
+        incidentId,
+        conversationId,
+        latestTurn,
+        observedAt,
+        reason,
+        diagnostic.terminalEvidence,
+        diagnostic.tailShape,
+        json(diagnostic),
+      )
+    }
+
+    const remaining = this.db.prepare(`
+      SELECT count(*) AS n FROM incidents WHERE conversation_id = ? AND status = 'open'
+    `).get(conversationId) as { n: number }
+    this.db.prepare(`
+      UPDATE conversations
+      SET terminal_state=?, incident_state=?, last_finish_reason=?, last_monitor_checked_at=?
+      WHERE id=?
+    `).run(
+      diagnostic.terminalEvidence,
+      Number(remaining.n) > 0 ? 'open' : null,
+      diagnostic.interruptedReason ?? null,
+      observedAt,
+      conversationId,
+    )
+  }
+
+  listIncidents(options: { status?: 'open' | 'resolved', limit?: number } = {}): ArchiveIncidentRow[] {
+    const limit = Math.max(1, Math.min(1000, options.limit ?? 100))
+    if (options.status) {
+      return this.db.prepare(`
+        SELECT id, conversation_id AS conversationId, turn_exchange_id AS turnExchangeId,
+               detected_at AS detectedAt, resolved_at AS resolvedAt, status, reason,
+               terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
+               source, diagnostic_json AS diagnosticJson
+        FROM incidents WHERE status = ? ORDER BY detected_at DESC LIMIT ?
+      `).all(options.status, limit) as unknown as ArchiveIncidentRow[]
+    }
+    return this.db.prepare(`
+      SELECT id, conversation_id AS conversationId, turn_exchange_id AS turnExchangeId,
+             detected_at AS detectedAt, resolved_at AS resolvedAt, status, reason,
+             terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
+             source, diagnostic_json AS diagnosticJson
+      FROM incidents ORDER BY detected_at DESC LIMIT ?
+    `).all(limit) as unknown as ArchiveIncidentRow[]
   }
 
   /**

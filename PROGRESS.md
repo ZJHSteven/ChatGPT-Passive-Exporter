@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-09：确认全局 `chatgpt-archive` 已注册在 `D:\App\npm-global\chatgpt-archive(.cmd)`。同时定位到一个高影响路径 bug：旧 CLI/daemon 的默认库与状态路径依赖调用者当前工作目录，AI 从其它项目调用时会悄悄创建并读取一份新的空 `data/chatgpt-archive.sqlite`。现改为以脚本自身 `import.meta.url` 推导项目根，默认始终指向正式主库；`CHATGPT_ARCHIVE_DB` / `--db` 仍可显式覆盖。
 - 当前 Userscript：`0.5.2`，Tampermonkey 显示名为 `ChatGPT Companion`；更新文件名仍沿用 `chatgpt-passive-exporter.user.js`，避免破坏既有更新链。
 - 当前项目路径：`D:\Workspace\ChatGPT-Passive-Exporter`。
 - 当前浏览器实测基线：脚本安装在 `D:\AppData\Chrome\Chrome-CDP\User Data\Default` 这套独立 CDP profile；普通 `C:\Users\ZJHSteven\AppData\Local\Google\Chrome\User Data\Default` 虽也装有 Tampermonkey，但未发现 Companion userscript 数据。

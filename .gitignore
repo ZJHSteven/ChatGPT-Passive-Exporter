@@ -13,6 +13,7 @@ data/*.sqlite
 data/*.sqlite-*
 data/raw/
 data/recovery-ledger.json
+data/archive-daemon*.json
 
 # Temporary research clones, test downloads and local HTTP server state
 .tmp/

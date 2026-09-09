@@ -2,8 +2,22 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
 import { importOfficialExportZips } from '../src/local/official-export.ts'
+
+/**
+ * 全局 `chatgpt-archive` 通过 npm link/全局 shim 可以从任意工作目录启动。
+ * 因此默认数据库、daemon 脚本和运行状态绝不能再用 `process.cwd()` 推导；
+ * 否则 AI 在另一个项目目录调用 CLI 时会悄悄创建一份新的空 `data/chatgpt-archive.sqlite`。
+ *
+ * `import.meta.url` 始终指向真正的脚本文件，所以以 scripts/ 的父目录作为项目根最稳定。
+ */
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const DEFAULT_DB_PATH = path.join(PROJECT_ROOT, 'data', 'chatgpt-archive.sqlite')
+const DEFAULT_DAEMON_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon-state.json')
+const DEFAULT_DAEMON_LOG_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
 
 function usage() {
   console.log(`ChatGPT Archive CLI
@@ -18,8 +32,12 @@ Usage:
   chatgpt-archive sources [--db <path>]
   chatgpt-archive schema [--source ID] [--db <path>]
   chatgpt-archive reindex [--all] [--db <path>]
+  chatgpt-archive incidents [--status open|resolved] [--limit N] [--db <path>]
+  chatgpt-archive daemon start [--cdp URL] [--reconcile-hours N] [--db <path>]
+  chatgpt-archive daemon status [--state <path>]
+  chatgpt-archive daemon stop [--state <path>]
 
-Default DB: data/chatgpt-archive.sqlite
+Default DB: <ChatGPT Archive project>/data/chatgpt-archive.sqlite
 
 Development fallback:
   node scripts/chatgpt-archive.mjs <command> ...
@@ -53,7 +71,113 @@ function parseArgs(argv) {
 }
 
 function dbPath(flags) {
-  return path.resolve(String(flags.get('db') || 'data/chatgpt-archive.sqlite'))
+  const explicit = flags.get('db') ?? process.env.CHATGPT_ARCHIVE_DB
+  return explicit === undefined ? DEFAULT_DB_PATH : path.resolve(String(explicit))
+}
+
+function daemonStatePath(flags) {
+  const explicit = flags.get('state')
+  return explicit === undefined ? DEFAULT_DAEMON_STATE_PATH : path.resolve(String(explicit))
+}
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  }
+  catch {
+    return false
+  }
+}
+
+async function readDaemonState(flags) {
+  const statePath = daemonStatePath(flags)
+  try {
+    const state = JSON.parse(await fs.readFile(statePath, 'utf8'))
+    return { statePath, state, alive: isPidAlive(Number(state?.pid)) }
+  }
+  catch {
+    return { statePath, state: null, alive: false }
+  }
+}
+
+async function daemonCommand(positionals, flags) {
+  const action = positionals[0]
+  if (!action) throw new Error('daemon requires start|status|stop')
+
+  if (action === 'status') {
+    const current = await readDaemonState(flags)
+    console.log(JSON.stringify(current, null, 2))
+    return
+  }
+
+  if (action === 'stop') {
+    const current = await readDaemonState(flags)
+    const pid = Number(current.state?.pid)
+    if (!current.alive || !Number.isInteger(pid)) {
+      console.log(JSON.stringify({ stopped: false, reason: 'daemon not running', ...current }, null, 2))
+      return
+    }
+    process.kill(pid, 'SIGTERM')
+    const started = Date.now()
+    while (isPidAlive(pid) && Date.now() - started < 5000) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    if (isPidAlive(pid)) process.kill(pid, 'SIGKILL')
+    console.log(JSON.stringify({ stopped: !isPidAlive(pid), pid, statePath: current.statePath }, null, 2))
+    return
+  }
+
+  if (action === 'start') {
+    const current = await readDaemonState(flags)
+    if (current.alive) {
+      console.log(JSON.stringify({ started: false, reason: 'already running', ...current }, null, 2))
+      return
+    }
+
+    const daemonScript = path.join(PROJECT_ROOT, 'scripts', 'chatgpt-archive-daemon.mjs')
+    const statePath = daemonStatePath(flags)
+    const logPath = flags.has('log')
+      ? path.resolve(String(flags.get('log')))
+      : DEFAULT_DAEMON_LOG_PATH
+    const childArgs = [daemonScript, '--state', statePath, '--log', logPath, '--db', dbPath(flags)]
+    const passFlags = [
+      'cdp',
+      'sync-delay-ms',
+      'reconcile-delay-ms',
+      'overlap',
+      'reconcile-hours',
+      'cooldown-minutes',
+      'max-sync-conversations',
+    ]
+    for (const name of passFlags) {
+      if (flags.has(name)) childArgs.push(`--${name}`, String(flags.get(name)))
+    }
+    if (flags.has('no-reconcile-on-start')) childArgs.push('--no-reconcile-on-start')
+
+    const child = spawn(process.execPath, childArgs, {
+      detached: true,
+      windowsHide: true,
+      // daemon 自己负责写结构化日志；这里若再把 stderr/stdout 重定向到同一文件，
+      // 每条 log() 会被“fs.appendFile + console.error”写两遍。
+      stdio: 'ignore',
+      cwd: PROJECT_ROOT,
+    })
+    child.unref()
+
+    const started = Date.now()
+    let observed = null
+    while (Date.now() - started < 15_000) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      observed = await readDaemonState(flags)
+      if (observed.alive && observed.state?.guardian) break
+    }
+    console.log(JSON.stringify({ started: Boolean(observed?.alive), pid: child.pid, ...(observed || {}) }, null, 2))
+    return
+  }
+
+  throw new Error(`Unknown daemon action: ${action}`)
 }
 
 function limit(flags, fallback) {
@@ -88,6 +212,12 @@ async function main() {
   }
 
   const { positionals, flags } = parseArgs(rest)
+
+  if (command === 'daemon') {
+    await daemonCommand(positionals, flags)
+    return
+  }
+
   const archive = new ChatArchiveDb(dbPath(flags))
   try {
     if (command === 'import') {
@@ -165,6 +295,19 @@ async function main() {
         rebuiltResources: resourceCount,
         stats: archive.stats(),
       }, null, 2))
+      return
+    }
+
+    if (command === 'incidents') {
+      const statusFlag = flags.get('status')
+      const status = statusFlag === undefined ? undefined : String(statusFlag)
+      if (status !== undefined && status !== 'open' && status !== 'resolved') {
+        throw new Error('--status must be open|resolved')
+      }
+      console.log(JSON.stringify(archive.listIncidents({
+        status,
+        limit: limit(flags, 100),
+      }), null, 2))
       return
     }
 
