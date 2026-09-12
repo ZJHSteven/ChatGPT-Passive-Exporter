@@ -242,6 +242,67 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('官方 mapping.parent 不会被后来的 metadata.parent_id 覆盖', () => {
+    const db = tempDb()
+    try {
+      const source = db.beginOfficialExportSource({
+        sourceKey: 'official-parent-test',
+        filePath: 'fixture.zip',
+        fileSize: 1,
+        fileMtimeMs: 1,
+        observedAt: 1000,
+        metadata: {},
+      })
+      db.importOfficialBatch(source.sourceId, [{
+        id: 'parent-priority',
+        title: 'Parent priority',
+        current_node: 'assistant-1',
+        mapping: {
+          'user-1': {
+            id: 'user-1',
+            parent: null,
+            children: ['assistant-1'],
+            message: {
+              id: 'user-1', author: { role: 'user' }, recipient: 'all',
+              content: { content_type: 'text', parts: ['问题'] }, metadata: {},
+            },
+          },
+          'assistant-1': {
+            id: 'assistant-1',
+            parent: 'user-1',
+            children: [],
+            message: {
+              id: 'assistant-1', author: { role: 'assistant' }, recipient: 'all', channel: 'final',
+              content: { content_type: 'text', parts: ['回答'] }, metadata: {},
+            },
+          },
+        },
+      }], { observedAt: 1000, partName: 'conversations-000.json' })
+
+      // 模拟当前 plural payload：metadata.parent_id 故意与官方 mapping.parent 不同。
+      db.mergeLiveMessagesPage({
+        title: 'Parent priority',
+        conversation_id: 'parent-priority',
+        current_node: 'assistant-1',
+        messages: [{
+          id: 'assistant-1', author: { role: 'assistant' }, recipient: 'all', channel: 'final',
+          content: { content_type: 'text', parts: ['更新后的回答'] },
+          metadata: { parent_id: 'transport-parent-not-tree-parent' },
+        }],
+      }, { observedAt: 2000 })
+
+      const row = db.db.prepare(`
+        SELECT parent_id AS parentId, parent_source AS parentSource
+        FROM mapping_nodes
+        WHERE conversation_id='parent-priority' AND node_id='assistant-1'
+      `).get()
+      expect(row).toMatchObject({ parentId: 'user-1', parentSource: 'official-mapping' })
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('complete 但没有 final 会开 incident；新 turn 正常完成后自动解除当前异常', () => {
     const db = tempDb()
     try {

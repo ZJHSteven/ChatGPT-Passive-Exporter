@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { gzipSync } from 'node:zlib'
+import { gunzipSync, gzipSync } from 'node:zlib'
 import { adaptConversation } from '../core/adapter.ts'
 import { extractMessageText } from '../core/adapter.ts'
 import { buildRichManifest } from '../core/manifest.ts'
@@ -301,6 +301,7 @@ export class ChatArchiveDb {
         conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
         node_id TEXT NOT NULL,
         parent_id TEXT,
+        parent_source TEXT,
         message_id TEXT,
         children_json TEXT,
         extra_json TEXT NOT NULL DEFAULT '{}',
@@ -458,6 +459,9 @@ export class ChatArchiveDb {
     this.ensureColumn('messages', 'first_seen_at', 'INTEGER')
     this.ensureColumn('messages', 'last_seen_at', 'INTEGER')
     this.ensureColumn('messages', 'source_observed_at', 'INTEGER')
+    // `metadata.parent_id` 与官方 mapping.parent 不是同一个语义：2026-09-13 在真实长会话中
+    // 观察到大量不一致。额外记录 parent 来源，避免后来的 plural body 把官方树关系覆盖掉。
+    this.ensureColumn('mapping_nodes', 'parent_source', 'TEXT')
   }
 
   /** SQLite 没有通用的 `ADD COLUMN IF NOT EXISTS`，所以先用 PRAGMA 检查旧库。 */
@@ -554,13 +558,16 @@ export class ChatArchiveDb {
     `)
     const upsertNode = this.db.prepare(`
       INSERT INTO mapping_nodes (
-        conversation_id, node_id, parent_id, message_id, children_json, extra_json,
+        conversation_id, node_id, parent_id, parent_source, message_id, children_json, extra_json,
         first_seen_at, last_seen_at, source_observed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, 'official-mapping', ?, ?, ?, ?, ?, ?)
       ON CONFLICT(conversation_id, node_id) DO UPDATE SET
         first_seen_at=min(mapping_nodes.first_seen_at, excluded.first_seen_at),
         last_seen_at=max(mapping_nodes.last_seen_at, excluded.last_seen_at),
-        parent_id=CASE WHEN excluded.source_observed_at >= mapping_nodes.source_observed_at THEN excluded.parent_id ELSE mapping_nodes.parent_id END,
+        -- 官方 Data Export 的 `mapping.parent` 是真正的树边，优先级高于在线
+        -- messages[].metadata.parent_id；即使官方快照时间早于 live observation，也不能反过来。
+        parent_id=excluded.parent_id,
+        parent_source='official-mapping',
         message_id=CASE WHEN excluded.source_observed_at >= mapping_nodes.source_observed_at THEN excluded.message_id ELSE mapping_nodes.message_id END,
         children_json=CASE WHEN excluded.source_observed_at >= mapping_nodes.source_observed_at AND excluded.children_json IS NOT NULL THEN excluded.children_json ELSE mapping_nodes.children_json END,
         extra_json=CASE WHEN excluded.source_observed_at >= mapping_nodes.source_observed_at THEN excluded.extra_json ELSE mapping_nodes.extra_json END,
@@ -1107,26 +1114,37 @@ export class ChatArchiveDb {
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `)
     /**
-     * 新式 plural body 虽然没有旧 `mapping{}` 大对象，但每条 message 的 metadata.parent_id
-     * 仍保留真实树关系。Genesis 已实测 103260/103260 个“有 message 的 mapping node”都满足
-     * `node_id === message_id`，因此在线同步可以安全用 message.id 作为 node_id。
+     * 新式 plural body 虽然没有旧 `mapping{}` 大对象，但每条 message 常带 metadata.parent_id。
+     * 2026-09-13 的真实对账证明：这个字段**不能**等同于旧 mapping.parent——在多条长会话里
+     * 大量 message 的 metadata.parent_id 与官方 mapping.parent 不一致。因此这里仍可安全使用
+     * `message.id` 作为 node_id（Genesis 已验证 103260/103260 个有 message 的 mapping node 满足
+     * node_id === message_id），但 parent 只能标记为 `live-metadata-inferred` 的推断关系。
      *
      * children_json 不直接相信远端单页（分页可能只看到部分 children）；下面会在本地 upsert
      * 完本页后，按 parent_id 从完整 mapping_nodes 表重新计算“当前已知 children”。
      */
     const upsertMappingNode = this.db.prepare(`
       INSERT INTO mapping_nodes (
-        conversation_id, node_id, parent_id, message_id, children_json, extra_json,
+        conversation_id, node_id, parent_id, parent_source, message_id, children_json, extra_json,
         first_seen_at, last_seen_at, source_observed_at
-      ) VALUES (?, ?, ?, ?, NULL, '{}', ?, ?, ?)
+      ) VALUES (?, ?, ?, 'live-metadata-inferred', ?, NULL, '{}', ?, ?, ?)
       ON CONFLICT(conversation_id, node_id) DO UPDATE SET
         first_seen_at=min(mapping_nodes.first_seen_at, excluded.first_seen_at),
         last_seen_at=max(mapping_nodes.last_seen_at, excluded.last_seen_at),
+        -- 已有官方 mapping.parent 时绝不能被 metadata.parent_id 覆盖。
+        -- 对纯 live 新节点，也只在本地还没有 parent 时填入一次推断值；后续不同页面里的
+        -- metadata.parent_id 不再来回改写树。
         parent_id=CASE
-          WHEN excluded.source_observed_at >= mapping_nodes.source_observed_at
-            AND excluded.parent_id IS NOT NULL
+          WHEN mapping_nodes.parent_source = 'official-mapping'
+          THEN mapping_nodes.parent_id
+          WHEN mapping_nodes.parent_id IS NULL AND excluded.parent_id IS NOT NULL
           THEN excluded.parent_id
           ELSE mapping_nodes.parent_id
+        END,
+        parent_source=CASE
+          WHEN mapping_nodes.parent_source = 'official-mapping' THEN 'official-mapping'
+          WHEN mapping_nodes.parent_id IS NULL AND excluded.parent_id IS NOT NULL THEN 'live-metadata-inferred'
+          ELSE mapping_nodes.parent_source
         END,
         message_id=COALESCE(excluded.message_id, mapping_nodes.message_id),
         source_observed_at=max(mapping_nodes.source_observed_at, excluded.source_observed_at)
@@ -1272,6 +1290,91 @@ export class ChatArchiveDb {
       resourceCount: Number(counts.resourceCount),
       diagnostic,
     }
+  }
+
+  /**
+   * 用已经保存在数据库里的“最新官方 conversation snapshot”修复 mapping tree 的 parent。
+   *
+   * 背景：早期 live merge 曾错误把 messages[].metadata.parent_id 当成 mapping.parent，因此
+   * 2026-09-01 Genesis 之后又被在线同步碰过的旧节点，parent_id 可能被推断值覆盖。好在官方
+   * snapshot 始终以 gzip 原样保留，所以这里可以离线、零网络地恢复权威 parent；官方包之后
+   * 才出现的新节点则保留 `live-metadata-inferred`，等待未来官方快照或更可靠在线版本协议确认。
+   *
+   * 这是可重复执行的修复操作：同一个节点每次都会得到相同的官方 parent。修复后按数据库里
+   * 当前全部 parent_id 重新计算 children_json，因此不会把 Genesis 之后新增的 live-only child
+   * 从父节点 children 列表里意外删掉。
+   */
+  repairMappingParentsFromOfficialSnapshots(): { conversations: number, nodes: number, inferredOnly: number } {
+    const latestSnapshots = this.db.prepare(`
+      SELECT s.conversation_id AS conversationId, s.raw_json_gzip AS rawGzip
+      FROM conversation_snapshots s
+      WHERE s.source_id = (
+        SELECT s2.source_id
+        FROM conversation_snapshots s2
+        WHERE s2.conversation_id = s.conversation_id
+        ORDER BY s2.observed_at DESC, s2.source_id DESC
+        LIMIT 1
+      )
+      ORDER BY s.conversation_id
+    `)
+    const updateOfficialParent = this.db.prepare(`
+      UPDATE mapping_nodes
+      SET parent_id = ?, parent_source = 'official-mapping'
+      WHERE conversation_id = ? AND node_id = ?
+    `)
+    const updateChildren = this.db.prepare(`
+      UPDATE mapping_nodes
+      SET children_json = (
+        SELECT json_group_array(node_id)
+        FROM (
+          SELECT node_id
+          FROM mapping_nodes child
+          WHERE child.conversation_id = ? AND child.parent_id = ?
+          ORDER BY COALESCE(child.source_observed_at, 0), child.node_id
+        )
+      )
+      WHERE conversation_id = ? AND node_id = ?
+    `)
+    const parentRows = this.db.prepare(`
+      SELECT DISTINCT conversation_id AS conversationId, parent_id AS parentId
+      FROM mapping_nodes
+      WHERE parent_id IS NOT NULL
+    `)
+
+    let conversations = 0
+    let nodes = 0
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const row of latestSnapshots.iterate() as Iterable<{ conversationId: string, rawGzip: Uint8Array }>) {
+        const raw = JSON.parse(gunzipSync(Buffer.from(row.rawGzip)).toString('utf8')) as unknown
+        const mapping = record(record(raw).mapping)
+        if (Object.keys(mapping).length === 0) continue
+        conversations += 1
+        for (const [mappingKey, nodeValue] of Object.entries(mapping)) {
+          const node = record(nodeValue)
+          const nodeId = stringValue(node.id) ?? mappingKey
+          const result = updateOfficialParent.run(stringValue(node.parent), row.conversationId, nodeId)
+          nodes += Number(result.changes)
+        }
+      }
+
+      // parent 被修回官方语义以后，children 必须跟当前数据库中的全部节点重新一致。
+      for (const row of parentRows.iterate() as Iterable<{ conversationId: string, parentId: string }>) {
+        updateChildren.run(row.conversationId, row.parentId, row.conversationId, row.parentId)
+      }
+      this.db.exec('COMMIT')
+    }
+    catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+
+    const inferredOnly = Number((this.db.prepare(`
+      SELECT count(*) AS n
+      FROM mapping_nodes
+      WHERE parent_source = 'live-metadata-inferred'
+    `).get() as { n: number }).n)
+    return { conversations, nodes, inferredOnly }
   }
 
   /** 在线增量只重建一个 conversation 的派生表，避免全库 FTS/资源重算。 */
