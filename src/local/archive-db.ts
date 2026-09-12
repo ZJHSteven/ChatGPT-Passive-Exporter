@@ -564,7 +564,7 @@ export class ChatArchiveDb {
       ON CONFLICT(conversation_id, node_id) DO UPDATE SET
         first_seen_at=min(mapping_nodes.first_seen_at, excluded.first_seen_at),
         last_seen_at=max(mapping_nodes.last_seen_at, excluded.last_seen_at),
-        -- 官方 Data Export 的 `mapping.parent` 是真正的树边，优先级高于在线
+        -- 官方 Data Export 的 mapping.parent 是真正的树边，优先级高于在线
         -- messages[].metadata.parent_id；即使官方快照时间早于 live observation，也不能反过来。
         parent_id=excluded.parent_id,
         parent_source='official-mapping',
