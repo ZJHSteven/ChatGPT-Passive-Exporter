@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   assessConversationPayload,
+  mergePluralConversationPages,
   preferPassiveSnapshot,
 } from '../src/core/conversation-snapshot'
 import type { PassiveCaptureEnvelope, RawConversationPayload } from '../src/core/types'
@@ -50,5 +51,37 @@ describe('conversation snapshot completeness', () => {
     const small = envelope(plural('c1', 10), 200)
     const large = envelope(plural('c1', 30), 100)
     expect(preferPassiveSnapshot(small, large)).toBe(large)
+  })
+
+  it('把 newest→oldest cursor pages 合成 oldest→newest，并按 message id 去重', () => {
+    const latest = {
+      title: '分页聊天',
+      conversation_id: 'cursor-merge',
+      current_node: 'm4',
+      messages: [
+        { id: 'm3', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['较新版本 m3'] } },
+        { id: 'm4', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['m4'] } },
+      ],
+      page_info: { start_cursor: 'cursor-middle', end_cursor: 'cursor-latest', has_previous_page: true, has_next_page: false },
+    }
+    const older = {
+      messages: [
+        { id: 'm1', author: { role: 'user' }, content: { content_type: 'text', parts: ['m1'] } },
+        { id: 'm2', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['m2'] } },
+        { id: 'm3', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['旧版本 m3'] } },
+      ],
+      page_info: { start_cursor: 'cursor-oldest', end_cursor: 'cursor-middle', has_previous_page: false, has_next_page: true },
+    }
+
+    const merged = mergePluralConversationPages([latest, older])
+    expect(merged.messages?.map(message => message.id)).toEqual(['m1', 'm2', 'm3', 'm4'])
+    expect(merged.messages?.find(message => message.id === 'm3')?.content?.parts).toEqual(['较新版本 m3'])
+    expect(merged.current_node).toBe('m4')
+    expect(merged.page_info).toMatchObject({
+      start_cursor: 'cursor-oldest',
+      end_cursor: 'cursor-latest',
+      has_previous_page: false,
+      has_next_page: false,
+    })
   })
 })
