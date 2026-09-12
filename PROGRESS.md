@@ -1,6 +1,8 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-13：重新找回 2026-09-03 WSS 原始研究与历史会话证据，纠正“只有 created + complete”的过度简化。真实观察过 `conversation-created`、`conversation-turn-complete`，以及关键的 `conversation-update + update_type=async-task-update-message`；后者甚至会携带其它异步 conversation 新生成的 assistant message，是当前已证实的 running/progress 实时信号。`conversation-turn-start` 尚无真实抓包证据，仅保留未来兼容，不再作为状态机主要依据。daemon parser 现保留 `updateType`，并把 `async-task-update-message` 纳入 active/watchdog 语义；14 个测试文件 / 58 tests 全通过。
+- 2026-09-13：历史 startup backlog 144 条已全部追平；随后切换当前 HEAD 再做 startup overlap，只发现期间新产生的 6 条变化并全部补齐。之后通过 Windows Task Scheduler 无窗口任务再次拉起当前 HEAD daemon（PID 30796），startup reconciliation 仅扫描 2 页即达到 56 条稳定 overlap，`dirtyCount=0 / dirty=0 / ready=0 / syncErrors=0 / 429=0`。计划任务的 `wscript -> node` 父子链和登录常驻路径已现场复验。
 - 2026-09-12：发现并修复 backlog drain 的 cooperative scheduling 问题：旧 `drainDirty()` 会在一个 `while (ready.size>0)` 中跑完整个 backlog，导致 Guardian 探活、WSS 缺失检测、watchdog 和 state 刷新在追平期间被长时间饿死。仓库 HEAD 现改为每次调度最多同步 1 个 conversation，随后立即归还主循环；主动 API 节奏仍由全局 request gate 控制。TypeScript + 13 files / 56 tests 通过。当前运行中的旧 PID 继续完成既有 backlog，追平后重启切换新调度器。
 - 2026-09-12：WSS 控制面遥测已加入仓库 HEAD：只记录 sent/received frame 计数、subscribe topic、`recovered`、安全白名单 controls、parsed event frame 数和“conversations message 但 parser 未识别”计数，不落 conversation id/正文/认证内容。用于 backlog 清零重启后实证 Guardian 是否真的订阅并消费 `conversations`。
 - 2026-09-12：修复 watchdog incident 分类：`watchdog:active-timeout` 现在与真实 `wss:*complete` 一样允许把 abnormal terminal 升级为 incident；startup/periodic reconciliation 仍只补历史，不因旧 backlog 批量制造实时告警。新增纯函数测试，Vitest 总数升至 56。

@@ -20,6 +20,7 @@
 - `turn-start` / conversation-created 只登记 active + dirty，首版不为了一个仍在生成的 turn 每几秒抓 body。若 active 超过可配置 watchdog（当前以约 35 分钟为保守起点）仍无 complete，则安排一次**诊断同步**，从 body 判断当前持久化尾部；只有确有独立信息需求时才考虑 `stream_status`。
 - WSS gap/reconnect、daemon 冷启动、online 恢复、低频 catalog reconciliation 发现 `update_time` 变化时，属于恢复路径：这些条目可直接进入 `sync-ready`，因为此时无法依赖之前的 complete 事件仍然存在。
 - 后续 Live Stream/SSE mirror 是独立实验层：若能可靠订阅正在生成的 turn，则 `turn-start` 后可以持续保存 transient stream，但这不能反过来改变 Archive Core 的最终 overlap/terminal 同步契约。
+- **2026-09-13 WSS 语义校正**：历史真实抓包并没有出现字面事件 `conversation-turn-start`；已确认的实时业务事件至少包括 `conversation-created`、`conversation-turn-complete` 和 `conversation-update`，其中 `conversation-update + update_type=async-task-update-message` 会在其它异步 conversation 运行过程中推新 message。因此 Phase 2 的 active/progress 入口应以该 async update 为主，`conversation-turn-start` 只作为向前兼容；不能再把“未看到 start”误解成 WSS 只有 created/complete。
 - 当前上线阻塞项按顺序处理：① Windows 登录自启动真正注册；② Chrome 根恢复改为复用桌面 `Chrome CDP 日常版.lnk`；③ 正式 daemon 常驻；④ 低速 backlog 追平到 overlap；⑤ 实测 WSS event → dirty/active → complete → sync/diagnostic E2E；⑥ 再进入 branch/version 与 Live Stream 实验。
 
 ### Phase 2 最终验收口径（2026-09-12 晚）
