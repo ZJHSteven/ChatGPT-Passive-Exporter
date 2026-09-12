@@ -691,6 +691,9 @@ async function main() {
 
   const syncConversation = async (conversationId, trigger) => {
     requireRequestWindow()
+    const classifyTerminal = shouldClassifyTerminalForTrigger(trigger)
+    const incidentBefore = classifyTerminal ? latestOpenIncident(conversationId) : null
+    let newIncident = null
     const basePath = `/backend-api/conversations/${encodeURIComponent(conversationId)}`
     const first = await fetchChecked({
       url: `${basePath}?include_has_versions=true&num_turns=10`,
@@ -721,14 +724,18 @@ async function main() {
         endpoint: pages === 0 ? basePath : `${basePath}/messages`,
         pageCursor: cursor,
         observationKind: `body-page:${trigger}`,
-        classifyTerminal: pages === 0 && shouldClassifyTerminalForTrigger(trigger),
+        classifyTerminal: pages === 0 && classifyTerminal,
       })
+      if (pages === 0 && classifyTerminal) {
+        const incidentAfter = latestOpenIncident(conversationId)
+        if (incidentAfter && incidentAfter.id !== incidentBefore?.id) newIncident = incidentAfter
+      }
       newMessages += merged.newMessageCount
       pages += 1
 
       const pageInfo = pagePayload.page_info || {}
       if (pageInfo.has_previous_page === false || allKnownBefore) {
-        return { conversationId, pages, newMessages, diagnostic: merged.diagnostic }
+        return { conversationId, pages, newMessages, diagnostic: merged.diagnostic, newIncident }
       }
       const nextCursor = pageInfo.start_cursor
       if (typeof nextCursor !== 'string' || !nextCursor) {
@@ -774,6 +781,7 @@ async function main() {
           terminal: result.diagnostic.terminalEvidence,
           tail: result.diagnostic.tailShape,
         })
+        if (result.newIncident) await notifyIncident(conversationId, result.newIncident)
       }
       catch (error) {
         syncErrors += 1
