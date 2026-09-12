@@ -203,6 +203,7 @@ async function daemonCommand(positionals, flags) {
       'watchdog-minutes',
       'chrome-shortcut',
       'chrome-start-timeout-ms',
+      'notification-config',
     ]
     for (const name of passFlags) {
       if (flags.has(name)) childArgs.push(`--${name}`, String(flags.get(name)))
