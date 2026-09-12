@@ -1,5 +1,17 @@
 # ChatGPT Passive Exporter ExecPlan
 
+## 当前权威阶段地图（2026-09-13）
+
+> 下方较早的“Phase 1～14”章节保留历史演进记录，但**当前执行与沟通统一使用本节编号**；若旧阶段编号与本节冲突，以本节和 `ARCHITECTURE.md` 为准。
+
+- **Phase 0 — Ground Truth：已完成。** 两份官方 Data Export ZIP diff、旧数据消失语义、fixture/来源基线。
+- **Phase 1 — Genesis Archive：已完成。** 多快照 union → canonical SQLite、raw snapshot、FTS、资源目录、6155 个历史 conversation。
+- **Phase 2 — Live Incremental Archive：当前收尾。** 单一隐藏 Guardian + 本地 daemon；WSS-first realtime；dirty/ready；catalog overlap recovery；body cursor overlap；SQLite live merge；incident ledger；Windows/Chrome 生命周期；限速与 429 breaker。2026-09-13 已修复真实 WSS 双层 payload parser，并实测两次 `WSS complete → body → SQLite` 全链且未使用 list fallback。
+- **Phase 2.5 — Branch / Version Semantics：Phase 2 完成后立即做。** 针对 Edit old user prompt、Regenerate assistant、1/3/2/3/3/3 version 切换、branch-in-new-chat，逐案 diff `include_has_versions=true` 返回，明确 transient/live event 应挂到哪一个 node/branch。
+- **Phase 3 — Live Turn Capture：下一大阶段。** 不再叫“纯 SSE mirror”。当前真实 turn 仍先走 `/backend-api/f/conversation` 的 `text/event-stream`；同时近期协议迹象表明某些流可能通过 `stream_handoff` 切到 turn-specific WSS/catch-up。目标是把 SSE + handoff 后实时通道统一成一个 lossless transient event log，并向轻量移动 PWA 提供只读实时观看。
+- **Phase 4 — Send / Control Plane：Live Turn 稳定后。** 从 CLI/PWA 对最新 canonical branch 发送新消息/继续；优先复刻第一方发送协议，DOM 点击只作为保守 fallback；必须解决 stale client/旧 branch 发送造成的进度丢失与副作用重复风险。
+- **Phase 5 — Guardian / Runtime Footprint：最后再优化。** 在不破坏 WSS/session/风控行为的前提下研究减少 Guardian React/资源/渲染负担，以及把多个 Windows daemon 的 supervisor/通知做统一治理；当前空首页 Guardian 已足够轻，不抢占 Phase 2/3 主线。
+
 ## 目标
 
 构建一个尽量不主动调用 ChatGPT 私有后端 API 的聊天归档工具：监听页面自己已经发出的请求并复制响应，随后将不同年代/不同接口形态的 ChatGPT conversation payload 归一化，再导出可读 Markdown、原始 JSON 和附件/富媒体清单。
@@ -27,11 +39,13 @@
 
 - **历史缺口**：冷启动只用 conversation list 做一次低频 overlap reconciliation；得到 backlog 后严格单并发、全局限速逐 conversation/body cursor 补到本地 overlap。当前正式参数为 catalog ≥5s/request、body ≥6s/request、额外 0–1.5s jitter；任意 429 立即进入 60 分钟 cooldown。
 - **稳态实时发现**：必须证明 Guardian 官方 WSS 实际订阅 `conversations`，并证明真实 `conversation-turn-complete` 能被 daemon 解析、标 dirty/ready、触发 body merge。只看到 `activeSockets=1` 不算验收通过。
+- **2026-09-13 真实协议修正**：complete 的当前第一方 frame 为 `message(topic=conversations) → payload.type → payload.payload.conversation_id`。旧 parser 因错误假设同层字段导致业务 frame 收到却未解析，从而产生“daemon 运行期间漏掉、重启 list 才发现 6 dirty”的现象。修复后必须以 `parsedEventFrames↑ / eventCounts↑ / syncedConversations↑ / lastReconcileAt 不变` 作为 realtime E2E 验收证据；该验收现已通过两轮。
 - **turn start/active 来源不得臆造**：现有 2026-09-03 WSS probe 真实日志只观察到 `conversation-turn-complete`，尚未观察到 `conversation-turn-start`。代码可保留兼容分支，但 Phase 2 不得声称 WSS 已证明能发现 turn start。若官方 WSS 不提供 start，异常“无 complete”检测要由低频 catalog `async_status/update_time` 或后续 Live Stream/SSE 层补足。
 - **在线树结构**：plural body 的 `message.id + metadata.parent_id` 必须同步 upsert `mapping_nodes`；已用 Genesis 103260/103260 个节点验证 `node_id===message_id`，并用冰岛旅行真实会话验证同一 conversation 内 sibling user/assistant branch 确实存在。
 - **高可用**：计划任务登录自启动、无控制台窗口、Guardian `SW_HIDE`、Auto Tab Discard 白名单与强制 discard 自愈必须保持已验收状态；Chrome 根恢复只实现非破坏性 no-op/启动路径，不为了测试强杀用户正在工作的整套 Chrome。
 - **异常账本**：complete/body 或 watchdog 诊断产生的 abnormal terminal 必须持久化到 SQLite `incidents`；恢复后的新 turn/final 只 resolve incident，不删除历史。手机 Bark 属于通知 transport，可配置但不得用过期 token 阻塞 Archive Core 验收。
 - **切换条件**：当前 backlog 完全追平后，正常停止旧 daemon，再由计划任务启动仓库 HEAD；重启后执行一次 WSS 控制面取证 + 真实用户 turn E2E。上述项目全通过后才宣布 Phase 2 完成并进入 Phase 3 Live Stream/SSE mirror。
+- **Live update 边界**：`conversation-update + async-task-update-message` 历史上能携带一个完整的 `update_content.message` snapshot，并可能重复送达；2026-09-13 两次普通 turn 实验未观察到该 update，而正文明确仍经 `/f/conversation` SSE。故 Phase 2 只能把 update 当 opportunistic async progress signal，绝不能把它当作所有 turn 的 start/逐 token stream，也不能用它取消 Phase 3。
 
 ## 设计原则
 

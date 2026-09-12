@@ -294,3 +294,24 @@ Phase 0 / 1 已完成：官方两份 ZIP union Genesis，正式库 6155 conversa
 5. 冷启动/WSS gap/低频 fallback reconciliation；
 6. 把当前 72 dirty 以该正式链路补进主库；
 7. 手动导出 UI/CLI 暴露 `auto/modern/legacy/passive/dom` 获取策略。
+
+### 9.1 2026-09-13 Phase 2 实时链最新验收
+
+- 历史 backlog 已清零；startup overlap 当前可稳定得到 `dirtyCount=0`。
+- 第一方当前 `conversation-turn-complete` WSS frame 使用双层 payload：`message(topic=conversations) → event payload → inner payload.conversation_id`。旧 parser 错误要求 `type + conversation_id` 同层，导致真实 frame 已到达但 `parsedEventFrames=0`；这也是此前“daemon 常驻期间漏同步、重启后 list 发现 6 dirty”的核心实现缺陷。
+- 修复后已连续两次在 daemon **不重启**、`lastReconcileAt` **不变化**的情况下完成：`WSS complete → parse conversation id → ready/dirty → body overlap → SQLite`，并回到 `dirty=0 / ready=0 / syncErrors=0`。因此 realtime 主链现已从“socket 在线”升级为真实端到端验收通过。
+- `conversation-update + async-task-update-message` 仍只作为 opportunistic async progress signal。历史 raw 证据显示它可携带完整 `update_content.message` snapshot，且可能重复；当前普通真实 turn 仍明确走 `/backend-api/f/conversation` 的 `text/event-stream`，两次受控实验均只在全局 WSS 收到最终 complete。因此 update 不能替代 live stream。
+
+### 9.2 当前统一阶段地图
+
+```text
+Phase 0  Ground Truth / ZIP diff          ✅
+Phase 1  Genesis Canonical Archive        ✅
+Phase 2  Live Incremental Archive         ◉ 收尾
+Phase 2.5 Branch / Version Semantics      → 下一小阶段
+Phase 3  Live Turn Capture                → SSE + handoff/WSS
+Phase 4  Send / Control Plane             → PWA/CLI 发送
+Phase 5  Guardian / Runtime Footprint     → 最后优化
+```
+
+Phase 3 的名称刻意使用 **Live Turn Capture** 而不是“纯 SSE mirror”：普通 turn 当前从 SSE 开始，但实现必须允许第一方协议把后续流 handoff 到 turn-specific WSS/catch-up；全局 `conversations` WSS 继续只承担 discovery/progress/terminal 通知，不与正文实时流混为一谈。
