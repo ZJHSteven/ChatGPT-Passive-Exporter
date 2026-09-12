@@ -1,6 +1,6 @@
 import { diagnoseLatestRun, type RunDiagnostic } from '../core/run-diagnostics'
 import { analyzeWidgetPressure, type WidgetPressureReport } from '../core/widget-pressure'
-import { assessConversationPayload } from '../core/conversation-snapshot'
+import { assessConversationPayload, mergePluralConversationPages } from '../core/conversation-snapshot'
 import type { RawConversationPayload } from '../core/types'
 
 /**
@@ -786,7 +786,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
    * 默认 2 turns，避免像 50MB 巨型聊天那样每次全量拉取。
    */
   const fetchConversationByTurns = async (conversationId: string, numTurns: number): Promise<ConversationTailResult> => {
-    const path = `/backend-api/conversations/${encodeURIComponent(conversationId)}?num_turns=${numTurns}`
+    const path = `/backend-api/conversations/${encodeURIComponent(conversationId)}?include_has_versions=true&num_turns=${numTurns}`
     const result = await authenticatedJson(path, '/backend-api/conversations/{conversation_id}')
     const payload = result.ok && result.body && typeof result.body === 'object'
       ? result.body as RawConversationPayload
@@ -815,16 +815,66 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
   /**
    * 完整 conversation 读取。
    *
-   * 为什么不能简单 `num_turns=100`：ChatGPT Web 会对同一个 endpoint 返回分页/尾部窗口，
-   * 而过去导出器曾把这种 partial payload 直接当完整聊天导出。这里首先请求一个足够大的
-   * plural 窗口；只有 `page_info.has_previous_page=false` 才接受。若 plural 仍明确/疑似不完整，
-   * 再退回 legacy singular mapping。两条路径都无法证明完整时宁可报错，也不截断用户历史。
+   * 为什么不能简单 `num_turns=1000`：当前第一方 ChatGPT Web 明确使用 10-turn cursor 分页，
+   * 大窗口属于我们自己发明的请求形状，也仍可能只得到 tail。这里改成完全跟随网页协议：
+   * 最新 10 turns → page_info.start_cursor → /messages?before=<cursor> → 一直翻到
+   * has_previous_page=false。每页串行、留少量间隔，不制造并发尖峰；modern 路径无法证明完整
+   * 时才退回 legacy singular mapping。两条路径都失败则宁可报错，也绝不静默导出残缺历史。
    */
   const fetchCompleteConversation = async (conversationId: string): Promise<ConversationTailResult> => {
-    const plural = await fetchConversationByTurns(conversationId, 1000)
-    if (plural.ok && plural.payload) {
-      const assessment = assessConversationPayload(plural.payload)
-      if (assessment.completeness === 'complete') return plural
+    const plural = await fetchConversationByTurns(conversationId, 10)
+    let pluralReason = plural.reason ?? `plural HTTP ${plural.httpStatus ?? '?'}`
+
+    if (plural.ok && plural.payload && Array.isArray((plural.payload as MessagesConversationPayload).messages)) {
+      const latestPage = plural.payload as MessagesConversationPayload
+      const pages: MessagesConversationPayload[] = [latestPage]
+      const firstAssessment = assessConversationPayload(latestPage)
+      if (firstAssessment.completeness === 'complete') return plural
+
+      let currentPage = latestPage
+      const seenCursors = new Set<string>()
+      for (let pageIndex = 1; pageIndex < 2000; pageIndex += 1) {
+        const pageInfo = currentPage.page_info
+        if (pageInfo?.has_previous_page === false) {
+          return { ...plural, payload: mergePluralConversationPages(pages) }
+        }
+
+        const cursor = typeof pageInfo?.start_cursor === 'string' ? pageInfo.start_cursor : ''
+        if (!cursor) {
+          pluralReason = `modern cursor 第 ${pageIndex} 页仍有 previous page，但缺少 start_cursor`
+          break
+        }
+        if (seenCursors.has(cursor)) {
+          pluralReason = `modern cursor 出现重复 start_cursor：${cursor}`
+          break
+        }
+        seenCursors.add(cursor)
+
+        // 完整导出是用户显式动作，可以主动补页；仍串行并留间隔，避免制造瞬时请求尖峰。
+        await sleep(350)
+        const path = `/backend-api/conversations/${encodeURIComponent(conversationId)}/messages?before=${encodeURIComponent(cursor)}&include_has_versions=true&num_turns=10`
+        const older = await authenticatedJson(path, '/backend-api/conversations/{conversation_id}/messages')
+        if (!older.ok || !older.body || typeof older.body !== 'object') {
+          pluralReason = `modern cursor 第 ${pageIndex + 1} 页失败：${older.reason ?? `HTTP ${older.httpStatus ?? '?'}`}`
+          break
+        }
+        const olderPage = older.body as MessagesConversationPayload
+        if (!Array.isArray(olderPage.messages)) {
+          pluralReason = `modern cursor 第 ${pageIndex + 1} 页没有 messages[]`
+          break
+        }
+        pages.push(olderPage)
+        currentPage = olderPage
+
+        if (olderPage.page_info?.has_previous_page === false) {
+          return {
+            ok: true,
+            httpStatus: older.httpStatus,
+            payload: mergePluralConversationPages(pages),
+            checkedAt: now(),
+          }
+        }
+      }
     }
 
     const singularPath = `/backend-api/conversation/${encodeURIComponent(conversationId)}`
@@ -845,9 +895,9 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
       }
     }
 
-    const pluralReason = plural.ok && plural.payload
-      ? assessConversationPayload(plural.payload).reason
-      : plural.reason ?? `plural HTTP ${plural.httpStatus ?? '?'}`
+    if (plural.ok && plural.payload && pluralReason.startsWith('plural HTTP')) {
+      pluralReason = assessConversationPayload(plural.payload).reason
+    }
     const singularReason = singular.ok && payload
       ? assessConversationPayload(payload).reason
       : singular.reason ?? `singular HTTP ${singular.httpStatus ?? '?'}`

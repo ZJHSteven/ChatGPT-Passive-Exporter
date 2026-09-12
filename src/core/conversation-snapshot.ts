@@ -2,6 +2,7 @@ import type {
   MappingConversationPayload,
   MessagesConversationPayload,
   PassiveCaptureEnvelope,
+  RawChatMessage,
   RawConversationPayload,
 } from './types'
 
@@ -135,5 +136,50 @@ export function preferPassiveSnapshot(
   }
   if (b.messageCount !== a.messageCount) return b.messageCount > a.messageCount ? incoming : current
   return incoming.capturedAt >= current.capturedAt ? incoming : current
+}
+
+/**
+ * 把 modern plural cursor 分页重新拼成一个可交给现有 adapter/exporter 的完整 messages payload。
+ *
+ * ChatGPT 当前分页方向是“最新页 → before cursor → 更老页”。调用方因此会把 pages 按
+ * [latest, older-1, older-2, ...] 传入。这里反向遍历，恢复成旧→新的自然顺序；同一个
+ * message id 如果跨页重叠，只保留更新方向更靠后的那份（也就是更接近 latest 的 snapshot）。
+ * 没有 id 的未知消息不擅自丢弃，而用页序号+行序号作为内部去重 key 保留。
+ */
+export function mergePluralConversationPages(
+  pagesNewestToOldest: MessagesConversationPayload[],
+): MessagesConversationPayload {
+  if (pagesNewestToOldest.length === 0) throw new Error('Cannot merge zero plural conversation pages')
+
+  const latest = pagesNewestToOldest[0]
+  const orderedKeys: string[] = []
+  const byKey = new Map<string, RawChatMessage>()
+
+  for (let reverseIndex = pagesNewestToOldest.length - 1; reverseIndex >= 0; reverseIndex -= 1) {
+    const page = pagesNewestToOldest[reverseIndex]
+    const messages = Array.isArray(page.messages) ? page.messages : []
+    messages.forEach((message, messageIndex) => {
+      const key = typeof message.id === 'string' && message.id
+        ? `id:${message.id}`
+        : `anonymous:${reverseIndex}:${messageIndex}`
+      if (!byKey.has(key)) orderedKeys.push(key)
+      byKey.set(key, message)
+    })
+  }
+
+  const oldest = pagesNewestToOldest.at(-1) ?? latest
+  const latestPageInfo = latest.page_info ?? {}
+  const oldestPageInfo = oldest.page_info ?? {}
+  return {
+    ...latest,
+    messages: orderedKeys.map(key => byKey.get(key)!).filter(Boolean),
+    page_info: {
+      ...latestPageInfo,
+      has_previous_page: false,
+      start_cursor: oldestPageInfo.start_cursor ?? latestPageInfo.start_cursor,
+      end_cursor: latestPageInfo.end_cursor ?? oldestPageInfo.end_cursor,
+      has_next_page: false,
+    },
+  }
 }
 
