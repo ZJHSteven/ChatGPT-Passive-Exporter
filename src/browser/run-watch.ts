@@ -1,7 +1,7 @@
 import { diagnoseLatestRun, type RunDiagnostic } from '../core/run-diagnostics'
 import { analyzeWidgetPressure, type WidgetPressureReport } from '../core/widget-pressure'
 import { assessConversationPayload, mergePluralConversationPages } from '../core/conversation-snapshot'
-import type { RawConversationPayload } from '../core/types'
+import type { MessagesConversationPayload, RawConversationPayload } from '../core/types'
 
 /**
  * ChatGPT 长 Agent turn 的轻量运行监控器。
@@ -851,7 +851,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
         seenCursors.add(cursor)
 
         // 完整导出是用户显式动作，可以主动补页；仍串行并留间隔，避免制造瞬时请求尖峰。
-        await sleep(350)
+        await new Promise(resolve => window.setTimeout(resolve, 350))
         const path = `/backend-api/conversations/${encodeURIComponent(conversationId)}/messages?before=${encodeURIComponent(cursor)}&include_has_versions=true&num_turns=10`
         const older = await authenticatedJson(path, '/backend-api/conversations/{conversation_id}/messages')
         if (!older.ok || !older.body || typeof older.body !== 'object') {

@@ -151,12 +151,12 @@ export function mergePluralConversationPages(
 ): MessagesConversationPayload {
   if (pagesNewestToOldest.length === 0) throw new Error('Cannot merge zero plural conversation pages')
 
-  const latest = pagesNewestToOldest[0]
+  const latest = pagesNewestToOldest[0]!
   const orderedKeys: string[] = []
   const byKey = new Map<string, RawChatMessage>()
 
   for (let reverseIndex = pagesNewestToOldest.length - 1; reverseIndex >= 0; reverseIndex -= 1) {
-    const page = pagesNewestToOldest[reverseIndex]
+    const page = pagesNewestToOldest[reverseIndex]!
     const messages = Array.isArray(page.messages) ? page.messages : []
     messages.forEach((message, messageIndex) => {
       const key = typeof message.id === 'string' && message.id
