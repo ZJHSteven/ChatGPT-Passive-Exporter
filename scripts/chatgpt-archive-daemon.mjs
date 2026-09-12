@@ -20,6 +20,10 @@ import process from 'node:process'
 import { execFileSync, spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
+import {
+  loadIncidentNotificationConfig,
+  sendIncidentNotification,
+} from '../src/local/incident-notifier.ts'
 import { summarizeFrame as summarizeWssFrame } from './wss-stability-probe.mjs'
 
 const DEFAULT_CDP = 'http://127.0.0.1:9222'
@@ -28,6 +32,7 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const DEFAULT_DB = path.join(PROJECT_ROOT, 'data', 'chatgpt-archive.sqlite')
 const DEFAULT_STATE = path.join(PROJECT_ROOT, 'data', 'archive-daemon-state.json')
 const DEFAULT_LOG = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
+const DEFAULT_NOTIFICATION_CONFIG = path.join(PROJECT_ROOT, 'data', 'archive-notification.local.json')
 const WINDOWS_HIDE_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-hide-window.ps1')
 const DEFAULT_CDP_TIMEOUT_MS = 10_000
 const DEFAULT_CHROME_SHORTCUT = process.platform === 'win32' && process.env.USERPROFILE
