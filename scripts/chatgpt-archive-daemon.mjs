@@ -671,37 +671,38 @@ async function main() {
   const drainDirty = async () => {
     if (syncInFlight || reconcileInFlight || stopping || Date.now() < cooldownUntil || !authHeaders || !guardian?.page || guardian.page.closed) return
     if (maxSyncConversations > 0 && syncedConversations >= maxSyncConversations) return
+    if (ready.size === 0) return
     syncInFlight = true
     try {
-      while (ready.size > 0 && !stopping && Date.now() >= cooldownUntil && authHeaders) {
-        if (maxSyncConversations > 0 && syncedConversations >= maxSyncConversations) break
-        const [conversationId, trigger] = ready.entries().next().value
-        ready.delete(conversationId)
-        try {
-          const result = await syncConversation(conversationId, trigger)
-          syncedConversations += 1
-          // 一次 overlap 同步成功以后，本地副本已经追到本次 observation，因此才清 dirty。
-          dirty.delete(conversationId)
-          if (result.diagnostic.terminalEvidence !== 'none') activeTurns.delete(conversationId)
-          await log('conversation synced', {
-            conversationId,
-            trigger,
-            pages: result.pages,
-            newMessages: result.newMessages,
-            terminal: result.diagnostic.terminalEvidence,
-            tail: result.diagnostic.tailShape,
-          })
-        }
-        catch (error) {
-          syncErrors += 1
-          lastError = error instanceof Error ? error.message : String(error)
-          await log('conversation sync failed', { conversationId, trigger, error: lastError })
-          // 失败不能把 dirty 事实抹掉；同时保留 ready，等 auth/cooldown/页面恢复后再试。
-          ready.set(conversationId, trigger)
-          if (!authHeaders || Date.now() < cooldownUntil) break
-          // 普通瞬时错误也不要 tight-loop 重打同一个 endpoint。
-          break
-        }
+      // 每次调度最多只处理一个 conversation。
+      //
+      // 旧实现会 `while (ready.size > 0)` 一直跑完整个 backlog。只要 backlog 有几十上百条，
+      // daemon 主循环就会被饿死数十分钟甚至数小时：Guardian Runtime 探活、WSS 缺失检测、
+      // watchdog、state.json 刷新都不能按 5 秒节奏执行。主动 API 的节流已经由全局 request gate
+      // 负责，因此这里应该采用 cooperative scheduling：处理一条就立刻把控制权还给主循环。
+      const [conversationId, trigger] = ready.entries().next().value
+      ready.delete(conversationId)
+      try {
+        const result = await syncConversation(conversationId, trigger)
+        syncedConversations += 1
+        // 一次 overlap 同步成功以后，本地副本已经追到本次 observation，因此才清 dirty。
+        dirty.delete(conversationId)
+        if (result.diagnostic.terminalEvidence !== 'none') activeTurns.delete(conversationId)
+        await log('conversation synced', {
+          conversationId,
+          trigger,
+          pages: result.pages,
+          newMessages: result.newMessages,
+          terminal: result.diagnostic.terminalEvidence,
+          tail: result.diagnostic.tailShape,
+        })
+      }
+      catch (error) {
+        syncErrors += 1
+        lastError = error instanceof Error ? error.message : String(error)
+        await log('conversation sync failed', { conversationId, trigger, error: lastError })
+        // 失败不能把 dirty 事实抹掉；同时保留 ready，等 auth/cooldown/页面恢复后再试。
+        ready.set(conversationId, trigger)
       }
     }
     finally {
