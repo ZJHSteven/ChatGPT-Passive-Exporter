@@ -461,6 +461,9 @@ async function main() {
   const dbPath = flags.has('db') ? path.resolve(String(flags.get('db'))) : DEFAULT_DB
   const statePath = flags.has('state') ? path.resolve(String(flags.get('state'))) : DEFAULT_STATE
   const logPath = flags.has('log') ? path.resolve(String(flags.get('log'))) : DEFAULT_LOG
+  const notificationConfigPath = flags.has('notification-config')
+    ? path.resolve(String(flags.get('notification-config')))
+    : DEFAULT_NOTIFICATION_CONFIG
   // 这里的 delay 不是“同步完以后随便睡一下”，而是所有主动 backend 请求之间的
   // **全局最小间隔**。Backlog 追平宁可花一两个小时，也不要因为一次启动积压 100+ 条
   // conversation 就短时间连续打几十个请求。
@@ -510,6 +513,10 @@ async function main() {
   let syncErrors = 0
   let lastError = null
   let lastActiveRequestAt = 0
+  let notificationConfig = null
+  let notificationLastAttemptAt = null
+  let notificationLastSuccessAt = null
+  let notificationLastError = null
 
   const log = async (message, extra = null) => {
     const line = `[${new Date().toISOString()}] ${message}${extra ? ` ${JSON.stringify(extra)}` : ''}\n`
@@ -566,6 +573,13 @@ async function main() {
       requestJitterMs,
     },
     cooldownUntil: cooldownUntil || null,
+    notification: {
+      enabled: Boolean(notificationConfig),
+      provider: notificationConfig?.provider ?? null,
+      lastAttemptAt: notificationLastAttemptAt,
+      lastSuccessAt: notificationLastSuccessAt,
+      lastError: notificationLastError,
+    },
     rssBytes: process.memoryUsage().rss,
     heapUsedBytes: process.memoryUsage().heapUsed,
     lastError,
@@ -576,6 +590,65 @@ async function main() {
   // `--no-reconcile-on-start` 的含义必须是“启动后先纯监听”。旧实现保留
   // lastReconcileAt=0，导致第一轮主循环把 periodic 当成“已经超过 6 小时”而立刻扫 list。
   if (!reconcileOnStart) lastReconcileAt = startedAt
+
+  try {
+    notificationConfig = await loadIncidentNotificationConfig(notificationConfigPath)
+    if (notificationConfig) {
+      await log('incident notification enabled', {
+        provider: notificationConfig.provider,
+        configPath: notificationConfigPath,
+      })
+    }
+  }
+  catch (error) {
+    notificationLastError = error instanceof Error ? error.message : String(error)
+    await log('incident notification config invalid; notifications disabled', {
+      configPath: notificationConfigPath,
+      error: notificationLastError,
+    })
+  }
+
+  const latestOpenIncident = (conversationId) => archive.db.prepare(`
+    SELECT i.id, i.reason, i.terminal_evidence AS terminalEvidence, i.tail_shape AS tailShape,
+           c.title
+    FROM incidents i
+    JOIN conversations c ON c.id = i.conversation_id
+    WHERE i.conversation_id = ? AND i.status = 'open'
+    ORDER BY i.detected_at DESC
+    LIMIT 1
+  `).get(conversationId) || null
+
+  const notifyIncident = async (conversationId, incident) => {
+    if (!notificationConfig || !incident) return
+    notificationLastAttemptAt = Date.now()
+    const body = [
+      incident.title || conversationId,
+      incident.reason || `${incident.terminalEvidence || 'abnormal'} / ${incident.tailShape || 'unknown tail'}`,
+    ].filter(Boolean).join('\n')
+    const result = await sendIncidentNotification(notificationConfig, {
+      title: 'ChatGPT 异常结束',
+      body,
+      url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
+    })
+    if (result.ok) {
+      notificationLastSuccessAt = Date.now()
+      notificationLastError = null
+      await log('incident notification sent', {
+        conversationId,
+        provider: notificationConfig.provider,
+        status: result.status,
+      })
+    }
+    else if (result.attempted) {
+      notificationLastError = result.error || 'notification failed'
+      await log('incident notification failed', {
+        conversationId,
+        provider: notificationConfig.provider,
+        status: result.status,
+        error: notificationLastError,
+      })
+    }
+  }
 
   const tripCooldown = async (reason) => {
     cooldownUntil = Date.now() + cooldownMinutes * 60_000
