@@ -825,18 +825,28 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     const plural = await fetchConversationByTurns(conversationId, 10)
     let pluralReason = plural.reason ?? `plural HTTP ${plural.httpStatus ?? '?'}`
 
+    const hasVersionMarkers = (payload: MessagesConversationPayload): boolean => {
+      return (payload.messages ?? []).some(message => message.metadata?.has_versions === true)
+    }
+
     if (plural.ok && plural.payload && Array.isArray((plural.payload as MessagesConversationPayload).messages)) {
       const latestPage = plural.payload as MessagesConversationPayload
       const pages: MessagesConversationPayload[] = [latestPage]
       const firstAssessment = assessConversationPayload(latestPage)
-      if (firstAssessment.completeness === 'complete') return plural
+      if (firstAssessment.completeness === 'complete' && !hasVersionMarkers(latestPage)) return plural
+      if (firstAssessment.completeness === 'complete' && hasVersionMarkers(latestPage)) {
+        pluralReason = 'modern payload 标记 has_versions=true；线性 messages[] 无法证明完整 branch tree，改走 singular mapping。'
+      }
 
       let currentPage = latestPage
       const seenCursors = new Set<string>()
-      for (let pageIndex = 1; pageIndex < 2000; pageIndex += 1) {
+      for (let pageIndex = 1; firstAssessment.completeness !== 'complete' && pageIndex < 2000; pageIndex += 1) {
         const pageInfo = currentPage.page_info
         if (pageInfo?.has_previous_page === false) {
-          return { ...plural, payload: mergePluralConversationPages(pages) }
+          const merged = mergePluralConversationPages(pages)
+          if (!hasVersionMarkers(merged)) return { ...plural, payload: merged }
+          pluralReason = 'modern cursor 已完整翻页，但存在 has_versions=true；为保留 edit/regenerate tree 改走 singular mapping。'
+          break
         }
 
         const cursor = typeof pageInfo?.start_cursor === 'string' ? pageInfo.start_cursor : ''
@@ -867,10 +877,15 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
         currentPage = olderPage
 
         if (olderPage.page_info?.has_previous_page === false) {
+          const merged = mergePluralConversationPages(pages)
+          if (hasVersionMarkers(merged)) {
+            pluralReason = 'modern cursor 已完整翻页，但存在 has_versions=true；为保留 edit/regenerate tree 改走 singular mapping。'
+            break
+          }
           return {
             ok: true,
             httpStatus: older.httpStatus,
-            payload: mergePluralConversationPages(pages),
+            payload: merged,
             checkedAt: now(),
           }
         }
