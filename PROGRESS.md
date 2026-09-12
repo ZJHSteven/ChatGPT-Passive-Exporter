@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-12：在线 plural body 分支结构找到可靠来源：真实 `live_observations` 中 message.metadata.parent_id 普遍存在；Genesis 进一步验证所有 103260 个带 message 的 mapping node 均满足 `node_id === message_id`，无例外。`mergeLiveMessagesPage()` 现同步 upsert mapping_nodes，并按本地完整 parent 关系重算已知 children，支持在线 edit/regenerate/stale-client sibling branch，不再只增长 messages 而 mapping tree 停在 Genesis。
 - 2026-09-12：Backlog drain 限流从“循环尾部 sleep”升级为所有主动 backend 请求共享的全局 request gate：catalog 默认最小间隔 5s，body/cursor 默认最小间隔 6s，并加 0–1.5s 随机 jitter；严格单并发。144 个 backlog 会慢慢补齐，不会变成 144 路并发。HTTP 429 仍立即触发 60 分钟 cooldown。
 - 2026-09-12：首次手动触发登录计划任务时，Task Scheduler 直接执行 `node.exe` 导致 Windows Terminal 在桌面长期显示。已改为 `wscript.exe //B` + `windows-archive-daemon-launcher.vbs`：Node 以 hidden window style 运行，wscript 同步等待 daemon 并转发退出码，所以桌面无黑窗，同时 Task Scheduler 的异常退出重启能力不丢失。
 - 2026-09-12：实时队列已从单一 `dirty Map` 拆成 `dirty + ready + activeTurns`：任意 WSS conversation event 立即标 stale；turn-start/conversation-created 只登记 active，不再 2.5 秒后抓半成品 body；turn-complete 才立即 ready；reconciliation 发现变化直接 ready；active 超过默认 35 分钟 watchdog 才排一次诊断 body sync。同步失败会保留 dirty/ready，不再静默丢队列。
