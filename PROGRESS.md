@@ -1,6 +1,9 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-12：发现并修复 backlog drain 的 cooperative scheduling 问题：旧 `drainDirty()` 会在一个 `while (ready.size>0)` 中跑完整个 backlog，导致 Guardian 探活、WSS 缺失检测、watchdog 和 state 刷新在追平期间被长时间饿死。仓库 HEAD 现改为每次调度最多同步 1 个 conversation，随后立即归还主循环；主动 API 节奏仍由全局 request gate 控制。TypeScript + 13 files / 56 tests 通过。当前运行中的旧 PID 继续完成既有 backlog，追平后重启切换新调度器。
+- 2026-09-12：WSS 控制面遥测已加入仓库 HEAD：只记录 sent/received frame 计数、subscribe topic、`recovered`、安全白名单 controls、parsed event frame 数和“conversations message 但 parser 未识别”计数，不落 conversation id/正文/认证内容。用于 backlog 清零重启后实证 Guardian 是否真的订阅并消费 `conversations`。
+- 2026-09-12：修复 watchdog incident 分类：`watchdog:active-timeout` 现在与真实 `wss:*complete` 一样允许把 abnormal terminal 升级为 incident；startup/periodic reconciliation 仍只补历史，不因旧 backlog 批量制造实时告警。新增纯函数测试，Vitest 总数升至 56。
 - 2026-09-12：在线 plural body → `mapping_nodes` 增量补树的作用域错误已修正；`mergeLiveMessagesPage()` 现在可直接使用 `message.id + metadata.parent_id` upsert 在线树节点，并在本地重算已知 children。TypeScript 通过，Vitest 13 files / 55 tests 全通过。当前正式 daemon 仍保持旧进程继续低速 drain backlog，待追平后再正常重启切换到这版，避免为了代码热更新中断已经健康运行的追平队列。
 - 2026-09-12：在线 plural body 分支结构找到可靠来源：真实 `live_observations` 中 message.metadata.parent_id 普遍存在；Genesis 进一步验证所有 103260 个带 message 的 mapping node 均满足 `node_id === message_id`，无例外。`mergeLiveMessagesPage()` 现同步 upsert mapping_nodes，并按本地完整 parent 关系重算已知 children，支持在线 edit/regenerate/stale-client sibling branch，不再只增长 messages 而 mapping tree 停在 Genesis。
 - 2026-09-12：Backlog drain 限流从“循环尾部 sleep”升级为所有主动 backend 请求共享的全局 request gate：catalog 默认最小间隔 5s，body/cursor 默认最小间隔 6s，并加 0–1.5s 随机 jitter；严格单并发。144 个 backlog 会慢慢补齐，不会变成 144 路并发。HTTP 429 仍立即触发 60 分钟 cooldown。
