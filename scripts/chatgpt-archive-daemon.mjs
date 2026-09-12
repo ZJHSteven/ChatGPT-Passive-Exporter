@@ -20,6 +20,7 @@ import process from 'node:process'
 import { execFileSync, spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
+import { summarizeFrame as summarizeWssFrame } from './wss-stability-probe.mjs'
 
 const DEFAULT_CDP = 'http://127.0.0.1:9222'
 const GUARDIAN_MARKER = 'chatgpt-archive-guardian'
@@ -463,6 +464,16 @@ async function main() {
   let lastWssEventAt = null
   let lastWssCreatedAt = null
   let lastWssClosedAt = null
+  let lastWssFrameAt = null
+  let lastWssControlAt = null
+  let wssSentFrames = 0
+  let wssReceivedFrames = 0
+  let wssParsedEventFrames = 0
+  let wssUnparsedConversationFrames = 0
+  let wssGeneration = 0
+  let subscribedTopics = new Set()
+  let conversationSubscriptionRecovered = null
+  let lastSafeWssControls = []
   let guardianReadyAt = 0
   let activeSocketIds = new Set()
   let stopping = false
@@ -501,8 +512,18 @@ async function main() {
       activeSockets: activeSocketIds.size,
       lastCreatedAt: lastWssCreatedAt,
       lastClosedAt: lastWssClosedAt,
+      lastFrameAt: lastWssFrameAt,
+      lastControlAt: lastWssControlAt,
       lastEventAt: lastWssEventAt,
       eventCounts: Object.fromEntries(eventCounts),
+      generation: wssGeneration,
+      sentFrames: wssSentFrames,
+      receivedFrames: wssReceivedFrames,
+      parsedEventFrames: wssParsedEventFrames,
+      unparsedConversationFrames: wssUnparsedConversationFrames,
+      subscribedTopics: [...subscribedTopics].sort(),
+      conversationSubscriptionRecovered,
+      lastControls: lastSafeWssControls,
     },
     authContext: { available: Boolean(authHeaders), capturedAt: lastAuthAt },
     queue: {
@@ -775,6 +796,51 @@ async function main() {
 
   const attachGuardianEvents = async () => {
     const page = guardian.page
+
+    /**
+     * 只记录 WSS 的协议控制面，不记录业务正文。
+     *
+     * `summarizeWssFrame()` 已经做白名单化：它最多留下 type/topic/recovered/status 等
+     * 控制字段和帧字节数，conversation_id、消息正文、认证参数都不会进入 state/log。
+     * 这层遥测专门用于区分：
+     * 1) socket 根本没有订阅 conversations；
+     * 2) conversations 已订阅，但没有业务 frame；
+     * 3) 收到了 conversations message frame，但我们的 event parser 没跟上 schema。
+     */
+    const observeWssControlFrame = async (direction, payloadData) => {
+      const summary = summarizeWssFrame(payloadData)
+      const now = Date.now()
+      lastWssFrameAt = now
+      if (direction === 'sent') wssSentFrames += 1
+      else wssReceivedFrames += 1
+
+      const controls = Array.isArray(summary.controls) ? summary.controls : []
+      if (controls.length === 0) return summary
+
+      lastWssControlAt = now
+      for (const control of controls) {
+        const topic = typeof control.topic_id === 'string'
+          ? control.topic_id
+          : typeof control.topic === 'string' ? control.topic : null
+        if (control.type === 'subscribe' && topic) {
+          if (direction === 'sent') subscribedTopics.add(topic)
+          if (direction === 'received' && topic === 'conversations' && typeof control.recovered === 'boolean') {
+            conversationSubscriptionRecovered = control.recovered
+          }
+        }
+      }
+
+      const safeEntry = {
+        at: now,
+        direction,
+        bytes: summary.bytes,
+        controls: controls.slice(0, 16),
+      }
+      lastSafeWssControls.push(safeEntry)
+      if (lastSafeWssControls.length > 12) lastSafeWssControls = lastSafeWssControls.slice(-12)
+      return summary
+    }
+
     page.on('Network.requestWillBeSent', ({ request }) => {
       if (!String(request?.url || '').includes('/backend-api/')) return
       const headers = sanitizeCapturedHeaders(request.headers)
@@ -796,14 +862,35 @@ async function main() {
         if (!stopping && activeSocketIds.size > 0 && authHeaders) void reconcileCatalog('wss-reconnect').catch(error => log('reconcile after WSS close failed', { error: String(error) }))
       }, 5000)
     })
+    page.on('Network.webSocketFrameSent', ({ requestId, response }) => {
+      if (!activeSocketIds.has(requestId)) return
+      void observeWssControlFrame('sent', response?.payloadData)
+    })
     page.on('Network.webSocketFrameReceived', ({ requestId, response }) => {
       if (!activeSocketIds.has(requestId)) return
-      const events = extractConversationEvents(response?.payloadData)
+      const payloadData = response?.payloadData
+      const summaryPromise = observeWssControlFrame('received', payloadData)
+      const events = extractConversationEvents(payloadData)
+      if (events.length > 0) wssParsedEventFrames += 1
       for (const event of events) {
         lastWssEventAt = Date.now()
         eventCounts.set(event.type, (eventCounts.get(event.type) || 0) + 1)
         observeConversationEvent(event)
       }
+      void summaryPromise.then(async (summary) => {
+        const controls = Array.isArray(summary.controls) ? summary.controls : []
+        const isConversationMessage = controls.some(control => {
+          const topic = control.topic_id ?? control.topic
+          return control.type === 'message' && topic === 'conversations'
+        })
+        if (isConversationMessage && events.length === 0) {
+          wssUnparsedConversationFrames += 1
+          await log('WSS conversations frame was not parsed into an event', {
+            bytes: summary.bytes,
+            controls,
+          })
+        }
+      })
     })
   }
 
@@ -847,7 +934,11 @@ async function main() {
     guardian?.browser?.close()
     guardian = await ensureGuardian(cdpHttp)
     guardianReadyAt = Date.now()
+    wssGeneration += 1
     activeSocketIds = new Set()
+    subscribedTopics = new Set()
+    conversationSubscriptionRecovered = null
+    lastSafeWssControls = []
     authHeaders = null
     await attachGuardianEvents()
     await log('guardian ready', {
