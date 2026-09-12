@@ -13,8 +13,13 @@ describe('ChatGPT Archive daemon WSS parser', () => {
         topic_id: 'conversations',
         payload: {
           type: 'conversation-turn-complete',
-          conversation_id: 'conversation-1',
-          private_body: 'do not need to copy this into event queue',
+          // 2026-09-13 当前第一方真实 frame：conversation_id 位于事件 payload 的下一层，
+          // 不能假设它和 conversation-turn-complete 的 type 是兄弟字段。
+          payload: {
+            conversation_id: 'conversation-1',
+            private_body: 'do not need to copy this into event queue',
+          },
+          metadata: null,
         },
       },
       {
@@ -22,7 +27,9 @@ describe('ChatGPT Archive daemon WSS parser', () => {
         topic_id: 'conversations',
         payload: {
           type: 'conversation-created',
-          conversation_id: 'conversation-2',
+          payload: {
+            conversation_id: 'conversation-2',
+          },
         },
       },
       {
@@ -30,9 +37,11 @@ describe('ChatGPT Archive daemon WSS parser', () => {
         topic_id: 'conversations',
         payload: {
           type: 'conversation-update',
-          update_type: 'async-task-update-message',
-          conversation_id: 'conversation-3',
-          update_content: { private_body: 'must not be copied into event identity' },
+          payload: {
+            conversation_id: 'conversation-3',
+            update_type: 'async-task-update-message',
+            update_content: { private_body: 'must not be copied into event identity' },
+          },
         },
       },
     ])

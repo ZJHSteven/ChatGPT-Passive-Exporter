@@ -274,6 +274,40 @@ export function extractConversationEvents(payloadData) {
   catch { return [] }
   const events = []
   const seen = new Set()
+
+  /**
+   * ChatGPT 当前 WSS 的 conversations 事件并不保证把“事件类型”和“conversation_id”放在同一层。
+   * 2026-09-13 真机抓到的 complete frame 形状是：
+   *
+   * message(topic=conversations)
+   *   └─ payload.type = conversation-turn-complete
+   *      └─ payload.payload.conversation_id = ...
+   *
+   * 因此这里不能再用“同一个 object 同时具有 type + conversation_id”这种过强假设。
+   * 对一个已经识别出的 conversation event 根对象，只在它自己的小子树里寻找标识字段；这样既能
+   * 兼容现在的双层 payload，也不会把同一 frame 里其它无关对象的 id 错配给事件。
+   */
+  const findStringField = (value, keys, depth = 0) => {
+    if (!value || depth > 5) return null
+    if (Array.isArray(value)) {
+      for (const child of value) {
+        const found = findStringField(child, keys, depth + 1)
+        if (found) return found
+      }
+      return null
+    }
+    if (typeof value !== 'object') return null
+    for (const key of keys) {
+      if (typeof value[key] === 'string' && value[key]) return value[key]
+    }
+    for (const child of Object.values(value)) {
+      if (!child || typeof child !== 'object') continue
+      const found = findStringField(child, keys, depth + 1)
+      if (found) return found
+    }
+    return null
+  }
+
   const visit = (value, inheritedTopic = null, depth = 0) => {
     if (!value || depth > 7) return
     if (Array.isArray(value)) {
@@ -285,16 +319,15 @@ export function extractConversationEvents(payloadData) {
     const payload = value.payload && typeof value.payload === 'object' ? value.payload : null
     const candidates = payload ? [payload, value] : [value]
     for (const candidate of candidates) {
-      const conversationId = typeof candidate.conversation_id === 'string'
-        ? candidate.conversation_id
-        : typeof candidate.conversationId === 'string' ? candidate.conversationId : null
       const type = typeof candidate.type === 'string'
         ? candidate.type
         : typeof candidate.event_type === 'string' ? candidate.event_type : null
-      const updateType = typeof candidate.update_type === 'string'
-        ? candidate.update_type
-        : typeof candidate.updateType === 'string' ? candidate.updateType : null
-      if ((topic === 'conversations' || inheritedTopic === 'conversations') && conversationId && type) {
+      // `message` 是 WSS 总线 envelope，不是 conversation 业务事件本身。
+      const isConversationEvent = typeof type === 'string' && type.startsWith('conversation-')
+      if ((topic === 'conversations' || inheritedTopic === 'conversations') && isConversationEvent) {
+        const conversationId = findStringField(candidate, ['conversation_id', 'conversationId'])
+        const updateType = findStringField(candidate, ['update_type', 'updateType'])
+        if (!conversationId) continue
         const key = `${conversationId}:${type}:${updateType || ''}`
         if (!seen.has(key)) {
           seen.add(key)
