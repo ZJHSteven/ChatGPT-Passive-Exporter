@@ -1,6 +1,10 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-12：重新核对正式运行状态，发现 `data/chatgpt-archive.sqlite` 已增长到 6165 conversations / 111250 messages，但正式 daemon **并未常驻**：旧 state 显示 `alive=false`，上次只同步 3 条且队列仍有 77 dirty。此前“持续追平”实际上没有完成，当前首要任务改为先把登录自启动/守护链真正上线，再低速 drain backlog。
+- 2026-09-12：澄清 dirty 语义：现有代码虽然已经对所有 WSS conversation event 调 `markDirty`，但非 complete 事件仅延迟约 2.5 秒就直接 `drainDirty()`，把“本地已 stale”和“适合马上抓最终 body”错误耦合。新状态机要求任何 start/create/update 都立刻 dirty/active，但只有 complete、reconciliation/gap recovery 或 watchdog 诊断才进入 sync-ready；未来 SSE live mirror 另做实验层。
+- 2026-09-12：主库精确体积 3,348,905,984 bytes（约 3.12 GiB）；`dbstat` 最大项为 messages 约 1.43GB、两套正文 FTS 合计约 0.98GB、conversation_snapshots 约 327MB、resources 约 202MB、message_parts 约 168MB、conversations 约 143MB。freelist 仅约 12MB，当前不是 VACUUM 虚胖。raw snapshots 与结构化表都继续保留，压缩/去重作为后续独立 migration，不阻塞同步上线。
+- 2026-09-12：确认桌面存在 `Chrome CDP 日常版.lnk`，其参数正是 `Chrome-CDP\\User Data` + `Default` + `9222`。Chrome 根恢复后续改为启动该快捷方式，避免 daemon 与桌面入口各维护一份易漂移的启动参数；不会为了测试强杀正在承载其它工作的整套 Chrome。
 - 2026-09-09：补齐 browser-process 级高可用设计：daemon 建立 Guardian 前先探测 CDP；只有整个 `9222` 不可达时，才按当前固定 Chrome executable + `D:\AppData\Chrome\Chrome-CDP\User Data\Default` 重新启动同一登录 profile，不创建第二套长期 profile。现有 Chrome 正常时是纯 no-op 探活；为避免破坏正在工作的十几个标签，本轮不主动 kill 整个 Chrome 做 destructive test。
 - 2026-09-09：新增 Windows Task Scheduler 登录自启动管理命令；计划任务直接托管 daemon，并配置非正常退出每分钟重试、`ExecutionTimeLimit=0`、`MultipleInstances=IgnoreNew`。Windows 进程监督与 ChatGPT/WSS/SQLite 业务逻辑分层；后续 AHK 可作为第二层可见性/通知监视，而不必承载核心 daemon。
 - 2026-09-09：Guardian“已休眠”根因确认是 CDP profile 中的 `Auto Tab Discard (suspend) 0.7.3`，其 discard 会留下一个 `💤 ChatGPT / （已休眠窗口） ChatGPT` 占位页；对该 target 的 `Runtime.evaluate` 可永久无响应。daemon 旧版 CDP `send()` 没有超时，因此即使业务进程在线也存在永久卡死风险。现增加 CDP connect/request 硬超时、无响应 renderer/WSS 缺失自愈，以及按已知 windowId 清理第三方睡眠占位 target。

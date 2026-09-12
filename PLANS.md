@@ -13,6 +13,15 @@
 - 实时路径：WSS 只负责快速产生 dirty/turn-complete 信号；真正数据完整性由 list/body overlap 同步保证。WSS reconnect、offline→online 或 watchdog 触发 reconciliation，而不是相信事件绝不会漏。
 - 所有在线同步结果继续写入同一 `data/chatgpt-archive.sqlite`，并保留 raw source observation；云端缺失不得物理删除本地历史。
 
+## 2026-09-12 实时状态机收口
+
+- **把“内容已变化”和“现在适合抓最终正文”拆成两个维度**。任何可信 WSS conversation 事件（例如 conversation-created、turn-start/update、turn-complete）一到，就立刻把该 conversation 记为 `dirty/stale`，表示“本地副本可能落后”；但 `dirty` 本身不等于“马上发 body 请求”。
+- `turn-complete` 是正常的 `sync-ready` 触发器：收到后立即安排一次 body overlap 增量同步，同一份 body 同时负责正文归档和 terminal/tail 异常诊断。
+- `turn-start` / conversation-created 只登记 active + dirty，首版不为了一个仍在生成的 turn 每几秒抓 body。若 active 超过可配置 watchdog（当前以约 35 分钟为保守起点）仍无 complete，则安排一次**诊断同步**，从 body 判断当前持久化尾部；只有确有独立信息需求时才考虑 `stream_status`。
+- WSS gap/reconnect、daemon 冷启动、online 恢复、低频 catalog reconciliation 发现 `update_time` 变化时，属于恢复路径：这些条目可直接进入 `sync-ready`，因为此时无法依赖之前的 complete 事件仍然存在。
+- 后续 Live Stream/SSE mirror 是独立实验层：若能可靠订阅正在生成的 turn，则 `turn-start` 后可以持续保存 transient stream，但这不能反过来改变 Archive Core 的最终 overlap/terminal 同步契约。
+- 当前上线阻塞项按顺序处理：① Windows 登录自启动真正注册；② Chrome 根恢复改为复用桌面 `Chrome CDP 日常版.lnk`；③ 正式 daemon 常驻；④ 低速 backlog 追平到 overlap；⑤ 实测 WSS event → dirty/active → complete → sync/diagnostic E2E；⑥ 再进入 branch/version 与 Live Stream 实验。
+
 ## 设计原则
 
 1. **被动捕获优先**：不自行构造 `/backend-api/conversation*` 请求，不读取或保存 Authorization/access token；只复制 ChatGPT 页面自己收到的符合白名单的响应。
