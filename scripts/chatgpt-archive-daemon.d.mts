@@ -8,6 +8,16 @@ export interface ArchiveWssEvent {
   type: string
 }
 
+export interface ArchiveWssEventBehavior {
+  dirty: true
+  syncReady: boolean
+  startsTurn: boolean
+  completesTurn: boolean
+}
+
 /** 从 ChatGPT conversations topic 的 WSS frame 中抽取最小事件身份。 */
 export function extractConversationEvents(payloadData: unknown): ArchiveWssEvent[]
+
+/** 将 WSS event 分类为 dirty / active / sync-ready 行为，不触碰网络。 */
+export function classifyConversationEvent(type: unknown): ArchiveWssEventBehavior
 
