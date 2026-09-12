@@ -612,6 +612,44 @@ export class ChatArchiveDb {
         conversation_id, message_id, part_index, source_field, part_kind, text_value, json_value
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `)
+    /**
+     * 新式 plural body 虽然没有旧 `mapping{}` 大对象，但每条 message 的 metadata.parent_id
+     * 仍保留了真实树关系。Genesis 已实测 103260/103260 个“有 message 的 mapping node”都满足
+     * `node_id === message_id`，因此在线同步可以安全用 message.id 作为 node_id。
+     *
+     * children_json 不直接相信远端单页（分页可能只看到部分 children）；下面会在本地 upsert
+     * 完本页后，按 parent_id 从完整 mapping_nodes 表重新计算“当前已知 children”。
+     */
+    const upsertMappingNode = this.db.prepare(`
+      INSERT INTO mapping_nodes (
+        conversation_id, node_id, parent_id, message_id, children_json, extra_json,
+        first_seen_at, last_seen_at, source_observed_at
+      ) VALUES (?, ?, ?, ?, NULL, '{}', ?, ?, ?)
+      ON CONFLICT(conversation_id, node_id) DO UPDATE SET
+        first_seen_at=min(mapping_nodes.first_seen_at, excluded.first_seen_at),
+        last_seen_at=max(mapping_nodes.last_seen_at, excluded.last_seen_at),
+        parent_id=CASE
+          WHEN excluded.source_observed_at >= mapping_nodes.source_observed_at
+            AND excluded.parent_id IS NOT NULL
+          THEN excluded.parent_id
+          ELSE mapping_nodes.parent_id
+        END,
+        message_id=COALESCE(excluded.message_id, mapping_nodes.message_id),
+        source_observed_at=max(mapping_nodes.source_observed_at, excluded.source_observed_at)
+    `)
+    const updateKnownChildren = this.db.prepare(`
+      UPDATE mapping_nodes
+      SET children_json = (
+        SELECT json_group_array(node_id)
+        FROM (
+          SELECT node_id
+          FROM mapping_nodes
+          WHERE conversation_id = ? AND parent_id = ?
+          ORDER BY COALESCE(source_observed_at, 0), node_id
+        )
+      )
+      WHERE conversation_id = ? AND node_id = ?
+    `)
     const insertSnapshot = this.db.prepare(`
       INSERT OR REPLACE INTO conversation_snapshots (
         source_id, conversation_id, part_name, record_ordinal, observed_at, sha256, raw_json_gzip
@@ -1121,12 +1159,14 @@ export class ChatArchiveDb {
         observedAt,
       )
 
+      const touchedParents = new Set<string>()
       conversation.messages.forEach((message, pageOrdinal) => {
         const rawMessage = record(message.raw)
         const author = record(rawMessage.author)
         const content = record(rawMessage.content)
         const metadata = record(rawMessage.metadata)
         const finishDetails = record(metadata.finish_details)
+        const parentId = stringValue(metadata.parent_id)
         upsertMessage.run(
           conversationId,
           message.id,
@@ -1160,6 +1200,17 @@ export class ChatArchiveDb {
           observedAt,
         )
 
+        upsertMappingNode.run(
+          conversationId,
+          message.id,
+          parentId,
+          message.id,
+          observedAt,
+          observedAt,
+          observedAt,
+        )
+        if (parentId) touchedParents.add(parentId)
+
         this.db.prepare('DELETE FROM message_parts WHERE conversation_id = ? AND message_id = ?').run(conversationId, message.id)
         if (Array.isArray(content.parts)) {
           content.parts.forEach((part, partIndex) => {
@@ -1176,6 +1227,13 @@ export class ChatArchiveDb {
           })
         }
       })
+
+      // children 由本地“所有已知 node”的 parent_id 反推，避免 cursor 分页只看到一支时把
+      // Genesis 已存在的 sibling 覆盖掉。parent 本页未出现也没关系：已存在就立即更新，
+      // 尚未入库则以后该 parent 被观察到时自然补齐。
+      for (const parentId of touchedParents) {
+        updateKnownChildren.run(conversationId, parentId, conversationId, parentId)
+      }
 
       this.db.prepare(`
         INSERT INTO live_observations (
