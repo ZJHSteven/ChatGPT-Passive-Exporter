@@ -247,7 +247,8 @@ describe('ChatArchiveDb', () => {
     try {
       const source = db.beginOfficialExportSource({
         sourceKey: 'official-parent-test',
-        filePath: 'fixture.zip',
+        displayName: 'fixture.zip',
+        sourcePath: 'fixture.zip',
         fileSize: 1,
         fileMtimeMs: 1,
         observedAt: 1000,
