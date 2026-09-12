@@ -21,3 +21,6 @@ export function extractConversationEvents(payloadData: unknown): ArchiveWssEvent
 /** 将 WSS event 分类为 dirty / active / sync-ready 行为，不触碰网络。 */
 export function classifyConversationEvent(type: unknown): ArchiveWssEventBehavior
 
+/** 判断某种同步 trigger 是否允许把异常尾部升级成 realtime incident。 */
+export function shouldClassifyTerminalForTrigger(trigger: unknown): boolean
+

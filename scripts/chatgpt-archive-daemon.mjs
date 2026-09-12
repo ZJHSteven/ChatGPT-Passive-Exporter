@@ -216,6 +216,23 @@ export function classifyConversationEvent(type) {
   }
 }
 
+/**
+ * 决定一次 body merge 是否有资格把“异常尾部”升级成 incident。
+ *
+ * 为什么不能所有同步都 classify：
+ * - startup / periodic reconciliation 可能一次补几十上百条历史 backlog；
+ * - 其中旧的 client_stopped / 半截 tool tail 适合归档取证，但不应在今天重新制造大量“实时事故”。
+ *
+ * 为什么 watchdog 必须 classify：
+ * - watchdog 本来就是“我们认为这一轮可能异常长/漏 complete”才主动做的诊断抓取；
+ * - 如果抓到明确 abnormal terminal，却因为 trigger 不含 complete 而不建 incident，就失去 watchdog 的意义。
+ */
+export function shouldClassifyTerminalForTrigger(trigger) {
+  const normalized = String(trigger || '').trim().toLowerCase()
+  if (normalized.startsWith('watchdog:')) return true
+  return normalized.startsWith('wss:') && normalized.includes('complete')
+}
+
 function chatgptTime(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string') {
@@ -626,7 +643,7 @@ async function main() {
         endpoint: pages === 0 ? basePath : `${basePath}/messages`,
         pageCursor: cursor,
         observationKind: `body-page:${trigger}`,
-        classifyTerminal: pages === 0 && /complete/iu.test(trigger),
+        classifyTerminal: pages === 0 && shouldClassifyTerminalForTrigger(trigger),
       })
       newMessages += merged.newMessageCount
       pages += 1

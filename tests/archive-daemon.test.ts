@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest'
-import { classifyConversationEvent, extractConversationEvents } from '../scripts/chatgpt-archive-daemon.mjs'
+import {
+  classifyConversationEvent,
+  extractConversationEvents,
+  shouldClassifyTerminalForTrigger,
+} from '../scripts/chatgpt-archive-daemon.mjs'
 
 describe('ChatGPT Archive daemon WSS parser', () => {
   test('从 conversations topic 中提取 conversation id 与事件类型', () => {
@@ -59,5 +63,13 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       syncReady: false,
       startsTurn: false,
     })
+  })
+
+  test('只有 realtime complete 与 watchdog 诊断允许创建 incident', () => {
+    expect(shouldClassifyTerminalForTrigger('wss:conversation-turn-complete')).toBe(true)
+    expect(shouldClassifyTerminalForTrigger('watchdog:active-timeout')).toBe(true)
+    expect(shouldClassifyTerminalForTrigger('reconcile:startup')).toBe(false)
+    expect(shouldClassifyTerminalForTrigger('reconcile:periodic')).toBe(false)
+    expect(shouldClassifyTerminalForTrigger('wss:conversation-created')).toBe(false)
   })
 })
