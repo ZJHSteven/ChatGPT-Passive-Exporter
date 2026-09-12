@@ -195,6 +195,7 @@ async function daemonCommand(positionals, flags) {
       'cdp',
       'sync-delay-ms',
       'reconcile-delay-ms',
+      'request-jitter-ms',
       'overlap',
       'reconcile-hours',
       'cooldown-minutes',

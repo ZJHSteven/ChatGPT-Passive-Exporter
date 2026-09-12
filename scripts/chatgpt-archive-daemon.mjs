@@ -438,8 +438,12 @@ async function main() {
   const dbPath = flags.has('db') ? path.resolve(String(flags.get('db'))) : DEFAULT_DB
   const statePath = flags.has('state') ? path.resolve(String(flags.get('state'))) : DEFAULT_STATE
   const logPath = flags.has('log') ? path.resolve(String(flags.get('log'))) : DEFAULT_LOG
-  const syncDelayMs = intFlag(flags, 'sync-delay-ms', 1500, 0)
-  const reconcileDelayMs = intFlag(flags, 'reconcile-delay-ms', 900, 0)
+  // 这里的 delay 不是“同步完以后随便睡一下”，而是所有主动 backend 请求之间的
+  // **全局最小间隔**。Backlog 追平宁可花一两个小时，也不要因为一次启动积压 100+ 条
+  // conversation 就短时间连续打几十个请求。
+  const syncDelayMs = intFlag(flags, 'sync-delay-ms', 6000, 0)
+  const reconcileDelayMs = intFlag(flags, 'reconcile-delay-ms', 5000, 0)
+  const requestJitterMs = intFlag(flags, 'request-jitter-ms', 1500, 0)
   const overlapThreshold = intFlag(flags, 'overlap', 56, 1)
   const reconcileHours = Number(flags.get('reconcile-hours') ?? 6)
   const reconcileOnStart = !flags.has('no-reconcile-on-start')
@@ -472,6 +476,7 @@ async function main() {
   let syncedConversations = 0
   let syncErrors = 0
   let lastError = null
+  let lastActiveRequestAt = 0
 
   const log = async (message, extra = null) => {
     const line = `[${new Date().toISOString()}] ${message}${extra ? ` ${JSON.stringify(extra)}` : ''}\n`
@@ -511,7 +516,12 @@ async function main() {
       reconcileInFlight,
     },
     sync: { syncedConversations, syncErrors, lastReconcileAt },
-    limits: { maxSyncConversations },
+    limits: {
+      maxSyncConversations,
+      bodyRequestGapMs: syncDelayMs,
+      catalogRequestGapMs: reconcileDelayMs,
+      requestJitterMs,
+    },
     cooldownUntil: cooldownUntil || null,
     rssBytes: process.memoryUsage().rss,
     heapUsedBytes: process.memoryUsage().heapUsed,
@@ -535,8 +545,19 @@ async function main() {
     if (!guardian?.page || guardian.page.closed) throw new Error('guardian page unavailable')
   }
 
+  const waitForRequestSlot = async (kind) => {
+    const baseGap = kind === 'catalog' ? reconcileDelayMs : syncDelayMs
+    const jitter = requestJitterMs > 0 ? Math.floor(Math.random() * (requestJitterMs + 1)) : 0
+    if (lastActiveRequestAt > 0) {
+      const waitMs = lastActiveRequestAt + baseGap + jitter - Date.now()
+      if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs))
+    }
+    lastActiveRequestAt = Date.now()
+  }
+
   const fetchChecked = async (request) => {
     requireRequestWindow()
+    await waitForRequestSlot(request.kind === 'catalog' ? 'catalog' : 'body')
     const response = await pageFetchJson(guardian.page, { ...request, headers: authHeaders })
     if (response.status === 429) {
       await tripCooldown('HTTP 429')
@@ -559,6 +580,7 @@ async function main() {
       url: `${basePath}?include_has_versions=true&num_turns=10`,
       targetPath: basePath,
       targetRoute: '/backend-api/conversations/{conversation_id}',
+      kind: 'body',
     })
     if (!Array.isArray(first.messages)) throw new Error(`conversation ${conversationId} latest body has no messages[]`)
 
@@ -602,9 +624,9 @@ async function main() {
         url: `${messagePath}?before=${encodeURIComponent(cursor)}&include_has_versions=true&num_turns=10`,
         targetPath: messagePath,
         targetRoute: '/backend-api/conversations/{conversation_id}/messages',
+        kind: 'body',
       })
       if (!Array.isArray(pagePayload.messages)) throw new Error(`conversation ${conversationId} cursor page has no messages[]`)
-      if (syncDelayMs > 0) await new Promise(resolve => setTimeout(resolve, syncDelayMs))
     }
   }
 
@@ -642,7 +664,6 @@ async function main() {
           // 普通瞬时错误也不要 tight-loop 重打同一个 endpoint。
           break
         }
-        if (syncDelayMs > 0) await new Promise(resolve => setTimeout(resolve, syncDelayMs))
       }
     }
     finally {
@@ -713,7 +734,12 @@ async function main() {
     try {
       while (stableOverlap < overlapThreshold) {
         const route = '/backend-api/conversations'
-        const body = await fetchChecked({ url: listPath(offset, limit), targetPath: route, targetRoute: route })
+        const body = await fetchChecked({
+          url: listPath(offset, limit),
+          targetPath: route,
+          targetRoute: route,
+          kind: 'catalog',
+        })
         const items = Array.isArray(body.items) ? body.items : []
         if (items.length === 0) break
         for (const item of items) {
@@ -736,7 +762,6 @@ async function main() {
         pages += 1
         offset += items.length
         if (items.length < limit) break
-        if (reconcileDelayMs > 0) await new Promise(resolve => setTimeout(resolve, reconcileDelayMs))
       }
     }
     finally {
