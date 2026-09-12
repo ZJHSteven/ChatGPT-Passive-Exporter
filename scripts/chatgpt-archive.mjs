@@ -19,6 +19,7 @@ const DEFAULT_DB_PATH = path.join(PROJECT_ROOT, 'data', 'chatgpt-archive.sqlite'
 const DEFAULT_DAEMON_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon-state.json')
 const DEFAULT_DAEMON_LOG_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
 const WINDOWS_STARTUP_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-archive-startup.ps1')
+const WINDOWS_STARTUP_LAUNCHER = path.join(PROJECT_ROOT, 'scripts', 'windows-archive-daemon-launcher.vbs')
 const WINDOWS_STARTUP_TASK = 'ChatGPT Archive Daemon'
 
 function usage() {
@@ -128,6 +129,7 @@ async function daemonCommand(positionals, flags) {
       args.push(
         '-NodeExe', process.execPath,
         '-DaemonScript', path.join(PROJECT_ROOT, 'scripts', 'chatgpt-archive-daemon.mjs'),
+        '-LauncherScript', WINDOWS_STARTUP_LAUNCHER,
         '-ProjectRoot', PROJECT_ROOT,
         '-DbPath', dbPath(flags),
       )

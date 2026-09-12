@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-12：首次手动触发登录计划任务时，Task Scheduler 直接执行 `node.exe` 导致 Windows Terminal 在桌面长期显示。已改为 `wscript.exe //B` + `windows-archive-daemon-launcher.vbs`：Node 以 hidden window style 运行，wscript 同步等待 daemon 并转发退出码，所以桌面无黑窗，同时 Task Scheduler 的异常退出重启能力不丢失。
 - 2026-09-12：实时队列已从单一 `dirty Map` 拆成 `dirty + ready + activeTurns`：任意 WSS conversation event 立即标 stale；turn-start/conversation-created 只登记 active，不再 2.5 秒后抓半成品 body；turn-complete 才立即 ready；reconciliation 发现变化直接 ready；active 超过默认 35 分钟 watchdog 才排一次诊断 body sync。同步失败会保留 dirty/ready，不再静默丢队列。
 - 2026-09-12：Chrome 根恢复改为启动桌面 `Chrome CDP 日常版.lnk`，daemon 不再复制 executable/user-data/profile/remote-debugging 参数；Windows startup helper 改由 PowerShell 7 (`pwsh.exe`) 执行，避开 Windows PowerShell 5.1 对无 BOM UTF-8 中文脚本的错误解码。
 - 2026-09-12：补齐 `chatgpt-archive-daemon.d.mts` 的 WSS event behavior 声明，使新的 dirty/ready 纯函数可被严格 TypeScript 测试直接导入。

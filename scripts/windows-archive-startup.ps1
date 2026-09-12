@@ -6,6 +6,7 @@ param(
   [string]$TaskName = 'ChatGPT Archive Daemon',
   [string]$NodeExe,
   [string]$DaemonScript,
+  [string]$LauncherScript,
   [string]$ProjectRoot,
   [string]$DbPath
 )
@@ -46,19 +47,27 @@ if ($Action -eq 'Uninstall') {
   exit 0
 }
 
-foreach ($required in @('NodeExe', 'DaemonScript', 'ProjectRoot', 'DbPath')) {
+foreach ($required in @('NodeExe', 'DaemonScript', 'LauncherScript', 'ProjectRoot', 'DbPath')) {
   if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $required -ValueOnly))) {
     throw "Install 缺少参数：$required"
   }
 }
 
+$wscriptExe = Join-Path $env:WINDIR 'System32\wscript.exe'
+
+# 计划任务本体执行 wscript，而不是直接执行 node.exe：wscript 会隐藏 Node 的控制台，
+# 并等待 Node 退出后把退出码原样传回 Task Scheduler，因此失败重启语义仍然成立。
 $arguments = @(
+  '//B',
+  '//NoLogo',
+  ('"{0}"' -f $LauncherScript),
+  ('"{0}"' -f $NodeExe),
   ('"{0}"' -f $DaemonScript),
   '--db', ('"{0}"' -f $DbPath)
 ) -join ' '
 
 $actionParams = @{
-  Execute = $NodeExe
+  Execute = $wscriptExe
   Argument = $arguments
   WorkingDirectory = $ProjectRoot
 }
@@ -97,6 +106,7 @@ Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
 [pscustomobject]@{
   Installed = $true
   TaskName = $TaskName
+  Launcher = $LauncherScript
   NodeExe = $NodeExe
   DaemonScript = $DaemonScript
   WorkingDirectory = $ProjectRoot
