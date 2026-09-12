@@ -172,6 +172,76 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('在线 plural messages 根据 metadata.parent_id 增量补 mapping tree，并保留 sibling branch', () => {
+    const db = tempDb()
+    try {
+      db.mergeLiveMessagesPage({
+        title: 'Live branch fixture',
+        conversation_id: 'branch-live',
+        current_node: 'assistant-a',
+        messages: [
+          {
+            id: 'user-root',
+            author: { role: 'user' },
+            recipient: 'all',
+            content: { content_type: 'text', parts: ['原问题'] },
+            metadata: {},
+          },
+          {
+            id: 'assistant-a',
+            author: { role: 'assistant' },
+            recipient: 'all',
+            channel: 'final',
+            content: { content_type: 'text', parts: ['第一次回答'] },
+            metadata: { parent_id: 'user-root' },
+          },
+        ],
+      }, { observedAt: 1000 })
+
+      // 第二次 observation 只带同一 user parent 下的新 sibling，模拟 regenerate。
+      // 旧 sibling 不应被删除，parent.children_json 应反映两条已知分支。
+      db.mergeLiveMessagesPage({
+        title: 'Live branch fixture',
+        conversation_id: 'branch-live',
+        current_node: 'assistant-b',
+        messages: [
+          {
+            id: 'assistant-b',
+            author: { role: 'assistant' },
+            recipient: 'all',
+            channel: 'final',
+            content: { content_type: 'text', parts: ['第二次回答'] },
+            metadata: { parent_id: 'user-root' },
+          },
+        ],
+      }, { observedAt: 2000 })
+
+      const nodes = db.db.prepare(`
+        SELECT node_id AS nodeId, parent_id AS parentId, message_id AS messageId,
+               children_json AS childrenJson
+        FROM mapping_nodes
+        WHERE conversation_id='branch-live'
+        ORDER BY node_id
+      `).all() as Array<{
+        nodeId: string
+        parentId: string | null
+        messageId: string | null
+        childrenJson: string | null
+      }>
+
+      expect(nodes.map(node => [node.nodeId, node.parentId, node.messageId])).toEqual([
+        ['assistant-a', 'user-root', 'assistant-a'],
+        ['assistant-b', 'user-root', 'assistant-b'],
+        ['user-root', null, 'user-root'],
+      ])
+      const root = nodes.find(node => node.nodeId === 'user-root')
+      expect(JSON.parse(root?.childrenJson || '[]').sort()).toEqual(['assistant-a', 'assistant-b'])
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('complete 但没有 final 会开 incident；新 turn 正常完成后自动解除当前异常', () => {
     const db = tempDb()
     try {
