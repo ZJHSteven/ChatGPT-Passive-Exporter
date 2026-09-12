@@ -205,19 +205,26 @@ async function ensureCdpBrowser(flags, cdpHttp) {
  *
  * - 所有 conversations topic event 都意味着本地副本可能 stale，因此一律 dirty；
  * - complete 是正常的 sync-ready 信号；
- * - turn start / conversation-created 代表有活跃工作，登记 watchdog，但暂不抓最终 body；
- * - 其它事件若当前已经 active，只更新 lastEventAt，不擅自改变 active/terminal 语义。
+ * - 真实抓包已经确认 `conversation-update + async-task-update-message` 会在其它 conversation
+ *   仍在异步运行时持续出现，因此它才是当前最可靠的“正在活跃/仍有进展”实时信号；
+ * - `conversation-turn-start` 目前尚未在真实样本里观察到，只保留兼容能力，不能再把设计
+ *   建立在“服务器一定会发 start”这个未经证实的假设上；
+ * - conversation-created 说明对象刚出现，但它可能在 turn-complete 之后才到（真实实验就抓到过），
+ *   因而只标 dirty，不单独把它当作“现在一定有一个 running turn”。
  */
-export function classifyConversationEvent(type) {
+export function classifyConversationEvent(type, updateType = null) {
   const normalized = String(type || '').toLowerCase()
+  const normalizedUpdateType = String(updateType || '').toLowerCase()
   const complete = normalized.includes('complete')
-  const startsTurn = normalized === 'conversation-created'
-    || (normalized.includes('turn') && /(start|begin|created)/u.test(normalized))
+  const explicitTurnStart = normalized.includes('turn') && /(start|begin|created)/u.test(normalized)
+  const asyncProgress = normalized === 'conversation-update'
+    && normalizedUpdateType === 'async-task-update-message'
   return {
     dirty: true,
     syncReady: complete,
-    startsTurn,
+    startsTurn: explicitTurnStart || asyncProgress,
     completesTurn: complete,
+    asyncProgress,
   }
 }
 
@@ -284,11 +291,14 @@ export function extractConversationEvents(payloadData) {
       const type = typeof candidate.type === 'string'
         ? candidate.type
         : typeof candidate.event_type === 'string' ? candidate.event_type : null
+      const updateType = typeof candidate.update_type === 'string'
+        ? candidate.update_type
+        : typeof candidate.updateType === 'string' ? candidate.updateType : null
       if ((topic === 'conversations' || inheritedTopic === 'conversations') && conversationId && type) {
-        const key = `${conversationId}:${type}`
+        const key = `${conversationId}:${type}:${updateType || ''}`
         if (!seen.has(key)) {
           seen.add(key)
-          events.push({ conversationId, type })
+          events.push({ conversationId, type, updateType })
         }
       }
     }
@@ -810,7 +820,7 @@ async function main() {
   }
 
   const observeConversationEvent = (event) => {
-    const behavior = classifyConversationEvent(event.type)
+    const behavior = classifyConversationEvent(event.type, event.updateType)
     const now = Date.now()
     markDirty(event.conversationId, `wss:${event.type}`)
     if (behavior.startsTurn) {
@@ -819,7 +829,7 @@ async function main() {
         startedAt: current?.startedAt ?? now,
         lastEventAt: now,
         lastWatchdogAt: current?.lastWatchdogAt ?? null,
-        startType: current?.startType ?? event.type,
+        startType: current?.startType ?? (event.updateType ? `${event.type}:${event.updateType}` : event.type),
       })
     }
     else if (activeTurns.has(event.conversationId)) {

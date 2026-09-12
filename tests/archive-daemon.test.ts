@@ -25,11 +25,22 @@ describe('ChatGPT Archive daemon WSS parser', () => {
           conversation_id: 'conversation-2',
         },
       },
+      {
+        type: 'message',
+        topic_id: 'conversations',
+        payload: {
+          type: 'conversation-update',
+          update_type: 'async-task-update-message',
+          conversation_id: 'conversation-3',
+          update_content: { private_body: 'must not be copied into event identity' },
+        },
+      },
     ])
 
     expect(extractConversationEvents(frame)).toEqual([
-      { conversationId: 'conversation-1', type: 'conversation-turn-complete' },
-      { conversationId: 'conversation-2', type: 'conversation-created' },
+      { conversationId: 'conversation-1', type: 'conversation-turn-complete', updateType: null },
+      { conversationId: 'conversation-2', type: 'conversation-created', updateType: null },
+      { conversationId: 'conversation-3', type: 'conversation-update', updateType: 'async-task-update-message' },
     ])
   })
 
@@ -41,7 +52,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     }))).toEqual([])
   })
 
-  test('dirty 与 sync-ready 分离：start 只标 stale，complete 才立即同步', () => {
+  test('dirty 与 sync-ready 分离：真实 async update 建立 active，complete 才立即同步', () => {
     expect(classifyConversationEvent('conversation-turn-start')).toMatchObject({
       dirty: true,
       syncReady: false,
@@ -51,7 +62,13 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(classifyConversationEvent('conversation-created')).toMatchObject({
       dirty: true,
       syncReady: false,
+      startsTurn: false,
+    })
+    expect(classifyConversationEvent('conversation-update', 'async-task-update-message')).toMatchObject({
+      dirty: true,
+      syncReady: false,
       startsTurn: true,
+      asyncProgress: true,
     })
     expect(classifyConversationEvent('conversation-turn-complete')).toMatchObject({
       dirty: true,

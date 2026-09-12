@@ -6,6 +6,7 @@
 export interface ArchiveWssEvent {
   conversationId: string
   type: string
+  updateType: string | null
 }
 
 export interface ArchiveWssEventBehavior {
@@ -13,13 +14,14 @@ export interface ArchiveWssEventBehavior {
   syncReady: boolean
   startsTurn: boolean
   completesTurn: boolean
+  asyncProgress: boolean
 }
 
 /** 从 ChatGPT conversations topic 的 WSS frame 中抽取最小事件身份。 */
 export function extractConversationEvents(payloadData: unknown): ArchiveWssEvent[]
 
 /** 将 WSS event 分类为 dirty / active / sync-ready 行为，不触碰网络。 */
-export function classifyConversationEvent(type: unknown): ArchiveWssEventBehavior
+export function classifyConversationEvent(type: unknown, updateType?: unknown): ArchiveWssEventBehavior
 
 /** 判断某种同步 trigger 是否允许把异常尾部升级成 realtime incident。 */
 export function shouldClassifyTerminalForTrigger(trigger: unknown): boolean
