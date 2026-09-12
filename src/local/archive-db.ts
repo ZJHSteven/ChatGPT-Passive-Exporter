@@ -1362,6 +1362,14 @@ export class ChatArchiveDb {
       for (const row of parentRows.iterate() as Iterable<{ conversationId: string, parentId: string }>) {
         updateChildren.run(row.conversationId, row.parentId, row.conversationId, row.parentId)
       }
+      // 旧数据库在新增 parent_source 列时，Genesis 之后才出现的 live-only 行会暂时是 NULL。
+      // 官方 snapshot 已经在上面全部打上 official-mapping，剩余“有 parent 但无标记”的行
+      // 只能来自旧 live merge，因此统一补成推断来源；根节点 parent=NULL 则不强行猜来源。
+      this.db.prepare(`
+        UPDATE mapping_nodes
+        SET parent_source = 'live-metadata-inferred'
+        WHERE parent_source IS NULL AND parent_id IS NOT NULL
+      `).run()
       this.db.exec('COMMIT')
     }
     catch (error) {
