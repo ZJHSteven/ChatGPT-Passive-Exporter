@@ -1,0 +1,7 @@
+{
+  "provider": "bark",
+  "enabled": true,
+  "baseUrl": "https://api.day.app",
+  "deviceToken": "<your-current-bark-device-token>",
+  "group": "ChatGPT Archive"
+}
