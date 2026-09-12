@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/tianya518/gptclient-go.git",
+  "branch": "main",
+  "pinnedSha": "34eabd254df459e3c8fd024f787dd9b4804465ee",
+  "observedAt": "2026-09-13",
+  "trackedPaths": [
+    "sentinel/",
+    "docs/CLIENT_STREAMING.md",
+    "API.md"
+  ],
+  "policy": "protocol-radar: prioritize WSS base topics, conversation-update, stream_handoff, conversation-turn-* continuation and SSE/WS decoding changes; reference/diff only, never auto-vendor private protocol code"
+}

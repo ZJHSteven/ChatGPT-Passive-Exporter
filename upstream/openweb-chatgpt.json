@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/imoonkey/openweb.git",
+  "branch": "main",
+  "pinnedSha": "a387b50c829d871839a613732e1b97bfa1946124",
+  "observedAt": "2026-09-13",
+  "trackedPaths": [
+    "src/sites/chatgpt/"
+  ],
+  "policy": "protocol-radar: watch ChatGPT read/send endpoints, Sentinel/PoW requirements, browser-vs-direct transport and conversation tree/search adapters; do not make OpenWeb a runtime dependency"
+}

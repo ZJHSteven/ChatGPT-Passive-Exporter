@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/siraht/ChatGPTExporter.git",
+  "branch": "main",
+  "pinnedSha": "c5618b3cc06eeb5b273d3727fe8729071441f291",
+  "observedAt": "2026-09-13",
+  "trackedPaths": [
+    "README.md",
+    "UPSTREAM_RESEARCH.md",
+    "src/",
+    "tests/"
+  ],
+  "policy": "archive-radar: watch complete conversation graph/branch preservation, resumable inventories, project/shared/workspace scopes, attachment retrieval and absent-not-deleted semantics; port reviewed ideas only"
+}

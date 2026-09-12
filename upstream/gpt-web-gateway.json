@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/stufently/gpt-web-gateway.git",
+  "branch": "main",
+  "pinnedSha": "efb01a32e9e4c7fbebb8acff204c8c2a448c476c",
+  "observedAt": "2026-09-13",
+  "trackedPaths": [
+    "CHANGELOG.md",
+    "src/",
+    "clients/chatgpt-web-skill/"
+  ],
+  "policy": "browser-stream-radar: watch passive backend-api interception, injected SSE tee, browser liveness/self-healing, conversation continuation and anti-bot compatibility; architecture reference only"
+}
