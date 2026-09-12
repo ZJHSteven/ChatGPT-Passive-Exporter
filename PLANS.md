@@ -22,6 +22,16 @@
 - 后续 Live Stream/SSE mirror 是独立实验层：若能可靠订阅正在生成的 turn，则 `turn-start` 后可以持续保存 transient stream，但这不能反过来改变 Archive Core 的最终 overlap/terminal 同步契约。
 - 当前上线阻塞项按顺序处理：① Windows 登录自启动真正注册；② Chrome 根恢复改为复用桌面 `Chrome CDP 日常版.lnk`；③ 正式 daemon 常驻；④ 低速 backlog 追平到 overlap；⑤ 实测 WSS event → dirty/active → complete → sync/diagnostic E2E；⑥ 再进入 branch/version 与 Live Stream 实验。
 
+### Phase 2 最终验收口径（2026-09-12 晚）
+
+- **历史缺口**：冷启动只用 conversation list 做一次低频 overlap reconciliation；得到 backlog 后严格单并发、全局限速逐 conversation/body cursor 补到本地 overlap。当前正式参数为 catalog ≥5s/request、body ≥6s/request、额外 0–1.5s jitter；任意 429 立即进入 60 分钟 cooldown。
+- **稳态实时发现**：必须证明 Guardian 官方 WSS 实际订阅 `conversations`，并证明真实 `conversation-turn-complete` 能被 daemon 解析、标 dirty/ready、触发 body merge。只看到 `activeSockets=1` 不算验收通过。
+- **turn start/active 来源不得臆造**：现有 2026-09-03 WSS probe 真实日志只观察到 `conversation-turn-complete`，尚未观察到 `conversation-turn-start`。代码可保留兼容分支，但 Phase 2 不得声称 WSS 已证明能发现 turn start。若官方 WSS 不提供 start，异常“无 complete”检测要由低频 catalog `async_status/update_time` 或后续 Live Stream/SSE 层补足。
+- **在线树结构**：plural body 的 `message.id + metadata.parent_id` 必须同步 upsert `mapping_nodes`；已用 Genesis 103260/103260 个节点验证 `node_id===message_id`，并用冰岛旅行真实会话验证同一 conversation 内 sibling user/assistant branch 确实存在。
+- **高可用**：计划任务登录自启动、无控制台窗口、Guardian `SW_HIDE`、Auto Tab Discard 白名单与强制 discard 自愈必须保持已验收状态；Chrome 根恢复只实现非破坏性 no-op/启动路径，不为了测试强杀用户正在工作的整套 Chrome。
+- **异常账本**：complete/body 或 watchdog 诊断产生的 abnormal terminal 必须持久化到 SQLite `incidents`；恢复后的新 turn/final 只 resolve incident，不删除历史。手机 Bark 属于通知 transport，可配置但不得用过期 token 阻塞 Archive Core 验收。
+- **切换条件**：当前 backlog 完全追平后，正常停止旧 daemon，再由计划任务启动仓库 HEAD；重启后执行一次 WSS 控制面取证 + 真实用户 turn E2E。上述项目全通过后才宣布 Phase 2 完成并进入 Phase 3 Live Stream/SSE mirror。
+
 ## 设计原则
 
 1. **被动捕获优先**：不自行构造 `/backend-api/conversation*` 请求，不读取或保存 Authorization/access token；只复制 ChatGPT 页面自己收到的符合白名单的响应。
