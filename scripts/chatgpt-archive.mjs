@@ -132,7 +132,9 @@ async function daemonCommand(positionals, flags) {
         '-DbPath', dbPath(flags),
       )
     }
-    const child = spawn('powershell.exe', args, {
+    // Windows PowerShell 5.1 会按系统代码页误读无 BOM 的 UTF-8 中文脚本；本机已有
+    // PowerShell 7，统一用 pwsh 解析 startup helper，避免同一脚本在 PS7 正常、PS5.1 语法损坏。
+    const child = spawn('pwsh.exe', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     })
@@ -195,9 +197,8 @@ async function daemonCommand(positionals, flags) {
       'reconcile-hours',
       'cooldown-minutes',
       'max-sync-conversations',
-      'chrome-exe',
-      'chrome-user-data',
-      'chrome-profile',
+      'watchdog-minutes',
+      'chrome-shortcut',
       'chrome-start-timeout-ms',
     ]
     for (const name of passFlags) {

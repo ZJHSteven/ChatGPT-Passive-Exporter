@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { extractConversationEvents } from '../scripts/chatgpt-archive-daemon.mjs'
+import { classifyConversationEvent, extractConversationEvents } from '../scripts/chatgpt-archive-daemon.mjs'
 
 describe('ChatGPT Archive daemon WSS parser', () => {
   test('从 conversations topic 中提取 conversation id 与事件类型', () => {
@@ -35,5 +35,29 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       topic_id: 'app_notifications',
       payload: { type: 'conversation-turn-complete', conversation_id: 'wrong-topic' },
     }))).toEqual([])
+  })
+
+  test('dirty 与 sync-ready 分离：start 只标 stale，complete 才立即同步', () => {
+    expect(classifyConversationEvent('conversation-turn-start')).toMatchObject({
+      dirty: true,
+      syncReady: false,
+      startsTurn: true,
+      completesTurn: false,
+    })
+    expect(classifyConversationEvent('conversation-created')).toMatchObject({
+      dirty: true,
+      syncReady: false,
+      startsTurn: true,
+    })
+    expect(classifyConversationEvent('conversation-turn-complete')).toMatchObject({
+      dirty: true,
+      syncReady: true,
+      completesTurn: true,
+    })
+    expect(classifyConversationEvent('conversation-title-generated')).toMatchObject({
+      dirty: true,
+      syncReady: false,
+      startsTurn: false,
+    })
   })
 })

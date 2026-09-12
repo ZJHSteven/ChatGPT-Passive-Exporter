@@ -1,6 +1,8 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-12：实时队列已从单一 `dirty Map` 拆成 `dirty + ready + activeTurns`：任意 WSS conversation event 立即标 stale；turn-start/conversation-created 只登记 active，不再 2.5 秒后抓半成品 body；turn-complete 才立即 ready；reconciliation 发现变化直接 ready；active 超过默认 35 分钟 watchdog 才排一次诊断 body sync。同步失败会保留 dirty/ready，不再静默丢队列。
+- 2026-09-12：Chrome 根恢复改为启动桌面 `Chrome CDP 日常版.lnk`，daemon 不再复制 executable/user-data/profile/remote-debugging 参数；Windows startup helper 改由 PowerShell 7 (`pwsh.exe`) 执行，避开 Windows PowerShell 5.1 对无 BOM UTF-8 中文脚本的错误解码。
 - 2026-09-12：重新核对正式运行状态，发现 `data/chatgpt-archive.sqlite` 已增长到 6165 conversations / 111250 messages，但正式 daemon **并未常驻**：旧 state 显示 `alive=false`，上次只同步 3 条且队列仍有 77 dirty。此前“持续追平”实际上没有完成，当前首要任务改为先把登录自启动/守护链真正上线，再低速 drain backlog。
 - 2026-09-12：澄清 dirty 语义：现有代码虽然已经对所有 WSS conversation event 调 `markDirty`，但非 complete 事件仅延迟约 2.5 秒就直接 `drainDirty()`，把“本地已 stale”和“适合马上抓最终 body”错误耦合。新状态机要求任何 start/create/update 都立刻 dirty/active，但只有 complete、reconciliation/gap recovery 或 watchdog 诊断才进入 sync-ready；未来 SSE live mirror 另做实验层。
 - 2026-09-12：主库精确体积 3,348,905,984 bytes（约 3.12 GiB）；`dbstat` 最大项为 messages 约 1.43GB、两套正文 FTS 合计约 0.98GB、conversation_snapshots 约 327MB、resources 约 202MB、message_parts 约 168MB、conversations 约 143MB。freelist 仅约 12MB，当前不是 VACUUM 虚胖。raw snapshots 与结构化表都继续保留，压缩/去重作为后续独立 migration，不阻塞同步上线。
