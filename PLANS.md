@@ -24,6 +24,9 @@
 6. **重新确认账户级事件语义。** 不再假定旧 `conversation-update + async-task-update-message` 是普通 turn start。直接检查当前 ChatGPT Web bundle / 真机 WSS，重点验证 `conversation-history-update`、`conversation-created`、`conversation-turn-complete` 的触发时机；旧 `conversation-update` 若仍存在，则只按其已证实的 async/background 语义使用。
 7. **Phase 3 不依赖单一“start event”。** 本机网页发起的 turn 可直接从 `/backend-api/f/conversation` SSE 请求本身发现；若收到 `stream_handoff`，转接 turn-specific WSS/catch-up。跨设备 turn 则优先用账户级 WSS 的 early history/progress 事件发现；若当前协议确实只在 complete 通知，必须明确记录“跨设备从第一 token 实时镜像尚未解决”，不得用高频 conversation list 冒充实时 discovery。
 8. **回归样本固化。** 增加“最新 reasoning-open + 历史 cursor final”“最新 tool-result-returned + 历史 cursor final”“同 conversation 两个异常 turn”“异常 turn 后新 turn 正常恢复”测试；任何历史页再次把 current state 改成 final 都必须立即测试失败。
+9. **watchdog 恢复为“超时调查器”，不要偷换成终态分类器。** watchdog 的触发条件就是“我们已经认为这一轮运行得异常久、而且迟迟没有 complete”；一旦超时就应该创建/更新该 turn 的 timeout incident，并主动抓一次最新 body 做诊断。若 body 明确 `client_stopped/interrupted`，则把同一 turn 的 incident 升级为 confirmed abnormal；若仍是 reasoning/tool open，只说明“超时且尚未正常收尾”，incident 继续 open，不能因为缺少 COMPLETE 就把 watchdog 变成无意义的只读检查。后续正常 final 或用户开启新 turn 时，只 resolve 这条 turn incident，不删除历史。
+10. **WSS close 必须先给官方页面自己的重连机制 grace。** 当前代码错误地把“Guardian 已启动超过 20 秒”当成“socket close 后已等待 20 秒”，导致任何运行期 `activeSockets=0` 都可能在下一轮 5 秒主循环被强制 reload。修为：首次启动仍使用 readiness grace；运行期 close 则从 `lastWssClosedAt` 单独计时，并在 grace 内观察官方页面是否自然 `webSocketCreated`/重新 subscribe。只有超过 grace 仍无 socket 才重建 Guardian。这样才能区分官方约 30–35 分钟的自然 socket 生命周期与我们自己的恢复行为。
+11. **start/discovery 不以 1 小时 catalog 轮询作为最终方案。** `async_status` catalog 扫描只保留为 gap/recovery 兜底，不能成为 watchdog 的主要起点。继续寻找账户级 WSS/其它第一方事件对普通 turn 的早期信号；Phase 3 对当前网页自己发起的 turn 直接从 `/backend-api/f/conversation` SSE 捕获开始，`stream_handoff` 后接 turn-specific WSS。跨设备普通 turn 若确实没有任何 early account event，应明确记录为协议能力缺口，而不是悄悄把 1 小时 list 轮询包装成“实时监控”。
 
 ## 目标
 
