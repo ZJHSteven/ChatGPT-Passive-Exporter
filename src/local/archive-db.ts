@@ -1914,7 +1914,9 @@ export class ChatArchiveDb {
         ? 'abnormal-terminal'
         : requestedKind
       const incidentId = currentIncident?.id ?? sha256Text(`${conversationId}:${turnKey}`).slice(0, 24)
-      const reason = diagnostic.summary
+      const reason = effectiveKind === 'watchdog-timeout'
+        ? `超过 watchdog 阈值仍未收到 conversation-turn-complete；${diagnostic.summary}`
+        : diagnostic.summary
       this.db.prepare(`
         INSERT INTO incidents (
           id, conversation_id, turn_exchange_id, turn_key, incident_kind,

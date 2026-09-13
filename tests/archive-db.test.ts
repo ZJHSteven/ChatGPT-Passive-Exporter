@@ -622,6 +622,7 @@ describe('ChatArchiveDb', () => {
         turnKey: 'turn-new',
         incidentKind: 'watchdog-timeout',
       })
+      expect(db.listIncidents({ status: 'open' })[0]?.reason).toContain('超过 watchdog 阈值仍未收到 conversation-turn-complete')
     }
     finally {
       db.close()
@@ -662,6 +663,7 @@ describe('ChatArchiveDb', () => {
         incidentKind: 'abnormal-terminal',
         status: 'open',
       })
+      expect(db.listIncidents()[0]?.reason).toContain('client_stopped')
 
       const secondTurn = {
         title: 'per-turn incident', conversation_id: 'per-turn', current_node: 'r2',

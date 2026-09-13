@@ -574,10 +574,11 @@ async function main() {
   const reconcileDelayMs = intFlag(flags, 'reconcile-delay-ms', 5000, 0)
   const requestJitterMs = intFlag(flags, 'request-jitter-ms', 1500, 0)
   const overlapThreshold = intFlag(flags, 'overlap', 56, 1)
-  // WSS 是主路径；catalog 只做 silent-half-open / 漏事件的一致性兜底。
-  // 6 小时会把“socket 表面 OPEN 但已静默失效”的最坏发现延迟拉得过长；1 小时仍远低于
-  // 早期 Fleet 的分钟级轮询压力，又能给 watchdog 一个现实可用的 start fallback。
-  const reconcileHours = Number(flags.get('reconcile-hours') ?? 1)
+  // WSS / Live Turn 才是实时发现主路径；catalog 只承担冷启动、断线恢复和低频最终一致性兜底。
+  // 不能因为普通 Web turn 暂时缺少通用 start 事件，就把 conversation list 偷偷升级成小时级
+  // “准实时 heartbeat”。默认恢复为 6 小时；跨设备 early signal 继续单独验证
+  // conversation-history-update，本机 Web turn 则由 Phase 3 直接观察 /f/conversation SSE。
+  const reconcileHours = Number(flags.get('reconcile-hours') ?? 6)
   const reconcileOnStart = !flags.has('no-reconcile-on-start')
   const cooldownMinutes = intFlag(flags, 'cooldown-minutes', 60, 1)
   const maxSyncConversations = intFlag(flags, 'max-sync-conversations', 0, 0)
