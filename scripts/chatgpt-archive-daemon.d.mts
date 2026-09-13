@@ -26,6 +26,9 @@ export function classifyConversationEvent(type: unknown, updateType?: unknown): 
 /** 判断某种同步 trigger 是否允许把异常尾部升级成 realtime incident。 */
 export function shouldClassifyTerminalForTrigger(trigger: unknown): boolean
 
+/** 判断 trigger 是否已提供 WSS/catalog 层面的“服务端确定结束”证据。 */
+export function isConfirmedTerminalTrigger(trigger: unknown): boolean
+
 /** 把 conversation list async_status 分类为 active / complete / unknown。 */
 export function classifyCatalogAsyncStatus(value: unknown): 'active' | 'complete' | 'unknown'
 

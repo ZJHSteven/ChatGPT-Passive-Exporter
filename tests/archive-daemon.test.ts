@@ -3,6 +3,7 @@ import {
   classifyCatalogAsyncStatus,
   classifyConversationEvent,
   extractConversationEvents,
+  isConfirmedTerminalTrigger,
   shouldClassifyTerminalForTrigger,
 } from '../scripts/chatgpt-archive-daemon.mjs'
 
@@ -100,6 +101,11 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shouldClassifyTerminalForTrigger('reconcile:wss-reconnect')).toBe(true)
     expect(shouldClassifyTerminalForTrigger('reconcile:guardian-recover')).toBe(true)
     expect(shouldClassifyTerminalForTrigger('wss:conversation-created')).toBe(false)
+
+    expect(isConfirmedTerminalTrigger('wss:conversation-turn-complete')).toBe(true)
+    expect(isConfirmedTerminalTrigger('reconcile:periodic:async-complete')).toBe(true)
+    expect(isConfirmedTerminalTrigger('watchdog:active-timeout')).toBe(false)
+    expect(isConfirmedTerminalTrigger('reconcile:wss-reconnect')).toBe(false)
   })
 
   test('conversation list async_status 只把已实测值分类为 active/complete', () => {

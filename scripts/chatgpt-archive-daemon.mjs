@@ -252,6 +252,20 @@ export function shouldClassifyTerminalForTrigger(trigger) {
 }
 
 /**
+ * 某个 trigger 是否已经提供“这一轮服务端确定结束”的外部证据。
+ *
+ * 这和 shouldClassifyTerminalForTrigger 不同：watchdog / gap repair 可以读取 body 并识别
+ * `client_stopped` 这类显式终止，但如果没有 complete 证据，单凭 reasoning/tool 尾巴仍不能
+ * 推断“已经死了”。只有 WSS complete 或 catalog 明确 active→async_status=4 才允许把
+ * `terminalEvidence=none + 非 final tail` 提升成异常 incident。
+ */
+export function isConfirmedTerminalTrigger(trigger) {
+  const normalized = String(trigger || '').trim().toLowerCase()
+  if (normalized.startsWith('wss:') && normalized.includes('complete')) return true
+  return normalized.startsWith('reconcile:') && normalized.endsWith(':async-complete')
+}
+
+/**
  * 把 conversation list 的 async_status 压成 daemon 只关心的三态。
  *
  * 真实历史交叉验证过：3/5 对应进行态，4 对应完成态。这里仍然刻意保守：
@@ -761,6 +775,7 @@ async function main() {
   const syncConversation = async (conversationId, trigger) => {
     requireRequestWindow()
     const classifyTerminal = shouldClassifyTerminalForTrigger(trigger)
+    const confirmedTerminal = isConfirmedTerminalTrigger(trigger)
     const incidentBefore = classifyTerminal ? latestOpenIncident(conversationId) : null
     let newIncident = null
     const basePath = `/backend-api/conversations/${encodeURIComponent(conversationId)}`
@@ -801,6 +816,7 @@ async function main() {
         pageCursor: cursor,
         observationKind: `body-page:${trigger}`,
         classifyTerminal: pages === 0 && classifyTerminal,
+        allowIncompleteTailIncident: pages === 0 && confirmedTerminal,
       })
       if (pages === 0) latestDiagnostic = merged.diagnostic
       if (pages === 0 && classifyTerminal) {

@@ -495,4 +495,57 @@ describe('ChatArchiveDb', () => {
       db.close()
     }
   })
+
+  test('watchdog 未确认终止时不会把 open reasoning 尾巴误报为 incident，但显式 interrupted 仍可记录', () => {
+    const db = tempDb()
+    try {
+      const running = {
+        title: 'Watchdog fixture',
+        conversation_id: 'watchdog-running',
+        messages: [
+          {
+            id: 'u1', author: { role: 'user' }, recipient: 'all',
+            content: { content_type: 'text', parts: ['执行长任务'] },
+            metadata: { turn_exchange_id: 'turn-running' },
+          },
+          {
+            id: 'r1', author: { role: 'assistant' }, recipient: 'all',
+            content: { content_type: 'thoughts', parts: ['仍在处理中'] },
+            metadata: { turn_exchange_id: 'turn-running', reasoning_status: 'is_reasoning' },
+          },
+        ],
+      }
+      db.mergeLiveMessagesPage(running, {
+        observedAt: 1000,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: false,
+      })
+      expect(db.listIncidents({ status: 'open' })).toHaveLength(0)
+
+      const stopped = {
+        ...running,
+        conversation_id: 'watchdog-stopped',
+        messages: [
+          ...running.messages,
+          {
+            id: 'a2', author: { role: 'assistant' }, recipient: 'all', channel: 'final',
+            content: { content_type: 'text', parts: ['被停止'] },
+            metadata: {
+              turn_exchange_id: 'turn-running',
+              finish_details: { type: 'interrupted', reason: 'client_stopped' },
+            },
+          },
+        ],
+      }
+      db.mergeLiveMessagesPage(stopped, {
+        observedAt: 2000,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: false,
+      })
+      expect(db.listIncidents({ status: 'open' }).some(item => item.conversationId === 'watchdog-stopped')).toBe(true)
+    }
+    finally {
+      db.close()
+    }
+  })
 })

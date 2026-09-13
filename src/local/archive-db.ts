@@ -1105,6 +1105,12 @@ export class ChatArchiveDb {
       observationKind?: string
       /** 只有 WSS complete / watchdog terminal verification 才允许新建 incident。 */
       classifyTerminal?: boolean
+      /**
+       * 是否已有外部证据确认这一轮已经结束。
+       * false 时仍可记录 explicit client_stopped/interrupted，但不能把 open reasoning/tool 尾巴
+       * 单独解释成异常终止；这用于 watchdog / gap repair 防止误报仍在正常运行的长任务。
+       */
+      allowIncompleteTailIncident?: boolean
     } = {},
   ): LiveMergeResult {
     const conversation = adaptConversation(payload)
@@ -1347,7 +1353,13 @@ export class ChatArchiveDb {
     }
 
     const diagnostic = diagnoseLatestRun(payload as never)
-    this.updateIncidentFromDiagnostic(conversationId, diagnostic, observedAt, options.classifyTerminal === true)
+    this.updateIncidentFromDiagnostic(
+      conversationId,
+      diagnostic,
+      observedAt,
+      options.classifyTerminal === true,
+      options.allowIncompleteTailIncident !== false,
+    )
     const counts = this.db.prepare(`
       SELECT message_count AS messageCount, resource_count AS resourceCount
       FROM conversations WHERE id = ?
@@ -1816,6 +1828,7 @@ export class ChatArchiveDb {
     diagnostic: RunDiagnostic,
     observedAt = Date.now(),
     allowCreate = true,
+    allowIncompleteTailIncident = true,
   ): void {
     const open = this.db.prepare(`
       SELECT id, turn_exchange_id AS turnExchangeId
@@ -1832,9 +1845,10 @@ export class ChatArchiveDb {
       this.db.prepare(`UPDATE incidents SET status='resolved', resolved_at=? WHERE id=?`).run(observedAt, open.id)
     }
 
-    const abnormal = diagnostic.terminalEvidence === 'client-stopped'
+    const explicitAbnormal = diagnostic.terminalEvidence === 'client-stopped'
       || diagnostic.terminalEvidence === 'interrupted'
-      || (diagnostic.terminalEvidence === 'none' && diagnostic.tailShape !== 'final')
+    const inferredAbnormal = diagnostic.terminalEvidence === 'none' && diagnostic.tailShape !== 'final'
+    const abnormal = explicitAbnormal || (allowIncompleteTailIncident && inferredAbnormal)
     if (allowCreate && abnormal && !recovered) {
       const fingerprint = `${conversationId}:${latestTurn ?? diagnostic.lastMessageId ?? 'unknown'}:${diagnostic.terminalEvidence}:${diagnostic.tailShape}`
       const incidentId = sha256Text(fingerprint).slice(0, 24)

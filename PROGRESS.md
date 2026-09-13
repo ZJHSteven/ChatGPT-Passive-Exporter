@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-13：收紧 watchdog/gap-repair 的异常判定，避免“35 分钟后 body 仍是 reasoning-open”被误报成已经异常终止。终态分类现分两层：watchdog / 一般 reconnect repair 只允许显式 `client_stopped/interrupted` 开 incident；只有 `conversation-turn-complete` 或 catalog `active→async_status=4` 已确认服务端结束时，才允许把 `terminalEvidence=none + 非 final tail` 推断为异常。长任务仍在跑时只保持 active/疑似，不判死。
 - 2026-09-13：补齐“普通 turn 没有 WSS start/update 时 watchdog 无法起表”的兜底：低频 catalog reconciliation 现在读取真实 `async_status`，3/5 只登记 active+dirty、不抓半成品；已登记 active 后看到 4 则视为漏掉 complete 的 gap repair，排一次 body 同步。startup 历史补账仍不创建 incident；periodic / WSS reconnect / Guardian recover 属于在线漏事件修复，允许对新变化做 terminal incident 分类。periodic 默认从 6h 收紧为 1h，仍远离分钟级轮询。
 - 2026-09-13：daemon 已接入按需 exact branch 同步：body cursor 扫描只要发现 `metadata.has_versions=true`，会先检查该版本节点是否已有 `official-mapping/live-singular-mapping`；只有新版本缺 exact tree 时才额外读取一次 `/backend-api/conversation/{id}` 并调用 `mergeLiveMappingSnapshot()`。普通聊天零额外请求；singular 失败只降级记录，不影响已成功的正文归档。并修复多页 body 同步误返回“最后一页 diagnostic”的问题，终态始终取最新第一页。
 - 2026-09-13：新增 `mergeLiveMappingSnapshot()`，用于 modern plural 发现版本分支后按需无损合并 legacy singular mapping。该路径不再调用会 DELETE conversation 的旧 `importRaw()`；它按 node/message ID union/upsert 全部 sibling branch，并把真正 mapping.parent/children 标为 `live-singular-mapping`，同时继续保存 transport_parent_id 与 raw gzip observation。
