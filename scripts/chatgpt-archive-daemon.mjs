@@ -757,8 +757,15 @@ async function main() {
     let cursor = null
     let pages = 0
     let newMessages = 0
+    let latestDiagnostic = null
+    const versionMarkerIds = new Set()
     while (true) {
       const normalized = { ...baseMeta, ...pagePayload, conversation_id: conversationId }
+      for (const message of normalized.messages || []) {
+        if (message?.metadata?.has_versions === true && typeof message.id === 'string') {
+          versionMarkerIds.add(message.id)
+        }
+      }
       const ids = (normalized.messages || []).map(message => message?.id).filter(id => typeof id === 'string')
       const knownBefore = archive.knownMessageIds(conversationId, ids)
       const allKnownBefore = ids.length > 0 && ids.every(id => knownBefore.has(id))
@@ -769,6 +776,7 @@ async function main() {
         observationKind: `body-page:${trigger}`,
         classifyTerminal: pages === 0 && classifyTerminal,
       })
+      if (pages === 0) latestDiagnostic = merged.diagnostic
       if (pages === 0 && classifyTerminal) {
         const incidentAfter = latestOpenIncident(conversationId)
         if (incidentAfter && incidentAfter.id !== incidentBefore?.id) newIncident = incidentAfter
@@ -778,7 +786,65 @@ async function main() {
 
       const pageInfo = pagePayload.page_info || {}
       if (pageInfo.has_previous_page === false || allKnownBefore) {
-        return { conversationId, pages, newMessages, diagnostic: merged.diagnostic, newIncident }
+        let exactMapping = false
+        if (versionMarkerIds.size > 0) {
+          const exactSource = archive.db.prepare(`
+            SELECT parent_source AS parentSource
+            FROM mapping_nodes
+            WHERE conversation_id = ? AND node_id = ?
+          `)
+          const needsExactMapping = [...versionMarkerIds].some((messageId) => {
+            const row = exactSource.get(conversationId, messageId)
+            return !row || !['official-mapping', 'live-singular-mapping'].includes(row.parentSource)
+          })
+
+          if (needsExactMapping) {
+            const singularPath = `/backend-api/conversation/${encodeURIComponent(conversationId)}`
+            try {
+              const mappingPayload = await fetchChecked({
+                url: singularPath,
+                targetPath: singularPath,
+                targetRoute: '/backend-api/conversation/{conversation_id}',
+                kind: 'body',
+              })
+              if (!mappingPayload?.mapping || typeof mappingPayload.mapping !== 'object') {
+                throw new Error(`conversation ${conversationId} singular response has no mapping`)
+              }
+              const mappingResult = archive.mergeLiveMappingSnapshot(mappingPayload, {
+                observedAt: Date.now(),
+                endpoint: singularPath,
+                observationKind: `mapping-snapshot:${trigger}`,
+              })
+              newMessages += mappingResult.newMessageCount
+              exactMapping = true
+              await log('versioned conversation exact mapping merged', {
+                conversationId,
+                trigger,
+                versionMarkers: versionMarkerIds.size,
+                nodes: mappingResult.nodeCount,
+                newMessages: mappingResult.newMessageCount,
+              })
+            }
+            catch (error) {
+              // 分支树增强失败不能把已成功的正文增量同步也判失败。保留 transport-only 标记，
+              // 后续版本事件可再次尝试 exact mapping；同时 raw plural observation 已经在库里。
+              await log('versioned conversation exact mapping unavailable', {
+                conversationId,
+                trigger,
+                error: error instanceof Error ? error.message : String(error),
+              })
+            }
+          }
+        }
+
+        return {
+          conversationId,
+          pages,
+          newMessages,
+          diagnostic: latestDiagnostic ?? merged.diagnostic,
+          newIncident,
+          exactMapping,
+        }
       }
       const nextCursor = pageInfo.start_cursor
       if (typeof nextCursor !== 'string' || !nextCursor) {
@@ -821,6 +887,7 @@ async function main() {
           trigger,
           pages: result.pages,
           newMessages: result.newMessages,
+          exactMapping: result.exactMapping,
           terminal: result.diagnostic.terminalEvidence,
           tail: result.diagnostic.tailShape,
         })
