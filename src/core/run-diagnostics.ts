@@ -175,11 +175,16 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
     reasoningStatusOf(message) === 'reasoning_ended'
     || contentTypeOf(message) === 'reasoning_recap'
   ))
-  const hasReasoningActive = turn.some(message => reasoningStatusOf(message) === 'is_reasoning')
+  const lastReasoningActiveIndex = turn.findLastIndex(message => reasoningStatusOf(message) === 'is_reasoning')
+  const lastReasoningEndedIndex = turn.findLastIndex(message => (
+    reasoningStatusOf(message) === 'reasoning_ended'
+    || contentTypeOf(message) === 'reasoning_recap'
+  ))
   const assistantToolCalls = turn.filter(isAssistantToolCall).length
   const toolResults = turn.filter(isToolResult).length
 
   const lastAssistantToolIndex = turn.findLastIndex(isAssistantToolCall)
+  const lastToolResultIndex = turn.findLastIndex(isToolResult)
   const hasToolResultAfterLastCall = lastAssistantToolIndex >= 0
     && turn.slice(lastAssistantToolIndex + 1).some(isToolResult)
 
@@ -190,9 +195,22 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
 
   let tailShape: RunTailShape = 'other'
   if (hasFinal) tailShape = 'final'
-  else if (lastAssistantToolIndex >= 0 && !hasToolResultAfterLastCall) tailShape = 'tool-call-open'
-  else if (hasReasoningActive && !hasReasoningEnded) tailShape = 'reasoning-open'
-  else if (lastAssistantToolIndex >= 0 && hasToolResultAfterLastCall) tailShape = 'tool-result-returned'
+  else if (
+    lastAssistantToolIndex >= 0
+    && !hasToolResultAfterLastCall
+    && lastAssistantToolIndex > lastReasoningActiveIndex
+  ) tailShape = 'tool-call-open'
+  else if (
+    lastReasoningActiveIndex >= 0
+    && lastReasoningActiveIndex > lastReasoningEndedIndex
+    && lastReasoningActiveIndex > lastToolResultIndex
+    && lastReasoningActiveIndex > lastAssistantToolIndex
+  ) tailShape = 'reasoning-open'
+  else if (
+    lastAssistantToolIndex >= 0
+    && hasToolResultAfterLastCall
+    && lastToolResultIndex > lastReasoningActiveIndex
+  ) tailShape = 'tool-result-returned'
 
   let summary = '当前 payload 没有明确终止证据；仅凭这份快照不能判断 run 是否仍在执行。'
   if (terminalEvidence === 'final') {

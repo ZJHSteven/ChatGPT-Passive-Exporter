@@ -77,9 +77,21 @@ describe('最后一轮快照诊断', () => {
     ]))
 
     expect(result.terminalEvidence).toBe('none')
-    expect(result.tailShape).toBe('reasoning-open')
+    expect(result.tailShape).toBe('tool-result-returned')
     expect(result.summary).toContain('不能据此判死')
     expect(result.assistantToolCalls).toBe(1)
     expect(result.toolResults).toBe(1)
+  })
+
+  test('reasoning after a tool result is the real tail', () => {
+    const result = diagnoseLatestRun(payload([
+      message({ id: 'u1', author: { role: 'user' } }),
+      message({ id: 'call1', recipient: 'api_tool.call_tool', content: { content_type: 'code', text: '{}' } }),
+      message({ id: 'tool1', author: { role: 'tool' }, content: { content_type: 'code', text: '{"ok":true}' } }),
+      message({ id: 'thought2', content: { content_type: 'thoughts' }, metadata: { reasoning_status: 'is_reasoning' } }),
+    ]))
+
+    expect(result.terminalEvidence).toBe('none')
+    expect(result.tailShape).toBe('reasoning-open')
   })
 })
