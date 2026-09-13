@@ -172,7 +172,7 @@ describe('ChatArchiveDb', () => {
     }
   })
 
-  test('在线 plural messages 根据 metadata.parent_id 增量补 mapping tree，并保留 sibling branch', () => {
+  test('在线 plural 只记录 transport_parent_id，不把 metadata.parent_id 伪装成 mapping tree', () => {
     const db = tempDb()
     try {
       db.mergeLiveMessagesPage({
@@ -198,8 +198,8 @@ describe('ChatArchiveDb', () => {
         ],
       }, { observedAt: 1000 })
 
-      // 第二次 observation 只带同一 user parent 下的新 sibling，模拟 regenerate。
-      // 旧 sibling 不应被删除，parent.children_json 应反映两条已知分支。
+      // 第二次 observation 仍保留两个 live 节点，但 metadata.parent_id 只属于 transport 关联，
+      // 不得据此制造 sibling tree；真正 sibling 要等 singular mapping 回填。
       db.mergeLiveMessagesPage({
         title: 'Live branch fixture',
         conversation_id: 'branch-live',
@@ -217,7 +217,8 @@ describe('ChatArchiveDb', () => {
       }, { observedAt: 2000 })
 
       const nodes = db.db.prepare(`
-        SELECT node_id AS nodeId, parent_id AS parentId, message_id AS messageId,
+        SELECT node_id AS nodeId, parent_id AS parentId, parent_source AS parentSource,
+               transport_parent_id AS transportParentId, message_id AS messageId,
                children_json AS childrenJson
         FROM mapping_nodes
         WHERE conversation_id='branch-live'
@@ -225,17 +226,19 @@ describe('ChatArchiveDb', () => {
       `).all() as Array<{
         nodeId: string
         parentId: string | null
+        parentSource: string | null
+        transportParentId: string | null
         messageId: string | null
         childrenJson: string | null
       }>
 
-      expect(nodes.map(node => [node.nodeId, node.parentId, node.messageId])).toEqual([
-        ['assistant-a', 'user-root', 'assistant-a'],
-        ['assistant-b', 'user-root', 'assistant-b'],
-        ['user-root', null, 'user-root'],
+      expect(nodes.map(node => [node.nodeId, node.parentId, node.transportParentId, node.messageId])).toEqual([
+        ['assistant-a', null, 'user-root', 'assistant-a'],
+        ['assistant-b', null, 'user-root', 'assistant-b'],
+        ['user-root', null, null, 'user-root'],
       ])
-      const root = nodes.find(node => node.nodeId === 'user-root')
-      expect(JSON.parse(root?.childrenJson || '[]').sort()).toEqual(['assistant-a', 'assistant-b'])
+      expect(nodes.every(node => node.parentSource === 'live-transport-only')).toBe(true)
+      expect(nodes.every(node => node.childrenJson === null)).toBe(true)
     }
     finally {
       db.close()

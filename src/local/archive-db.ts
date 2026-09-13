@@ -302,6 +302,7 @@ export class ChatArchiveDb {
         node_id TEXT NOT NULL,
         parent_id TEXT,
         parent_source TEXT,
+        transport_parent_id TEXT,
         message_id TEXT,
         children_json TEXT,
         extra_json TEXT NOT NULL DEFAULT '{}',
@@ -479,6 +480,49 @@ export class ChatArchiveDb {
     // `metadata.parent_id` 与官方 mapping.parent 不是同一个语义：2026-09-13 在真实长会话中
     // 观察到大量不一致。额外记录 parent 来源，避免后来的 plural body 把官方树关系覆盖掉。
     this.ensureColumn('mapping_nodes', 'parent_source', 'TEXT')
+    this.ensureColumn('mapping_nodes', 'transport_parent_id', 'TEXT')
+
+    // 旧 live merge 曾把 metadata.parent_id 直接塞进 parent_id。现在已确认该字段属于
+    // transport/request 关联，不是 mapping tree 边，因此一次性搬到独立列并清空伪树边。
+    // official-mapping 行完全不受影响；迁移可重复执行，因为只匹配旧来源标记。
+    const inferredParents = this.db.prepare(`
+      SELECT DISTINCT conversation_id AS conversationId, parent_id AS parentId
+      FROM mapping_nodes
+      WHERE parent_source = 'live-metadata-inferred' AND parent_id IS NOT NULL
+    `).all() as Array<{ conversationId: string, parentId: string }>
+    if (inferredParents.length > 0) {
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        this.db.prepare(`
+          UPDATE mapping_nodes
+          SET transport_parent_id = COALESCE(transport_parent_id, parent_id),
+              parent_id = NULL,
+              parent_source = 'live-transport-only'
+          WHERE parent_source = 'live-metadata-inferred'
+        `).run()
+        const rebuildChildren = this.db.prepare(`
+          UPDATE mapping_nodes
+          SET children_json = (
+            SELECT json_group_array(node_id)
+            FROM (
+              SELECT node_id
+              FROM mapping_nodes child
+              WHERE child.conversation_id = ? AND child.parent_id = ?
+              ORDER BY COALESCE(child.source_observed_at, 0), child.node_id
+            )
+          )
+          WHERE conversation_id = ? AND node_id = ?
+        `)
+        for (const row of inferredParents) {
+          rebuildChildren.run(row.conversationId, row.parentId, row.conversationId, row.parentId)
+        }
+        this.db.exec('COMMIT')
+      }
+      catch (error) {
+        this.db.exec('ROLLBACK')
+        throw error
+      }
+    }
   }
 
   /** SQLite 没有通用的 `ADD COLUMN IF NOT EXISTS`，所以先用 PRAGMA 检查旧库。 */
@@ -1132,52 +1176,31 @@ export class ChatArchiveDb {
     `)
     /**
      * 新式 plural body 虽然没有旧 `mapping{}` 大对象，但每条 message 常带 metadata.parent_id。
-     * 2026-09-13 的真实对账证明：这个字段**不能**等同于旧 mapping.parent——在多条长会话里
-     * 大量 message 的 metadata.parent_id 与官方 mapping.parent 不一致。因此这里仍可安全使用
-     * `message.id` 作为 node_id（Genesis 已验证 103260/103260 个有 message 的 mapping node 满足
-     * node_id === message_id），但 parent 只能标记为 `live-metadata-inferred` 的推断关系。
+     * 2026-09-13 的真实对账证明：这个字段**不能**等同于旧 mapping.parent，甚至经常指向一个
+     * 根本不存在于官方 mapping 的 transport/request id。因此：
+     * - `message.id` 仍可安全作为 node_id（Genesis 103260/103260 一致）；
+     * - metadata.parent_id 只进入 `transport_parent_id`；
+     * - 真正的 parent_id / children_json 只接受 official/singular mapping。
      *
-     * children_json 不直接相信远端单页（分页可能只看到部分 children）；下面会在本地 upsert
-     * 完本页后，按 parent_id 从完整 mapping_nodes 表重新计算“当前已知 children”。
+     * 没有 exact mapping 时宁可暂时没有树边，也不能制造一个看似完整但语义错误的 branch tree。
      */
     const upsertMappingNode = this.db.prepare(`
       INSERT INTO mapping_nodes (
-        conversation_id, node_id, parent_id, parent_source, message_id, children_json, extra_json,
+        conversation_id, node_id, parent_id, parent_source, transport_parent_id,
+        message_id, children_json, extra_json,
         first_seen_at, last_seen_at, source_observed_at
-      ) VALUES (?, ?, ?, 'live-metadata-inferred', ?, NULL, '{}', ?, ?, ?)
+      ) VALUES (?, ?, NULL, 'live-transport-only', ?, ?, NULL, '{}', ?, ?, ?)
       ON CONFLICT(conversation_id, node_id) DO UPDATE SET
         first_seen_at=min(mapping_nodes.first_seen_at, excluded.first_seen_at),
         last_seen_at=max(mapping_nodes.last_seen_at, excluded.last_seen_at),
-        -- 已有官方 mapping.parent 时绝不能被 metadata.parent_id 覆盖。
-        -- 对纯 live 新节点，也只在本地还没有 parent 时填入一次推断值；后续不同页面里的
-        -- metadata.parent_id 不再来回改写树。
-        parent_id=CASE
-          WHEN mapping_nodes.parent_source = 'official-mapping'
-          THEN mapping_nodes.parent_id
-          WHEN mapping_nodes.parent_id IS NULL AND excluded.parent_id IS NOT NULL
-          THEN excluded.parent_id
-          ELSE mapping_nodes.parent_id
-        END,
+        transport_parent_id=COALESCE(excluded.transport_parent_id, mapping_nodes.transport_parent_id),
         parent_source=CASE
-          WHEN mapping_nodes.parent_source = 'official-mapping' THEN 'official-mapping'
-          WHEN mapping_nodes.parent_id IS NULL AND excluded.parent_id IS NOT NULL THEN 'live-metadata-inferred'
-          ELSE mapping_nodes.parent_source
+          WHEN mapping_nodes.parent_source IN ('official-mapping', 'live-singular-mapping')
+          THEN mapping_nodes.parent_source
+          ELSE 'live-transport-only'
         END,
         message_id=COALESCE(excluded.message_id, mapping_nodes.message_id),
         source_observed_at=max(mapping_nodes.source_observed_at, excluded.source_observed_at)
-    `)
-    const updateKnownChildren = this.db.prepare(`
-      UPDATE mapping_nodes
-      SET children_json = (
-        SELECT json_group_array(node_id)
-        FROM (
-          SELECT node_id
-          FROM mapping_nodes
-          WHERE conversation_id = ? AND parent_id = ?
-          ORDER BY COALESCE(source_observed_at, 0), node_id
-        )
-      )
-      WHERE conversation_id = ? AND node_id = ?
     `)
     const latestRecordedHead = this.db.prepare(`
       SELECT current_node AS currentNode
@@ -1224,7 +1247,6 @@ export class ChatArchiveDb {
         }
       }
 
-      const touchedParents = new Set<string>()
       conversation.messages.forEach((message, pageOrdinal) => {
         const rawMessage = record(message.raw)
         const author = record(rawMessage.author)
@@ -1274,7 +1296,6 @@ export class ChatArchiveDb {
           observedAt,
           observedAt,
         )
-        if (parentId) touchedParents.add(parentId)
 
         this.db.prepare('DELETE FROM message_parts WHERE conversation_id = ? AND message_id = ?').run(conversationId, message.id)
         if (Array.isArray(content.parts)) {
@@ -1292,13 +1313,6 @@ export class ChatArchiveDb {
           })
         }
       })
-
-      // children 由本地“所有已知 node”的 parent_id 反推，避免 cursor 分页只看到一支时把
-      // Genesis 已存在的 sibling 覆盖掉。parent 本页未出现也没关系：已存在就立即更新，
-      // 尚未入库则以后该 parent 被观察到时自然补齐。
-      for (const parentId of touchedParents) {
-        updateKnownChildren.run(conversationId, parentId, conversationId, parentId)
-      }
 
       this.db.prepare(`
         INSERT INTO live_observations (
