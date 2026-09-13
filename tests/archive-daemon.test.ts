@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import {
+  classifyCatalogAsyncStatus,
   classifyConversationEvent,
   extractConversationEvents,
   shouldClassifyTerminalForTrigger,
@@ -91,11 +92,23 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     })
   })
 
-  test('只有 realtime complete 与 watchdog 诊断允许创建 incident', () => {
+  test('realtime complete/watchdog/gap repair 允许 incident；startup 历史补账不允许', () => {
     expect(shouldClassifyTerminalForTrigger('wss:conversation-turn-complete')).toBe(true)
     expect(shouldClassifyTerminalForTrigger('watchdog:active-timeout')).toBe(true)
     expect(shouldClassifyTerminalForTrigger('reconcile:startup')).toBe(false)
-    expect(shouldClassifyTerminalForTrigger('reconcile:periodic')).toBe(false)
+    expect(shouldClassifyTerminalForTrigger('reconcile:periodic')).toBe(true)
+    expect(shouldClassifyTerminalForTrigger('reconcile:wss-reconnect')).toBe(true)
+    expect(shouldClassifyTerminalForTrigger('reconcile:guardian-recover')).toBe(true)
     expect(shouldClassifyTerminalForTrigger('wss:conversation-created')).toBe(false)
+  })
+
+  test('conversation list async_status 只把已实测值分类为 active/complete', () => {
+    expect(classifyCatalogAsyncStatus(3)).toBe('active')
+    expect(classifyCatalogAsyncStatus('3')).toBe('active')
+    expect(classifyCatalogAsyncStatus(5)).toBe('active')
+    expect(classifyCatalogAsyncStatus(4)).toBe('complete')
+    expect(classifyCatalogAsyncStatus(null)).toBe('unknown')
+    expect(classifyCatalogAsyncStatus(0)).toBe('unknown')
+    expect(classifyCatalogAsyncStatus('garbled')).toBe('unknown')
   })
 })

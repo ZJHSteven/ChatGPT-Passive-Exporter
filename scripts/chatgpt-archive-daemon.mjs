@@ -242,7 +242,30 @@ export function classifyConversationEvent(type, updateType = null) {
 export function shouldClassifyTerminalForTrigger(trigger) {
   const normalized = String(trigger || '').trim().toLowerCase()
   if (normalized.startsWith('watchdog:')) return true
-  return normalized.startsWith('wss:') && normalized.includes('complete')
+  if (normalized.startsWith('wss:') && normalized.includes('complete')) return true
+  // startup 是“把停机期间甚至更久以前的历史补回来”，不能因为今天重启就把旧异常重新报警。
+  // periodic / WSS reconnect / Guardian recover 则是在线系统的 gap repair：它们发现的较新变化
+  // 本来就应该由 realtime 链处理，只是 WSS 中间漏了，所以允许做终态 incident 分类。
+  return normalized.startsWith('reconcile:periodic')
+    || normalized.startsWith('reconcile:wss-reconnect')
+    || normalized.startsWith('reconcile:guardian-recover')
+}
+
+/**
+ * 把 conversation list 的 async_status 压成 daemon 只关心的三态。
+ *
+ * 真实历史交叉验证过：3/5 对应进行态，4 对应完成态。这里仍然刻意保守：
+ * - 3 / 5：可以建立 active/watchdog，但不能单凭它宣布“模型一定还在计算”；
+ * - 4：只表示服务端认为异步工作已结束，最终正常/异常仍要看 conversation body；
+ * - null/其它：unknown，不猜。
+ */
+export function classifyCatalogAsyncStatus(value) {
+  const normalized = typeof value === 'string' && /^\d+$/u.test(value.trim())
+    ? Number(value.trim())
+    : value
+  if (normalized === 3 || normalized === 5) return 'active'
+  if (normalized === 4) return 'complete'
+  return 'unknown'
 }
 
 function chatgptTime(value) {
@@ -514,7 +537,10 @@ async function main() {
   const reconcileDelayMs = intFlag(flags, 'reconcile-delay-ms', 5000, 0)
   const requestJitterMs = intFlag(flags, 'request-jitter-ms', 1500, 0)
   const overlapThreshold = intFlag(flags, 'overlap', 56, 1)
-  const reconcileHours = Number(flags.get('reconcile-hours') ?? 6)
+  // WSS 是主路径；catalog 只做 silent-half-open / 漏事件的一致性兜底。
+  // 6 小时会把“socket 表面 OPEN 但已静默失效”的最坏发现延迟拉得过长；1 小时仍远低于
+  // 早期 Fleet 的分钟级轮询压力，又能给 watchdog 一个现实可用的 start fallback。
+  const reconcileHours = Number(flags.get('reconcile-hours') ?? 1)
   const reconcileOnStart = !flags.has('no-reconcile-on-start')
   const cooldownMinutes = intFlag(flags, 'cooldown-minutes', 60, 1)
   const maxSyncConversations = intFlag(flags, 'max-sync-conversations', 0, 0)
@@ -980,6 +1006,26 @@ async function main() {
         for (const item of items) {
           const id = typeof item.id === 'string' ? item.id : typeof item.conversation_id === 'string' ? item.conversation_id : null
           if (!id) continue
+          const asyncState = classifyCatalogAsyncStatus(item.async_status)
+          const now = Date.now()
+          const wasActive = activeTurns.has(id)
+          if (asyncState === 'active') {
+            const current = activeTurns.get(id)
+            activeTurns.set(id, {
+              startedAt: current?.startedAt ?? now,
+              lastEventAt: now,
+              lastWatchdogAt: current?.lastWatchdogAt ?? null,
+              startType: current?.startType ?? `catalog:async_status=${item.async_status}`,
+            })
+            // running 说明该 conversation 当前仍可能继续变化：只标 stale，不抓半成品 body。
+            markDirty(id, `catalog:async-active:${reason}`)
+          }
+          else if (asyncState === 'complete' && wasActive) {
+            // 低频 list 看到了 active→complete，而 WSS complete 没到：这是典型 gap repair。
+            activeTurns.delete(id)
+            markSyncReady(id, `reconcile:${reason}:async-complete`, 0)
+          }
+
           const local = archive.db.prepare('SELECT title, update_time AS updateTime FROM conversations WHERE id=?').get(id)
           const serverUpdate = chatgptTime(item.update_time)
           const localUpdate = local?.updateTime ?? null
@@ -989,8 +1035,10 @@ async function main() {
           if (changed) {
             stableOverlap = 0
             dirtyCount += 1
-            // reconciliation 本身就是“我们可能错过了实时 complete”的恢复路径，发现变化后可直接同步。
-            markSyncReady(id, `reconcile:${reason}`, 0)
+            // running 时只登记 dirty/active，避免为了监控去抓正在生成的半成品；完成/未知则
+            // 按正常 gap reconciliation 直接补 body。若上面刚处理 active→complete，这里重复
+            // set 同一个 Map key 也是幂等的。
+            if (asyncState !== 'active') markSyncReady(id, `reconcile:${reason}`, 0)
           }
           else stableOverlap += 1
         }

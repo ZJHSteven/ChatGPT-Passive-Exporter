@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-13：补齐“普通 turn 没有 WSS start/update 时 watchdog 无法起表”的兜底：低频 catalog reconciliation 现在读取真实 `async_status`，3/5 只登记 active+dirty、不抓半成品；已登记 active 后看到 4 则视为漏掉 complete 的 gap repair，排一次 body 同步。startup 历史补账仍不创建 incident；periodic / WSS reconnect / Guardian recover 属于在线漏事件修复，允许对新变化做 terminal incident 分类。periodic 默认从 6h 收紧为 1h，仍远离分钟级轮询。
 - 2026-09-13：daemon 已接入按需 exact branch 同步：body cursor 扫描只要发现 `metadata.has_versions=true`，会先检查该版本节点是否已有 `official-mapping/live-singular-mapping`；只有新版本缺 exact tree 时才额外读取一次 `/backend-api/conversation/{id}` 并调用 `mergeLiveMappingSnapshot()`。普通聊天零额外请求；singular 失败只降级记录，不影响已成功的正文归档。并修复多页 body 同步误返回“最后一页 diagnostic”的问题，终态始终取最新第一页。
 - 2026-09-13：新增 `mergeLiveMappingSnapshot()`，用于 modern plural 发现版本分支后按需无损合并 legacy singular mapping。该路径不再调用会 DELETE conversation 的旧 `importRaw()`；它按 node/message ID union/upsert 全部 sibling branch，并把真正 mapping.parent/children 标为 `live-singular-mapping`，同时继续保存 transport_parent_id 与 raw gzip observation。
 - 2026-09-13：进一步确认 `messages[].metadata.parent_id` 不是 mapping tree parent：在“办理申根签证流程”真实 sibling 节点中，它甚至指向官方 mapping 完全不存在的 ID。Schema 新增 `mapping_nodes.transport_parent_id`；旧 `live-metadata-inferred` 一次性迁移为 `live-transport-only` 并清除伪 parent 边。以后 plural live merge 只保存 transport 关联，真正 `parent_id/children_json` 只接受 official/singular mapping；宁可暂时无树，也不制造错误 branch。
