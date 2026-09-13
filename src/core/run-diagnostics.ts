@@ -231,7 +231,7 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
     summary = '最新快照仍有 is_reasoning 且尚无 reasoning_ended/final；这可能只是模型仍在思考，不能据此判死。'
   }
   else if (tailShape === 'tool-result-returned') {
-    summary = '最新工具结果已经回来，但当前 payload 尚无明确终止证据；仍需服务器状态确认是否继续运行。'
+    summary = '最新工具结果已经回来，但当前 payload 尚无明确终止证据；不能据此判死，仍需服务器状态确认是否继续运行。'
   }
 
   const representative = last ?? user
