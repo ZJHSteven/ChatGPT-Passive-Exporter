@@ -548,4 +548,140 @@ describe('ChatArchiveDb', () => {
       db.close()
     }
   })
+
+  test('cursor 历史页只能补事实，不能覆盖最新 turn 的 current state 或 incident', () => {
+    const db = tempDb()
+    try {
+      const latest = {
+        title: '分页状态 fixture',
+        conversation_id: 'page-state',
+        current_node: 'tool-result',
+        update_time: 20,
+        messages: [
+          {
+            id: 'u-new', author: { role: 'user' }, recipient: 'all',
+            content: { content_type: 'text', parts: ['新一轮'] },
+            metadata: { turn_exchange_id: 'turn-new' },
+          },
+          {
+            id: 'call-new', author: { role: 'assistant' }, recipient: 'api_tool.call_tool',
+            content: { content_type: 'code', text: '{}' },
+            metadata: { turn_exchange_id: 'turn-new' },
+          },
+          {
+            id: 'tool-result', author: { role: 'tool' }, recipient: 'all',
+            content: { content_type: 'code', text: '{"ok":true}' },
+            metadata: { turn_exchange_id: 'turn-new' },
+          },
+        ],
+      }
+      db.mergeLiveMessagesPage(latest, {
+        observedAt: 2000,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: true,
+        incidentKind: 'watchdog-timeout',
+        updateCurrentState: true,
+      })
+
+      const oldPage = {
+        title: '旧分页标题不应覆盖',
+        conversation_id: 'page-state',
+        current_node: 'old-final',
+        update_time: 10,
+        messages: [
+          {
+            id: 'u-old', author: { role: 'user' }, recipient: 'all',
+            content: { content_type: 'text', parts: ['旧一轮'] },
+            metadata: { turn_exchange_id: 'turn-old' },
+          },
+          {
+            id: 'old-final', author: { role: 'assistant' }, recipient: 'all', channel: 'final',
+            content: { content_type: 'text', parts: ['旧 final'] },
+            metadata: { turn_exchange_id: 'turn-old' },
+          },
+        ],
+      }
+      db.mergeLiveMessagesPage(oldPage, {
+        observedAt: 2100,
+        classifyTerminal: false,
+        updateCurrentState: false,
+      })
+
+      expect(db.db.prepare(`
+        SELECT current_node AS currentNode, terminal_state AS terminalState,
+               incident_state AS incidentState, title
+        FROM conversations WHERE id='page-state'
+      `).get()).toMatchObject({
+        currentNode: 'tool-result',
+        terminalState: 'none',
+        incidentState: 'open',
+        title: '分页状态 fixture',
+      })
+      expect(db.listIncidents({ status: 'open' })).toHaveLength(1)
+      expect(db.listIncidents({ status: 'open' })[0]).toMatchObject({
+        turnKey: 'turn-new',
+        incidentKind: 'watchdog-timeout',
+      })
+    }
+    finally {
+      db.close()
+    }
+  })
+
+  test('incident 以 turn 为稳定身份，同一 turn 升级而不同 turn 不互相覆盖', () => {
+    const db = tempDb()
+    try {
+      const timedOut = {
+        title: 'per-turn incident', conversation_id: 'per-turn', current_node: 'r1',
+        messages: [
+          { id: 'u1', author: { role: 'user' }, recipient: 'all', content: { content_type: 'text', parts: ['任务1'] }, metadata: { turn_exchange_id: 'turn-1' } },
+          { id: 'r1', author: { role: 'assistant' }, recipient: 'all', content: { content_type: 'thoughts', parts: ['处理中'] }, metadata: { turn_exchange_id: 'turn-1', reasoning_status: 'is_reasoning' } },
+        ],
+      }
+      db.mergeLiveMessagesPage(timedOut, {
+        observedAt: 1000,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: true,
+        incidentKind: 'watchdog-timeout',
+      })
+      const firstId = db.listIncidents()[0]?.id
+
+      const interrupted = {
+        ...timedOut,
+        current_node: 'a1',
+        messages: [
+          ...timedOut.messages,
+          { id: 'a1', author: { role: 'assistant' }, recipient: 'all', channel: 'final', content: { content_type: 'text', parts: ['中断'] }, metadata: { turn_exchange_id: 'turn-1', finish_details: { type: 'interrupted', reason: 'client_stopped' } } },
+        ],
+      }
+      db.mergeLiveMessagesPage(interrupted, { observedAt: 1100, classifyTerminal: true })
+      expect(db.listIncidents()).toHaveLength(1)
+      expect(db.listIncidents()[0]).toMatchObject({
+        id: firstId,
+        turnKey: 'turn-1',
+        incidentKind: 'abnormal-terminal',
+        status: 'open',
+      })
+
+      const secondTurn = {
+        title: 'per-turn incident', conversation_id: 'per-turn', current_node: 'r2',
+        messages: [
+          { id: 'u2', author: { role: 'user' }, recipient: 'all', content: { content_type: 'text', parts: ['任务2'] }, metadata: { turn_exchange_id: 'turn-2' } },
+          { id: 'r2', author: { role: 'assistant' }, recipient: 'all', content: { content_type: 'thoughts', parts: ['又卡住'] }, metadata: { turn_exchange_id: 'turn-2', reasoning_status: 'is_reasoning' } },
+        ],
+      }
+      db.mergeLiveMessagesPage(secondTurn, {
+        observedAt: 2000,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: true,
+        incidentKind: 'watchdog-timeout',
+      })
+      expect(db.listIncidents()).toHaveLength(2)
+      expect(db.listIncidents({ status: 'resolved' }).map(item => item.turnKey)).toContain('turn-1')
+      expect(db.listIncidents({ status: 'open' }).map(item => item.turnKey)).toEqual(['turn-2'])
+    }
+    finally {
+      db.close()
+    }
+  })
 })

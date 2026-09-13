@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-13：重构当前状态/incident 的页与 turn 归属。`mergeLiveMessagesPage()` 新增 `updateCurrentState`：只有最新第一页能更新 conversation 的 current_node/head/terminal/incident，cursor 历史页只补 messages/nodes/raw observation。`incidents` 新增稳定 `turn_key`、`incident_kind`、`last_observed_at`，同一 turn 从 watchdog timeout 演进到 explicit interrupted 会升级同一行；新 turn 只 resolve 旧 turn incident，不删除历史，也不再用“conversation 任意 open incident”污染当前红牌。watchdog 超时本身重新成为 `watchdog-timeout` incident，而不是必须先证明 COMPLETE 才有意义。
 - 2026-09-13：修正 run tail 诊断优先级：不再因为本轮早期曾出现 `reasoning_status=is_reasoning` 就掩盖后续真实尾部；工具结果晚于 reasoning 时归为 `tool-result-returned`，只有工具结果之后再次进入 reasoning 才归为 `reasoning-open`。这与 OverlayLex 的真实中断样本一致。
 - 2026-09-13：修复 Guardian 运行中自愈被误标成 `startup` 的 gap 风险。此前 catch 会先 `guardian=null`，下一轮又用 null 判断为 startup，导致“WSS 20 秒未建立→重建 Guardian”这类运行时故障可能跳过 `guardian-recover` overlap。现用独立 `guardianEstablishedOnce` 区分首次启动与运行中恢复；任何后续重建都走 recover-page，并在 auth 恢复后立即 reconciliation。健康主循环完成后还会清除 state 中已恢复的 transient `lastError`，历史错误仍保留在日志。
 - 2026-09-13：收紧 watchdog/gap-repair 的异常判定，避免“35 分钟后 body 仍是 reasoning-open”被误报成已经异常终止。终态分类现分两层：watchdog / 一般 reconnect repair 只允许显式 `client_stopped/interrupted` 开 incident；只有 `conversation-turn-complete` 或 catalog `active→async_status=4` 已确认服务端结束时，才允许把 `terminalEvidence=none + 非 final tail` 推断为异常。长任务仍在跑时只保持 active/疑似，不判死。

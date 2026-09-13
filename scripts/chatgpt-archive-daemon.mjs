@@ -819,8 +819,12 @@ async function main() {
         endpoint: pages === 0 ? basePath : `${basePath}/messages`,
         pageCursor: cursor,
         observationKind: `body-page:${trigger}`,
+        updateCurrentState: pages === 0,
         classifyTerminal: pages === 0 && classifyTerminal,
-        allowIncompleteTailIncident: pages === 0 && confirmedTerminal,
+        // watchdog 的语义是“已经超时，所以这个 turn 本身就是需要调查的 incident”。
+        // COMPLETE 只决定它是不是 confirmed terminal；不能拿“尚未 COMPLETE”把 watchdog 变成空操作。
+        allowIncompleteTailIncident: pages === 0 && (confirmedTerminal || trigger.startsWith('watchdog:')),
+        incidentKind: trigger.startsWith('watchdog:') ? 'watchdog-timeout' : 'abnormal-terminal',
       })
       if (pages === 0) latestDiagnostic = merged.diagnostic
       if (pages === 0 && classifyTerminal) {

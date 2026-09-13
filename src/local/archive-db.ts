@@ -111,7 +111,10 @@ export interface ArchiveIncidentRow {
   id: string
   conversationId: string
   turnExchangeId: string | null
+  turnKey: string
+  incidentKind: 'watchdog-timeout' | 'abnormal-terminal'
   detectedAt: number
+  lastObservedAt: number
   resolvedAt: number | null
   status: 'open' | 'resolved'
   reason: string
@@ -428,7 +431,10 @@ export class ChatArchiveDb {
         id TEXT PRIMARY KEY,
         conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
         turn_exchange_id TEXT,
+        turn_key TEXT,
+        incident_kind TEXT NOT NULL DEFAULT 'abnormal-terminal',
         detected_at INTEGER NOT NULL,
+        last_observed_at INTEGER,
         resolved_at INTEGER,
         status TEXT NOT NULL,
         reason TEXT NOT NULL,
@@ -491,6 +497,23 @@ export class ChatArchiveDb {
     // 观察到大量不一致。额外记录 parent 来源，避免后来的 plural body 把官方树关系覆盖掉。
     this.ensureColumn('mapping_nodes', 'parent_source', 'TEXT')
     this.ensureColumn('mapping_nodes', 'transport_parent_id', 'TEXT')
+    this.ensureColumn('incidents', 'turn_key', 'TEXT')
+    this.ensureColumn('incidents', 'incident_kind', "TEXT NOT NULL DEFAULT 'abnormal-terminal'")
+    this.ensureColumn('incidents', 'last_observed_at', 'INTEGER')
+
+    // Incident 的稳定身份必须属于某一个 turn，而不是“这个 conversation 当前有一张红牌”。
+    // 旧库已有少量 incident：优先沿用 turn_exchange_id；极少数没有 turn id 的历史行退化用自身 id，
+    // 只为保证迁移唯一性。新写入会使用 turn_exchange_id/user message/last message 生成稳定 turn_key。
+    this.db.prepare(`
+      UPDATE incidents
+      SET turn_key = COALESCE(NULLIF(turn_key, ''), NULLIF(turn_exchange_id, ''), id),
+          last_observed_at = COALESCE(last_observed_at, resolved_at, detected_at)
+      WHERE turn_key IS NULL OR turn_key = '' OR last_observed_at IS NULL
+    `).run()
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS incidents_conversation_turn
+      ON incidents(conversation_id, turn_key)
+    `)
 
     // 旧 live merge 曾把 metadata.parent_id 直接塞进 parent_id。现在已确认该字段属于
     // transport/request 关联，不是 mapping tree 边，因此一次性搬到独立列并清空伪树边。
@@ -1106,6 +1129,14 @@ export class ChatArchiveDb {
       /** 只有 WSS complete / watchdog terminal verification 才允许新建 incident。 */
       classifyTerminal?: boolean
       /**
+       * 这一页是否代表 conversation 的“当前最新头”。
+       * cursor 历史页只能补 messages/nodes/raw observation，绝不能覆盖 current_node、head history、
+       * terminal_state 或 incident_state。daemon 只会给第一页传 true。
+       */
+      updateCurrentState?: boolean
+      /** watchdog 超时和已确认 abnormal terminal 都是 incident，但语义不同。 */
+      incidentKind?: 'watchdog-timeout' | 'abnormal-terminal'
+      /**
        * 是否已有外部证据确认这一轮已经结束。
        * false 时仍可记录 explicit client_stopped/interrupted，但不能把 open reasoning/tool 尾巴
        * 单独解释成异常终止；这用于 watchdog / gap repair 防止误报仍在正常运行的长任务。
@@ -1121,6 +1152,7 @@ export class ChatArchiveDb {
     const rawPayload = record(payload)
     const observedAt = options.observedAt ?? Date.now()
     const now = Date.now()
+    const updateCurrentState = options.updateCurrentState !== false
     const rawText = json(payload)
     const messageIds = conversation.messages.map(message => message.id)
     const knownBefore = this.knownMessageIds(conversationId, messageIds)
@@ -1234,21 +1266,24 @@ export class ChatArchiveDb {
 
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      upsertConversation.run(
-        conversationId,
-        conversation.title,
-        conversation.currentNode ?? null,
-        observedAt,
-        now,
-        numberValue(rawPayload.create_time),
-        numberValue(rawPayload.update_time),
-        observedAt,
-        observedAt,
-      )
+      const conversationExists = Boolean(this.db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(conversationId))
+      if (updateCurrentState || !conversationExists) {
+        upsertConversation.run(
+          conversationId,
+          conversation.title,
+          conversation.currentNode ?? null,
+          observedAt,
+          now,
+          numberValue(rawPayload.create_time),
+          numberValue(rawPayload.update_time),
+          observedAt,
+          observedAt,
+        )
+      }
 
       // 连续 cursor page / 重试经常带同一个 current_node；只记录真正的 head 变化，
       // 既能审计 A→B→A，又不会让分页同步把该表刷成另一份 observation 日志。
-      if (conversation.currentNode) {
+      if (updateCurrentState && conversation.currentNode) {
         const priorHead = latestRecordedHead.get(conversationId) as { currentNode?: string } | undefined
         if (priorHead?.currentNode !== conversation.currentNode) {
           insertHeadHistory.run(
@@ -1353,13 +1388,17 @@ export class ChatArchiveDb {
     }
 
     const diagnostic = diagnoseLatestRun(payload as never)
-    this.updateIncidentFromDiagnostic(
-      conversationId,
-      diagnostic,
-      observedAt,
-      options.classifyTerminal === true,
-      options.allowIncompleteTailIncident !== false,
-    )
+    if (updateCurrentState) {
+      this.updateIncidentFromDiagnostic(
+        conversationId,
+        diagnostic,
+        observedAt,
+        options.classifyTerminal === true,
+        options.allowIncompleteTailIncident !== false,
+        options.incidentKind ?? 'abnormal-terminal',
+        options.observationKind ?? 'realtime-body',
+      )
+    }
     const counts = this.db.prepare(`
       SELECT message_count AS messageCount, resource_count AS resourceCount
       FROM conversations WHERE id = ?
@@ -1829,62 +1868,102 @@ export class ChatArchiveDb {
     observedAt = Date.now(),
     allowCreate = true,
     allowIncompleteTailIncident = true,
+    requestedKind: 'watchdog-timeout' | 'abnormal-terminal' = 'abnormal-terminal',
+    source = 'realtime-body',
   ): void {
-    const open = this.db.prepare(`
-      SELECT id, turn_exchange_id AS turnExchangeId
-      FROM incidents
-      WHERE conversation_id = ? AND status = 'open'
-      ORDER BY detected_at DESC
-      LIMIT 1
-    `).get(conversationId) as { id: string, turnExchangeId: string | null } | undefined
-
     const latestTurn = diagnostic.turnExchangeId ?? null
-    const recovered = diagnostic.terminalEvidence === 'final'
-      || (open && open.turnExchangeId && latestTurn && open.turnExchangeId !== latestTurn)
-    if (open && recovered) {
-      this.db.prepare(`UPDATE incidents SET status='resolved', resolved_at=? WHERE id=?`).run(observedAt, open.id)
+    const turnKey = diagnostic.turnExchangeId
+      ?? diagnostic.userMessageId
+      ?? diagnostic.lastMessageId
+      ?? diagnostic.currentNode
+      ?? `unknown:${observedAt}`
+
+    // 一旦最新 body 已经进入另一个 turn，旧 turn 的 open incident 只能变成“历史已继续”，
+    // 绝不能让旧红牌继续污染 conversation 当前状态。历史行保留，只改变 status/resolved_at。
+    this.db.prepare(`
+      UPDATE incidents
+      SET status='resolved',
+          resolved_at=COALESCE(resolved_at, ?),
+          last_observed_at=?
+      WHERE conversation_id=? AND status='open' AND turn_key<>?
+    `).run(observedAt, observedAt, conversationId, turnKey)
+
+    const currentIncident = this.db.prepare(`
+      SELECT id, status, incident_kind AS incidentKind
+      FROM incidents
+      WHERE conversation_id=? AND turn_key=?
+      LIMIT 1
+    `).get(conversationId, turnKey) as { id: string, status: string, incidentKind: string } | undefined
+
+    if (diagnostic.terminalEvidence === 'final' && currentIncident?.status === 'open') {
+      this.db.prepare(`
+        UPDATE incidents
+        SET status='resolved', resolved_at=COALESCE(resolved_at, ?), last_observed_at=?
+        WHERE id=?
+      `).run(observedAt, observedAt, currentIncident.id)
     }
 
     const explicitAbnormal = diagnostic.terminalEvidence === 'client-stopped'
       || diagnostic.terminalEvidence === 'interrupted'
     const inferredAbnormal = diagnostic.terminalEvidence === 'none' && diagnostic.tailShape !== 'final'
     const abnormal = explicitAbnormal || (allowIncompleteTailIncident && inferredAbnormal)
-    if (allowCreate && abnormal && !recovered) {
-      const fingerprint = `${conversationId}:${latestTurn ?? diagnostic.lastMessageId ?? 'unknown'}:${diagnostic.terminalEvidence}:${diagnostic.tailShape}`
-      const incidentId = sha256Text(fingerprint).slice(0, 24)
+    if (allowCreate && abnormal && diagnostic.terminalEvidence !== 'final') {
+      // 同一 turn 从“超时疑似卡住”演进成明确 client_stopped/interrupted 时，升级同一条 incident，
+      // 不再因为 terminal/tail 字段变化制造第二条事故记录。
+      const effectiveKind: 'watchdog-timeout' | 'abnormal-terminal' = explicitAbnormal
+        ? 'abnormal-terminal'
+        : requestedKind
+      const incidentId = currentIncident?.id ?? sha256Text(`${conversationId}:${turnKey}`).slice(0, 24)
       const reason = diagnostic.summary
       this.db.prepare(`
         INSERT INTO incidents (
-          id, conversation_id, turn_exchange_id, detected_at, resolved_at, status,
+          id, conversation_id, turn_exchange_id, turn_key, incident_kind,
+          detected_at, last_observed_at, resolved_at, status,
           reason, terminal_evidence, tail_shape, source, diagnostic_json
-        ) VALUES (?, ?, ?, ?, NULL, 'open', ?, ?, ?, 'realtime-body', ?)
-        ON CONFLICT(id) DO UPDATE SET
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'open', ?, ?, ?, ?, ?)
+        ON CONFLICT(conversation_id, turn_key) DO UPDATE SET
+          turn_exchange_id=COALESCE(excluded.turn_exchange_id, incidents.turn_exchange_id),
+          incident_kind=CASE
+            WHEN incidents.incident_kind='abnormal-terminal' OR excluded.incident_kind='abnormal-terminal'
+            THEN 'abnormal-terminal'
+            ELSE excluded.incident_kind
+          END,
+          last_observed_at=excluded.last_observed_at,
+          resolved_at=NULL,
+          status='open',
           reason=excluded.reason,
           terminal_evidence=excluded.terminal_evidence,
           tail_shape=excluded.tail_shape,
+          source=excluded.source,
           diagnostic_json=excluded.diagnostic_json
       `).run(
         incidentId,
         conversationId,
         latestTurn,
+        turnKey,
+        effectiveKind,
+        observedAt,
         observedAt,
         reason,
         diagnostic.terminalEvidence,
         diagnostic.tailShape,
+        source,
         json(diagnostic),
       )
     }
 
-    const remaining = this.db.prepare(`
-      SELECT count(*) AS n FROM incidents WHERE conversation_id = ? AND status = 'open'
-    `).get(conversationId) as { n: number }
+    const currentOpen = this.db.prepare(`
+      SELECT count(*) AS n
+      FROM incidents
+      WHERE conversation_id = ? AND turn_key = ? AND status = 'open'
+    `).get(conversationId, turnKey) as { n: number }
     this.db.prepare(`
       UPDATE conversations
       SET terminal_state=?, incident_state=?, last_finish_reason=?, last_monitor_checked_at=?
       WHERE id=?
     `).run(
       diagnostic.terminalEvidence,
-      Number(remaining.n) > 0 ? 'open' : null,
+      Number(currentOpen.n) > 0 ? 'open' : null,
       diagnostic.interruptedReason ?? null,
       observedAt,
       conversationId,
@@ -1896,7 +1975,9 @@ export class ChatArchiveDb {
     if (options.status) {
       return this.db.prepare(`
         SELECT id, conversation_id AS conversationId, turn_exchange_id AS turnExchangeId,
-               detected_at AS detectedAt, resolved_at AS resolvedAt, status, reason,
+               turn_key AS turnKey, incident_kind AS incidentKind,
+               detected_at AS detectedAt, last_observed_at AS lastObservedAt,
+               resolved_at AS resolvedAt, status, reason,
                terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
                source, diagnostic_json AS diagnosticJson
         FROM incidents WHERE status = ? ORDER BY detected_at DESC LIMIT ?
@@ -1904,7 +1985,9 @@ export class ChatArchiveDb {
     }
     return this.db.prepare(`
       SELECT id, conversation_id AS conversationId, turn_exchange_id AS turnExchangeId,
-             detected_at AS detectedAt, resolved_at AS resolvedAt, status, reason,
+             turn_key AS turnKey, incident_kind AS incidentKind,
+             detected_at AS detectedAt, last_observed_at AS lastObservedAt,
+             resolved_at AS resolvedAt, status, reason,
              terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
              source, diagnostic_json AS diagnosticJson
       FROM incidents ORDER BY detected_at DESC LIMIT ?
