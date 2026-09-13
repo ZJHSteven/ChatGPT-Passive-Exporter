@@ -309,7 +309,7 @@ function chatgptTime(value) {
   return null
 }
 
-function sanitizeCapturedHeaders(headers) {
+export function sanitizeCapturedHeaders(headers) {
   const allowed = new Set([
     'authorization',
     'oai-client-build-number',
@@ -317,9 +317,14 @@ function sanitizeCapturedHeaders(headers) {
     'oai-device-id',
     'oai-language',
     'oai-session-id',
-    'X-OAI-IS-Client-Observation',
+    'x-oai-is-client-observation',
   ])
-  return Object.fromEntries(Object.entries(headers || {}).filter(([key]) => allowed.has(key)))
+  const sanitized = {}
+  for (const [key, value] of Object.entries(headers || {})) {
+    const normalized = String(key).toLowerCase()
+    if (allowed.has(normalized)) sanitized[normalized] = value
+  }
+  return sanitized
 }
 
 export function extractConversationEvents(payloadData) {

@@ -4,6 +4,7 @@ import {
   classifyConversationEvent,
   extractConversationEvents,
   isConfirmedTerminalTrigger,
+  sanitizeCapturedHeaders,
   shouldRebuildGuardianForMissingWss,
   shouldClassifyTerminalForTrigger,
 } from '../scripts/chatgpt-archive-daemon.mjs'
@@ -145,5 +146,20 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       gapStartedAt: null,
       reconnectGraceMs: 20_000,
     })).toBe(false)
+  })
+
+  test('请求上下文白名单大小写无关，且不会复制 cookie / user-agent 等浏览器应自行生成的头', () => {
+    expect(sanitizeCapturedHeaders({
+      Authorization: 'Bearer fresh-token',
+      'OAI-Session-ID': 'fresh-session',
+      'X-OAI-IS-Client-Observation': '1',
+      Cookie: 'must-not-copy',
+      'User-Agent': 'must-not-copy',
+      Referer: 'must-not-copy',
+    })).toEqual({
+      authorization: 'Bearer fresh-token',
+      'oai-session-id': 'fresh-session',
+      'x-oai-is-client-observation': '1',
+    })
   })
 })
