@@ -565,6 +565,10 @@ async function main() {
   await fs.mkdir(path.dirname(statePath), { recursive: true })
   const archive = new ChatArchiveDb(dbPath)
   let guardian = null
+  // `guardian === null` 同时出现在“进程第一次启动”和“运行中自愈 catch 已清空旧 Guardian”两种
+  // 场景；不能再仅凭 null 决定 reason。否则运行中 WSS/renderer 故障会被误标成 startup，
+  // 从而跳过 guardian-recover reconciliation，留下一个真正的事件盲区。
+  let guardianEstablishedOnce = false
   let authHeaders = null
   let lastAuthAt = null
   let cooldownUntil = 0
@@ -1226,6 +1230,7 @@ async function main() {
       created: guardian.created,
       nativeHidden: guardian.nativeWindow?.visibleAfter === false,
     })
+    guardianEstablishedOnce = true
     // listener 必须先于导航/reload 安装，才能捕获第一条真实 backend header 与 WSS 创建。
     if (guardian.created) {
       await guardian.page.send('Page.navigate', { url: `https://chatgpt.com/?${GUARDIAN_MARKER}=1` })
@@ -1258,7 +1263,9 @@ async function main() {
   await log('daemon starting', { pid: process.pid, dbPath, cdpHttp })
   while (!stopping) {
     try {
-      if (!guardian || guardian.page.closed) await establishGuardian(guardian ? 'recover-page' : 'startup')
+      if (!guardian || guardian.page.closed) {
+        await establishGuardian(guardianEstablishedOnce ? 'recover-page' : 'startup')
+      }
 
       const targets = await fetch(`${cdpHttp}/json/list`).then(response => response.json())
       if (!targets.some(target => target.id === guardian.targetId)) {
@@ -1286,6 +1293,9 @@ async function main() {
       }
       queueWatchdogDiagnostics()
       await drainDirty()
+      // 运行态错误已经写入日志；完整健康迭代成功后清掉 state 里的 transient lastError，
+      // 避免 CLI 永远显示一个几小时前已经自动恢复的问题。
+      lastError = null
       await writeState()
     }
     catch (error) {
