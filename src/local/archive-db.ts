@@ -394,6 +394,23 @@ export class ChatArchiveDb {
       CREATE INDEX IF NOT EXISTS live_observations_conversation_time
         ON live_observations(conversation_id, observed_at DESC);
 
+      -- current_node 只是“这一时刻服务端/前端选中的 head”，不是历史消息的唯一真相。
+      -- ChatGPT 在 edit / regenerate / stale-client / branch switch 场景下可能出现 A→B→A；
+      -- conversations.current_node 只能保存最新值，因此另外保存 head 变化时间线。
+      CREATE TABLE IF NOT EXISTS conversation_head_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        current_node TEXT NOT NULL,
+        previous_node TEXT,
+        observed_at INTEGER NOT NULL,
+        payload_update_time REAL,
+        observation_kind TEXT NOT NULL,
+        endpoint TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS conversation_head_history_conversation_time
+        ON conversation_head_history(conversation_id, observed_at DESC);
+
       -- incident 是“某一轮的异常历史”，不是 conversation 永久属性。
       -- conversations.incident_state 只保存当前快速状态；完整历史在本表。
       CREATE TABLE IF NOT EXISTS incidents (
@@ -1162,6 +1179,19 @@ export class ChatArchiveDb {
       )
       WHERE conversation_id = ? AND node_id = ?
     `)
+    const latestRecordedHead = this.db.prepare(`
+      SELECT current_node AS currentNode
+      FROM conversation_head_history
+      WHERE conversation_id = ?
+      ORDER BY observed_at DESC, id DESC
+      LIMIT 1
+    `)
+    const insertHeadHistory = this.db.prepare(`
+      INSERT INTO conversation_head_history (
+        conversation_id, current_node, previous_node, observed_at,
+        payload_update_time, observation_kind, endpoint
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
 
     this.db.exec('BEGIN IMMEDIATE')
     try {
@@ -1176,6 +1206,23 @@ export class ChatArchiveDb {
         observedAt,
         observedAt,
       )
+
+      // 连续 cursor page / 重试经常带同一个 current_node；只记录真正的 head 变化，
+      // 既能审计 A→B→A，又不会让分页同步把该表刷成另一份 observation 日志。
+      if (conversation.currentNode) {
+        const priorHead = latestRecordedHead.get(conversationId) as { currentNode?: string } | undefined
+        if (priorHead?.currentNode !== conversation.currentNode) {
+          insertHeadHistory.run(
+            conversationId,
+            conversation.currentNode,
+            priorHead?.currentNode ?? null,
+            observedAt,
+            numberValue(rawPayload.update_time),
+            options.observationKind ?? 'body-page',
+            options.endpoint ?? null,
+          )
+        }
+      }
 
       const touchedParents = new Set<string>()
       conversation.messages.forEach((message, pageOrdinal) => {

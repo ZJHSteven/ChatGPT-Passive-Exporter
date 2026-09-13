@@ -304,6 +304,49 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('current_node A→B→A 会保留 head 历史；重复观察同一 head 幂等', () => {
+    const db = tempDb()
+    try {
+      const page = (head: string, text: string, updateTime: number) => ({
+        title: 'Head history fixture',
+        conversation_id: 'head-history',
+        current_node: head,
+        update_time: updateTime,
+        messages: [
+          {
+            id: head,
+            author: { role: 'assistant' },
+            recipient: 'all',
+            channel: 'final',
+            content: { content_type: 'text', parts: [text] },
+            metadata: {},
+          },
+        ],
+      })
+
+      db.mergeLiveMessagesPage(page('a', 'A1', 1), { observedAt: 1000, observationKind: 'wss:complete' })
+      db.mergeLiveMessagesPage(page('a', 'A1', 1), { observedAt: 1100, observationKind: 'cursor-page' })
+      db.mergeLiveMessagesPage(page('b', 'B', 2), { observedAt: 2000, observationKind: 'wss:complete' })
+      db.mergeLiveMessagesPage(page('a', 'A2', 3), { observedAt: 3000, observationKind: 'wss:complete' })
+
+      const history = db.db.prepare(`
+        SELECT current_node AS currentNode, previous_node AS previousNode, observed_at AS observedAt
+        FROM conversation_head_history
+        WHERE conversation_id = 'head-history'
+        ORDER BY observed_at, id
+      `).all()
+
+      expect(history).toEqual([
+        { currentNode: 'a', previousNode: null, observedAt: 1000 },
+        { currentNode: 'b', previousNode: 'a', observedAt: 2000 },
+        { currentNode: 'a', previousNode: 'b', observedAt: 3000 },
+      ])
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('complete 但没有 final 会开 incident；新 turn 正常完成后自动解除当前异常', () => {
     const db = tempDb()
     try {
