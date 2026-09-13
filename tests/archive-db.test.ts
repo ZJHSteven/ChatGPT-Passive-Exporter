@@ -350,6 +350,89 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('singular mapping 会把 edit/regenerate sibling 精确回填为 branch tree', () => {
+    const db = tempDb()
+    try {
+      // 先模拟 modern plural：两个 assistant 都只知道同一个 transport_parent_id，不能据此建树。
+      db.mergeLiveMessagesPage({
+        title: 'Version tree fixture',
+        conversation_id: 'version-tree',
+        current_node: 'assistant-b',
+        messages: [
+          {
+            id: 'user-a', author: { role: 'user' }, recipient: 'all',
+            content: { content_type: 'text', parts: ['原问题'] },
+            metadata: { has_versions: true, parent_id: 'transport-user-parent' },
+          },
+          {
+            id: 'assistant-b', author: { role: 'assistant' }, recipient: 'all', channel: 'final',
+            content: { content_type: 'text', parts: ['第二版回答'] },
+            metadata: { parent_id: 'transport-assistant-parent' },
+          },
+        ],
+      }, { observedAt: 1000 })
+
+      // 再模拟 singular mapping：同一 user 下有两条 regenerate assistant sibling。
+      const merged = db.mergeLiveMappingSnapshot({
+        title: 'Version tree fixture',
+        conversation_id: 'version-tree',
+        current_node: 'assistant-b',
+        mapping: {
+          'root': { id: 'root', parent: null, children: ['user-a'], message: null },
+          'user-a': {
+            id: 'user-a', parent: 'root', children: ['assistant-a', 'assistant-b'],
+            message: {
+              id: 'user-a', author: { role: 'user' }, recipient: 'all',
+              content: { content_type: 'text', parts: ['原问题'] },
+              metadata: { has_versions: true, parent_id: 'transport-user-parent' },
+            },
+          },
+          'assistant-a': {
+            id: 'assistant-a', parent: 'user-a', children: [],
+            message: {
+              id: 'assistant-a', author: { role: 'assistant' }, recipient: 'all', channel: 'final',
+              content: { content_type: 'text', parts: ['第一版回答'] }, metadata: {},
+            },
+          },
+          'assistant-b': {
+            id: 'assistant-b', parent: 'user-a', children: [],
+            message: {
+              id: 'assistant-b', author: { role: 'assistant' }, recipient: 'all', channel: 'final',
+              content: { content_type: 'text', parts: ['第二版回答'] },
+              metadata: { parent_id: 'transport-assistant-parent' },
+            },
+          },
+        },
+      }, { observedAt: 2000, observationKind: 'version-tree:test' })
+
+      expect(merged.nodeCount).toBe(4)
+      expect(merged.newMessageCount).toBe(1)
+      const rows = db.db.prepare(`
+        SELECT node_id AS nodeId, parent_id AS parentId, parent_source AS parentSource,
+               transport_parent_id AS transportParentId, children_json AS childrenJson
+        FROM mapping_nodes
+        WHERE conversation_id='version-tree'
+        ORDER BY node_id
+      `).all() as Array<Record<string, unknown>>
+      const user = rows.find(row => row.nodeId === 'user-a')
+      expect(user).toMatchObject({
+        parentId: 'root',
+        parentSource: 'live-singular-mapping',
+        transportParentId: 'transport-user-parent',
+      })
+      expect(JSON.parse(String(user?.childrenJson))).toEqual(['assistant-a', 'assistant-b'])
+      expect(rows.find(row => row.nodeId === 'assistant-a')).toMatchObject({
+        parentId: 'user-a', parentSource: 'live-singular-mapping',
+      })
+      expect(rows.find(row => row.nodeId === 'assistant-b')).toMatchObject({
+        parentId: 'user-a', parentSource: 'live-singular-mapping', transportParentId: 'transport-assistant-parent',
+      })
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('complete 但没有 final 会开 incident；新 turn 正常完成后自动解除当前异常', () => {
     const db = tempDb()
     try {

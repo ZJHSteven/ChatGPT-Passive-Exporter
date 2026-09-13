@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-13：新增 `mergeLiveMappingSnapshot()`，用于 modern plural 发现版本分支后按需无损合并 legacy singular mapping。该路径不再调用会 DELETE conversation 的旧 `importRaw()`；它按 node/message ID union/upsert 全部 sibling branch，并把真正 mapping.parent/children 标为 `live-singular-mapping`，同时继续保存 transport_parent_id 与 raw gzip observation。
 - 2026-09-13：进一步确认 `messages[].metadata.parent_id` 不是 mapping tree parent：在“办理申根签证流程”真实 sibling 节点中，它甚至指向官方 mapping 完全不存在的 ID。Schema 新增 `mapping_nodes.transport_parent_id`；旧 `live-metadata-inferred` 一次性迁移为 `live-transport-only` 并清除伪 parent 边。以后 plural live merge 只保存 transport 关联，真正 `parent_id/children_json` 只接受 official/singular mapping；宁可暂时无树，也不制造错误 branch。
 - 2026-09-13：针对用户现场观察到的“刷新后某些消息/状态看似回吃”，新增 `conversation_head_history`：live body 只在 `current_node` 真正变化时记录一行，连续 cursor/retry 同 head 不重复。Archive 仍坚持 messages/nodes union/upsert，不因服务器当前分支较短或 UI 不再展示某节点而删除历史；以后可直接审计 A→B→A、branch switch 与 stale-client head 抢占，而不必从 gzip raw 手工还原。
 - 2026-09-13：定位并修复 Phase 2 最关键的 realtime 漏同步根因。当前第一方 `conversations` WSS 的真实 complete frame 是双层 payload：外层 `message(topic=conversations)` → `payload.type=conversation-turn-complete` → `payload.payload.conversation_id`。旧 parser 错把 `type` 与 `conversation_id` 当作兄弟字段，因此 daemon 虽然 `activeSockets=1`，却出现 `parsedEventFrames=0 / unparsedConversationFrames=2 / lastEventAt=null`；这正是“daemon 一直开着，重启后 list 又发现 6 个 dirty”的主要原因。已提交 `7c321c7 fix(sync): 兼容真实 WSS 双层 payload`，并把 2026-09-13 真机 frame 固化成回归 fixture；TypeScript + 14 test files / 58 tests 全通过。

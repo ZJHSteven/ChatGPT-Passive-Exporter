@@ -97,6 +97,16 @@ export interface LiveMergeResult {
   diagnostic: RunDiagnostic
 }
 
+export interface LiveMappingMergeResult {
+  conversationId: string
+  title: string
+  nodeCount: number
+  messageCount: number
+  newMessageCount: number
+  totalMessageCount: number
+  resourceCount: number
+}
+
 export interface ArchiveIncidentRow {
   id: string
   conversationId: string
@@ -1350,6 +1360,283 @@ export class ChatArchiveDb {
       totalMessageCount: Number(counts.messageCount),
       resourceCount: Number(counts.resourceCount),
       diagnostic,
+    }
+  }
+
+  /**
+   * 合并 first-party legacy singular `/backend-api/conversation/{id}` 的完整 mapping tree。
+   *
+   * 该接口只在 modern plural 明确出现 `metadata.has_versions=true`、而本地还没有 exact mapping
+   * 时按需调用。它与旧 `importRaw()` 的最大区别是**绝不 DELETE conversation**：
+   * - 所有 mapping node 按 node_id union/upsert；
+   * - sibling branch 的 message 同样按 message_id union/upsert；
+   * - 已经存在但当前 singular snapshot 没展示的历史节点仍然保留；
+   * - mapping.parent / children 记为 `live-singular-mapping`，可覆盖此前 transport-only 占位。
+   *
+   * 这让 edit user prompt / regenerate assistant 的树关系有一条真正 first-party 的事实源，
+   * 而不是继续猜 `messages[].metadata.parent_id`。
+   */
+  mergeLiveMappingSnapshot(
+    payload: unknown,
+    options: {
+      observedAt?: number
+      endpoint?: string
+      observationKind?: string
+    } = {},
+  ): LiveMappingMergeResult {
+    const rawConversation = record(payload)
+    const mapping = record(rawConversation.mapping)
+    const conversationId = stringValue(rawConversation.conversation_id) ?? stringValue(rawConversation.id)
+    if (!conversationId || Object.keys(mapping).length === 0) {
+      throw new Error('Live mapping snapshot has no conversation_id or mapping')
+    }
+
+    const canonical = adaptConversation(rawConversation)
+    const observedAt = options.observedAt ?? Date.now()
+    const now = Date.now()
+    const rawText = json(payload)
+    const messageIds = Object.values(mapping)
+      .map(node => stringValue(record(record(node).message).id))
+      .filter((id): id is string => Boolean(id))
+    const knownBefore = this.knownMessageIds(conversationId, messageIds)
+
+    const upsertConversation = this.db.prepare(`
+      INSERT INTO conversations (
+        id, title, source_format, current_node, captured_at, imported_at,
+        message_count, resource_count, markdown,
+        create_time, update_time, first_seen_at, last_seen_at, source_missing
+      ) VALUES (?, ?, 'mapping', ?, ?, ?, 0, 0, '', ?, ?, ?, ?, 0)
+      ON CONFLICT(id) DO UPDATE SET
+        title=excluded.title,
+        current_node=COALESCE(excluded.current_node, conversations.current_node),
+        captured_at=max(conversations.captured_at, excluded.captured_at),
+        imported_at=excluded.imported_at,
+        create_time=COALESCE(conversations.create_time, excluded.create_time),
+        update_time=CASE
+          WHEN excluded.update_time IS NULL THEN conversations.update_time
+          WHEN conversations.update_time IS NULL THEN excluded.update_time
+          ELSE max(conversations.update_time, excluded.update_time)
+        END,
+        first_seen_at=min(COALESCE(conversations.first_seen_at, excluded.first_seen_at), excluded.first_seen_at),
+        last_seen_at=max(COALESCE(conversations.last_seen_at, excluded.last_seen_at), excluded.last_seen_at),
+        source_missing=0
+    `)
+    const upsertNode = this.db.prepare(`
+      INSERT INTO mapping_nodes (
+        conversation_id, node_id, parent_id, parent_source, transport_parent_id,
+        message_id, children_json, extra_json, first_seen_at, last_seen_at, source_observed_at
+      ) VALUES (?, ?, ?, 'live-singular-mapping', ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(conversation_id, node_id) DO UPDATE SET
+        first_seen_at=min(mapping_nodes.first_seen_at, excluded.first_seen_at),
+        last_seen_at=max(mapping_nodes.last_seen_at, excluded.last_seen_at),
+        parent_id=excluded.parent_id,
+        parent_source='live-singular-mapping',
+        transport_parent_id=COALESCE(excluded.transport_parent_id, mapping_nodes.transport_parent_id),
+        message_id=COALESCE(excluded.message_id, mapping_nodes.message_id),
+        children_json=excluded.children_json,
+        extra_json=excluded.extra_json,
+        source_observed_at=max(mapping_nodes.source_observed_at, excluded.source_observed_at)
+    `)
+    const upsertMessage = this.db.prepare(`
+      INSERT INTO messages (
+        conversation_id, message_id, ordinal, role, author_name, recipient, channel,
+        content_type, text, hidden, create_time, metadata_json,
+        node_id, role_raw, update_time, status, end_turn, weight,
+        request_id, turn_exchange_id, model_slug, resolved_model_slug,
+        finish_type, finish_reason, reasoning_status,
+        author_json, content_json, raw_json,
+        first_seen_at, last_seen_at, source_observed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(conversation_id, message_id) DO UPDATE SET
+        last_seen_at=max(COALESCE(messages.last_seen_at, excluded.last_seen_at), excluded.last_seen_at),
+        ordinal=excluded.ordinal,
+        role=excluded.role,
+        author_name=excluded.author_name,
+        recipient=excluded.recipient,
+        channel=excluded.channel,
+        content_type=excluded.content_type,
+        text=excluded.text,
+        hidden=excluded.hidden,
+        create_time=COALESCE(excluded.create_time, messages.create_time),
+        metadata_json=excluded.metadata_json,
+        node_id=excluded.node_id,
+        role_raw=excluded.role_raw,
+        update_time=COALESCE(excluded.update_time, messages.update_time),
+        status=excluded.status,
+        end_turn=excluded.end_turn,
+        weight=excluded.weight,
+        request_id=excluded.request_id,
+        turn_exchange_id=excluded.turn_exchange_id,
+        model_slug=excluded.model_slug,
+        resolved_model_slug=excluded.resolved_model_slug,
+        finish_type=excluded.finish_type,
+        finish_reason=excluded.finish_reason,
+        reasoning_status=excluded.reasoning_status,
+        author_json=excluded.author_json,
+        content_json=excluded.content_json,
+        raw_json=excluded.raw_json,
+        source_observed_at=max(COALESCE(messages.source_observed_at, 0), excluded.source_observed_at)
+    `)
+    const insertPart = this.db.prepare(`
+      INSERT INTO message_parts (
+        conversation_id, message_id, part_index, source_field, part_kind, text_value, json_value
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+    const latestRecordedHead = this.db.prepare(`
+      SELECT current_node AS currentNode
+      FROM conversation_head_history
+      WHERE conversation_id = ?
+      ORDER BY observed_at DESC, id DESC
+      LIMIT 1
+    `)
+    const insertHeadHistory = this.db.prepare(`
+      INSERT INTO conversation_head_history (
+        conversation_id, current_node, previous_node, observed_at,
+        payload_update_time, observation_kind, endpoint
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      upsertConversation.run(
+        conversationId,
+        stringValue(rawConversation.title) ?? canonical.title,
+        stringValue(rawConversation.current_node),
+        observedAt,
+        now,
+        numberValue(rawConversation.create_time),
+        numberValue(rawConversation.update_time),
+        observedAt,
+        observedAt,
+      )
+
+      const currentNode = stringValue(rawConversation.current_node)
+      if (currentNode) {
+        const priorHead = latestRecordedHead.get(conversationId) as { currentNode?: string } | undefined
+        if (priorHead?.currentNode !== currentNode) {
+          insertHeadHistory.run(
+            conversationId,
+            currentNode,
+            priorHead?.currentNode ?? null,
+            observedAt,
+            numberValue(rawConversation.update_time),
+            options.observationKind ?? 'mapping-snapshot',
+            options.endpoint ?? null,
+          )
+        }
+      }
+
+      let ordinal = 0
+      for (const [mappingKey, rawNodeValue] of Object.entries(mapping)) {
+        const rawNode = record(rawNodeValue)
+        const nodeId = stringValue(rawNode.id) ?? mappingKey
+        const rawMessage = record(rawNode.message)
+        const messageId = stringValue(rawMessage.id)
+        const metadata = record(rawMessage.metadata)
+        upsertNode.run(
+          conversationId,
+          nodeId,
+          stringValue(rawNode.parent),
+          stringValue(metadata.parent_id),
+          messageId,
+          Array.isArray(rawNode.children) ? json(rawNode.children) : null,
+          jsonWithoutKeys(rawNode, NODE_KNOWN_KEYS),
+          observedAt,
+          observedAt,
+          observedAt,
+        )
+
+        if (messageId) {
+          const author = record(rawMessage.author)
+          const content = record(rawMessage.content)
+          const finishDetails = record(metadata.finish_details)
+          const roleRaw = canonicalRole(author.role)
+          upsertMessage.run(
+            conversationId,
+            messageId,
+            ordinal,
+            roleRaw,
+            stringValue(author.name),
+            stringValue(rawMessage.recipient) ?? 'all',
+            stringValue(rawMessage.channel),
+            stringValue(content.content_type) ?? 'unknown',
+            extractMessageText(rawMessage),
+            metadata.is_visually_hidden_from_conversation === true ? 1 : 0,
+            numberValue(rawMessage.create_time),
+            json(metadata),
+            nodeId,
+            roleRaw,
+            numberValue(rawMessage.update_time),
+            stringValue(rawMessage.status),
+            booleanValue(rawMessage.end_turn),
+            numberValue(rawMessage.weight),
+            stringValue(metadata.request_id),
+            stringValue(metadata.turn_exchange_id),
+            stringValue(metadata.model_slug),
+            stringValue(metadata.resolved_model_slug),
+            stringValue(finishDetails.type),
+            stringValue(finishDetails.reason),
+            stringValue(metadata.reasoning_status),
+            json(author),
+            json(content),
+            json(rawMessage),
+            observedAt,
+            observedAt,
+            observedAt,
+          )
+
+          this.db.prepare('DELETE FROM message_parts WHERE conversation_id = ? AND message_id = ?').run(conversationId, messageId)
+          if (Array.isArray(content.parts)) {
+            content.parts.forEach((part, partIndex) => {
+              const kind = part === null ? 'null' : Array.isArray(part) ? 'array' : typeof part === 'object' ? 'object' : typeof part
+              insertPart.run(
+                conversationId,
+                messageId,
+                partIndex,
+                'parts',
+                kind,
+                typeof part === 'string' ? part : null,
+                typeof part === 'string' ? null : json(part),
+              )
+            })
+          }
+        }
+        ordinal += 1
+      }
+
+      this.db.prepare(`
+        INSERT INTO live_observations (
+          conversation_id, observation_kind, endpoint, page_cursor, observed_at, sha256, raw_json_gzip
+        ) VALUES (?, ?, ?, NULL, ?, ?, ?)
+      `).run(
+        conversationId,
+        options.observationKind ?? 'mapping-snapshot',
+        options.endpoint ?? null,
+        observedAt,
+        sha256Text(rawText),
+        gzipSync(Buffer.from(rawText, 'utf8')),
+      )
+
+      this.rebuildConversationDerivedInsideTransaction(conversationId)
+      this.db.exec('COMMIT')
+    }
+    catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+
+    const counts = this.db.prepare(`
+      SELECT message_count AS messageCount, resource_count AS resourceCount
+      FROM conversations WHERE id = ?
+    `).get(conversationId) as { messageCount: number, resourceCount: number }
+    return {
+      conversationId,
+      title: stringValue(rawConversation.title) ?? canonical.title,
+      nodeCount: Object.keys(mapping).length,
+      messageCount: messageIds.length,
+      newMessageCount: messageIds.filter(id => !knownBefore.has(id)).length,
+      totalMessageCount: Number(counts.messageCount),
+      resourceCount: Number(counts.resourceCount),
     }
   }
 
