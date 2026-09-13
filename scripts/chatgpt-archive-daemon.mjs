@@ -576,6 +576,7 @@ async function main() {
   const reconcileOnStart = !flags.has('no-reconcile-on-start')
   const cooldownMinutes = intFlag(flags, 'cooldown-minutes', 60, 1)
   const maxSyncConversations = intFlag(flags, 'max-sync-conversations', 0, 0)
+  const wssReconnectGraceMs = intFlag(flags, 'wss-reconnect-grace-ms', 20_000, 1000)
   const watchdogMinutes = Number(flags.get('watchdog-minutes') ?? 35)
   if (!Number.isFinite(watchdogMinutes) || watchdogMinutes <= 0) throw new Error('--watchdog-minutes must be > 0')
   const watchdogMs = watchdogMinutes * 60_000
@@ -596,6 +597,10 @@ async function main() {
   let lastWssClosedAt = null
   let lastWssFrameAt = null
   let lastWssControlAt = null
+  // “现在没有任何 ChatGPT WSS”从什么时候开始。首次加载从 Guardian ready 起算；
+  // 运行期则只在最后一条受监控 socket 真正收到 CDP close 时重新起算。
+  let wssGapStartedAt = null
+  let lastWssReconnectDelayMs = null
   let wssSentFrames = 0
   let wssReceivedFrames = 0
   let wssParsedEventFrames = 0
@@ -649,6 +654,9 @@ async function main() {
       lastFrameAt: lastWssFrameAt,
       lastControlAt: lastWssControlAt,
       lastEventAt: lastWssEventAt,
+      gapStartedAt: wssGapStartedAt,
+      lastReconnectDelayMs: lastWssReconnectDelayMs,
+      reconnectGraceMs: wssReconnectGraceMs,
       eventCounts: Object.fromEntries(eventCounts),
       generation: wssGeneration,
       sentFrames: wssSentFrames,
@@ -1155,16 +1163,41 @@ async function main() {
     })
     page.on('Network.webSocketCreated', ({ requestId, url }) => {
       if (!String(url || '').startsWith('wss://') || !String(url || '').includes('chatgpt.com')) return
+      const now = Date.now()
+      const gapStartedAt = wssGapStartedAt
+      const isNativeReconnect = Number.isFinite(gapStartedAt)
+        && Number.isFinite(lastWssClosedAt)
+        && Number(lastWssClosedAt) >= guardianReadyAt
       activeSocketIds.add(requestId)
-      lastWssCreatedAt = Date.now()
+      lastWssCreatedAt = now
+      wssGapStartedAt = null
+
+      if (isNativeReconnect) {
+        lastWssReconnectDelayMs = now - Number(gapStartedAt)
+        // 新连接必须重新完成 subscribe；清掉上一条 socket 的 ACK，避免状态页显示陈旧恢复状态。
+        subscribedTopics = new Set()
+        conversationSubscriptionRecovered = null
+        void log('ChatGPT WSS reconnected natively', {
+          delayMs: lastWssReconnectDelayMs,
+          closedAt: lastWssClosedAt,
+          createdAt: now,
+        })
+
+        // 当前 conversations subscribe 经常返回 recovered=false，因此不能假设 gap 内事件会自动回放。
+        // 等新连接完成 connect/subscribe 后做一次 overlap reconciliation，仍然不是高频 list 心跳。
+        setTimeout(() => {
+          if (!stopping && activeSocketIds.has(requestId) && authHeaders) {
+            void reconcileCatalog('wss-reconnect').catch(error => log('reconcile after native WSS reconnect failed', { error: String(error) }))
+          }
+        }, 5000)
+      }
     })
     page.on('Network.webSocketClosed', ({ requestId }) => {
       if (!activeSocketIds.delete(requestId)) return
-      lastWssClosedAt = Date.now()
-      // fresh reconnect 不保证 gap replay；等新 socket/auth 恢复后做一次 reconciliation。
-      setTimeout(() => {
-        if (!stopping && activeSocketIds.size > 0 && authHeaders) void reconcileCatalog('wss-reconnect').catch(error => log('reconcile after WSS close failed', { error: String(error) }))
-      }, 5000)
+      const now = Date.now()
+      lastWssClosedAt = now
+      // 只有最后一条 WSS 都关闭时才进入 gap；若旧连接关闭时新连接已并存，监听面并未中断。
+      if (activeSocketIds.size === 0) wssGapStartedAt = now
     })
     page.on('Network.webSocketFrameSent', ({ requestId, response }) => {
       if (!activeSocketIds.has(requestId)) return
@@ -1240,6 +1273,8 @@ async function main() {
     guardianReadyAt = Date.now()
     wssGeneration += 1
     activeSocketIds = new Set()
+    // 新 Guardian 尚未建立第一条 WSS，首次 readiness 也统一使用同一个 gap 时钟。
+    wssGapStartedAt = guardianReadyAt
     subscribedTopics = new Set()
     conversationSubscriptionRecovered = null
     lastSafeWssControls = []
@@ -1304,9 +1339,14 @@ async function main() {
         throw new Error('guardian renderer reports document.wasDiscarded=true')
       }
 
-      // 正常 ChatGPT 首页加载后会维持一个 conversations WSS。若页面已经 ready/auth 可用、
-      // 但 20 秒后仍没有 socket，视作监听面失效并重建 Guardian，而不是无期限静默。
-      if (authHeaders && Date.now() - guardianReadyAt > 20_000 && activeSocketIds.size === 0) {
+      // 首次加载时 gap 从 Guardian ready 起算；运行中 close 则从本次 CDP close 起算。
+      // 必须先给第一方页面自己的 reconnect 机制完整 grace，超过 grace 仍无 socket 才重建页面。
+      if (authHeaders && shouldRebuildGuardianForMissingWss({
+        now: Date.now(),
+        activeSockets: activeSocketIds.size,
+        gapStartedAt: wssGapStartedAt,
+        reconnectGraceMs: wssReconnectGraceMs,
+      })) {
         throw new Error('guardian has no active ChatGPT WSS after readiness grace period')
       }
 

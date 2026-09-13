@@ -4,6 +4,7 @@ import {
   classifyConversationEvent,
   extractConversationEvents,
   isConfirmedTerminalTrigger,
+  shouldRebuildGuardianForMissingWss,
   shouldClassifyTerminalForTrigger,
 } from '../scripts/chatgpt-archive-daemon.mjs'
 
@@ -116,5 +117,33 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(classifyCatalogAsyncStatus(null)).toBe('unknown')
     expect(classifyCatalogAsyncStatus(0)).toBe('unknown')
     expect(classifyCatalogAsyncStatus('garbled')).toBe('unknown')
+  })
+
+  test('WSS 恢复 grace 从本次 socket gap 起算，而不是 Guardian 启动时间', () => {
+    const gapStartedAt = 100_000
+    expect(shouldRebuildGuardianForMissingWss({
+      now: 119_999,
+      activeSockets: 0,
+      gapStartedAt,
+      reconnectGraceMs: 20_000,
+    })).toBe(false)
+    expect(shouldRebuildGuardianForMissingWss({
+      now: 120_000,
+      activeSockets: 0,
+      gapStartedAt,
+      reconnectGraceMs: 20_000,
+    })).toBe(true)
+    expect(shouldRebuildGuardianForMissingWss({
+      now: 999_999,
+      activeSockets: 1,
+      gapStartedAt,
+      reconnectGraceMs: 20_000,
+    })).toBe(false)
+    expect(shouldRebuildGuardianForMissingWss({
+      now: 999_999,
+      activeSockets: 0,
+      gapStartedAt: null,
+      reconnectGraceMs: 20_000,
+    })).toBe(false)
   })
 })
