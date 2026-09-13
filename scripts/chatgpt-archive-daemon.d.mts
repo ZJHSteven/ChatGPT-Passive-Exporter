@@ -32,3 +32,11 @@ export function isConfirmedTerminalTrigger(trigger: unknown): boolean
 /** 把 conversation list async_status 分类为 active / complete / unknown。 */
 export function classifyCatalogAsyncStatus(value: unknown): 'active' | 'complete' | 'unknown'
 
+/** 只有“无 WSS”从本次 gap 起持续超过 grace 后，才允许重建 Guardian。 */
+export function shouldRebuildGuardianForMissingWss(input: {
+  now: number
+  activeSockets: number
+  gapStartedAt: number | null
+  reconnectGraceMs: number
+}): boolean
+

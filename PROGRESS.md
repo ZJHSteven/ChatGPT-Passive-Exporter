@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-13：开始修正 WSS 运行期恢复 grace：新增纯函数 `shouldRebuildGuardianForMissingWss()`，明确重建判断必须以“本次无 socket gap 的起点”为基准，而不是 Guardian 启动时间；后续事件接线会让运行期 close 从 close 时刻重新计时。
 - 2026-09-13：补齐 `tool-result-returned` 诊断摘要的保守语义：工具结果已返回但无 final 时明确写明“不能据此判死”，与状态机“尾部形态不等于生命状态”保持一致。
 - 2026-09-13：重构当前状态/incident 的页与 turn 归属。`mergeLiveMessagesPage()` 新增 `updateCurrentState`：只有最新第一页能更新 conversation 的 current_node/head/terminal/incident，cursor 历史页只补 messages/nodes/raw observation。`incidents` 新增稳定 `turn_key`、`incident_kind`、`last_observed_at`，同一 turn 从 watchdog timeout 演进到 explicit interrupted 会升级同一行；新 turn 只 resolve 旧 turn incident，不删除历史，也不再用“conversation 任意 open incident”污染当前红牌。watchdog 超时本身重新成为 `watchdog-timeout` incident，而不是必须先证明 COMPLETE 才有意义。
 - 2026-09-13：修正 run tail 诊断优先级：不再因为本轮早期曾出现 `reasoning_status=is_reasoning` 就掩盖后续真实尾部；工具结果晚于 reasoning 时归为 `tool-result-returned`，只有工具结果之后再次进入 reasoning 才归为 `reasoning-open`。这与 OverlayLex 的真实中断样本一致。

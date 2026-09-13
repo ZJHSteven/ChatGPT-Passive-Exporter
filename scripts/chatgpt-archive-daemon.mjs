@@ -282,6 +282,24 @@ export function classifyCatalogAsyncStatus(value) {
   return 'unknown'
 }
 
+/**
+ * 判断“当前没有 ChatGPT WSS”是否已经持续到需要重建 Guardian。
+ *
+ * 关键点是 grace 必须从“这一次没有 socket 的 gap”开始算，而不是从 Guardian 启动时开始算。
+ * 否则 Guardian 运行 20 秒以后，任何一次正常的 socket close 都会在下一轮主循环被立刻升级成
+ * 整页 reload，反而打断 ChatGPT 前端自己的 WebSocket 重连逻辑。
+ */
+export function shouldRebuildGuardianForMissingWss({
+  now,
+  activeSockets,
+  gapStartedAt,
+  reconnectGraceMs,
+}) {
+  if (Number(activeSockets) > 0) return false
+  if (!Number.isFinite(gapStartedAt)) return false
+  return Number(now) - Number(gapStartedAt) >= Number(reconnectGraceMs)
+}
+
 function chatgptTime(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string') {
