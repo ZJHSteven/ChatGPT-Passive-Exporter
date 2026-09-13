@@ -48,12 +48,23 @@ describe('ChatGPT Archive daemon WSS parser', () => {
           },
         },
       },
+      {
+        type: 'message',
+        topic_id: 'conversations',
+        payload: {
+          type: 'conversation-history-update',
+          payload: {
+            conversation_id: 'conversation-4',
+          },
+        },
+      },
     ])
 
     expect(extractConversationEvents(frame)).toEqual([
       { conversationId: 'conversation-1', type: 'conversation-turn-complete', updateType: null },
       { conversationId: 'conversation-2', type: 'conversation-created', updateType: null },
       { conversationId: 'conversation-3', type: 'conversation-update', updateType: 'async-task-update-message' },
+      { conversationId: 'conversation-4', type: 'conversation-history-update', updateType: null },
     ])
   })
 
@@ -82,6 +93,14 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       syncReady: false,
       startsTurn: true,
       asyncProgress: true,
+    })
+    // 2026-09-13 的统一桌面 App 逆向表明该事件会使 Chat history source refresh；
+    // 但同日两次当前 Web 普通 turn 实验均未收到它，因此暂时只作为 stale/dirty 信号。
+    // 在拿到“远端设备发消息 → Guardian 收到 history-update”的真实 frame 前，不擅自当 turn start。
+    expect(classifyConversationEvent('conversation-history-update')).toMatchObject({
+      dirty: true,
+      syncReady: false,
+      startsTurn: false,
     })
     expect(classifyConversationEvent('conversation-turn-complete')).toMatchObject({
       dirty: true,

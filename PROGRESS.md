@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-13：重新核实普通 turn 的 early WSS 信号。近期统一 ChatGPT 桌面 App（2026-09-06 build 8109）的已安装代码证据显示，账户级 Chat 更新订阅同时监听 `conversations` / `alder-conversations`，并让 `conversation-created`、`conversation-history-update`、`conversation-turn-complete` 触发历史源 refresh；因此不能宣称 history/update 语义已退役。与此同时，本机 Web Guardian 做了两次受控普通聊天实验：新 conversation 第一轮只收到 `turn-complete → created`，已有 conversation 第二轮只收到 `turn-complete`，均没有 `conversation-history-update`。当前 daemon 因而会解析 history-update 并标 dirty，但在拿到跨设备真实样本前不把它擅自当 startsTurn。Phase 3 本机 Web turn 应直接从页面自己的 `/backend-api/f/conversation` SSE 开始；跨设备 early signal 继续以 history-update 为重点验证对象。
 - 2026-09-13：收紧 daemon 主动只读请求的“当前页面上下文重放”实现：`sanitizeCapturedHeaders()` 改成大小写无关，只保留 Authorization/OAI session-device-build-language/client observation 白名单；Cookie、User-Agent、Referer、sec-ch 等不复制，继续由 Guardian 页面的同源 `fetch(credentials=include)` 现场生成。认证上下文仍只驻留内存、来自当前页面自然 `/backend-api/` 请求，401/403 会立即清空等待重新捕获，不持久化旧 token。
 - 2026-09-13：完成 WSS 运行期恢复 grace 修正。daemon 现在维护独立 `wssGapStartedAt`：首次加载从 Guardian ready 起算，运行中只在最后一条 ChatGPT socket 的 CDP `webSocketClosed` 时重新起算；grace 内如果前端自己 `webSocketCreated`，记录 close→create 延迟、清空旧 subscribe ACK，并在新连接稳定后做一次 overlap reconciliation。只有 gap 真正持续超过 grace 才重建 Guardian，避免旧实现把第一方自然 socket 轮换强制打断。
 - 2026-09-13：补齐 `tool-result-returned` 诊断摘要的保守语义：工具结果已返回但无 final 时明确写明“不能据此判死”，与状态机“尾部形态不等于生命状态”保持一致。
