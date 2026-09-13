@@ -12,6 +12,19 @@
 - **Phase 4 — Send / Control Plane：Live Turn 稳定后。** 从 CLI/PWA 对最新 canonical branch 发送新消息/继续；优先复刻第一方发送协议，DOM 点击只作为保守 fallback；必须解决 stale client/旧 branch 发送造成的进度丢失与副作用重复风险。
 - **Phase 5 — Guardian / Runtime Footprint：最后再优化。** 在不破坏 WSS/session/风控行为的前提下研究减少 Guardian React/资源/渲染负担，以及把多个 Windows daemon 的 supervisor/通知做统一治理；当前空首页 Guardian 已足够轻，不抢占 Phase 2/3 主线。
 
+## 2026-09-13 Phase 2 事故状态 / WSS 发现链修正 ExecPlan
+
+> 这轮计划来自三个真实断流样本（reasoning-open ×2、tool-result-returned ×1）。目标不是增加更多轮询，而是先把“事实分页”“当前 turn 状态”“每 turn incident”“实时发现信号”四层彻底拆开，再决定 Phase 3 如何接实时流。
+
+1. **分页与当前状态解耦。** Modern `/backend-api/conversations/{id}` / `messages?before=...` 的 cursor 分页只负责补历史事实；只有“最新 body 第一页”有资格更新 conversation 当前 turn 的 `terminal_state / incident_state`。历史 cursor 页即使包含旧 final，也绝不能覆盖当前 turn 状态。
+2. **incident 按 turn 建模。** `incidents` 的稳定身份改为 `conversation + turnKey`；优先用 `turn_exchange_id`，缺失时依次回退 user message / last message / current node。一个 turn 的诊断演进更新同一条 incident；后续新 turn 只把旧异常标记 resumed/resolved，永不删除历史，也不允许不同 turn 互相覆盖诊断内容。
+3. **当前状态与历史事故分层。** `conversations.terminal_state` 仅表示最新已观测 turn；`conversations.incident_state` 仅表示当前/latest turn 是否仍有 open incident。历史 resolved/open 事实全部以 `incidents` 为准，不能再用“该 conversation 是否存在任意 open incident”推导当前红牌。
+4. **请求 transport 审计。** 逐条核实 daemon 的 catalog/body/cursor/singular 请求都来自当前第一方网页已经存在的 endpoint/query 形状；Authorization/OAI session/device/build 等只从 Guardian 当前 `/backend-api/` 自然请求中临时捕获允许列表，cookie/UA/referrer/sec-ch 继续由浏览器同源 `fetch(credentials=include)` 生成；禁止把 token/header 固化到磁盘长期复用。对 401/403 必须丢弃内存 auth context 等待自然刷新。
+5. **WSS 生命周期取证与恢复语义。** 区分“Chrome/CDP 明确收到 `webSocketClosed`”与“长期静默猜断线”。生产 daemon 在 close 后给官方页面一个自然重连 grace，不应下一轮主循环立即 reload Guardian；记录 close→new socket 延迟、generation、subscribe ack/recovered，只有超过 grace 仍无 socket 才重建 Guardian。用现有纯被动 `wss-stability-probe` 和历史日志判断约 30–35 分钟周期到底是第一方正常 socket 生命周期还是页面/daemon 故障。
+6. **重新确认账户级事件语义。** 不再假定旧 `conversation-update + async-task-update-message` 是普通 turn start。直接检查当前 ChatGPT Web bundle / 真机 WSS，重点验证 `conversation-history-update`、`conversation-created`、`conversation-turn-complete` 的触发时机；旧 `conversation-update` 若仍存在，则只按其已证实的 async/background 语义使用。
+7. **Phase 3 不依赖单一“start event”。** 本机网页发起的 turn 可直接从 `/backend-api/f/conversation` SSE 请求本身发现；若收到 `stream_handoff`，转接 turn-specific WSS/catch-up。跨设备 turn 则优先用账户级 WSS 的 early history/progress 事件发现；若当前协议确实只在 complete 通知，必须明确记录“跨设备从第一 token 实时镜像尚未解决”，不得用高频 conversation list 冒充实时 discovery。
+8. **回归样本固化。** 增加“最新 reasoning-open + 历史 cursor final”“最新 tool-result-returned + 历史 cursor final”“同 conversation 两个异常 turn”“异常 turn 后新 turn 正常恢复”测试；任何历史页再次把 current state 改成 final 都必须立即测试失败。
+
 ## 目标
 
 构建一个尽量不主动调用 ChatGPT 私有后端 API 的聊天归档工具：监听页面自己已经发出的请求并复制响应，随后将不同年代/不同接口形态的 ChatGPT conversation payload 归一化，再导出可读 Markdown、原始 JSON 和附件/富媒体清单。
