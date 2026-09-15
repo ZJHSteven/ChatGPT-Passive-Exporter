@@ -1943,9 +1943,11 @@ export class ChatArchiveDb {
         ? 'abnormal-terminal'
         : requestedKind
       const incidentId = currentIncident?.id ?? sha256Text(`${conversationId}:${turnKey}`).slice(0, 24)
-      const reason = effectiveKind === 'watchdog-timeout'
-        ? `超过 watchdog 阈值仍未收到 conversation-turn-complete；${diagnostic.summary}`
-        : diagnostic.summary
+      const reason = historicalEnded && !explicitAbnormal
+        ? `历史 turn 后续已经出现更新的 user turn，可确认该轮已经结束；该轮没有 final，持久化尾部为 ${diagnostic.tailShape}。`
+        : effectiveKind === 'watchdog-timeout'
+          ? `超过 watchdog 阈值仍未收到 conversation-turn-complete；${diagnostic.summary}`
+          : diagnostic.summary
       this.db.prepare(`
         INSERT INTO incidents (
           id, conversation_id, turn_exchange_id, turn_key, incident_kind,
@@ -1981,24 +1983,36 @@ export class ChatArchiveDb {
         source,
         json(diagnostic),
       )
+
+      // 历史补账表示“事故发生过，但用户后来已经进入了更新 turn”。因此保留 incident 事实，
+      // 但立刻标为 resolved，不能因为翻旧 cursor 而重新点亮当前 conversation 的红牌。
+      if (historicalEnded) {
+        this.db.prepare(`
+          UPDATE incidents
+          SET status='resolved', resolved_at=COALESCE(resolved_at, ?), last_observed_at=?
+          WHERE conversation_id=? AND turn_key=?
+        `).run(observedAt, observedAt, conversationId, turnKey)
+      }
     }
 
-    const currentOpen = this.db.prepare(`
-      SELECT count(*) AS n
-      FROM incidents
-      WHERE conversation_id = ? AND turn_key = ? AND status = 'open'
-    `).get(conversationId, turnKey) as { n: number }
-    this.db.prepare(`
-      UPDATE conversations
-      SET terminal_state=?, incident_state=?, last_finish_reason=?, last_monitor_checked_at=?
-      WHERE id=?
-    `).run(
-      diagnostic.terminalEvidence,
-      Number(currentOpen.n) > 0 ? 'open' : null,
-      diagnostic.interruptedReason ?? null,
-      observedAt,
-      conversationId,
-    )
+    if (updateConversationState) {
+      const currentOpen = this.db.prepare(`
+        SELECT count(*) AS n
+        FROM incidents
+        WHERE conversation_id = ? AND turn_key = ? AND status = 'open'
+      `).get(conversationId, turnKey) as { n: number }
+      this.db.prepare(`
+        UPDATE conversations
+        SET terminal_state=?, incident_state=?, last_finish_reason=?, last_monitor_checked_at=?
+        WHERE id=?
+      `).run(
+        diagnostic.terminalEvidence,
+        Number(currentOpen.n) > 0 ? 'open' : null,
+        diagnostic.interruptedReason ?? null,
+        observedAt,
+        conversationId,
+      )
+    }
   }
 
   listIncidents(options: { status?: 'open' | 'resolved', limit?: number } = {}): ArchiveIncidentRow[] {
