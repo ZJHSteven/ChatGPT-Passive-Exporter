@@ -18,6 +18,7 @@ export type RunTailShape =
   | 'final'
   | 'tool-call-open'
   | 'reasoning-open'
+  | 'reasoning-ended-no-final'
   | 'tool-result-returned'
   | 'other'
 
@@ -231,22 +232,29 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
 
   let tailShape: RunTailShape = 'other'
   if (hasFinal) tailShape = 'final'
-  else if (
-    lastAssistantToolIndex >= 0
-    && !hasToolResultAfterLastCall
-    && lastAssistantToolIndex > lastReasoningActiveIndex
-  ) tailShape = 'tool-call-open'
-  else if (
-    lastReasoningActiveIndex >= 0
-    && lastReasoningActiveIndex > lastReasoningEndedIndex
-    && lastReasoningActiveIndex > lastToolResultIndex
-    && lastReasoningActiveIndex > lastAssistantToolIndex
-  ) tailShape = 'reasoning-open'
-  else if (
-    lastAssistantToolIndex >= 0
-    && hasToolResultAfterLastCall
-    && lastToolResultIndex > lastReasoningActiveIndex
-  ) tailShape = 'tool-result-returned'
+  else {
+    // 不再用一串“是否曾经出现过 X”的条件互相覆盖，而是只看这一 turn 最后一个真正具有
+    // 运行语义的事件。这样 `reasoning → tool call → tool result` 一定归到 tool result；
+    // `tool result → reasoning` 一定归到 reasoning；`reasoning_recap` 后没有 final 也能被单独识别。
+    const lastSemanticIndex = Math.max(
+      lastAssistantToolIndex,
+      lastToolResultIndex,
+      lastReasoningActiveIndex,
+      lastReasoningEndedIndex,
+    )
+    if (lastSemanticIndex === lastAssistantToolIndex && lastAssistantToolIndex >= 0 && !hasToolResultAfterLastCall) {
+      tailShape = 'tool-call-open'
+    }
+    else if (lastSemanticIndex === lastToolResultIndex && lastToolResultIndex >= 0) {
+      tailShape = 'tool-result-returned'
+    }
+    else if (lastSemanticIndex === lastReasoningActiveIndex && lastReasoningActiveIndex >= 0) {
+      tailShape = 'reasoning-open'
+    }
+    else if (lastSemanticIndex === lastReasoningEndedIndex && lastReasoningEndedIndex >= 0) {
+      tailShape = 'reasoning-ended-no-final'
+    }
+  }
 
   let summary = '当前 payload 没有明确终止证据；仅凭这份快照不能判断 run 是否仍在执行。'
   if (terminalEvidence === 'final') {
@@ -265,6 +273,9 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
   }
   else if (tailShape === 'reasoning-open') {
     summary = '最新快照仍有 is_reasoning 且尚无 reasoning_ended/final；这可能只是模型仍在思考，不能据此判死。'
+  }
+  else if (tailShape === 'reasoning-ended-no-final') {
+    summary = '最新运行语义已经到 reasoning_ended/reasoning_recap，但仍没有 final answer；这表示推理阶段已经收尾，正文终态仍缺失。'
   }
   else if (tailShape === 'tool-result-returned') {
     summary = '最新工具结果已经回来，但当前 payload 尚无明确终止证据；不能据此判死，仍需服务器状态确认是否继续运行。'

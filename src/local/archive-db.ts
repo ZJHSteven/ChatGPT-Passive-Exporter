@@ -1399,6 +1399,12 @@ export class ChatArchiveDb {
       // 没有 userMessageId 的片段可能是未来协议下的分页边界残片；没有稳定 turn 身份时，
       // 宁可只保存事实数据，也不凭残片制造历史事故。
       if (!historical.userMessageId) continue
+      // `other` 只表示“没有识别到 final，也没有识别到明确的 reasoning/tool 运行尾型”。
+      // 其中会混入 user-only、system-only、编辑/分支残片等情况；历史补账不能仅凭“后面有
+      // 新 user turn”就把这些模糊形态全部登记成事故。显式 interrupted/client_stopped 例外。
+      const explicitHistoricalAbnormal = historical.terminalEvidence === 'client-stopped'
+        || historical.terminalEvidence === 'interrupted'
+      if (!explicitHistoricalAbnormal && historical.tailShape === 'other') continue
       this.updateIncidentFromDiagnostic(
         conversationId,
         historical,
