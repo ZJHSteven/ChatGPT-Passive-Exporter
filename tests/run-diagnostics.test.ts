@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { diagnoseLatestRun } from '../src/core/run-diagnostics'
+import { diagnoseLatestRun, diagnoseRuns } from '../src/core/run-diagnostics'
 import type { MessagesConversationPayload, RawChatMessage } from '../src/core/types'
 
 function message(input: Partial<RawChatMessage> & Pick<RawChatMessage, 'id'>): RawChatMessage {
@@ -93,5 +93,19 @@ describe('最后一轮快照诊断', () => {
 
     expect(result.terminalEvidence).toBe('none')
     expect(result.tailShape).toBe('reasoning-open')
+  })
+
+  test('一个 page 内多个 user turn 会被逐 turn 诊断，而不是只看整页最后一轮', () => {
+    const results = diagnoseRuns(payload([
+      message({ id: 'u1', author: { role: 'user' }, metadata: { turn_exchange_id: 'turn-1' } }),
+      message({ id: 'call1', recipient: 'api_tool.call_tool', content: { content_type: 'code', text: '{}' }, metadata: { turn_exchange_id: 'turn-1' } }),
+      message({ id: 'tool1', author: { role: 'tool' }, content: { content_type: 'code', text: '{"ok":true}' }, metadata: { turn_exchange_id: 'turn-1' } }),
+      message({ id: 'u2', author: { role: 'user' }, metadata: { turn_exchange_id: 'turn-2' } }),
+      message({ id: 'a2', channel: 'final', metadata: { turn_exchange_id: 'turn-2', finish_details: { type: 'stop', stop_tokens: [200002] } } }),
+    ]))
+
+    expect(results).toHaveLength(2)
+    expect(results[0]).toMatchObject({ turnExchangeId: 'turn-1', tailShape: 'tool-result-returned', terminalEvidence: 'none' })
+    expect(results[1]).toMatchObject({ turnExchangeId: 'turn-2', tailShape: 'final', terminalEvidence: 'final' })
   })
 })
