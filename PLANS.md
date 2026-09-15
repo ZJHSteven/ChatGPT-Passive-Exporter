@@ -28,6 +28,7 @@
 10. **WSS close 必须先给官方页面自己的重连机制 grace。** 当前代码错误地把“Guardian 已启动超过 20 秒”当成“socket close 后已等待 20 秒”，导致任何运行期 `activeSockets=0` 都可能在下一轮 5 秒主循环被强制 reload。修为：首次启动仍使用 readiness grace；运行期 close 则从 `lastWssClosedAt` 单独计时，并在 grace 内观察官方页面是否自然 `webSocketCreated`/重新 subscribe。只有超过 grace 仍无 socket 才重建 Guardian。这样才能区分官方约 30–35 分钟的自然 socket 生命周期与我们自己的恢复行为。
 11. **start/discovery 不以 1 小时 catalog 轮询作为最终方案。** `async_status` catalog 扫描只保留为 gap/recovery 兜底，不能成为 watchdog 的主要起点。继续寻找账户级 WSS/其它第一方事件对普通 turn 的早期信号；Phase 3 对当前网页自己发起的 turn 直接从 `/backend-api/f/conversation` SSE 捕获开始，`stream_handoff` 后接 turn-specific WSS。跨设备普通 turn 若确实没有任何 early account event，应明确记录为协议能力缺口，而不是悄悄把 1 小时 list 轮询包装成“实时监控”。
 12. **历史 cursor 也必须逐 turn 诊断，而不是只补正文。** Cursor/page 只是传输容器，不是状态单位。每一页里的每个 turn 都应按自己的 user/turn_exchange_id/tool/reasoning/final 证据更新对应 `conversation + turn_key` incident；历史页仍可补 messages、tool call/result、metadata、mapping/raw observation。唯一禁止的是历史 turn 去覆盖 `conversations.current_node / terminal_state / incident_state` 这类“当前/latest”汇总字段。若某个旧 turn 后面已经存在更新的 user turn，则“后续 turn 已开始”本身可作为该旧 turn 已结束的证据：旧 turn 无 final 时允许记为历史 abnormal incident，并直接标为 resolved/resumed，而不是把它误当成仍在运行。
+13. **watchdog 只接受可靠的 active 起点。** `conversation list.async_status=3/5` 只能进入独立的 `catalogActive`/recovery 状态，不能写入 watchdog `activeTurns`，因为“第一次扫到 running”不是 turn start，且服务端 zombie 可能保持数天。`activeTurns.startedAt` 只允许来自本机 `/backend-api/f/conversation` 发送观测、明确 WSS turn-start（若协议再次出现）或已验证的 async progress 事件。跨设备普通 turn 若没有 early account event，就明确标注 watchdog coverage 缺失，不用 catalog 伪造起点。
 
 ## 目标
 
