@@ -686,4 +686,94 @@ describe('ChatArchiveDb', () => {
       db.close()
     }
   })
+
+  test('cursor 历史页会补自己的 turn incident 与工具事实，但不会关闭当前 turn 红牌', () => {
+    const db = tempDb()
+    try {
+      const current = {
+        title: '历史 turn 补账 fixture',
+        conversation_id: 'historical-turn-ledger',
+        current_node: 'r-new',
+        messages: [
+          {
+            id: 'u-new', author: { role: 'user' }, recipient: 'all',
+            content: { content_type: 'text', parts: ['当前轮'] },
+            metadata: { turn_exchange_id: 'turn-new' },
+          },
+          {
+            id: 'r-new', author: { role: 'assistant' }, recipient: 'all',
+            content: { content_type: 'thoughts', parts: ['仍在运行'] },
+            metadata: { turn_exchange_id: 'turn-new', reasoning_status: 'is_reasoning' },
+          },
+        ],
+      }
+      db.mergeLiveMessagesPage(current, {
+        observedAt: 1000,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: true,
+        incidentKind: 'watchdog-timeout',
+        updateCurrentState: true,
+      })
+
+      const historicalPage = {
+        title: '旧页标题不应覆盖',
+        conversation_id: 'historical-turn-ledger',
+        current_node: 'tool-old',
+        messages: [
+          {
+            id: 'u-old', author: { role: 'user' }, recipient: 'all',
+            content: { content_type: 'text', parts: ['旧轮'] },
+            metadata: { turn_exchange_id: 'turn-old' },
+          },
+          {
+            id: 'call-old', author: { role: 'assistant' }, recipient: 'api_tool.call_tool',
+            content: { content_type: 'code', text: '{"tool":"demo"}' },
+            metadata: { turn_exchange_id: 'turn-old', custom_marker: 'keep-me' },
+          },
+          {
+            id: 'tool-old', author: { role: 'tool' }, recipient: 'all',
+            content: { content_type: 'code', text: '{"ok":true}' },
+            metadata: { turn_exchange_id: 'turn-old', tool_marker: 'kept' },
+          },
+        ],
+      }
+      db.mergeLiveMessagesPage(historicalPage, {
+        observedAt: 2000,
+        updateCurrentState: false,
+        classifyTerminal: false,
+        observationKind: 'cursor-page',
+      })
+
+      const open = db.listIncidents({ status: 'open' })
+      const resolved = db.listIncidents({ status: 'resolved' })
+      expect(open).toHaveLength(1)
+      expect(open[0]).toMatchObject({ turnKey: 'turn-new', incidentKind: 'watchdog-timeout' })
+      expect(resolved).toHaveLength(1)
+      expect(resolved[0]).toMatchObject({ turnKey: 'turn-old', incidentKind: 'abnormal-terminal' })
+      expect(resolved[0]?.reason).toContain('历史 turn 后续已经出现更新的 user turn')
+
+      const currentState = db.db.prepare(`
+        SELECT current_node AS currentNode, terminal_state AS terminalState,
+               incident_state AS incidentState, title
+        FROM conversations WHERE id='historical-turn-ledger'
+      `).get()
+      expect(currentState).toMatchObject({
+        currentNode: 'r-new',
+        terminalState: 'none',
+        incidentState: 'open',
+        title: '历史 turn 补账 fixture',
+      })
+
+      const oldTool = db.db.prepare(`
+        SELECT text, metadata_json AS metadataJson
+        FROM messages
+        WHERE conversation_id='historical-turn-ledger' AND message_id='tool-old'
+      `).get() as { text: string, metadataJson: string }
+      expect(oldTool.text).toContain('ok')
+      expect(JSON.parse(oldTool.metadataJson)).toMatchObject({ tool_marker: 'kept' })
+    }
+    finally {
+      db.close()
+    }
+  })
 })
