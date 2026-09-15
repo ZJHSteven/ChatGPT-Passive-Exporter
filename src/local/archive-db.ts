@@ -7,7 +7,7 @@ import { adaptConversation } from '../core/adapter.ts'
 import { extractMessageText } from '../core/adapter.ts'
 import { buildRichManifest } from '../core/manifest.ts'
 import { conversationToMarkdown } from '../core/markdown.ts'
-import { diagnoseLatestRun, type RunDiagnostic } from '../core/run-diagnostics.ts'
+import { diagnoseLatestRun, diagnoseRuns, type RunDiagnostic } from '../core/run-diagnostics.ts'
 import type { CanonicalConversation } from '../core/types.ts'
 
 export interface ArchiveImportResult {
@@ -1387,7 +1387,30 @@ export class ChatArchiveDb {
       throw error
     }
 
-    const diagnostic = diagnoseLatestRun(payload as never)
+    const diagnostics = diagnoseRuns(payload as never)
+    const diagnostic = diagnostics.at(-1) ?? diagnoseLatestRun(payload as never)
+
+    // page/cursor 只是运输容器：所有已经被“后续 user turn”越过的旧 turn，都有资格补自己的
+    // 历史 incident。它们绝不能更新 conversation 当前汇总状态，也不能把另一个当前 turn 的
+    // open incident 顺手 resolve 掉。cursor 历史页中的所有完整 user turn 都属于这种情况；
+    // latest 第一页则只有最后一个 turn 是“当前”，前面的 turn 全部按历史处理。
+    const historicalDiagnostics = updateCurrentState ? diagnostics.slice(0, -1) : diagnostics
+    for (const historical of historicalDiagnostics) {
+      // 没有 userMessageId 的片段可能是未来协议下的分页边界残片；没有稳定 turn 身份时，
+      // 宁可只保存事实数据，也不凭残片制造历史事故。
+      if (!historical.userMessageId) continue
+      this.updateIncidentFromDiagnostic(
+        conversationId,
+        historical,
+        observedAt,
+        true,
+        true,
+        'abnormal-terminal',
+        `${options.observationKind ?? 'realtime-body'}:historical-turn`,
+        false,
+        true,
+      )
+    }
     if (updateCurrentState) {
       this.updateIncidentFromDiagnostic(
         conversationId,
@@ -1397,6 +1420,8 @@ export class ChatArchiveDb {
         options.allowIncompleteTailIncident !== false,
         options.incidentKind ?? 'abnormal-terminal',
         options.observationKind ?? 'realtime-body',
+        true,
+        false,
       )
     }
     const counts = this.db.prepare(`
@@ -1870,6 +1895,8 @@ export class ChatArchiveDb {
     allowIncompleteTailIncident = true,
     requestedKind: 'watchdog-timeout' | 'abnormal-terminal' = 'abnormal-terminal',
     source = 'realtime-body',
+    updateConversationState = true,
+    historicalEnded = false,
   ): void {
     const latestTurn = diagnostic.turnExchangeId ?? null
     const turnKey = diagnostic.turnExchangeId
