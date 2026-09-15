@@ -147,6 +147,42 @@ function latestTurn(messages: RawChatMessage[]): RawChatMessage[] {
 }
 
 /**
+ * 把一个 conversation page 中可见的消息按 user 边界拆成多个 turn，并逐 turn 复用
+ * `diagnoseLatestRun()` 做诊断。
+ *
+ * 重要：page/cursor 只是传输容器，不是运行状态单位。一个 `num_turns=10` 页面会天然
+ * 包含多个 turn；一次漏同步后，最新页也可能同时包含“漏掉的旧 turn + 当前 turn”。
+ * 因此 incident 必须消费这里返回的逐-turn 结果，而不能只看整页最后一轮。
+ */
+export function diagnoseRuns(payload: RawConversationPayload): RunDiagnostic[] {
+  const messages = orderedMessages(payload)
+  if (messages.length === 0) return []
+
+  const turns: RawChatMessage[][] = []
+  let current: RawChatMessage[] = []
+  for (const message of messages) {
+    if (roleOf(message) === 'user' && current.length > 0) {
+      turns.push(current)
+      current = []
+    }
+    current.push(message)
+  }
+  if (current.length > 0) turns.push(current)
+
+  return turns.map((turn, index) => {
+    const lastMessageId = typeof turn.at(-1)?.id === 'string' ? turn.at(-1)!.id : undefined
+    const currentNode = index === turns.length - 1 && typeof payload.current_node === 'string'
+      ? payload.current_node
+      : lastMessageId
+    return diagnoseLatestRun({
+      ...payload,
+      messages: turn,
+      current_node: currentNode,
+    } as RawConversationPayload)
+  })
+}
+
+/**
  * 对 conversation 当前最后一轮做“快照诊断”。
  *
  * 注意：这个函数不回答“它现在还活着吗”。它只回答：

@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-16：开始把 incident 诊断单位从“page 的最后一轮”改成真正的逐 turn。`run-diagnostics` 新增 `diagnoseRuns()`：同一个 latest/cursor page 内会按 user 边界拆出多个 turn，后续数据库层可分别补历史 incident；page/cursor 继续只作为传输容器，不再承担运行状态语义。
 - 2026-09-13：恢复 watchdog/periodic 的产品语义：`watchdog-timeout` incident 的 reason 现在明确记录“超过 watchdog 阈值仍未收到 conversation-turn-complete”，而不是只显示当时的 tail 描述；如果同一 turn 后来明确 interrupted/client_stopped，会升级为 abnormal-terminal 并替换为明确终止原因。与此同时 periodic conversation-list reconciliation 默认从临时的 1 小时恢复为 6 小时，明确只做最终一致性兜底，不再拿 list 轮询冒充普通 turn 的实时 start 发现。
 - 2026-09-13：重新核实普通 turn 的 early WSS 信号。近期统一 ChatGPT 桌面 App（2026-09-06 build 8109）的已安装代码证据显示，账户级 Chat 更新订阅同时监听 `conversations` / `alder-conversations`，并让 `conversation-created`、`conversation-history-update`、`conversation-turn-complete` 触发历史源 refresh；因此不能宣称 history/update 语义已退役。与此同时，本机 Web Guardian 做了两次受控普通聊天实验：新 conversation 第一轮只收到 `turn-complete → created`，已有 conversation 第二轮只收到 `turn-complete`，均没有 `conversation-history-update`。当前 daemon 因而会解析 history-update 并标 dirty，但在拿到跨设备真实样本前不把它擅自当 startsTurn。Phase 3 本机 Web turn 应直接从页面自己的 `/backend-api/f/conversation` SSE 开始；跨设备 early signal 继续以 history-update 为重点验证对象。
 - 2026-09-13：收紧 daemon 主动只读请求的“当前页面上下文重放”实现：`sanitizeCapturedHeaders()` 改成大小写无关，只保留 Authorization/OAI session-device-build-language/client observation 白名单；Cookie、User-Agent、Referer、sec-ch 等不复制，继续由 Guardian 页面的同源 `fetch(credentials=include)` 现场生成。认证上下文仍只驻留内存、来自当前页面自然 `/backend-api/` 请求，401/403 会立即清空等待重新捕获，不持久化旧 token。
