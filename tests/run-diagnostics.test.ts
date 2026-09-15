@@ -108,4 +108,16 @@ describe('最后一轮快照诊断', () => {
     expect(results[0]).toMatchObject({ turnExchangeId: 'turn-1', tailShape: 'tool-result-returned', terminalEvidence: 'none' })
     expect(results[1]).toMatchObject({ turnExchangeId: 'turn-2', tailShape: 'final', terminalEvidence: 'final' })
   })
+
+  test('reasoning 已结束但 final 缺失会单独标成 reasoning-ended-no-final', () => {
+    const result = diagnoseLatestRun(payload([
+      message({ id: 'u1', author: { role: 'user' }, metadata: { turn_exchange_id: 'turn-1' } }),
+      message({ id: 'thought', content: { content_type: 'thoughts' }, metadata: { turn_exchange_id: 'turn-1', reasoning_status: 'is_reasoning' } }),
+      message({ id: 'recap', content: { content_type: 'reasoning_recap', parts: ['完成推理'] }, metadata: { turn_exchange_id: 'turn-1', reasoning_status: 'reasoning_ended' } }),
+    ]))
+
+    expect(result.terminalEvidence).toBe('none')
+    expect(result.tailShape).toBe('reasoning-ended-no-final')
+    expect(result.summary).toContain('final')
+  })
 })
