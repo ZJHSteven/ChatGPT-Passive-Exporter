@@ -1907,13 +1907,15 @@ export class ChatArchiveDb {
 
     // 一旦最新 body 已经进入另一个 turn，旧 turn 的 open incident 只能变成“历史已继续”，
     // 绝不能让旧红牌继续污染 conversation 当前状态。历史行保留，只改变 status/resolved_at。
-    this.db.prepare(`
-      UPDATE incidents
-      SET status='resolved',
-          resolved_at=COALESCE(resolved_at, ?),
-          last_observed_at=?
-      WHERE conversation_id=? AND status='open' AND turn_key<>?
-    `).run(observedAt, observedAt, conversationId, turnKey)
+    if (updateConversationState) {
+      this.db.prepare(`
+        UPDATE incidents
+        SET status='resolved',
+            resolved_at=COALESCE(resolved_at, ?),
+            last_observed_at=?
+        WHERE conversation_id=? AND status='open' AND turn_key<>?
+      `).run(observedAt, observedAt, conversationId, turnKey)
+    }
 
     const currentIncident = this.db.prepare(`
       SELECT id, status, incident_kind AS incidentKind
