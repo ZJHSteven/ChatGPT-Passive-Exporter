@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
 import { importOfficialExportZips } from '../src/local/official-export.ts'
 import { clusterCompletionBursts, readTurnTraceTail } from '../src/local/turn-trace-reader.ts'
+import { actorStatus, resetActor, sendActorPrompt } from '../src/local/chatgpt-actor.ts'
 
 /**
  * 全局 `chatgpt-archive` 通过 npm link/全局 shim 可以从任意工作目录启动。
@@ -20,6 +21,7 @@ const DEFAULT_DB_PATH = path.join(PROJECT_ROOT, 'data', 'chatgpt-archive.sqlite'
 const DEFAULT_DAEMON_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon-state.json')
 const DEFAULT_DAEMON_LOG_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
 const DEFAULT_TURN_TRACE_PATH = path.join(PROJECT_ROOT, 'data', 'active-turn-trace.jsonl')
+const DEFAULT_ACTOR_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-actor-state.json')
 const WINDOWS_STARTUP_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-archive-startup.ps1')
 const WINDOWS_STARTUP_LAUNCHER = path.join(PROJECT_ROOT, 'scripts', 'windows-archive-daemon-launcher.vbs')
 const WINDOWS_STARTUP_TASK = 'ChatGPT Archive Daemon'
@@ -39,6 +41,9 @@ Usage:
   chatgpt-archive reindex [--all] [--db <path>]
   chatgpt-archive incidents [--status open|resolved] [--limit N] [--db <path>]
   chatgpt-archive turn-trace [--limit N] [--trace <path>] [--cluster-ms N]
+  chatgpt-archive actor send --prompt-file <path> [--cdp URL] [--trace <path>] [--state <path>]
+  chatgpt-archive actor status [--cdp URL] [--state <path>]
+  chatgpt-archive actor reset [--cdp URL] [--state <path>]
   chatgpt-archive daemon start [--cdp URL] [--reconcile-hours N] [--db <path>]
   chatgpt-archive daemon status [--state <path>]
   chatgpt-archive daemon stop [--state <path>]
@@ -298,6 +303,41 @@ async function main() {
       completionBursts: clusterCompletionBursts(records, clusterMs),
     }, null, 2))
     return
+  }
+
+  if (command === 'actor') {
+    const action = positionals[0]
+    const cdpHttp = String(flags.get('cdp') || 'http://127.0.0.1:9222').replace(/\/$/u, '')
+    const actorStatePath = flags.has('state')
+      ? path.resolve(String(flags.get('state')))
+      : DEFAULT_ACTOR_STATE_PATH
+    if (action === 'status') {
+      console.log(JSON.stringify(await actorStatus(cdpHttp, actorStatePath), null, 2))
+      return
+    }
+    if (action === 'reset') {
+      console.log(JSON.stringify(await resetActor(cdpHttp, actorStatePath), null, 2))
+      return
+    }
+    if (action === 'send') {
+      const promptFile = flags.get('prompt-file')
+      if (typeof promptFile !== 'string' || !promptFile) throw new Error('actor send requires --prompt-file <path>')
+      const prompt = await fs.readFile(path.resolve(promptFile), 'utf8')
+      const tracePath = flags.has('trace')
+        ? path.resolve(String(flags.get('trace')))
+        : DEFAULT_TURN_TRACE_PATH
+      const timeoutMs = Number(flags.get('timeout-ms') ?? 20_000)
+      if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) throw new Error('--timeout-ms must be >= 1000')
+      console.log(JSON.stringify(await sendActorPrompt({
+        cdpHttp,
+        statePath: actorStatePath,
+        tracePath,
+        prompt,
+        timeoutMs,
+      }), null, 2))
+      return
+    }
+    throw new Error('actor requires send|status|reset')
   }
 
   const archive = new ChatArchiveDb(dbPath(flags))

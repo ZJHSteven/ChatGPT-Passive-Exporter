@@ -29,8 +29,19 @@ export interface WssLifecycleInput {
 export interface ActiveTurnTraceBase {
   version: 1
   at: number
-  kind: 'wss-lifecycle' | 'body-snapshot' | 'catalog-observation'
+  kind: 'wss-lifecycle' | 'body-snapshot' | 'catalog-observation' | 'actor-submit'
   conversationId: string
+}
+
+export interface ActorSubmitTrace extends ActiveTurnTraceBase {
+  kind: 'actor-submit'
+  actorTargetId: string
+  cdpRequestId: string
+  responseStatus: number | null
+  responseMimeType: string | null
+  boundAt: number
+  bindDelayMs: number
+  pageUrlBefore: string
 }
 
 export interface WssLifecycleTrace extends ActiveTurnTraceBase {
@@ -82,7 +93,7 @@ export interface CatalogObservationTrace extends ActiveTurnTraceBase {
   catalogActiveConversationIdsAfter: string[]
 }
 
-export type ActiveTurnTrace = WssLifecycleTrace | BodySnapshotTrace | CatalogObservationTrace
+export type ActiveTurnTrace = WssLifecycleTrace | BodySnapshotTrace | CatalogObservationTrace | ActorSubmitTrace
 
 /**
  * 为了让 JSONL 可稳定 diff / 测试，conversation id 一律排序后写出。
@@ -173,6 +184,36 @@ export function buildCatalogObservationTrace(input: {
     reliableActiveConversationIdsAfter: reliableAfter,
     catalogActiveAfter: catalogAfter.length,
     catalogActiveConversationIdsAfter: catalogAfter,
+  }
+}
+
+/**
+ * Phase 3 的本地 actor 可以直接看到 `/backend-api/f/conversation` 的 requestWillBeSent，
+ * 因而这比账户级 WSS/catalog 更接近“真实 turn start”。新聊天发出时 URL 还没有 UUID，
+ * actor 会先在内存里保留 submittedAt，等同一个 document 路由到 `/c/<UUID>` 后再一次性落盘。
+ */
+export function buildActorSubmitTrace(input: {
+  submittedAt: number
+  boundAt: number
+  conversationId: string
+  actorTargetId: string
+  cdpRequestId: string
+  responseStatus?: number | null
+  responseMimeType?: string | null
+  pageUrlBefore: string
+}): ActorSubmitTrace {
+  return {
+    version: 1,
+    at: input.submittedAt,
+    kind: 'actor-submit',
+    conversationId: input.conversationId,
+    actorTargetId: input.actorTargetId,
+    cdpRequestId: input.cdpRequestId,
+    responseStatus: input.responseStatus ?? null,
+    responseMimeType: input.responseMimeType ?? null,
+    boundAt: input.boundAt,
+    bindDelayMs: Math.max(0, input.boundAt - input.submittedAt),
+    pageUrlBefore: input.pageUrlBefore,
   }
 }
 

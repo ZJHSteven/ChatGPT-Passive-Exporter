@@ -41,6 +41,7 @@
 5. **Safety Review 预留而不猜。** 2026-09-16 已从当前 ChatGPT bundle 证实 UI 组件名为 `SafetyReviewStatus`，但归档 body 暂未找到稳定 `protectionType` 字段。Recorder 先预留 `safetyReview:null`，后续 Phase 3 页面/stream 捕获拿到真实 signal 后再填，禁止从文案或主题猜 `bio/cyber`。
 6. **测试覆盖批量异常取证关键字段。** 单元测试至少覆盖：start/progress/complete 前后并发度、complete 先于 created、body snapshot 绑定 request/turn id、无可靠 start 时仍能记录 complete 但不伪造 startedAt。
 7. **上线前清理实验垃圾。** `tmp-branch-*` / `tmp-*safety*` 和实验 JSON 不进入正式提交；正式提交只包含 recorder、测试、文档及此前已确认的 daemon 生命周期日志改动。
+8. **单 actor 的可靠 local start。** Phase 3 actor 不直接构造私有 conversation POST；继续调用 ChatGPT 页面自己的 send handler，并只读监听页面自然 `POST /backend-api/f/conversation` 的 `requestWillBeSent`。新聊天从 `/` 到 `/c/<UUID>` 后，把原始 request 时刻与真实 UUID 绑定成 `actor-submit` trace。后续受控 3→8 并发以这条 trace 作为本机任务的精确 start，下游 WSS complete/body snapshot 作为 end/终态证据。
 
 
 ## 目标

@@ -16,6 +16,7 @@ data/recovery-ledger.json
 data/archive-daemon*.json
 data/archive-notification.local.json
 data/active-turn-trace*.jsonl
+data/archive-actor-state.json
 
 # Temporary research clones, test downloads and local HTTP server state
 .tmp/

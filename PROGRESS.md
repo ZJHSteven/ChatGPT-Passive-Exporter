@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-19：Phase 3 单 actor 控制面开始产品化：新增 `chatgpt-archive actor send/status/reset`。`send` 只接受 prompt file，默认始终复用同一个 actor target、导航到全新聊天、用页面自身 send button handler 提交；它不构造 `/backend-api/f/conversation`，只监听页面自然 `requestWillBeSent`，再等 `/c/<UUID>` 绑定并追加 `actor-submit` trace。这样本机受控并发终于有可靠 start 时刻，可与 Guardian complete/body snapshot 对齐。
 - 2026-09-19：Phase 3 单 actor 最小 E2E 已现场通过。一个长期 actor document 通过页面自身 send handler 发出 `POST /backend-api/f/conversation`（200 `text/event-stream`），随后切换到真实 conversation `6aae3805-792c-83ea-8ad7-ebe9d0c083b1`；Guardian 独立收到 `conversation-turn-complete → conversation-created`，body sync 落出 requestId/turnExchangeId 与 `final/final`。同时抓到一个新聊天自然触发多组 `/backend-api/conversations` sidebar 请求，进一步证明“为并发开 N 个完整 ChatGPT tab”会把 list 流量按 renderer 放大，后续并发实验坚持单 actor。
 - 2026-09-19：普通 Web turn 再次证实账户 WSS 没有可靠 start：上述 actor smoke 的 WSS trace `activeBefore=0`，尽管 `/f/conversation` 本机发送时刻是已知的。Phase 3 下一步把 actor 的 `/f/conversation` requestWillBeSent 记录为可靠 local start，并在 URL 获得真实 UUID 后绑定，供受控并发精确计数；不再拿 catalog running 伪造 start。
 - 2026-09-19：新增 `chatgpt-archive turn-trace` 读取面：只读 JSONL 尾部，默认展示最近 100 条 lifecycle/body/catalog 记录，并按 30 秒窗口自动聚合多个 `conversation-turn-complete` burst；若 body snapshot 已到，会把 requestId/turnExchangeId/terminal/tail 直接吸附到对应 complete，专门用于识别“多个聊天在十几秒内一起无 final 收口”的账户级异常。
