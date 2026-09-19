@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
 import { importOfficialExportZips } from '../src/local/official-export.ts'
+import { clusterCompletionBursts, readTurnTraceTail } from '../src/local/turn-trace-reader.ts'
 
 /**
  * 全局 `chatgpt-archive` 通过 npm link/全局 shim 可以从任意工作目录启动。
@@ -18,6 +19,7 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const DEFAULT_DB_PATH = path.join(PROJECT_ROOT, 'data', 'chatgpt-archive.sqlite')
 const DEFAULT_DAEMON_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon-state.json')
 const DEFAULT_DAEMON_LOG_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
+const DEFAULT_TURN_TRACE_PATH = path.join(PROJECT_ROOT, 'data', 'active-turn-trace.jsonl')
 const WINDOWS_STARTUP_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-archive-startup.ps1')
 const WINDOWS_STARTUP_LAUNCHER = path.join(PROJECT_ROOT, 'scripts', 'windows-archive-daemon-launcher.vbs')
 const WINDOWS_STARTUP_TASK = 'ChatGPT Archive Daemon'
@@ -36,6 +38,7 @@ Usage:
   chatgpt-archive schema [--source ID] [--db <path>]
   chatgpt-archive reindex [--all] [--db <path>]
   chatgpt-archive incidents [--status open|resolved] [--limit N] [--db <path>]
+  chatgpt-archive turn-trace [--limit N] [--trace <path>] [--cluster-ms N]
   chatgpt-archive daemon start [--cdp URL] [--reconcile-hours N] [--db <path>]
   chatgpt-archive daemon status [--state <path>]
   chatgpt-archive daemon stop [--state <path>]
@@ -271,6 +274,29 @@ async function main() {
 
   if (command === 'daemon') {
     await daemonCommand(positionals, flags)
+    return
+  }
+
+  if (command === 'turn-trace') {
+    const tracePath = flags.has('trace')
+      ? path.resolve(String(flags.get('trace')))
+      : DEFAULT_TURN_TRACE_PATH
+    const clusterMs = Number(flags.get('cluster-ms') ?? 30_000)
+    if (!Number.isFinite(clusterMs) || clusterMs < 0) throw new Error('--cluster-ms must be >= 0')
+    let records = []
+    try {
+      records = await readTurnTraceTail(tracePath)
+    }
+    catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+    const recent = records.slice(-limit(flags, 100))
+    console.log(JSON.stringify({
+      tracePath,
+      recordCountInTail: records.length,
+      records: recent,
+      completionBursts: clusterCompletionBursts(records, clusterMs),
+    }, null, 2))
     return
   }
 
