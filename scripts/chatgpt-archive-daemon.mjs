@@ -21,6 +21,12 @@ import { execFileSync, spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
 import {
+  ActiveTurnRecorder,
+  buildBodySnapshotTrace,
+  buildCatalogObservationTrace,
+  buildWssLifecycleTrace,
+} from '../src/local/active-turn-recorder.ts'
+import {
   loadIncidentNotificationConfig,
   sendIncidentNotification,
 } from '../src/local/incident-notifier.ts'
@@ -32,6 +38,7 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const DEFAULT_DB = path.join(PROJECT_ROOT, 'data', 'chatgpt-archive.sqlite')
 const DEFAULT_STATE = path.join(PROJECT_ROOT, 'data', 'archive-daemon-state.json')
 const DEFAULT_LOG = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
+const DEFAULT_TURN_TRACE = path.join(PROJECT_ROOT, 'data', 'active-turn-trace.jsonl')
 const DEFAULT_NOTIFICATION_CONFIG = path.join(PROJECT_ROOT, 'data', 'archive-notification.local.json')
 const WINDOWS_HIDE_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-hide-window.ps1')
 const DEFAULT_CDP_TIMEOUT_MS = 10_000
@@ -564,6 +571,9 @@ async function main() {
   const dbPath = flags.has('db') ? path.resolve(String(flags.get('db'))) : DEFAULT_DB
   const statePath = flags.has('state') ? path.resolve(String(flags.get('state'))) : DEFAULT_STATE
   const logPath = flags.has('log') ? path.resolve(String(flags.get('log'))) : DEFAULT_LOG
+  const turnTracePath = flags.has('turn-trace')
+    ? path.resolve(String(flags.get('turn-trace')))
+    : DEFAULT_TURN_TRACE
   const notificationConfigPath = flags.has('notification-config')
     ? path.resolve(String(flags.get('notification-config')))
     : DEFAULT_NOTIFICATION_CONFIG
@@ -622,6 +632,7 @@ async function main() {
   const dirty = new Map()
   const ready = new Map()
   const activeTurns = new Map()
+  const turnRecorder = new ActiveTurnRecorder(turnTracePath)
   const eventCounts = new Map()
   let syncInFlight = false
   let reconcileInFlight = false
@@ -645,6 +656,7 @@ async function main() {
     startedAt: startedAt,
     updatedAt: Date.now(),
     database: dbPath,
+    turnTrace: turnTracePath,
     cdp: cdpHttp,
     guardian: guardian ? {
       targetId: guardian.targetId,
@@ -973,6 +985,22 @@ async function main() {
           terminal: result.diagnostic.terminalEvidence,
           tail: result.diagnostic.tailShape,
         })
+        // Body sync 是我们第一次能够稳定拿到 request_id / turn_exchange_id / tool activity 的位置。
+        // 它和 WSS lifecycle 分开记录：WSS 负责“何时 complete / 当时观测到多少并发”，body
+        // 负责“complete 的到底是哪一个 turn，以及它最终停在什么尾型”。
+        await turnRecorder.append(buildBodySnapshotTrace({
+          at: Date.now(),
+          conversationId,
+          trigger,
+          diagnostic: result.diagnostic,
+          activeConversationIds: activeTurns.keys(),
+        })).catch(async (error) => {
+          await log('active turn trace write failed', {
+            kind: 'body-snapshot',
+            conversationId,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        })
         if (result.newIncident) await notifyIncident(conversationId, result.newIncident)
       }
       catch (error) {
@@ -1004,6 +1032,15 @@ async function main() {
   const observeConversationEvent = (event) => {
     const behavior = classifyConversationEvent(event.type, event.updateType)
     const now = Date.now()
+    const activeBeforeIds = [...activeTurns.keys()]
+    // 只记录生命周期元数据，不记录消息正文。并发实验需要精确知道每个
+    // conversation 的 created/complete 时刻，否则 eventCounts 只能给总数，
+    // 无法判断究竟是哪一条在高并发下被挤掉或漏掉。
+    void log('wss conversation event', {
+      conversationId: event.conversationId,
+      type: event.type,
+      updateType: event.updateType || null,
+    })
     markDirty(event.conversationId, `wss:${event.type}`)
     if (behavior.startsTurn) {
       const current = activeTurns.get(event.conversationId)
@@ -1021,6 +1058,26 @@ async function main() {
       activeTurns.delete(event.conversationId)
       markSyncReady(event.conversationId, `wss:${event.type}`, 500)
     }
+    const activeAfterIds = [...activeTurns.keys()]
+    void turnRecorder.append(buildWssLifecycleTrace({
+      at: now,
+      event: {
+        conversationId: event.conversationId,
+        type: event.type,
+        updateType: event.updateType || null,
+        startsTurn: behavior.startsTurn,
+        completesTurn: behavior.completesTurn,
+        asyncProgress: behavior.asyncProgress,
+      },
+      activeBeforeIds,
+      activeAfterIds,
+    })).catch((error) => {
+      void log('active turn trace write failed', {
+        kind: 'wss-lifecycle',
+        conversationId: event.conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
   }
 
   const queueWatchdogDiagnostics = () => {
@@ -1075,10 +1132,40 @@ async function main() {
             })
             // running 说明该 conversation 当前仍可能继续变化：只标 stale，不抓半成品 body。
             markDirty(id, `catalog:async-active:${reason}`)
+            await turnRecorder.append(buildCatalogObservationTrace({
+              at: now,
+              conversationId: id,
+              asyncStatus: item.async_status ?? null,
+              classifiedState: 'active',
+              reason,
+              wasTrackedActive: wasActive,
+              activeAfterIds: activeTurns.keys(),
+            })).catch(async (error) => {
+              await log('active turn trace write failed', {
+                kind: 'catalog-observation',
+                conversationId: id,
+                error: error instanceof Error ? error.message : String(error),
+              })
+            })
           }
           else if (asyncState === 'complete' && wasActive) {
             // 低频 list 看到了 active→complete，而 WSS complete 没到：这是典型 gap repair。
             activeTurns.delete(id)
+            await turnRecorder.append(buildCatalogObservationTrace({
+              at: now,
+              conversationId: id,
+              asyncStatus: item.async_status ?? null,
+              classifiedState: 'complete',
+              reason,
+              wasTrackedActive: true,
+              activeAfterIds: activeTurns.keys(),
+            })).catch(async (error) => {
+              await log('active turn trace write failed', {
+                kind: 'catalog-observation',
+                conversationId: id,
+                error: error instanceof Error ? error.message : String(error),
+              })
+            })
             markSyncReady(id, `reconcile:${reason}:async-complete`, 0)
           }
 
