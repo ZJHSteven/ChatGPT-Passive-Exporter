@@ -75,9 +75,11 @@ export interface CatalogObservationTrace extends ActiveTurnTraceBase {
   asyncStatus: number | string | null
   classifiedState: 'active' | 'complete'
   reason: string
-  wasTrackedActive: boolean
-  activeAfter: number
-  activeConversationIdsAfter: string[]
+  wasCatalogActive: boolean
+  reliableActiveAfter: number
+  reliableActiveConversationIdsAfter: string[]
+  catalogActiveAfter: number
+  catalogActiveConversationIdsAfter: string[]
 }
 
 export type ActiveTurnTrace = WssLifecycleTrace | BodySnapshotTrace | CatalogObservationTrace
@@ -152,10 +154,12 @@ export function buildCatalogObservationTrace(input: {
   asyncStatus: number | string | null
   classifiedState: 'active' | 'complete'
   reason: string
-  wasTrackedActive: boolean
-  activeAfterIds: Iterable<string>
+  wasCatalogActive: boolean
+  reliableActiveAfterIds: Iterable<string>
+  catalogActiveAfterIds: Iterable<string>
 }): CatalogObservationTrace {
-  const after = sortedConversationIds(input.activeAfterIds)
+  const reliableAfter = sortedConversationIds(input.reliableActiveAfterIds)
+  const catalogAfter = sortedConversationIds(input.catalogActiveAfterIds)
   return {
     version: 1,
     at: input.at,
@@ -164,9 +168,11 @@ export function buildCatalogObservationTrace(input: {
     asyncStatus: input.asyncStatus,
     classifiedState: input.classifiedState,
     reason: input.reason,
-    wasTrackedActive: input.wasTrackedActive,
-    activeAfter: after.length,
-    activeConversationIdsAfter: after,
+    wasCatalogActive: input.wasCatalogActive,
+    reliableActiveAfter: reliableAfter.length,
+    reliableActiveConversationIdsAfter: reliableAfter,
+    catalogActiveAfter: catalogAfter.length,
+    catalogActiveConversationIdsAfter: catalogAfter,
   }
 }
 

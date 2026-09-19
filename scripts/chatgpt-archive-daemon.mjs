@@ -631,6 +631,10 @@ async function main() {
   // dirty = “本地可能落后”；ready = “现在允许主动抓 body”。二者必须分开。
   const dirty = new Map()
   const ready = new Map()
+  // catalogActive 只表示“低频 conversation list 曾看见 async_status=3/5”。
+  // 它不是可靠 turn start，因此绝不能进入 watchdog 的 activeTurns.startedAt。
+  // 这个集合只用于 catalog 自己识别 active→complete 的 gap repair。
+  const catalogActive = new Map()
   const activeTurns = new Map()
   const turnRecorder = new ActiveTurnRecorder(turnTracePath)
   const eventCounts = new Map()
@@ -689,6 +693,7 @@ async function main() {
     queue: {
       dirty: dirty.size,
       ready: ready.size,
+      catalogActive: catalogActive.size,
       active: activeTurns.size,
       oldestActiveMs: activeTurns.size > 0
         ? Math.max(...[...activeTurns.values()].map(item => Date.now() - item.startedAt))
@@ -1056,6 +1061,7 @@ async function main() {
     }
     if (behavior.completesTurn) {
       activeTurns.delete(event.conversationId)
+      catalogActive.delete(event.conversationId)
       markSyncReady(event.conversationId, `wss:${event.type}`, 500)
     }
     const activeAfterIds = [...activeTurns.keys()]
@@ -1121,16 +1127,16 @@ async function main() {
           if (!id) continue
           const asyncState = classifyCatalogAsyncStatus(item.async_status)
           const now = Date.now()
-          const wasActive = activeTurns.has(id)
+          const wasCatalogActive = catalogActive.has(id)
           if (asyncState === 'active') {
-            const current = activeTurns.get(id)
-            activeTurns.set(id, {
-              startedAt: current?.startedAt ?? now,
-              lastEventAt: now,
-              lastWatchdogAt: current?.lastWatchdogAt ?? null,
-              startType: current?.startType ?? `catalog:async_status=${item.async_status}`,
+            const current = catalogActive.get(id)
+            catalogActive.set(id, {
+              firstSeenAt: current?.firstSeenAt ?? now,
+              lastSeenAt: now,
+              asyncStatus: item.async_status,
             })
-            // running 说明该 conversation 当前仍可能继续变化：只标 stale，不抓半成品 body。
+            // running 说明该 conversation 当前仍可能继续变化：只标 stale，不抓半成品 body，
+            // 更不能用“第一次扫到 running”的时间启动 watchdog。
             markDirty(id, `catalog:async-active:${reason}`)
             await turnRecorder.append(buildCatalogObservationTrace({
               at: now,
@@ -1138,8 +1144,9 @@ async function main() {
               asyncStatus: item.async_status ?? null,
               classifiedState: 'active',
               reason,
-              wasTrackedActive: wasActive,
-              activeAfterIds: activeTurns.keys(),
+              wasCatalogActive,
+              reliableActiveAfterIds: activeTurns.keys(),
+              catalogActiveAfterIds: catalogActive.keys(),
             })).catch(async (error) => {
               await log('active turn trace write failed', {
                 kind: 'catalog-observation',
@@ -1148,17 +1155,18 @@ async function main() {
               })
             })
           }
-          else if (asyncState === 'complete' && wasActive) {
+          else if (asyncState === 'complete' && wasCatalogActive) {
             // 低频 list 看到了 active→complete，而 WSS complete 没到：这是典型 gap repair。
-            activeTurns.delete(id)
+            catalogActive.delete(id)
             await turnRecorder.append(buildCatalogObservationTrace({
               at: now,
               conversationId: id,
               asyncStatus: item.async_status ?? null,
               classifiedState: 'complete',
               reason,
-              wasTrackedActive: true,
-              activeAfterIds: activeTurns.keys(),
+              wasCatalogActive: true,
+              reliableActiveAfterIds: activeTurns.keys(),
+              catalogActiveAfterIds: catalogActive.keys(),
             })).catch(async (error) => {
               await log('active turn trace write failed', {
                 kind: 'catalog-observation',

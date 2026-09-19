@@ -95,8 +95,9 @@ describe('Active Turn Recorder', () => {
       asyncStatus: 4,
       classifiedState: 'complete',
       reason: 'periodic',
-      wasTrackedActive: true,
-      activeAfterIds: ['conversation-2'],
+      wasCatalogActive: true,
+      reliableActiveAfterIds: ['conversation-2'],
+      catalogActiveAfterIds: ['conversation-3'],
     })
 
     expect(trace).toEqual({
@@ -107,9 +108,11 @@ describe('Active Turn Recorder', () => {
       asyncStatus: 4,
       classifiedState: 'complete',
       reason: 'periodic',
-      wasTrackedActive: true,
-      activeAfter: 1,
-      activeConversationIdsAfter: ['conversation-2'],
+      wasCatalogActive: true,
+      reliableActiveAfter: 1,
+      reliableActiveConversationIdsAfter: ['conversation-2'],
+      catalogActiveAfter: 1,
+      catalogActiveConversationIdsAfter: ['conversation-3'],
     })
   })
 })
