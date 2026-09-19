@@ -1,6 +1,8 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-19：进入 Active Turn Recorder 收口。2026-09-18 现场抓到三个不同 conversation 在 16 秒内先后 `conversation-turn-complete`，随后均落成 `reasoning-ended-no-final`；其中当前研究聊天甚至 0 次工具调用，说明不能把该簇简单归因于某个 DevSpace 工具或单页 renderer。下一步由 daemon 自动记录 WSS complete 前后并发快照，并在 body sync 后补 `requestId / turnExchangeId / tool activity / terminal/tail`，为账户级/后端批量收口取证。
+- 2026-09-19：Safety Review 边界保持保守。前端 bundle 已确认特殊提示“我们的系统正在进一步处理此请求”对应组件 `SafetyReviewStatus`，其内部支持 `protectionType=bio/cyber`、request/serverRequest/turnExchange 等标识；但当前 Archive body 尚未找到稳定 protection 字段，因此 recorder 暂不猜测 safety 类型，等 Phase 3 页面/实时流捕获拿到真实 signal 后再填。
 - 2026-09-16：开始把 incident 诊断单位从“page 的最后一轮”改成真正的逐 turn。`run-diagnostics` 新增 `diagnoseRuns()`：同一个 latest/cursor page 内会按 user 边界拆出多个 turn，后续数据库层可分别补历史 incident；page/cursor 继续只作为传输容器，不再承担运行状态语义。
 - 2026-09-16：历史 turn incident 补账开始接入数据库层：历史诊断路径新增“不得更新 conversation 当前汇总状态”的硬保护，避免 cursor/旧 turn 在补事故历史时误把当前 turn 的 open incident resolve 掉。
 - 2026-09-16：历史异常 turn 的账本语义进一步收口：旧 turn 若已被后续 user turn 越过且自身无 final，可补一条 `abnormal-terminal` 历史 incident，并立即以 resolved/resumed 形态保存；显式 interrupted/client_stopped 仍保留原始终止证据。历史补账不会重新点亮 conversation 当前 incident_state。

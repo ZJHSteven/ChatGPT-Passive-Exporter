@@ -30,6 +30,19 @@
 12. **历史 cursor 也必须逐 turn 诊断，而不是只补正文。** Cursor/page 只是传输容器，不是状态单位。每一页里的每个 turn 都应按自己的 user/turn_exchange_id/tool/reasoning/final 证据更新对应 `conversation + turn_key` incident；历史页仍可补 messages、tool call/result、metadata、mapping/raw observation。唯一禁止的是历史 turn 去覆盖 `conversations.current_node / terminal_state / incident_state` 这类“当前/latest”汇总字段。若某个旧 turn 后面已经存在更新的 user turn，则“后续 turn 已开始”本身可作为该旧 turn 已结束的证据：旧 turn 无 final 时允许记为历史 abnormal incident，并直接标为 resolved/resumed，而不是把它误当成仍在运行。
 13. **watchdog 只接受可靠的 active 起点。** `conversation list.async_status=3/5` 只能进入独立的 `catalogActive`/recovery 状态，不能写入 watchdog `activeTurns`，因为“第一次扫到 running”不是 turn start，且服务端 zombie 可能保持数天。`activeTurns.startedAt` 只允许来自本机 `/backend-api/f/conversation` 发送观测、明确 WSS turn-start（若协议再次出现）或已验证的 async progress 事件。跨设备普通 turn 若没有 early account event，就明确标注 watchdog coverage 缺失，不用 catalog 伪造起点。
 
+## 2026-09-19 Active Turn Recorder ExecPlan
+
+> 目标：下一次出现“多个 conversation 在十几秒内一起 `conversation-turn-complete`，但没有 final answer”的批量异常时，不再依赖事后手工拼日志，而是由 Guardian/daemon 自动留下可回放的逐 turn 时间线。
+
+1. **新增独立 turn trace JSONL。** 每条记录都只保存生命周期/诊断元数据，不保存用户正文、工具正文、认证头或 cookie。默认路径放在 `data/active-turn-trace.jsonl`，并允许 CLI flag 覆盖。
+2. **WSS 生命周期必须带并发快照。** `conversation-created / conversation-update / conversation-turn-complete` 每次都记录 `activeBefore / activeAfter / activeConversationIds`；complete 必须在删除 active turn 之前先记录 pre-complete 并发度，避免以后无法还原“当时同时跑了几个”。
+3. **Body sync 负责补 turn 身份。** 完成一次最新 body merge 后，把现有 `RunDiagnostic` 中的 `requestId / turnExchangeId / userMessageId / terminalEvidence / tailShape / assistantToolCalls / toolResults / hasReasoningEnded / hasFinal` 写入 trace，与触发该同步的 WSS/catalog/watchdog 原因绑定。
+4. **Catalog 只记录已知状态迁移，不伪造 start。** `async_status=3/5`、`4` 可作为 recovery observation 写 trace，但继续遵守现有原则：第一次扫到 running 不是可靠 startedAt。
+5. **Safety Review 预留而不猜。** 2026-09-16 已从当前 ChatGPT bundle 证实 UI 组件名为 `SafetyReviewStatus`，但归档 body 暂未找到稳定 `protectionType` 字段。Recorder 先预留 `safetyReview:null`，后续 Phase 3 页面/stream 捕获拿到真实 signal 后再填，禁止从文案或主题猜 `bio/cyber`。
+6. **测试覆盖批量异常取证关键字段。** 单元测试至少覆盖：start/progress/complete 前后并发度、complete 先于 created、body snapshot 绑定 request/turn id、无可靠 start 时仍能记录 complete 但不伪造 startedAt。
+7. **上线前清理实验垃圾。** `tmp-branch-*` / `tmp-*safety*` 和实验 JSON 不进入正式提交；正式提交只包含 recorder、测试、文档及此前已确认的 daemon 生命周期日志改动。
+
+
 ## 目标
 
 构建一个尽量不主动调用 ChatGPT 私有后端 API 的聊天归档工具：监听页面自己已经发出的请求并复制响应，随后将不同年代/不同接口形态的 ChatGPT conversation payload 归一化，再导出可读 Markdown、原始 JSON 和附件/富媒体清单。
