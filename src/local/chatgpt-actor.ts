@@ -256,6 +256,17 @@ async function clickSendHandler(client: ActorCdpClient): Promise<void> {
   if (result !== true) throw new Error('ChatGPT actor send button unavailable or disabled')
 }
 
+/**
+ * prepare 返回以后，当前 ChatGPT Web 会让发送按钮经历一个很短的 disabled/重挂载窗口。
+ * 第二阶段 submit 必须等按钮重新可用；否则“prepare 已成功”会被误判成发送失败。
+ */
+async function isSendButtonReady(client: ActorCdpClient): Promise<boolean> {
+  return await evaluateValue(client, `(() => {
+    const button = document.querySelector('button[data-testid="send-button"]')
+    return Boolean(button && !button.disabled)
+  })()`) === true
+}
+
 export async function sendActorPrompt(options: ActorSendOptions): Promise<Record<string, unknown>> {
   const timeoutMs = options.timeoutMs ?? 20_000
   if (!options.prompt.trim()) throw new Error('actor prompt is empty')
@@ -373,9 +384,13 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
           && prepareState.status >= 200
           && prepareState.status < 300
         ) {
-          retriedAfterPrepare = true
-          sendHandlerAttempts += 1
-          await clickSendHandler(client)
+          // prepare response 到达时按钮可能还在 disabled 动画/状态切换里；只有它真正恢复后
+          // 才消耗“唯一一次第二阶段重试”额度。
+          if (await isSendButtonReady(client)) {
+            retriedAfterPrepare = true
+            sendHandlerAttempts += 1
+            await clickSendHandler(client)
+          }
         }
         await new Promise(resolve => setTimeout(resolve, 100))
       }
