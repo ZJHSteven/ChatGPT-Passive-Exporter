@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-19：Active Turn Recorder 运行时 JSONL 已加入 `.gitignore`，避免真实事故元数据被误提交；Branch/SafetyReview 研究期间生成的临时探针脚本与实验 JSON/截图已清理，不进入正式仓库历史。
 - 2026-09-19：修正 catalog active 与可靠 turn active 混用。`async_status=3/5` 现在只进入独立 `catalogActive`，用于低频 list 自己识别 active→complete 的 gap repair；不再写 `activeTurns.startedAt`，因此不会污染 watchdog 或把“第一次扫到 running”误当真实 turn start。Recorder 同时区分 `reliableActive*` 与 `catalogActive*` 两套计数。
 - 2026-09-19：Active Turn Recorder 第一版已实现：daemon 默认追加 `data/active-turn-trace.jsonl`，WSS lifecycle 记录 complete 前后已观测 active conversation 集合；body sync 补 `requestId / turnExchangeId / userMessageId / terminalEvidence / tailShape / tool call/result 数`；低频 catalog 只记录已实测的 active/complete 状态迁移，不把首次扫到 running 伪造成可靠 start。Safety Review 字段显式保持 `null`，等待 Phase 3 拿到真实前端/stream signal。
 - 2026-09-19：进入 Active Turn Recorder 收口。2026-09-18 现场抓到三个不同 conversation 在 16 秒内先后 `conversation-turn-complete`，随后均落成 `reasoning-ended-no-final`；其中当前研究聊天甚至 0 次工具调用，说明不能把该簇简单归因于某个 DevSpace 工具或单页 renderer。下一步由 daemon 自动记录 WSS complete 前后并发快照，并在 body sync 后补 `requestId / turnExchangeId / tool activity / terminal/tail`，为账户级/后端批量收口取证。
