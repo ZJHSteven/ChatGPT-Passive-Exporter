@@ -36,6 +36,9 @@ export interface ActiveTurnTraceBase {
 export interface ActorSubmitTrace extends ActiveTurnTraceBase {
   kind: 'actor-submit'
   actorTargetId: string
+  prepareRequestId: string | null
+  prepareStatus: number | null
+  sendHandlerAttempts: number
   cdpRequestId: string
   responseStatus: number | null
   responseMimeType: string | null
@@ -198,6 +201,9 @@ export function buildActorSubmitTrace(input: {
   conversationId: string
   actorTargetId: string
   cdpRequestId: string
+  prepareRequestId?: string | null
+  prepareStatus?: number | null
+  sendHandlerAttempts?: number
   responseStatus?: number | null
   responseMimeType?: string | null
   pageUrlBefore: string
@@ -208,6 +214,9 @@ export function buildActorSubmitTrace(input: {
     kind: 'actor-submit',
     conversationId: input.conversationId,
     actorTargetId: input.actorTargetId,
+    prepareRequestId: input.prepareRequestId ?? null,
+    prepareStatus: input.prepareStatus ?? null,
+    sendHandlerAttempts: input.sendHandlerAttempts ?? 1,
     cdpRequestId: input.cdpRequestId,
     responseStatus: input.responseStatus ?? null,
     responseMimeType: input.responseMimeType ?? null,

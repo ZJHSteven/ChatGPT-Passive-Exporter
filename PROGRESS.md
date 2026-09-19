@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-19：actor send 补齐当前 Web composer 的两阶段 prepare 状态机。真实 CLI smoke 只触发 prepare、20 秒内没有正式 `/f/conversation`，与此前手工 CDP 现象一致；现在只在观察到 `/f/conversation/prepare` 返回 2xx 且正式 POST 尚未出现时，额外调用一次相同页面 send handler。Trace 同时保存 prepare request/status 与 handler 尝试次数，禁止按固定延时盲目重复点击。
 - 2026-09-19：actor 首次 CLI smoke 在真正发送前暴露 Node ESM 解析差异：Vitest/TS 可解析无扩展 import，但 Node 24 直接执行 `.ts` 不会给运行时 import 自动补 `.ts`。已把 `chatgpt-actor.ts` 对 recorder 的 runtime import 改为显式 `.ts`；该失败发生在创建/发送前，没有产生测试 conversation。
 - 2026-09-19：修正 actor CDP 异步回调的 TypeScript 控制流表达：`requestWillBeSent` 通过显式 holder 回填 submit event，避免 TS 把主循环变量错误收窄为 `never`；运行时协议不变。
 - 2026-09-19：Phase 3 单 actor 控制面开始产品化：新增 `chatgpt-archive actor send/status/reset`。`send` 只接受 prompt file，默认始终复用同一个 actor target、导航到全新聊天、用页面自身 send button handler 提交；它不构造 `/backend-api/f/conversation`，只监听页面自然 `requestWillBeSent`，再等 `/c/<UUID>` 绑定并追加 `actor-submit` trace。这样本机受控并发终于有可靠 start 时刻，可与 Guardian complete/body snapshot 对齐。

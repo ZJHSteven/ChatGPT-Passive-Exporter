@@ -279,15 +279,31 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
     // CDP event callback 与下面的轮询循环是异步交错的。使用显式 holder 可以让 TypeScript
     // 正确表达“回调稍后会填值”，避免把主循环里的变量误判成永远为 null/never。
     const submitState: { event: { at: number; requestId: string } | null } = { event: null }
+    const prepareState: {
+      requestId: string | null
+      status: number | null
+      respondedAt: number | null
+    } = { requestId: null, status: null, respondedAt: null }
     let responseStatus: number | null = null
     let responseMimeType: string | null = null
     const formalRequestUrl = 'https://chatgpt.com/backend-api/f/conversation'
+    const prepareRequestUrl = `${formalRequestUrl}/prepare`
     const offRequest = client.on('Network.requestWillBeSent', (event) => {
+      if (event?.request?.method === 'POST' && event?.request?.url === prepareRequestUrl) {
+        // 同一次 actor send 最多关心第一条 prepare；后续若前端自己重试，不让它覆盖初始证据。
+        if (!prepareState.requestId) prepareState.requestId = String(event.requestId)
+        return
+      }
       if (submitState.event) return
       if (event?.request?.method !== 'POST' || event?.request?.url !== formalRequestUrl) return
       submitState.event = { at: Date.now(), requestId: String(event.requestId) }
     })
     const offResponse = client.on('Network.responseReceived', (event) => {
+      if (prepareState.requestId && String(event?.requestId) === prepareState.requestId) {
+        prepareState.status = Number(event?.response?.status ?? 0) || null
+        prepareState.respondedAt = Date.now()
+        return
+      }
       const submitEvent = submitState.event
       if (!submitEvent || String(event?.requestId) !== submitEvent.requestId) return
       responseStatus = Number(event?.response?.status ?? 0) || null
@@ -295,6 +311,8 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
     })
 
     try {
+      let sendHandlerAttempts = 1
+      let retriedAfterPrepare = false
       await clickSendHandler(client)
       const deadline = Date.now() + timeoutMs
       let conversationId: string | null = null
@@ -313,6 +331,9 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
             boundAt,
             conversationId,
             actorTargetId: targetId,
+            prepareRequestId: prepareState.requestId,
+            prepareStatus: prepareState.status,
+            sendHandlerAttempts,
             cdpRequestId: submitEvent.requestId,
             responseStatus,
             responseMimeType,
@@ -331,10 +352,30 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
             boundAt,
             bindDelayMs: boundAt - submitEvent.at,
             cdpRequestId: submitEvent.requestId,
+            prepareRequestId: prepareState.requestId,
+            prepareStatus: prepareState.status,
+            sendHandlerAttempts,
             responseStatus,
             responseMimeType,
             pageUrlBefore,
           }
+        }
+
+        // 2026-09-19 当前 Web composer 的真实行为：一个全新/hidden actor 首次调用 send handler
+        // 可能只发 `/f/conversation/prepare`。手工 CDP 已复现：prepare=200 后按钮仍可用，第二次
+        // 调用同一个页面 handler 才发正式 `/f/conversation` SSE。因此只在“prepare 已明确成功，
+        // 且正式 POST 仍不存在”时补一次 handler 调用；绝不按时间盲目连点。
+        if (
+          !submitState.event
+          && !retriedAfterPrepare
+          && prepareState.respondedAt !== null
+          && prepareState.status !== null
+          && prepareState.status >= 200
+          && prepareState.status < 300
+        ) {
+          retriedAfterPrepare = true
+          sendHandlerAttempts += 1
+          await clickSendHandler(client)
         }
         await new Promise(resolve => setTimeout(resolve, 100))
       }
