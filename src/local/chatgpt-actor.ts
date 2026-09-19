@@ -274,16 +274,19 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
     await clearAndTypePrompt(client, options.prompt)
 
     const pageUrlBefore = String(await evaluateValue(client, 'location.href') || CHATGPT_HOME)
-    let submitEvent: { at: number; requestId: string } | null = null
+    // CDP event callback 与下面的轮询循环是异步交错的。使用显式 holder 可以让 TypeScript
+    // 正确表达“回调稍后会填值”，避免把主循环里的变量误判成永远为 null/never。
+    const submitState: { event: { at: number; requestId: string } | null } = { event: null }
     let responseStatus: number | null = null
     let responseMimeType: string | null = null
     const formalRequestUrl = 'https://chatgpt.com/backend-api/f/conversation'
     const offRequest = client.on('Network.requestWillBeSent', (event) => {
-      if (submitEvent) return
+      if (submitState.event) return
       if (event?.request?.method !== 'POST' || event?.request?.url !== formalRequestUrl) return
-      submitEvent = { at: Date.now(), requestId: String(event.requestId) }
+      submitState.event = { at: Date.now(), requestId: String(event.requestId) }
     })
     const offResponse = client.on('Network.responseReceived', (event) => {
+      const submitEvent = submitState.event
       if (!submitEvent || String(event?.requestId) !== submitEvent.requestId) return
       responseStatus = Number(event?.response?.status ?? 0) || null
       responseMimeType = typeof event?.response?.mimeType === 'string' ? event.response.mimeType : null
@@ -297,6 +300,7 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
       while (Date.now() < deadline) {
         const href = String(await evaluateValue(client, 'location.href') || '')
         conversationId = conversationIdFromUrl(href)
+        const submitEvent = submitState.event
         if (submitEvent && conversationId) {
           boundAt = Date.now()
           // response 通常早于 URL bind，但给它一个很短的观察窗口，不因缺 response 阻塞发送控制面。
@@ -332,7 +336,7 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
         }
         await new Promise(resolve => setTimeout(resolve, 100))
       }
-      if (!submitEvent) throw new Error('ChatGPT actor did not emit POST /backend-api/f/conversation')
+      if (!submitState.event) throw new Error('ChatGPT actor did not emit POST /backend-api/f/conversation')
       throw new Error('ChatGPT actor request started but conversation UUID was not bound before timeout')
     }
     finally {
