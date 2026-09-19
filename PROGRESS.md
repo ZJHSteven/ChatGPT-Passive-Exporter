@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-19：actor 首次 CLI smoke 在真正发送前暴露 Node ESM 解析差异：Vitest/TS 可解析无扩展 import，但 Node 24 直接执行 `.ts` 不会给运行时 import 自动补 `.ts`。已把 `chatgpt-actor.ts` 对 recorder 的 runtime import 改为显式 `.ts`；该失败发生在创建/发送前，没有产生测试 conversation。
 - 2026-09-19：修正 actor CDP 异步回调的 TypeScript 控制流表达：`requestWillBeSent` 通过显式 holder 回填 submit event，避免 TS 把主循环变量错误收窄为 `never`；运行时协议不变。
 - 2026-09-19：Phase 3 单 actor 控制面开始产品化：新增 `chatgpt-archive actor send/status/reset`。`send` 只接受 prompt file，默认始终复用同一个 actor target、导航到全新聊天、用页面自身 send button handler 提交；它不构造 `/backend-api/f/conversation`，只监听页面自然 `requestWillBeSent`，再等 `/c/<UUID>` 绑定并追加 `actor-submit` trace。这样本机受控并发终于有可靠 start 时刻，可与 Guardian complete/body snapshot 对齐。
 - 2026-09-19：Phase 3 单 actor 最小 E2E 已现场通过。一个长期 actor document 通过页面自身 send handler 发出 `POST /backend-api/f/conversation`（200 `text/event-stream`），随后切换到真实 conversation `6aae3805-792c-83ea-8ad7-ebe9d0c083b1`；Guardian 独立收到 `conversation-turn-complete → conversation-created`，body sync 落出 requestId/turnExchangeId 与 `final/final`。同时抓到一个新聊天自然触发多组 `/backend-api/conversations` sidebar 请求，进一步证明“为并发开 N 个完整 ChatGPT tab”会把 list 流量按 renderer 放大，后续并发实验坚持单 actor。
