@@ -28,6 +28,12 @@ export interface RunDiagnostic {
   turnExchangeId?: string
   requestId?: string
   userMessageId?: string
+  userMessageCount: number
+  /**
+   * 同一 turn_exchange_id / request_id 内出现多个 user message，表示运行中 steering/follow-up。
+   * 这不是新的 turn 边界，也不能仅凭“后来没有 final”推断为异常终止。
+   */
+  hasInTurnSteering: boolean
   lastMessageId?: string
   lastRole?: string
   lastContentType?: string
@@ -242,6 +248,7 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
   const turn = latestTurn(messages)
   const last = turn.at(-1)
   const user = turn.find(message => roleOf(message) === 'user')
+  const userMessageCount = turn.filter(message => roleOf(message) === 'user').length
 
   const interrupted = [...turn]
     .reverse()
@@ -334,6 +341,8 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
     turnExchangeId: [...turn].reverse().map(turnExchangeIdOf).find(Boolean),
     requestId: [...turn].reverse().map(requestIdOf).find(Boolean),
     userMessageId: typeof user?.id === 'string' ? user.id : undefined,
+    userMessageCount,
+    hasInTurnSteering: userMessageCount > 1,
     lastMessageId: typeof representative?.id === 'string' ? representative.id : undefined,
     lastRole: representative ? roleOf(representative) : undefined,
     lastContentType: representative ? contentTypeOf(representative) : undefined,
