@@ -1404,6 +1404,10 @@ export class ChatArchiveDb {
       // 新 user turn”就把这些模糊形态全部登记成事故。显式 interrupted/client_stopped 例外。
       const explicitHistoricalAbnormal = historical.terminalEvidence === 'client-stopped'
         || historical.terminalEvidence === 'interrupted'
+      // 运行中 steering 会在同一 turn_exchange_id / request_id 内插入新的 user message。
+      // 这类 turn 随后即使以 reasoning-ended-no-final 收尾，也不能仅凭“后来出现新 turn”
+      // 自动推断为异常；只有显式 interrupted/client_stopped 才保留历史 incident。
+      if (!explicitHistoricalAbnormal && historical.hasInTurnSteering) continue
       if (!explicitHistoricalAbnormal && historical.tailShape === 'other') continue
       this.updateIncidentFromDiagnostic(
         conversationId,
@@ -1940,7 +1944,9 @@ export class ChatArchiveDb {
 
     const explicitAbnormal = diagnostic.terminalEvidence === 'client-stopped'
       || diagnostic.terminalEvidence === 'interrupted'
-    const inferredAbnormal = diagnostic.terminalEvidence === 'none' && diagnostic.tailShape !== 'final'
+    const inferredAbnormal = diagnostic.terminalEvidence === 'none'
+      && diagnostic.tailShape !== 'final'
+      && (requestedKind === 'watchdog-timeout' || !diagnostic.hasInTurnSteering)
     const abnormal = explicitAbnormal || (allowIncompleteTailIncident && inferredAbnormal)
     if (allowCreate && abnormal && diagnostic.terminalEvidence !== 'final') {
       // 同一 turn 从“超时疑似卡住”演进成明确 client_stopped/interrupted 时，升级同一条 incident，
