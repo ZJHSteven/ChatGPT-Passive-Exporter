@@ -1,5 +1,7 @@
 # 项目状态快照
 
+- 2026-09-20：真机捕获到运行中 steering 的协议级证据：同一 async turn 内可以再次出现 `role=user`，且 `turn_exchange_id + request_id` 与原 turn 完全相同；随后真正开启下一 turn 时两者才同时变化。此前 `diagnoseRuns()`/`diagnoseLatestRun()` 的“见 user 就切 turn”会把正常 steering 错拆并制造 historical incident，现已改为优先按 `turn_exchange_id`、次按 `request_id` 分组，仅在协议 ID 缺失时退回 user 边界。新增真实形态回归，当前 TypeScript + 17 files / 81 tests 全通过。
+
 ## 当前版本
 - 2026-09-19：定位 actor 过早发送的真正原因：静态/早期 hydration shell 中 composer 仍位于原生 `<form>`，此时点击 send 会走浏览器 GET fallback，形成 `/?prompt-textarea=...`；稳定 ChatGPT composer 则已脱离该 form。`waitForComposer()` 现在必须等待 `readyState=complete + input存在 + input.closest('form')===null`，不再把“DOM里刚出现 textarea”误当应用已可发送。
 - 2026-09-19：进一步修正 actor prepare→submit 过渡：prepare 2xx 到达瞬间 send button 可能暂时 disabled/重挂载，第二阶段不再立刻点击；循环只在按钮重新存在且 enabled 后才消耗唯一一次 retry。上一轮失败仍发生在正式 conversation POST 前，没有创建 turn。
