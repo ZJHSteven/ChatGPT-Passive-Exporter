@@ -203,14 +203,22 @@ async function evaluateValue(client: ActorCdpClient, expression: string): Promis
 async function waitForComposer(client: ActorCdpClient, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const ready = await evaluateValue(client, `Boolean(
-      document.querySelector('textarea[aria-label="与 ChatGPT 聊天"]')
-      || document.querySelector('#prompt-textarea')
-    )`)
+    const ready = await evaluateValue(client, `(() => {
+      const input = document.querySelector('textarea[aria-label="与 ChatGPT 聊天"]')
+        || document.querySelector('textarea')
+        || document.querySelector('#prompt-textarea')
+      if (document.readyState !== 'complete' || !input) return false
+
+      // 2026-09-19 真机验证：ChatGPT 的静态/早期 hydration shell 会把 composer 放在原生
+      // <form> 中；此时过早点 send 会触发浏览器 GET fallback，URL 会变成
+      // /?prompt-textarea=...，根本不会发 /f/conversation。React 完成接管后，稳定 composer
+      // 已脱离该原生 form。必须等到这个状态再输入/发送，不能只看“textarea 已经出现在 DOM”。
+      return input.closest('form') === null
+    })()`)
     if (ready === true) return
     await new Promise(resolve => setTimeout(resolve, 100))
   }
-  throw new Error('ChatGPT actor composer did not become ready')
+  throw new Error('ChatGPT actor composer did not finish hydration before timeout')
 }
 
 /** 只接受真正服务端 UUID；Branch 临时的 `WEB:` id 不算绑定完成。 */

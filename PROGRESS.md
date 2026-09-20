@@ -1,6 +1,7 @@
 # 项目状态快照
 
 ## 当前版本
+- 2026-09-19：定位 actor 过早发送的真正原因：静态/早期 hydration shell 中 composer 仍位于原生 `<form>`，此时点击 send 会走浏览器 GET fallback，形成 `/?prompt-textarea=...`；稳定 ChatGPT composer 则已脱离该 form。`waitForComposer()` 现在必须等待 `readyState=complete + input存在 + input.closest('form')===null`，不再把“DOM里刚出现 textarea”误当应用已可发送。
 - 2026-09-19：进一步修正 actor prepare→submit 过渡：prepare 2xx 到达瞬间 send button 可能暂时 disabled/重挂载，第二阶段不再立刻点击；循环只在按钮重新存在且 enabled 后才消耗唯一一次 retry。上一轮失败仍发生在正式 conversation POST 前，没有创建 turn。
 - 2026-09-19：actor send 补齐当前 Web composer 的两阶段 prepare 状态机。真实 CLI smoke 只触发 prepare、20 秒内没有正式 `/f/conversation`，与此前手工 CDP 现象一致；现在只在观察到 `/f/conversation/prepare` 返回 2xx 且正式 POST 尚未出现时，额外调用一次相同页面 send handler。Trace 同时保存 prepare request/status 与 handler 尝试次数，禁止按固定延时盲目重复点击。
 - 2026-09-19：actor 首次 CLI smoke 在真正发送前暴露 Node ESM 解析差异：Vitest/TS 可解析无扩展 import，但 Node 24 直接执行 `.ts` 不会给运行时 import 自动补 `.ts`。已把 `chatgpt-actor.ts` 对 recorder 的 runtime import 改为显式 `.ts`；该失败发生在创建/发送前，没有产生测试 conversation。
