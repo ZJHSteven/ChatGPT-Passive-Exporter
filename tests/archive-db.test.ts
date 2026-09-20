@@ -776,4 +776,33 @@ describe('ChatArchiveDb', () => {
       db.close()
     }
   })
+
+  test('historical steering without explicit interruption does not become an incident', () => {
+    const db = tempDb()
+    try {
+      db.mergeLiveMessagesPage({
+        title: 'steering fixture',
+        conversation_id: 'steering-history',
+        current_node: 'a2',
+        messages: [
+          { id: 'u1', author: { role: 'user' }, recipient: 'all', content: { content_type: 'text', parts: ['first'] }, metadata: { turn_exchange_id: 'turn-1', request_id: 'req-1' } },
+          { id: 'r1', author: { role: 'assistant' }, recipient: 'all', content: { content_type: 'thoughts', parts: ['thinking'] }, metadata: { turn_exchange_id: 'turn-1', request_id: 'req-1', reasoning_status: 'is_reasoning' } },
+          { id: 'u-steer', author: { role: 'user' }, recipient: 'all', content: { content_type: 'text', parts: ['steer'] }, metadata: { turn_exchange_id: 'turn-1', request_id: 'req-1' } },
+          { id: 'recap1', author: { role: 'assistant' }, recipient: 'all', content: { content_type: 'reasoning_recap', parts: ['done thinking'] }, metadata: { turn_exchange_id: 'turn-1', request_id: 'req-1', reasoning_status: 'reasoning_ended' } },
+          { id: 'u2', author: { role: 'user' }, recipient: 'all', content: { content_type: 'text', parts: ['next turn'] }, metadata: { turn_exchange_id: 'turn-2', request_id: 'req-2' } },
+          { id: 'a2', author: { role: 'assistant' }, recipient: 'all', channel: 'final', content: { content_type: 'text', parts: ['ok'] }, metadata: { turn_exchange_id: 'turn-2', request_id: 'req-2', finish_details: { type: 'stop', stop_tokens: [200002] } } },
+        ],
+      }, {
+        observedAt: 3000,
+        updateCurrentState: true,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: true,
+      })
+
+      expect(db.listIncidents()).toHaveLength(0)
+    }
+    finally {
+      db.close()
+    }
+  })
 })
