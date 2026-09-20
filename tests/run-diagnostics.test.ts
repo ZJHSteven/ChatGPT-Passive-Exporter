@@ -109,6 +109,38 @@ describe('最后一轮快照诊断', () => {
     expect(results[1]).toMatchObject({ turnExchangeId: 'turn-2', tailShape: 'final', terminalEvidence: 'final' })
   })
 
+  test('same turn_exchange_id user steering stays inside one logical turn', () => {
+    const results = diagnoseRuns(payload([
+      message({ id: 'u1', author: { role: 'user' }, metadata: { turn_exchange_id: 'turn-1', request_id: 'request-1' } }),
+      message({ id: 'thought1', content: { content_type: 'thoughts' }, metadata: { turn_exchange_id: 'turn-1', request_id: 'request-1', reasoning_status: 'is_reasoning' } }),
+      message({ id: 'call1', recipient: 'api_tool.call_tool', content: { content_type: 'code', text: '{}' }, metadata: { turn_exchange_id: 'turn-1', request_id: 'request-1' } }),
+      message({ id: 'tool1', author: { role: 'tool' }, content: { content_type: 'code', text: '{"ok":true}' }, metadata: { turn_exchange_id: 'turn-1', request_id: 'request-1' } }),
+      message({ id: 'u-steer', author: { role: 'user' }, metadata: { turn_exchange_id: 'turn-1', request_id: 'request-1' } }),
+      message({ id: 'recap1', content: { content_type: 'reasoning_recap', parts: ['steered'] }, metadata: { turn_exchange_id: 'turn-1', request_id: 'request-1', reasoning_status: 'reasoning_ended' } }),
+      message({ id: 'u2', author: { role: 'user' }, metadata: { turn_exchange_id: 'turn-2', request_id: 'request-2' } }),
+      message({ id: 'a2', channel: 'final', metadata: { turn_exchange_id: 'turn-2', request_id: 'request-2', finish_details: { type: 'stop', stop_tokens: [200002] } } }),
+    ]))
+
+    expect(results).toHaveLength(2)
+    expect(results[0]).toMatchObject({
+      turnExchangeId: 'turn-1',
+      requestId: 'request-1',
+      tailShape: 'reasoning-ended-no-final',
+      nodeCount: 6,
+    })
+    expect(results[1]).toMatchObject({ turnExchangeId: 'turn-2', requestId: 'request-2', tailShape: 'final' })
+
+    const latest = diagnoseLatestRun(payload([
+      message({ id: 'u1', author: { role: 'user' }, metadata: { turn_exchange_id: 'turn-1', request_id: 'request-1' } }),
+      message({ id: 'call1', recipient: 'api_tool.call_tool', content: { content_type: 'code', text: '{}' }, metadata: { turn_exchange_id: 'turn-1', request_id: 'request-1' } }),
+      message({ id: 'tool1', author: { role: 'tool' }, metadata: { turn_exchange_id: 'turn-1', request_id: 'request-1' } }),
+      message({ id: 'u-steer', author: { role: 'user' }, metadata: { turn_exchange_id: 'turn-1', request_id: 'request-1' } }),
+      message({ id: 'recap1', content: { content_type: 'reasoning_recap', parts: ['steered'] }, metadata: { turn_exchange_id: 'turn-1', request_id: 'request-1', reasoning_status: 'reasoning_ended' } }),
+    ]))
+    expect(latest.nodeCount).toBe(5)
+    expect(latest.turnExchangeId).toBe('turn-1')
+  })
+
   test('reasoning 已结束但 final 缺失会单独标成 reasoning-ended-no-final', () => {
     const result = diagnoseLatestRun(payload([
       message({ id: 'u1', author: { role: 'user' }, metadata: { turn_exchange_id: 'turn-1' } }),
