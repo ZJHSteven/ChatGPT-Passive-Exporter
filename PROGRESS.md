@@ -1,6 +1,8 @@
 # 项目状态快照
 
 - 2026-09-20：真机捕获到运行中 steering 的协议级证据：同一 async turn 内可以再次出现 `role=user`，且 `turn_exchange_id + request_id` 与原 turn 完全相同；随后真正开启下一 turn 时两者才同时变化。此前 `diagnoseRuns()`/`diagnoseLatestRun()` 的“见 user 就切 turn”会把正常 steering 错拆并制造 historical incident，现已改为优先按 `turn_exchange_id`、次按 `request_id` 分组，仅在协议 ID 缺失时退回 user 边界。新增真实形态回归，当前 TypeScript + 17 files / 81 tests 全通过。
+- 2026-09-20：进一步修正 steering incident 语义：同一 turn 内多条 user message 现在标记 `hasInTurnSteering`；普通 complete / historical backfill 不再仅凭“无 final”把这类正常 steering 记成 abnormal，只有显式 `client_stopped/interrupted` 仍会立案；watchdog timeout 不受此豁免。回归增至 17 files / 82 tests。正式 ledger 中 18 条满足“historical-turn + terminal_evidence=none + 同 turn 多 user”的旧 steering 假阳性已一次性清理，并以当前 HEAD 重启 daemon。
+- 2026-09-20：确认 Sep19 长会话“并发异常研究”存在 ghost-execution / persistence-stall：conversation body 的 update_time/current_node 在 15:06:48 后停止推进，但同一个 DevSpace 审计 metadata 会话继续执行并产生 Git commit 至至少 15:28，约 22 分钟以上；后续 raw body 的 `context_truncation_continuation` 仍为 null，因此“执行链继续但 conversation 持久化链停滞”已证实，但尚不能把根因直接归因于上下文超限。
 
 ## 当前版本
 - 2026-09-19：定位 actor 过早发送的真正原因：静态/早期 hydration shell 中 composer 仍位于原生 `<form>`，此时点击 send 会走浏览器 GET fallback，形成 `/?prompt-textarea=...`；稳定 ChatGPT composer 则已脱离该 form。`waitForComposer()` 现在必须等待 `readyState=complete + input存在 + input.closest('form')===null`，不再把“DOM里刚出现 textarea”误当应用已可发送。
