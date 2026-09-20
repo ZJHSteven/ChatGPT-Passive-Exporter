@@ -32,6 +32,8 @@
 
 ## 2026-09-19 Active Turn Recorder ExecPlan
 
+> 2026-09-20 steering 校正：真实样本证明，运行中用户追加 follow-up 时，新 `role=user` message 可以继续沿用同一个 `turn_exchange_id + request_id`；只有真正开启下一轮时这两个 ID 才变化。运行诊断因此必须优先按 `turn_exchange_id`（次选 `request_id`）划分 turn，只在协议 ID 缺失时回退到 user 边界。`async-task-steering-message` 属于同一 async task 的 steering/progress 证据，不能因为中途出现新 user message 就制造 historical abnormal incident。
+
 > 目标：下一次出现“多个 conversation 在十几秒内一起 `conversation-turn-complete`，但没有 final answer”的批量异常时，不再依赖事后手工拼日志，而是由 Guardian/daemon 自动留下可回放的逐 turn 时间线。
 
 1. **新增独立 turn trace JSONL。** 每条记录都只保存生命周期/诊断元数据，不保存用户正文、工具正文、认证头或 cookie。默认路径放在 `data/active-turn-trace.jsonl`，并允许 CLI flag 覆盖。
