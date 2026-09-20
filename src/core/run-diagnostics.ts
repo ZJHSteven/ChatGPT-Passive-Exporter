@@ -28,12 +28,12 @@ export interface RunDiagnostic {
   turnExchangeId?: string
   requestId?: string
   userMessageId?: string
-  userMessageCount: number
+  userMessageCount?: number
   /**
    * 同一 turn_exchange_id / request_id 内出现多个 user message，表示运行中 steering/follow-up。
    * 这不是新的 turn 边界，也不能仅凭“后来没有 final”推断为异常终止。
    */
-  hasInTurnSteering: boolean
+  hasInTurnSteering?: boolean
   lastMessageId?: string
   lastRole?: string
   lastContentType?: string
