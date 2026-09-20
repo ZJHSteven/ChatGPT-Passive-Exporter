@@ -127,6 +127,8 @@ describe('最后一轮快照诊断', () => {
       requestId: 'request-1',
       tailShape: 'reasoning-ended-no-final',
       nodeCount: 6,
+      userMessageCount: 2,
+      hasInTurnSteering: true,
     })
     expect(results[1]).toMatchObject({ turnExchangeId: 'turn-2', requestId: 'request-2', tailShape: 'final' })
 
