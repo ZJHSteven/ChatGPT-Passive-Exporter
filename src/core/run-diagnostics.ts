@@ -136,15 +136,70 @@ function orderedMessages(payload: RawConversationPayload): RawChatMessage[] {
   return reversed.reverse()
 }
 
-function latestTurn(messages: RawChatMessage[]): RawChatMessage[] {
-  let lastUserIndex = -1
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (roleOf(messages[index]!) === 'user') {
-      lastUserIndex = index
-      break
-    }
+function requestIdOfMessage(message: RawChatMessage): string | undefined {
+  return requestIdOf(message)
+}
+
+/**
+ * 把页面中的消息切成真实的 turn。
+ *
+ * 2026-09-20 的真机样本证明：用户在模型仍运行时发送 follow-up/steering，新的 user message
+ * 仍然可以沿用**同一个** `turn_exchange_id` 和 `request_id`。因此“看到 user 就开新 turn”会把
+ * 一个正常 steering 错拆成两个 turn，并进一步制造假的 reasoning-ended-no-final incident。
+ *
+ * 边界优先级：
+ * 1. `turn_exchange_id` 变化：第一方最明确的 turn 身份；
+ * 2. 缺少 turn_exchange_id 时，`request_id` 变化；
+ * 3. 两类协议 ID 都缺失时，才退回传统的 user-message 边界。
+ */
+function splitLogicalTurns(messages: RawChatMessage[]): RawChatMessage[][] {
+  const turns: RawChatMessage[][] = []
+  let current: RawChatMessage[] = []
+  let currentTurnExchangeId: string | undefined
+  let currentRequestId: string | undefined
+
+  const flush = () => {
+    if (current.length > 0) turns.push(current)
+    current = []
+    currentTurnExchangeId = undefined
+    currentRequestId = undefined
   }
-  return lastUserIndex >= 0 ? messages.slice(lastUserIndex) : messages
+
+  for (const message of messages) {
+    const messageTurnExchangeId = turnExchangeIdOf(message)
+    const messageRequestId = requestIdOfMessage(message)
+
+    const hasStableCurrentIdentity = Boolean(currentTurnExchangeId || currentRequestId)
+    const sameStableIdentity = Boolean(
+      (currentTurnExchangeId && messageTurnExchangeId === currentTurnExchangeId)
+      || (!currentTurnExchangeId && currentRequestId && messageRequestId === currentRequestId),
+    )
+    const explicitlyDifferentIdentity = Boolean(
+      (currentTurnExchangeId && messageTurnExchangeId && messageTurnExchangeId !== currentTurnExchangeId)
+      || (!currentTurnExchangeId && currentRequestId && messageRequestId && messageRequestId !== currentRequestId),
+    )
+    const fallbackUserBoundary = roleOf(message) === 'user'
+      && current.length > 0
+      && !hasStableCurrentIdentity
+      && !messageTurnExchangeId
+      && !messageRequestId
+
+    if (explicitlyDifferentIdentity || fallbackUserBoundary) flush()
+
+    current.push(message)
+    if (!currentTurnExchangeId && messageTurnExchangeId) currentTurnExchangeId = messageTurnExchangeId
+    if (!currentRequestId && messageRequestId) currentRequestId = messageRequestId
+
+    // 对带协议 ID 的消息，只有“明确不同”才切 turn；同 ID 的 user 就是 steering。
+    // 无 ID 的 system/tool 辅助消息继续附着到当前 turn，不单独制造边界。
+    void sameStableIdentity
+  }
+  flush()
+  return turns
+}
+
+function latestTurn(messages: RawChatMessage[]): RawChatMessage[] {
+  return splitLogicalTurns(messages).at(-1) ?? messages
 }
 
 /**
@@ -158,17 +213,7 @@ function latestTurn(messages: RawChatMessage[]): RawChatMessage[] {
 export function diagnoseRuns(payload: RawConversationPayload): RunDiagnostic[] {
   const messages = orderedMessages(payload)
   if (messages.length === 0) return []
-
-  const turns: RawChatMessage[][] = []
-  let current: RawChatMessage[] = []
-  for (const message of messages) {
-    if (roleOf(message) === 'user' && current.length > 0) {
-      turns.push(current)
-      current = []
-    }
-    current.push(message)
-  }
-  if (current.length > 0) turns.push(current)
+  const turns = splitLogicalTurns(messages)
 
   return turns.map((turn, index) => {
     const lastMessageId = typeof turn.at(-1)?.id === 'string' ? turn.at(-1)!.id : undefined
