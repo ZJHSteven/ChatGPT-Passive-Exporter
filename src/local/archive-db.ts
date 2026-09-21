@@ -113,6 +113,8 @@ export interface ArchiveIncidentRow {
   turnExchangeId: string | null
   turnKey: string
   incidentKind: 'watchdog-timeout' | 'abnormal-terminal'
+  /** 生命周期主类：回答“这一轮为什么算事故”，不与 tail/head 结构混在一起。 */
+  lifecycleClass: 'complete-no-final' | 'watchdog-timeout' | 'explicit-interrupted' | 'abnormal-terminal'
   detectedAt: number
   lastObservedAt: number
   resolvedAt: number | null
@@ -120,8 +122,21 @@ export interface ArchiveIncidentRow {
   reason: string
   terminalEvidence: string
   tailShape: string
+  /** canonical current_node 与本次 plural messages[] 的相对关系。 */
+  headState: string | null
+  /** 是否已经在 head history 中真实观察到 A→B→A/返回旧 head。 */
+  headRollbackObserved: boolean
+  /** current_node 之后、仍属于同一 turn 的 off-head message 数量。 */
+  offHeadSameTurnCount: number
   source: string
   diagnosticJson: string
+}
+
+function normalizeIncidentRow(row: Record<string, unknown>): ArchiveIncidentRow {
+  return {
+    ...row,
+    headRollbackObserved: Number(row.headRollbackObserved) === 1,
+  } as unknown as ArchiveIncidentRow
 }
 
 function ensureParentDir(filePath: string): void {
@@ -433,6 +448,7 @@ export class ChatArchiveDb {
         turn_exchange_id TEXT,
         turn_key TEXT,
         incident_kind TEXT NOT NULL DEFAULT 'abnormal-terminal',
+        lifecycle_class TEXT,
         detected_at INTEGER NOT NULL,
         last_observed_at INTEGER,
         resolved_at INTEGER,
@@ -440,6 +456,9 @@ export class ChatArchiveDb {
         reason TEXT NOT NULL,
         terminal_evidence TEXT NOT NULL,
         tail_shape TEXT NOT NULL,
+        head_state TEXT,
+        head_rollback INTEGER NOT NULL DEFAULT 0,
+        off_head_same_turn_count INTEGER NOT NULL DEFAULT 0,
         source TEXT NOT NULL,
         diagnostic_json TEXT NOT NULL
       );
@@ -500,6 +519,10 @@ export class ChatArchiveDb {
     this.ensureColumn('incidents', 'turn_key', 'TEXT')
     this.ensureColumn('incidents', 'incident_kind', "TEXT NOT NULL DEFAULT 'abnormal-terminal'")
     this.ensureColumn('incidents', 'last_observed_at', 'INTEGER')
+    this.ensureColumn('incidents', 'lifecycle_class', 'TEXT')
+    this.ensureColumn('incidents', 'head_state', 'TEXT')
+    this.ensureColumn('incidents', 'head_rollback', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('incidents', 'off_head_same_turn_count', 'INTEGER NOT NULL DEFAULT 0')
 
     // Incident 的稳定身份必须属于某一个 turn，而不是“这个 conversation 当前有一张红牌”。
     // 旧库已有少量 incident：优先沿用 turn_exchange_id；极少数没有 turn id 的历史行退化用自身 id，
@@ -507,8 +530,19 @@ export class ChatArchiveDb {
     this.db.prepare(`
       UPDATE incidents
       SET turn_key = COALESCE(NULLIF(turn_key, ''), NULLIF(turn_exchange_id, ''), id),
-          last_observed_at = COALESCE(last_observed_at, resolved_at, detected_at)
-      WHERE turn_key IS NULL OR turn_key = '' OR last_observed_at IS NULL
+          last_observed_at = COALESCE(last_observed_at, resolved_at, detected_at),
+          lifecycle_class = COALESCE(NULLIF(lifecycle_class, ''), CASE
+            WHEN incident_kind = 'watchdog-timeout' THEN 'watchdog-timeout'
+            WHEN terminal_evidence IN ('client-stopped', 'interrupted') THEN 'explicit-interrupted'
+            WHEN source LIKE '%conversation-turn-complete%'
+              OR source LIKE '%async-complete%'
+              OR reason LIKE '历史 turn 后续已经出现更新的 user turn%'
+            THEN 'complete-no-final'
+            ELSE 'abnormal-terminal'
+          END)
+      WHERE turn_key IS NULL OR turn_key = ''
+         OR last_observed_at IS NULL
+         OR lifecycle_class IS NULL OR lifecycle_class = ''
     `).run()
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS incidents_conversation_turn
@@ -1928,11 +1962,28 @@ export class ChatArchiveDb {
     }
 
     const currentIncident = this.db.prepare(`
-      SELECT id, status, incident_kind AS incidentKind
+      SELECT id, status, incident_kind AS incidentKind,
+             lifecycle_class AS lifecycleClass
       FROM incidents
       WHERE conversation_id=? AND turn_key=?
       LIMIT 1
-    `).get(conversationId, turnKey) as { id: string, status: string, incidentKind: string } | undefined
+    `).get(conversationId, turnKey) as {
+      id: string
+      status: string
+      incidentKind: string
+      lifecycleClass: string | null
+    } | undefined
+
+    // head history 只有在 current_node 真正变化时才插一行；因此同一个 head 出现两次以上，
+    // 就意味着中间至少去过另一个 head（A→B→A）。这里只记录证据，不把“主动切 branch”
+    // 和“异常回退”擅自合并成同一个根因。
+    const headRollbackObserved = diagnostic.currentNode
+      ? Number((this.db.prepare(`
+          SELECT count(*) AS n
+          FROM conversation_head_history
+          WHERE conversation_id = ? AND current_node = ?
+        `).get(conversationId, diagnostic.currentNode) as { n: number }).n) >= 2
+      : false
 
     if (diagnostic.terminalEvidence === 'final' && currentIncident?.status === 'open') {
       this.db.prepare(`
@@ -1967,6 +2018,9 @@ export class ChatArchiveDb {
             reason=?,
             terminal_evidence=?,
             tail_shape=?,
+            head_state=?,
+            head_rollback=?,
+            off_head_same_turn_count=?,
             diagnostic_json=?
         WHERE id=?
       `).run(
@@ -1974,6 +2028,9 @@ export class ChatArchiveDb {
         refreshedReason,
         diagnostic.terminalEvidence,
         diagnostic.tailShape,
+        diagnostic.headState,
+        headRollbackObserved ? 1 : 0,
+        diagnostic.offHeadSameTurnMessageCount,
         json(diagnostic),
         currentIncident.id,
       )
@@ -1991,18 +2048,29 @@ export class ChatArchiveDb {
       const effectiveKind: 'watchdog-timeout' | 'abnormal-terminal' = explicitAbnormal
         ? 'abnormal-terminal'
         : requestedKind
+      const lifecycleClass: ArchiveIncidentRow['lifecycleClass'] = explicitAbnormal
+        ? 'explicit-interrupted'
+        : effectiveKind === 'watchdog-timeout'
+          ? 'watchdog-timeout'
+          : (allowIncompleteTailIncident || historicalEnded)
+              ? 'complete-no-final'
+              : 'abnormal-terminal'
       const incidentId = currentIncident?.id ?? sha256Text(`${conversationId}:${turnKey}`).slice(0, 24)
       const reason = historicalEnded && !explicitAbnormal
-        ? `历史 turn 后续已经出现更新的 user turn，可确认该轮已经结束；该轮没有 final，持久化尾部为 ${diagnostic.tailShape}。`
+        ? `历史 turn 后续已经出现更新的 user turn，可确认该轮已经结束；该轮属于 complete-no-final，持久化尾部为 ${diagnostic.tailShape}。`
         : effectiveKind === 'watchdog-timeout'
           ? `超过 watchdog 阈值仍未收到 conversation-turn-complete；${diagnostic.summary}`
-          : diagnostic.summary
+          : lifecycleClass === 'complete-no-final'
+            ? `已确认 turn 完成但没有 final；${diagnostic.summary}`
+            : diagnostic.summary
       this.db.prepare(`
         INSERT INTO incidents (
-          id, conversation_id, turn_exchange_id, turn_key, incident_kind,
+          id, conversation_id, turn_exchange_id, turn_key, incident_kind, lifecycle_class,
           detected_at, last_observed_at, resolved_at, status,
-          reason, terminal_evidence, tail_shape, source, diagnostic_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'open', ?, ?, ?, ?, ?)
+          reason, terminal_evidence, tail_shape,
+          head_state, head_rollback, off_head_same_turn_count,
+          source, diagnostic_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'open', ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversation_id, turn_key) DO UPDATE SET
           turn_exchange_id=COALESCE(excluded.turn_exchange_id, incidents.turn_exchange_id),
           incident_kind=CASE
@@ -2010,12 +2078,16 @@ export class ChatArchiveDb {
             THEN 'abnormal-terminal'
             ELSE excluded.incident_kind
           END,
+          lifecycle_class=excluded.lifecycle_class,
           last_observed_at=excluded.last_observed_at,
           resolved_at=NULL,
           status='open',
           reason=excluded.reason,
           terminal_evidence=excluded.terminal_evidence,
           tail_shape=excluded.tail_shape,
+          head_state=excluded.head_state,
+          head_rollback=excluded.head_rollback,
+          off_head_same_turn_count=excluded.off_head_same_turn_count,
           source=excluded.source,
           diagnostic_json=excluded.diagnostic_json
       `).run(
@@ -2024,11 +2096,15 @@ export class ChatArchiveDb {
         latestTurn,
         turnKey,
         effectiveKind,
+        lifecycleClass,
         observedAt,
         observedAt,
         reason,
         diagnostic.terminalEvidence,
         diagnostic.tailShape,
+        diagnostic.headState,
+        headRollbackObserved ? 1 : 0,
+        diagnostic.offHeadSameTurnMessageCount,
         source,
         json(diagnostic),
       )
@@ -2067,25 +2143,33 @@ export class ChatArchiveDb {
   listIncidents(options: { status?: 'open' | 'resolved', limit?: number } = {}): ArchiveIncidentRow[] {
     const limit = Math.max(1, Math.min(1000, options.limit ?? 100))
     if (options.status) {
-      return this.db.prepare(`
+      const rows = this.db.prepare(`
         SELECT id, conversation_id AS conversationId, turn_exchange_id AS turnExchangeId,
                turn_key AS turnKey, incident_kind AS incidentKind,
+               lifecycle_class AS lifecycleClass,
                detected_at AS detectedAt, last_observed_at AS lastObservedAt,
                resolved_at AS resolvedAt, status, reason,
                terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
+               head_state AS headState, head_rollback AS headRollbackObserved,
+               off_head_same_turn_count AS offHeadSameTurnCount,
                source, diagnostic_json AS diagnosticJson
         FROM incidents WHERE status = ? ORDER BY detected_at DESC LIMIT ?
-      `).all(options.status, limit) as unknown as ArchiveIncidentRow[]
+      `).all(options.status, limit) as unknown as Array<Record<string, unknown>>
+      return rows.map(normalizeIncidentRow)
     }
-    return this.db.prepare(`
+    const rows = this.db.prepare(`
       SELECT id, conversation_id AS conversationId, turn_exchange_id AS turnExchangeId,
              turn_key AS turnKey, incident_kind AS incidentKind,
+             lifecycle_class AS lifecycleClass,
              detected_at AS detectedAt, last_observed_at AS lastObservedAt,
              resolved_at AS resolvedAt, status, reason,
              terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
+             head_state AS headState, head_rollback AS headRollbackObserved,
+             off_head_same_turn_count AS offHeadSameTurnCount,
              source, diagnostic_json AS diagnosticJson
       FROM incidents ORDER BY detected_at DESC LIMIT ?
-    `).all(limit) as unknown as ArchiveIncidentRow[]
+    `).all(limit) as unknown as Array<Record<string, unknown>>
+    return rows.map(normalizeIncidentRow)
   }
 
   /**
