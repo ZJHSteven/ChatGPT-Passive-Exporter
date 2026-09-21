@@ -32,6 +32,15 @@ export function isConfirmedTerminalTrigger(trigger: unknown): boolean
 /** 把 conversation list async_status 分类为 active / complete / unknown。 */
 export function classifyCatalogAsyncStatus(value: unknown): 'active' | 'complete' | 'unknown'
 
+/**
+ * 根据 reconciliation 场景选择需要连续看到多少条稳定旧记录才可停止 catalog 扫描。
+ * 短 WSS reconnect 默认一整页；startup/periodic/长盲区继续使用更深阈值。
+ */
+export function catalogStableOverlapTarget(
+  reason: unknown,
+  options?: { pageSize?: number, deepThreshold?: number },
+): number
+
 /** 只有“无 WSS”从本次 gap 起持续超过 grace 后，才允许重建 Guardian。 */
 export function shouldRebuildGuardianForMissingWss(input: {
   now: number

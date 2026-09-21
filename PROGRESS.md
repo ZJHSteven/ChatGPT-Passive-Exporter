@@ -1,5 +1,6 @@
 # 项目状态快照
 
+- 2026-09-21：定向测试已 63/63 通过；首次 typecheck 唯一失败来自 `chatgpt-archive-daemon.d.mts` 尚未声明新导出的 `catalogStableOverlapTarget()`，运行时/Vitest 本身正常。现已同步旁路声明，继续全量回归。
 - 2026-09-21：回溯 9/13《chatgpt同步持久化》后，确认今天的 head 模型能解释当时一部分长期疑问，但证据等级必须分开。旧讨论已经明确记录过“刷新后状态回吃”和“手机看起来吞了两步”，并在真实冰岛分支中证明：同一 parent 下可以保留正文完全相同但 node/message ID 不同的 User sibling，以及 regenerate/retry Assistant sibling；当时已经提出“UI current_node 切到另一 branch 后，两步可从当前视图消失，但服务器未必删除”。本地当时也确认 2762 messages / 1623 mapping nodes / 13 live observations 未随页面刷新做 destructive overwrite。今天重新查 `conversation_head_history`，该 conversation 只有 1 条 head 记录，没有 A→B→A，因此旧“回吃”只能标为**与 branch/head 切换或 head/messages divergence 高度一致的历史现象**，不能追溯升级成 confirmed rollback。Phase 3 SSE/current-node transition recorder 仍是区分“live UI 曾到 B 后回 A”与“B 只是 off-head transport message”的必要证据。
 - 2026-09-21：确认并用回归测试锁死 archive 的“证据优先”语义：live plural body 只 union/upsert，不会因为后续 current_node 回退、响应变短而删除先前已落盘 message。即使服务器从 head B 回到 A 且新 body 不再携带 B，本地 `messages` 与 Markdown 仍保留 B；`conversations.current_node` 则更新为 A。因此本地 forensic 导出不会随服务端回缩丢证据，但它是历史无损并集，可能比某一时刻 UI 当前 branch 更丰富。
 - 2026-09-21：catalog fallback 开始按盲区类型动态 overlap。`wss-reconnect` 从“最后一个差异之后连续 56 条稳定记录”收紧为“一整页 28 条稳定记录”；因此第一页全稳定时 1 页即停，第一页有少量变化时通常 2 页，若第二页仍有变化才继续第 3 页。startup/periodic/guardian-recover 暂时仍保留 `--overlap` 的深阈值（默认 56），避免把长盲区误当几秒 reconnect。日志新增 `requiredStableOverlap` 便于回放实际停止依据。
