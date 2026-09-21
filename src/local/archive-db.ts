@@ -1171,6 +1171,13 @@ export class ChatArchiveDb {
       /** watchdog 超时和已确认 abnormal terminal 都是 incident，但语义不同。 */
       incidentKind?: 'watchdog-timeout' | 'abnormal-terminal'
       /**
+       * 是否允许这次 merge 更新 incident ledger。
+       *
+       * 浏览器内存/离线 forensic recovery 只是在补“已经观察到、但 canonical body 没持久化”的
+       * 消息事实；它本身不是服务器 lifecycle 证据，因此必须能完全跳过 incident 推断/刷新。
+       */
+      updateIncidents?: boolean
+      /**
        * 是否已有外部证据确认这一轮已经结束。
        * false 时仍可记录 explicit client_stopped/interrupted，但不能把 open reasoning/tool 尾巴
        * 单独解释成异常终止；这用于 watchdog / gap repair 防止误报仍在正常运行的长任务。
