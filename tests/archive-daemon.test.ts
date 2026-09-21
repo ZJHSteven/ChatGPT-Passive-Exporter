@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import {
+  catalogStableOverlapTarget,
   classifyCatalogAsyncStatus,
   classifyConversationEvent,
   extractConversationEvents,
@@ -137,6 +138,15 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(classifyCatalogAsyncStatus(null)).toBe('unknown')
     expect(classifyCatalogAsyncStatus(0)).toBe('unknown')
     expect(classifyCatalogAsyncStatus('garbled')).toBe('unknown')
+  })
+
+  test('短 WSS reconnect 只需一整页稳定 overlap，startup/guardian 继续深扫描', () => {
+    expect(catalogStableOverlapTarget('wss-reconnect', { pageSize: 28, deepThreshold: 56 })).toBe(28)
+    expect(catalogStableOverlapTarget('startup', { pageSize: 28, deepThreshold: 56 })).toBe(56)
+    expect(catalogStableOverlapTarget('periodic', { pageSize: 28, deepThreshold: 84 })).toBe(84)
+    expect(catalogStableOverlapTarget('guardian-recover', { pageSize: 28, deepThreshold: 56 })).toBe(56)
+    // deepThreshold 即使被错误配置得比一页还小，也不能让深同步比短 gap 更激进。
+    expect(catalogStableOverlapTarget('startup', { pageSize: 28, deepThreshold: 1 })).toBe(28)
   })
 
   test('WSS 恢复 grace 从本次 socket gap 起算，而不是 Guardian 启动时间', () => {

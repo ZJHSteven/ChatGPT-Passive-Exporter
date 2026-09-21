@@ -1,5 +1,6 @@
 # 项目状态快照
 
+- 2026-09-21：catalog fallback 开始按盲区类型动态 overlap。`wss-reconnect` 从“最后一个差异之后连续 56 条稳定记录”收紧为“一整页 28 条稳定记录”；因此第一页全稳定时 1 页即停，第一页有少量变化时通常 2 页，若第二页仍有变化才继续第 3 页。startup/periodic/guardian-recover 暂时仍保留 `--overlap` 的深阈值（默认 56），避免把长盲区误当几秒 reconnect。日志新增 `requiredStableOverlap` 便于回放实际停止依据。
 - 2026-09-21：首轮 head/incident 定向测试暴露的仅是测试兼容项：旧 RunDiagnostic fixture 补 `headState/offHead*` 默认值，incident reason 测试改为校验中文“已确认 turn 完成但没有 final”，生命周期机器字段继续由 `lifecycleClass` 负责，不要求可读 reason 重复英文枚举。
 - 2026-09-21：补 incident 分层回归用例：confirmed complete 的 context-only 明确归 `complete-no-final`；同一事故可同时记录 `tail=reasoning-open + headState=behind-same-turn + offHead=2`；只有 A→B→A 的 head history 才出现 `headRollbackObserved=true`；watchdog 与 client_stopped 分别保持独立 lifecycle class。
 - 2026-09-21：Active Turn Recorder 的 `body-snapshot` 同步扩展为保存 `currentNode/currentNodeStatus/currentNodeEndTurn/headState/offHeadSameTurnMessageCount`。以后即使 incident 分类器再升级，原始 JSONL 也能回放“WSS 已 complete，但 canonical head 仍 in_progress 且后面已有同 turn messages”这一类关键控制面证据。

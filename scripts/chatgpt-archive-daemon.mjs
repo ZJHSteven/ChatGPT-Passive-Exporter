@@ -290,6 +290,23 @@ export function classifyCatalogAsyncStatus(value) {
 }
 
 /**
+ * 为不同 reconciliation 场景选择“已经足够重合”的连续稳定条目数。
+ *
+ * - 原生 WSS reconnect 的盲区通常只有几秒；此时从最新端向旧端扫描，只要在最后一个差异
+ *   之后连续看到**一整页**稳定旧记录，就已经跨过本次 gap 的变化边界。第一页完全稳定时
+ *   因此只请求一页；第一页有变化才自然翻第二页。
+ * - startup / periodic / Guardian 重建可能跨越更久，继续沿用 deepThreshold（默认 56）。
+ *
+ * 这里不是“看到一个熟 ID 就停”：一个偶然旧 ID 不足以证明 offset pagination 已重新进入
+ * 稳定区域，完整一页才是短 gap 的安全缓冲。
+ */
+export function catalogStableOverlapTarget(reason, { pageSize = 28, deepThreshold = 56 } = {}) {
+  const safePageSize = Math.max(1, Math.trunc(pageSize))
+  const safeDeepThreshold = Math.max(safePageSize, Math.trunc(deepThreshold))
+  return reason === 'wss-reconnect' ? safePageSize : safeDeepThreshold
+}
+
+/**
  * 判断“当前没有 ChatGPT WSS”是否已经持续到需要重建 Guardian。
  *
  * 关键点是 grace 必须从“这一次没有 socket 的 gap”开始算，而不是从 Guardian 启动时开始算。
@@ -1111,8 +1128,12 @@ async function main() {
     let stableOverlap = 0
     let pages = 0
     let dirtyCount = 0
+    const requiredStableOverlap = catalogStableOverlapTarget(reason, {
+      pageSize: limit,
+      deepThreshold: overlapThreshold,
+    })
     try {
-      while (stableOverlap < overlapThreshold) {
+      while (stableOverlap < requiredStableOverlap) {
         const route = '/backend-api/conversations'
         const body = await fetchChecked({
           url: listPath(offset, limit),
@@ -1202,7 +1223,13 @@ async function main() {
       reconcileInFlight = false
     }
     lastReconcileAt = Date.now()
-    await log('catalog reconciliation complete', { reason, pages, dirtyCount, stableOverlap })
+    await log('catalog reconciliation complete', {
+      reason,
+      pages,
+      dirtyCount,
+      stableOverlap,
+      requiredStableOverlap,
+    })
     await writeState()
     void drainDirty()
   }
