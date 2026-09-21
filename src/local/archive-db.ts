@@ -1942,6 +1942,43 @@ export class ChatArchiveDb {
       `).run(observedAt, observedAt, currentIncident.id)
     }
 
+    // “这一次 observation 有没有资格创建 incident”和“一个已经存在的 incident 能不能吸收
+    // 更完整的新诊断”是两回事。
+    //
+    // 典型现场：WSS conversation-turn-complete 已经可靠地为某 turn 立案，但当时旧版诊断器只把
+    // `user + model_editable_context` 识别成笼统 `other`。升级分类器后，startup/reconnect reconcile
+    // 本身不应凭一个普通 body fetch **新建**事故，但它完全有资格把同一 turn 的既有事故刷新成
+    // `context-only-no-output`。否则 incident ledger 会永久冻结在创建时的旧分类。
+    //
+    // 这里故意保留原 incident 的 source：最初的 WSS/catalog/watchdog 信号才是“为什么当时可以
+    // 判定/调查这个 turn”的生命状态证据；普通 reconcile 只是更新 body 诊断，不能冒充新的
+    // terminal source。watchdog 的 reason 也保留 timeout 语义前缀。
+    if (
+      !allowCreate
+      && currentIncident?.status === 'open'
+      && diagnostic.terminalEvidence !== 'final'
+    ) {
+      const refreshedReason = currentIncident.incidentKind === 'watchdog-timeout'
+        ? `超过 watchdog 阈值仍未收到 conversation-turn-complete；${diagnostic.summary}`
+        : diagnostic.summary
+      this.db.prepare(`
+        UPDATE incidents
+        SET last_observed_at=?,
+            reason=?,
+            terminal_evidence=?,
+            tail_shape=?,
+            diagnostic_json=?
+        WHERE id=?
+      `).run(
+        observedAt,
+        refreshedReason,
+        diagnostic.terminalEvidence,
+        diagnostic.tailShape,
+        json(diagnostic),
+        currentIncident.id,
+      )
+    }
+
     const explicitAbnormal = diagnostic.terminalEvidence === 'client-stopped'
       || diagnostic.terminalEvidence === 'interrupted'
     const inferredAbnormal = diagnostic.terminalEvidence === 'none'

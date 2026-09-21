@@ -545,6 +545,72 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('普通 reconcile 可刷新同 turn 已有 incident 的新 tail，但不得改写原终止来源或凭空新建立案', () => {
+    const db = tempDb()
+    try {
+      const contextOnly = {
+        title: 'incident refresh fixture',
+        conversation_id: 'incident-refresh',
+        current_node: 'ctx1',
+        messages: [
+          {
+            id: 'u1', author: { role: 'user' }, recipient: 'all',
+            content: { content_type: 'text', parts: ['继续'] },
+            metadata: { turn_exchange_id: 'turn-refresh', request_id: 'request-refresh' },
+          },
+          {
+            id: 'ctx1', author: { role: 'assistant' }, recipient: 'all',
+            content: { content_type: 'model_editable_context', parts: [] },
+            metadata: { turn_exchange_id: 'turn-refresh', request_id: 'request-refresh' },
+          },
+        ],
+      }
+
+      // 先模拟“旧版分类器在 WSS complete 时已经立案、但只记成 other”的历史账。
+      db.mergeLiveMessagesPage(contextOnly, {
+        observedAt: 1000,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: true,
+        observationKind: 'body-page:wss:conversation-turn-complete',
+      })
+      db.db.prepare(`
+        UPDATE incidents
+        SET tail_shape='other', reason='legacy other', diagnostic_json='{}'
+        WHERE conversation_id='incident-refresh' AND turn_key='turn-refresh'
+      `).run()
+
+      // startup/reconnect 不是新的 terminal trigger，因此 classifyTerminal=false。
+      // 它只能刷新已经存在的同 turn incident，不能把 source 改成 reconcile。
+      db.mergeLiveMessagesPage(contextOnly, {
+        observedAt: 2000,
+        classifyTerminal: false,
+        observationKind: 'body-page:reconcile:startup',
+      })
+
+      expect(db.listIncidents()).toHaveLength(1)
+      expect(db.listIncidents()[0]).toMatchObject({
+        status: 'open',
+        tailShape: 'context-only-no-output',
+        source: 'body-page:wss:conversation-turn-complete',
+        lastObservedAt: 2000,
+      })
+
+      // 一个从未由可靠 terminal/watchdog 路径立案的新 turn，普通 reconcile 仍然不能创建事故。
+      db.mergeLiveMessagesPage({
+        ...contextOnly,
+        conversation_id: 'incident-refresh-no-create',
+      }, {
+        observedAt: 3000,
+        classifyTerminal: false,
+        observationKind: 'body-page:reconcile:startup',
+      })
+      expect(db.listIncidents()).toHaveLength(1)
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('watchdog 未确认终止时不会把 open reasoning 尾巴误报为 incident，但显式 interrupted 仍可记录', () => {
     const db = tempDb()
     try {
