@@ -1,5 +1,6 @@
 # 项目状态快照
 
+- 2026-09-21：补 incident 分层回归用例：confirmed complete 的 context-only 明确归 `complete-no-final`；同一事故可同时记录 `tail=reasoning-open + headState=behind-same-turn + offHead=2`；只有 A→B→A 的 head history 才出现 `headRollbackObserved=true`；watchdog 与 client_stopped 分别保持独立 lifecycle class。
 - 2026-09-21：Active Turn Recorder 的 `body-snapshot` 同步扩展为保存 `currentNode/currentNodeStatus/currentNodeEndTurn/headState/offHeadSameTurnMessageCount`。以后即使 incident 分类器再升级，原始 JSONL 也能回放“WSS 已 complete，但 canonical head 仍 in_progress 且后面已有同 turn messages”这一类关键控制面证据。
 - 2026-09-21：incident schema 开始正式分层：新增 `lifecycle_class`、`head_state`、`head_rollback`、`off_head_same_turn_count`。`complete-no-final` 现在是生命周期主类，`tail_shape` 继续只描述死在 reasoning/tool/context 哪一层；head divergence/rollback 是第三个独立维度。旧 WSS complete/async-complete/watchdog/interrupted 记录在数据库迁移时会按已有强证据回填 lifecycle class；rollback 只有 conversation_head_history 对同一 head 至少出现两次时才置位。
 - 2026-09-21：RunDiagnostic 新增独立 `headState` 维度，不再把 canonical head 异常混进 tail/root-cause。当前支持 `aligned / behind-same-turn / behind-other-turn / current-node-missing / unknown`，并记录 `currentNodeStatus`、`currentNodeEndTurn`、currentNodeIndex 以及最多 16 个同 turn off-head message ID。真实迁移事故所需的形态现在可以表达为“无 final + 某种 tail + current_node=in_progress + behind-same-turn”；只有 head history 真正 A→B→A 才会在 incident 层进一步标 rollback。

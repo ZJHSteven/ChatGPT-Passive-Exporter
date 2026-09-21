@@ -537,7 +537,115 @@ describe('ChatArchiveDb', () => {
       expect(db.listIncidents({ status: 'open' })[0]).toMatchObject({
         turnKey: 'turn-context-only',
         incidentKind: 'abnormal-terminal',
+        lifecycleClass: 'complete-no-final',
         tailShape: 'context-only-no-output',
+        headState: 'aligned',
+        headRollbackObserved: false,
+        offHeadSameTurnCount: 0,
+      })
+    }
+    finally {
+      db.close()
+    }
+  })
+
+  test('incident 同时保存 complete-no-final、tail 与 head/messages divergence 三个独立维度', () => {
+    const db = tempDb()
+    try {
+      const body = {
+        title: 'head divergence incident',
+        conversation_id: 'head-divergence-incident',
+        current_node: 'call1',
+        messages: [
+          {
+            id: 'u1', author: { role: 'user' }, recipient: 'all', create_time: 1,
+            content: { content_type: 'text', parts: ['go'] },
+            metadata: { turn_exchange_id: 'turn-diverge', request_id: 'request-diverge' },
+          },
+          {
+            id: 'call1', author: { role: 'assistant' }, recipient: 'functions.exec', channel: 'commentary',
+            create_time: 2, status: 'in_progress', end_turn: null,
+            content: { content_type: 'text', parts: [''] },
+            metadata: { turn_exchange_id: 'turn-diverge', request_id: 'request-diverge' },
+          },
+          {
+            id: 'tool1', author: { role: 'tool' }, recipient: 'all', create_time: 3,
+            status: 'finished_successfully', content: { content_type: 'text', parts: [''] },
+            metadata: { turn_exchange_id: 'turn-diverge', request_id: 'request-diverge' },
+          },
+          {
+            id: 'thought2', author: { role: 'assistant' }, recipient: 'all', create_time: 4,
+            status: 'finished_successfully', end_turn: false,
+            content: { content_type: 'thoughts', parts: [''] },
+            metadata: {
+              turn_exchange_id: 'turn-diverge', request_id: 'request-diverge', reasoning_status: 'is_reasoning',
+            },
+          },
+        ],
+      }
+
+      db.mergeLiveMessagesPage(body, {
+        observedAt: 1000,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: true,
+        observationKind: 'body-page:wss:conversation-turn-complete',
+      })
+
+      expect(db.listIncidents({ status: 'open' })[0]).toMatchObject({
+        lifecycleClass: 'complete-no-final',
+        tailShape: 'reasoning-open',
+        headState: 'behind-same-turn',
+        headRollbackObserved: false,
+        offHeadSameTurnCount: 2,
+      })
+      expect(db.listIncidents({ status: 'open' })[0]?.reason).toContain('complete-no-final')
+    }
+    finally {
+      db.close()
+    }
+  })
+
+  test('只有 head history 真正 A→B→A 时 incident 才记录 rollback evidence', () => {
+    const db = tempDb()
+    try {
+      const messages = [
+        {
+          id: 'u1', author: { role: 'user' }, recipient: 'all', create_time: 1,
+          content: { content_type: 'text', parts: ['go'] },
+          metadata: { turn_exchange_id: 'turn-rollback' },
+        },
+        {
+          id: 'a', author: { role: 'assistant' }, recipient: 'all', create_time: 2,
+          content: { content_type: 'thoughts', parts: ['A'] },
+          metadata: { turn_exchange_id: 'turn-rollback', reasoning_status: 'is_reasoning' },
+        },
+        {
+          id: 'b', author: { role: 'assistant' }, recipient: 'all', create_time: 3,
+          content: { content_type: 'thoughts', parts: ['B'] },
+          metadata: { turn_exchange_id: 'turn-rollback', reasoning_status: 'is_reasoning' },
+        },
+      ]
+
+      db.mergeLiveMessagesPage({
+        title: 'rollback', conversation_id: 'rollback-incident', current_node: 'a', messages,
+      }, { observedAt: 1000, classifyTerminal: false })
+      db.mergeLiveMessagesPage({
+        title: 'rollback', conversation_id: 'rollback-incident', current_node: 'b', messages,
+      }, { observedAt: 2000, classifyTerminal: false })
+      db.mergeLiveMessagesPage({
+        title: 'rollback', conversation_id: 'rollback-incident', current_node: 'a', messages,
+      }, {
+        observedAt: 3000,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: true,
+        observationKind: 'body-page:wss:conversation-turn-complete',
+      })
+
+      expect(db.listIncidents({ status: 'open' })[0]).toMatchObject({
+        lifecycleClass: 'complete-no-final',
+        headState: 'behind-same-turn',
+        headRollbackObserved: true,
+        offHeadSameTurnCount: 1,
       })
     }
     finally {
@@ -736,6 +844,7 @@ describe('ChatArchiveDb', () => {
       expect(db.listIncidents({ status: 'open' })[0]).toMatchObject({
         turnKey: 'turn-new',
         incidentKind: 'watchdog-timeout',
+        lifecycleClass: 'watchdog-timeout',
       })
       expect(db.listIncidents({ status: 'open' })[0]?.reason).toContain('超过 watchdog 阈值仍未收到 conversation-turn-complete')
     }
@@ -776,6 +885,7 @@ describe('ChatArchiveDb', () => {
         id: firstId,
         turnKey: 'turn-1',
         incidentKind: 'abnormal-terminal',
+        lifecycleClass: 'explicit-interrupted',
         status: 'open',
       })
       expect(db.listIncidents()[0]?.reason).toContain('client_stopped')
