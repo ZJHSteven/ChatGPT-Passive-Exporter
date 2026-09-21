@@ -1431,6 +1431,7 @@ export class ChatArchiveDb {
     const diagnostics = diagnoseRuns(payload as never)
     const diagnostic = diagnostics.at(-1) ?? diagnoseLatestRun(payload as never)
 
+    if (options.updateIncidents !== false) {
     // page/cursor 只是运输容器：所有已经被“后续 user turn”越过的旧 turn，都有资格补自己的
     // 历史 incident。它们绝不能更新 conversation 当前汇总状态，也不能把另一个当前 turn 的
     // open incident 顺手 resolve 掉。cursor 历史页中的所有完整 user turn 都属于这种情况；
@@ -1474,6 +1475,7 @@ export class ChatArchiveDb {
         true,
         false,
       )
+    }
     }
     const counts = this.db.prepare(`
       SELECT message_count AS messageCount, resource_count AS resourceCount
