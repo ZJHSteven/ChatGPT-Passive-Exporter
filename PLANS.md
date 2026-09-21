@@ -36,6 +36,8 @@
 
 > 目标：下一次出现“多个 conversation 在十几秒内一起 `conversation-turn-complete`，但没有 final answer”的批量异常时，不再依赖事后手工拼日志，而是由 Guardian/daemon 自动留下可回放的逐 turn 时间线。
 
+> 2026-09-21 新样本校正：`迁移刷机方案` 连续出现两种 **WSS 已 `conversation-turn-complete`、但没有 final** 的不同尾型。前一轮明确停在 `assistant -> functions.exec` 且缺对应 tool result；用户随后发送“又中断了继续”后，新 turn 则只持久化了 user + `model_editable_context` 两个节点，之后多次 reconnect body 仍没有 reasoning/tool/final。诊断器必须把后一种从笼统 `other` 拆成纯结构性 `context-only-no-output`，但该 tail 本身仍不得作为死亡证据；只有外层 WSS/catalog/stream_status 已确认收口后，才能形成 abnormal-terminal incident。与此同时，`async_status=3/5` 长期 active 且没有 complete 的 `active-zombie/watchdog-timeout` 继续作为独立生命状态问题，绝不能和 complete-no-final 合并。
+
 1. **新增独立 turn trace JSONL。** 每条记录都只保存生命周期/诊断元数据，不保存用户正文、工具正文、认证头或 cookie。默认路径放在 `data/active-turn-trace.jsonl`，并允许 CLI flag 覆盖。
 2. **WSS 生命周期必须带并发快照。** `conversation-created / conversation-update / conversation-turn-complete` 每次都记录 `activeBefore / activeAfter / activeConversationIds`；complete 必须在删除 active turn 之前先记录 pre-complete 并发度，避免以后无法还原“当时同时跑了几个”。
 3. **Body sync 负责补 turn 身份。** 完成一次最新 body merge 后，把现有 `RunDiagnostic` 中的 `requestId / turnExchangeId / userMessageId / terminalEvidence / tailShape / assistantToolCalls / toolResults / hasReasoningEnded / hasFinal` 写入 trace，与触发该同步的 WSS/catalog/watchdog 原因绑定。
