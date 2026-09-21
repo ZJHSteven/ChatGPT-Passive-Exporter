@@ -37,6 +37,7 @@
 > 目标：下一次出现“多个 conversation 在十几秒内一起 `conversation-turn-complete`，但没有 final answer”的批量异常时，不再依赖事后手工拼日志，而是由 Guardian/daemon 自动留下可回放的逐 turn 时间线。
 
 > 2026-09-21 新样本校正：`迁移刷机方案` 连续出现两种 **WSS 已 `conversation-turn-complete`、但没有 final** 的不同尾型。前一轮明确停在 `assistant -> functions.exec` 且缺对应 tool result；用户随后发送“又中断了继续”后，新 turn 则只持久化了 user + `model_editable_context` 两个节点，之后多次 reconnect body 仍没有 reasoning/tool/final。诊断器必须把后一种从笼统 `other` 拆成纯结构性 `context-only-no-output`，但该 tail 本身仍不得作为死亡证据；只有外层 WSS/catalog/stream_status 已确认收口后，才能形成 abnormal-terminal incident。与此同时，`async_status=3/5` 长期 active 且没有 complete 的 `active-zombie/watchdog-timeout` 继续作为独立生命状态问题，绝不能和 complete-no-final 合并。
+> 同一 turn 已经由可靠终止信号建立 incident 后，后续 startup/reconnect/body reconcile 即使本身没有“允许新建 incident”的资格，也应刷新这条**既有** incident 的 tail/diagnostic/last_observed_at；这样分类器升级或后续更完整 body 可以自愈旧账。该刷新不得把普通 reconcile 当成新的终止来源，也不得覆盖 incident 最初的 WSS/catalog/watchdog `source`，更不得据此给一个从未立案的 turn 新建事故。
 
 1. **新增独立 turn trace JSONL。** 每条记录都只保存生命周期/诊断元数据，不保存用户正文、工具正文、认证头或 cookie。默认路径放在 `data/active-turn-trace.jsonl`，并允许 CLI flag 覆盖。
 2. **WSS 生命周期必须带并发快照。** `conversation-created / conversation-update / conversation-turn-complete` 每次都记录 `activeBefore / activeAfter / activeConversationIds`；complete 必须在删除 active turn 之前先记录 pre-complete 并发度，避免以后无法还原“当时同时跑了几个”。
