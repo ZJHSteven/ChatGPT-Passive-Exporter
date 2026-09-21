@@ -70,6 +70,11 @@ export interface BodySnapshotTrace extends ActiveTurnTraceBase {
   terminalEvidence: RunDiagnostic['terminalEvidence']
   interruptedReason: string | null
   tailShape: RunDiagnostic['tailShape']
+  currentNode: string | null
+  currentNodeStatus: string | null
+  currentNodeEndTurn: boolean | null
+  headState: RunDiagnostic['headState']
+  offHeadSameTurnMessageCount: number
   hasFinal: boolean
   hasReasoningEnded: boolean
   assistantToolCalls: number
@@ -151,6 +156,11 @@ export function buildBodySnapshotTrace(input: {
     terminalEvidence: input.diagnostic.terminalEvidence,
     interruptedReason: input.diagnostic.interruptedReason ?? null,
     tailShape: input.diagnostic.tailShape,
+    currentNode: input.diagnostic.currentNode ?? null,
+    currentNodeStatus: input.diagnostic.currentNodeStatus ?? null,
+    currentNodeEndTurn: input.diagnostic.currentNodeEndTurn ?? null,
+    headState: input.diagnostic.headState,
+    offHeadSameTurnMessageCount: input.diagnostic.offHeadSameTurnMessageCount,
     hasFinal: input.diagnostic.hasFinal,
     hasReasoningEnded: input.diagnostic.hasReasoningEnded,
     assistantToolCalls: input.diagnostic.assistantToolCalls,
