@@ -274,6 +274,60 @@ async function importFile(db, filePath) {
   return results
 }
 
+/**
+ * Non-destructive offline recovery for evidence that survived in browser memory
+ * while the canonical conversation body stopped persisting.
+ *
+ * Unlike importRaw(), this path must never replace an existing conversation.
+ * It reuses the live union merge and stores the full recovery bundle in
+ * live_observations for later forensic reinterpretation.
+ */
+async function recoverFile(db, filePath) {
+  const absolute = path.resolve(filePath)
+  const stat = await fs.stat(absolute)
+  if (!stat.isFile()) throw new Error('Not a file: ' + absolute)
+  const parsed = JSON.parse(await fs.readFile(absolute, 'utf8'))
+  const payloads = Array.isArray(parsed) ? parsed : [parsed]
+  const results = []
+
+  for (const payload of payloads) {
+    try {
+      const recovery = payload && typeof payload === 'object' ? payload.recovery : null
+      if (!recovery || recovery.kind !== 'browser-memory-recovery') {
+        throw new Error('recovery payload must set recovery.kind="browser-memory-recovery"')
+      }
+      if (!Array.isArray(payload.messages)) {
+        throw new Error('recovery payload requires messages[]')
+      }
+
+      const capturedAt = Number(recovery.capturedAt)
+      const observedAt = Number.isFinite(capturedAt) && capturedAt > 0
+        ? capturedAt
+        : (stat.mtimeMs || Date.now())
+
+      results.push({
+        file: absolute,
+        ...db.mergeLiveMessagesPage(payload, {
+          observedAt,
+          endpoint: 'offline://browser-memory-recovery',
+          observationKind: 'browser-memory-recovery',
+          updateCurrentState: false,
+          classifyTerminal: false,
+          allowIncompleteTailIncident: false,
+          updateIncidents: false,
+        }),
+      })
+    }
+    catch (error) {
+      results.push({
+        file: absolute,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+  return results
+}
+
 async function main() {
   const [command, ...rest] = process.argv.slice(2)
   if (!command || command === '-h' || command === '--help' || command === 'help') {
@@ -353,6 +407,14 @@ async function main() {
       const results = []
       for (const file of positionals) results.push(...await importFile(archive, file))
       console.log(JSON.stringify({ database: archive.filePath, imported: results }, null, 2))
+      return
+    }
+
+    if (command === 'recover') {
+      if (positionals.length === 0) throw new Error('recover requires at least one recovery JSON file')
+      const results = []
+      for (const file of positionals) results.push(...await recoverFile(archive, file))
+      console.log(JSON.stringify({ database: archive.filePath, recovered: results }, null, 2))
       return
     }
 
