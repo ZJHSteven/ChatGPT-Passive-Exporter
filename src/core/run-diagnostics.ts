@@ -20,6 +20,7 @@ export type RunTailShape =
   | 'reasoning-open'
   | 'reasoning-ended-no-final'
   | 'tool-result-returned'
+  | 'context-only-no-output'
   | 'other'
 
 export interface RunDiagnostic {
@@ -271,6 +272,14 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
   ))
   const assistantToolCalls = turn.filter(isAssistantToolCall).length
   const toolResults = turn.filter(isToolResult).length
+  const hasModelEditableContext = turn.some(message => (
+    roleOf(message) === 'assistant'
+    && contentTypeOf(message) === 'model_editable_context'
+  ))
+  const hasNonContextAssistantOutput = turn.some(message => (
+    roleOf(message) === 'assistant'
+    && contentTypeOf(message) !== 'model_editable_context'
+  ))
 
   const lastAssistantToolIndex = turn.findLastIndex(isAssistantToolCall)
   const lastToolResultIndex = turn.findLastIndex(isToolResult)
@@ -306,6 +315,22 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
     else if (lastSemanticIndex === lastReasoningEndedIndex && lastReasoningEndedIndex >= 0) {
       tailShape = 'reasoning-ended-no-final'
     }
+    else if (
+      lastSemanticIndex < 0
+      && userMessageCount === 1
+      && hasModelEditableContext
+      && !hasNonContextAssistantOutput
+      && toolResults === 0
+    ) {
+      // 2026-09-21 真机样本：用户点“继续”后，服务端后来确实发出了
+      // conversation-turn-complete，但 body 在多次 reconnect 后仍只有
+      // `user + assistant(model_editable_context)`，完全没有 reasoning、tool 或 final。
+      //
+      // 这里刻意只给它一个“结构性尾型”名字，不把它叫做 abort/crash：在一个尚未完成的
+      // 正常 turn 早期，也可能短暂看到相同快照。是否异常终止仍必须由 WSS complete、
+      // stream_status COMPLETE 或其它独立终止证据来决定。
+      tailShape = 'context-only-no-output'
+    }
   }
 
   let summary = '当前 payload 没有明确终止证据；仅凭这份快照不能判断 run 是否仍在执行。'
@@ -331,6 +356,9 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
   }
   else if (tailShape === 'tool-result-returned') {
     summary = '最新工具结果已经回来，但当前 payload 尚无明确终止证据；不能据此判死，仍需服务器状态确认是否继续运行。'
+  }
+  else if (tailShape === 'context-only-no-output') {
+    summary = '本轮在 user 之后只持久化了 model_editable_context，没有 reasoning、tool call/result 或 final；这只是快照尾型，仍需服务器终止状态确认是否已经异常收口。'
   }
 
   const representative = last ?? user

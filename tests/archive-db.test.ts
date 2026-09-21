@@ -496,6 +496,55 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('confirmed complete 的 context-only-no-output 会单独记账，而未确认终止时不会仅凭该尾型判死', () => {
+    const db = tempDb()
+    try {
+      const contextOnly = {
+        title: 'context-only fixture',
+        conversation_id: 'context-only-conversation',
+        current_node: 'ctx1',
+        messages: [
+          {
+            id: 'u1', author: { role: 'user' }, recipient: 'all',
+            content: { content_type: 'text', parts: ['继续'] },
+            metadata: { turn_exchange_id: 'turn-context-only', request_id: 'request-context-only' },
+          },
+          {
+            id: 'ctx1', author: { role: 'assistant' }, recipient: 'all',
+            content: { content_type: 'model_editable_context', parts: [] },
+            metadata: { turn_exchange_id: 'turn-context-only', request_id: 'request-context-only' },
+          },
+        ],
+      }
+
+      // 单独看到这种 body 形态时不能判死：模拟 watchdog / reconnect 尚无 confirmed complete。
+      db.mergeLiveMessagesPage(contextOnly, {
+        observedAt: 1000,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: false,
+      })
+      expect(db.listIncidents({ status: 'open' })).toHaveLength(0)
+
+      // 收到 WSS conversation-turn-complete 后，上层会把 allowIncompleteTailIncident 打开；
+      // 此时同一个结构性尾型才成为 confirmed complete-no-final 的异常账目。
+      db.mergeLiveMessagesPage(contextOnly, {
+        observedAt: 2000,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: true,
+        observationKind: 'wss:conversation-turn-complete',
+      })
+      expect(db.listIncidents({ status: 'open' })).toHaveLength(1)
+      expect(db.listIncidents({ status: 'open' })[0]).toMatchObject({
+        turnKey: 'turn-context-only',
+        incidentKind: 'abnormal-terminal',
+        tailShape: 'context-only-no-output',
+      })
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('watchdog 未确认终止时不会把 open reasoning 尾巴误报为 incident，但显式 interrupted 仍可记录', () => {
     const db = tempDb()
     try {

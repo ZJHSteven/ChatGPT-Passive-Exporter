@@ -154,4 +154,41 @@ describe('最后一轮快照诊断', () => {
     expect(result.tailShape).toBe('reasoning-ended-no-final')
     expect(result.summary).toContain('final')
   })
+
+  test('只有 user + model_editable_context 时标成 context-only-no-output，但不自行判死', () => {
+    const result = diagnoseLatestRun(payload([
+      message({
+        id: 'u1',
+        author: { role: 'user' },
+        content: { content_type: 'text', parts: ['继续'] },
+        metadata: { turn_exchange_id: 'turn-context-only', request_id: 'request-context-only' },
+      }),
+      message({
+        id: 'ctx1',
+        author: { role: 'assistant' },
+        recipient: 'all',
+        content: { content_type: 'model_editable_context', parts: [] },
+        metadata: { turn_exchange_id: 'turn-context-only', request_id: 'request-context-only' },
+      }),
+    ]))
+
+    expect(result.terminalEvidence).toBe('none')
+    expect(result.tailShape).toBe('context-only-no-output')
+    expect(result.hasFinal).toBe(false)
+    expect(result.hasReasoningEnded).toBe(false)
+    expect(result.assistantToolCalls).toBe(0)
+    expect(result.toolResults).toBe(0)
+    expect(result.nodeCount).toBe(2)
+    expect(result.summary).toContain('服务器终止状态')
+  })
+
+  test('model_editable_context 后如果已有普通 assistant 输出，不误归 context-only-no-output', () => {
+    const result = diagnoseLatestRun(payload([
+      message({ id: 'u1', author: { role: 'user' } }),
+      message({ id: 'ctx1', content: { content_type: 'model_editable_context', parts: [] } }),
+      message({ id: 'a1', content: { content_type: 'text', parts: ['可见输出但缺少 final 标记'] } }),
+    ]))
+
+    expect(result.tailShape).toBe('other')
+  })
 })
