@@ -172,6 +172,81 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('浏览器内存 recovery 只补消息，不改 canonical head 或 incident', () => {
+    const db = tempDb()
+    try {
+      db.mergeLiveMessagesPage({
+        title: 'Recovery fixture',
+        conversation_id: 'recovery-chat',
+        current_node: 'assistant-final',
+        messages: [
+          {
+            id: 'user-old',
+            author: { role: 'user' },
+            recipient: 'all',
+            content: { content_type: 'text', parts: ['旧问题'] },
+            metadata: { turn_exchange_id: 'turn-old' },
+          },
+          {
+            id: 'assistant-final',
+            author: { role: 'assistant' },
+            recipient: 'all',
+            channel: 'final',
+            content: { content_type: 'text', parts: ['旧回答'] },
+            metadata: { turn_exchange_id: 'turn-old' },
+          },
+        ],
+      }, { observedAt: 1000, classifyTerminal: true })
+
+      db.mergeLiveMessagesPage({
+        title: 'Recovery fixture',
+        conversation_id: 'recovery-chat',
+        current_node: 'ui-length-cap',
+        recovery: { kind: 'browser-memory-recovery', capturedAt: 2000 },
+        messages: [
+          {
+            id: 'user-recovered',
+            author: { role: 'user' },
+            recipient: 'all',
+            content: { content_type: 'text', parts: ['又中断了继续'] },
+            metadata: { recovery_source: 'browser-memory' },
+          },
+          {
+            id: 'ui-length-cap',
+            author: { role: 'assistant' },
+            recipient: 'all',
+            content: { content_type: 'text', parts: ['你已达到此对话的长度上限'] },
+            metadata: { recovery_source: 'browser-memory', recovery_ui_state: 'length-cap' },
+          },
+        ],
+      }, {
+        observedAt: 2000,
+        observationKind: 'browser-memory-recovery',
+        endpoint: 'offline://browser-memory-recovery',
+        updateCurrentState: false,
+        classifyTerminal: false,
+        updateIncidents: false,
+      })
+
+      expect(db.getMessages('recovery-chat').map(item => item.messageId)).toEqual(
+        expect.arrayContaining(['user-old', 'assistant-final', 'user-recovered', 'ui-length-cap']),
+      )
+      expect(db.db.prepare(
+        'SELECT current_node AS currentNode FROM conversations WHERE id = ?',
+      ).get('recovery-chat')).toMatchObject({ currentNode: 'assistant-final' })
+      expect(db.listIncidents()).toHaveLength(0)
+      expect(db.db.prepare(
+        'SELECT observation_kind AS observationKind, endpoint FROM live_observations WHERE conversation_id = ? ORDER BY id DESC LIMIT 1',
+      ).get('recovery-chat')).toMatchObject({
+        observationKind: 'browser-memory-recovery',
+        endpoint: 'offline://browser-memory-recovery',
+      })
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('在线 plural 只记录 transport_parent_id，不把 metadata.parent_id 伪装成 mapping tree', () => {
     const db = tempDb()
     try {
