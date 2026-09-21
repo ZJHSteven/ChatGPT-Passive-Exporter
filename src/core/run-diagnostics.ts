@@ -23,9 +23,35 @@ export type RunTailShape =
   | 'context-only-no-output'
   | 'other'
 
+/**
+ * `current_node` 只描述服务端当前选中的 canonical head。
+ *
+ * 新式 plural `messages[]` 在真实事故里已经出现过：数组里存在与 current_node 同一 turn、
+ * create/transport 顺序更靠后的 message，但 current_node 仍停在前面的 open tool-call。
+ * 这和“final 是否缺失”是完全独立的维度，因此单独保存，不能把它揉进 tailShape。
+ */
+export type RunHeadState =
+  | 'aligned'
+  | 'behind-same-turn'
+  | 'behind-other-turn'
+  | 'current-node-missing'
+  | 'unknown'
+
 export interface RunDiagnostic {
   conversationId?: string
   currentNode?: string
+  /** current_node 指向的 message 自身局部状态；它不是 turn-global lifecycle。 */
+  currentNodeStatus?: string
+  /** current_node message 的 end_turn；null/undefined 都保持原始“不知道”语义。 */
+  currentNodeEndTurn?: boolean | null
+  /** current_node 在本次 ordered messages[] 中的位置，仅用于取证。 */
+  currentNodeIndex?: number
+  /** canonical head 与 plural messages[] 的相对关系。 */
+  headState: RunHeadState
+  /** current_node 之后、仍属于同一 turn 的 message 数量。 */
+  offHeadSameTurnMessageCount: number
+  /** 为了 incident/trace 可读性只保留少量 ID；完整 message 仍在 archive 表和 raw observation。 */
+  offHeadSameTurnMessageIds: string[]
   turnExchangeId?: string
   requestId?: string
   userMessageId?: string
@@ -70,6 +96,16 @@ function contentTypeOf(message: RawChatMessage): string {
 
 function roleOf(message: RawChatMessage): string {
   return typeof message.author?.role === 'string' ? message.author.role : 'unknown'
+}
+
+function statusOf(message: RawChatMessage): string | undefined {
+  return typeof message.status === 'string' ? message.status : undefined
+}
+
+function endTurnOf(message: RawChatMessage): boolean | null | undefined {
+  if (typeof message.end_turn === 'boolean') return message.end_turn
+  if (message.end_turn === null) return null
+  return undefined
 }
 
 function turnExchangeIdOf(message: RawChatMessage): string | undefined {
@@ -210,6 +246,68 @@ function latestTurn(messages: RawChatMessage[]): RawChatMessage[] {
 }
 
 /**
+ * 分析 `current_node` 是否落后于 plural messages[]。
+ *
+ * 这里刻意只把“同一稳定 turn 身份”叫 `behind-same-turn`。如果 current_node 后面还有 message，
+ * 但它们属于别的 turn，只记 `behind-other-turn`，避免把分页/branch/未来协议变化误判成同一故障。
+ * legacy mapping 经过 current_node 反向走树后天然只包含当前分支，因此通常会得到 aligned。
+ */
+function analyzeHeadState(payload: RawConversationPayload, messages: RawChatMessage[]): {
+  headState: RunHeadState
+  currentNodeStatus?: string
+  currentNodeEndTurn?: boolean | null
+  currentNodeIndex?: number
+  offHeadSameTurnMessageCount: number
+  offHeadSameTurnMessageIds: string[]
+} {
+  const currentNode = typeof payload.current_node === 'string' && payload.current_node
+    ? payload.current_node
+    : undefined
+  if (!currentNode) {
+    return {
+      headState: 'unknown',
+      offHeadSameTurnMessageCount: 0,
+      offHeadSameTurnMessageIds: [],
+    }
+  }
+
+  const currentNodeIndex = messages.findIndex(message => message.id === currentNode)
+  if (currentNodeIndex < 0) {
+    return {
+      headState: 'current-node-missing',
+      offHeadSameTurnMessageCount: 0,
+      offHeadSameTurnMessageIds: [],
+    }
+  }
+
+  const currentMessage = messages[currentNodeIndex]!
+  const headTurnExchangeId = turnExchangeIdOf(currentMessage)
+  const headRequestId = requestIdOf(currentMessage)
+  const laterMessages = messages.slice(currentNodeIndex + 1)
+  const sameTurnLater = laterMessages.filter((message) => {
+    if (headTurnExchangeId) return turnExchangeIdOf(message) === headTurnExchangeId
+    if (headRequestId) return requestIdOf(message) === headRequestId
+    return false
+  })
+
+  let headState: RunHeadState = 'aligned'
+  if (sameTurnLater.length > 0) headState = 'behind-same-turn'
+  else if (laterMessages.length > 0) headState = 'behind-other-turn'
+
+  return {
+    headState,
+    currentNodeStatus: statusOf(currentMessage),
+    currentNodeEndTurn: endTurnOf(currentMessage),
+    currentNodeIndex,
+    offHeadSameTurnMessageCount: sameTurnLater.length,
+    offHeadSameTurnMessageIds: sameTurnLater
+      .map(message => typeof message.id === 'string' ? message.id : '')
+      .filter(Boolean)
+      .slice(0, 16),
+  }
+}
+
+/**
  * 把一个 conversation page 中可见的消息按 user 边界拆成多个 turn，并逐 turn 复用
  * `diagnoseLatestRun()` 做诊断。
  *
@@ -246,6 +344,7 @@ export function diagnoseRuns(payload: RawConversationPayload): RunDiagnostic[] {
  */
 export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnostic {
   const messages = orderedMessages(payload)
+  const head = analyzeHeadState(payload, messages)
   const turn = latestTurn(messages)
   const last = turn.at(-1)
   const user = turn.find(message => roleOf(message) === 'user')
@@ -361,11 +460,24 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
     summary = '本轮在 user 之后只持久化了 model_editable_context，没有 reasoning、tool call/result 或 final；这只是快照尾型，仍需服务器终止状态确认是否已经异常收口。'
   }
 
+  if (head.headState === 'behind-same-turn') {
+    summary += ` current_node 之后仍观测到 ${head.offHeadSameTurnMessageCount} 条同 turn message，存在 head/messages divergence。`
+  }
+  else if (head.headState === 'current-node-missing') {
+    summary += ' current_node 在本次 message 集合中不存在，head 与 payload 内容无法直接对齐。'
+  }
+
   const representative = last ?? user
 
   return {
     conversationId: typeof payload.conversation_id === 'string' ? payload.conversation_id : undefined,
     currentNode: typeof payload.current_node === 'string' ? payload.current_node : undefined,
+    currentNodeStatus: head.currentNodeStatus,
+    currentNodeEndTurn: head.currentNodeEndTurn,
+    currentNodeIndex: head.currentNodeIndex,
+    headState: head.headState,
+    offHeadSameTurnMessageCount: head.offHeadSameTurnMessageCount,
+    offHeadSameTurnMessageIds: head.offHeadSameTurnMessageIds,
     turnExchangeId: [...turn].reverse().map(turnExchangeIdOf).find(Boolean),
     requestId: [...turn].reverse().map(requestIdOf).find(Boolean),
     userMessageId: typeof user?.id === 'string' ? user.id : undefined,

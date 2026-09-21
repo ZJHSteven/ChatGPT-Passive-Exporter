@@ -191,4 +191,55 @@ describe('最后一轮快照诊断', () => {
 
     expect(result.tailShape).toBe('other')
   })
+
+  test('current_node 落后于同 turn 的后续 messages 时独立记录 head/messages divergence', () => {
+    const input = payload([
+      message({
+        id: 'u1', author: { role: 'user' }, create_time: 1,
+        metadata: { turn_exchange_id: 'turn-diverge', request_id: 'request-diverge' },
+      }),
+      message({
+        id: 'call1', recipient: 'functions.exec', channel: 'commentary', create_time: 2,
+        status: 'in_progress', end_turn: null,
+        metadata: { turn_exchange_id: 'turn-diverge', request_id: 'request-diverge' },
+      }),
+      message({
+        id: 'tool1', author: { role: 'tool' }, create_time: 3,
+        status: 'finished_successfully',
+        metadata: { turn_exchange_id: 'turn-diverge', request_id: 'request-diverge' },
+      }),
+      message({
+        id: 'thought2', create_time: 4, status: 'finished_successfully', end_turn: false,
+        content: { content_type: 'thoughts' },
+        metadata: { turn_exchange_id: 'turn-diverge', request_id: 'request-diverge', reasoning_status: 'is_reasoning' },
+      }),
+    ])
+    input.current_node = 'call1'
+
+    const result = diagnoseLatestRun(input)
+
+    expect(result.headState).toBe('behind-same-turn')
+    expect(result.currentNodeStatus).toBe('in_progress')
+    expect(result.currentNodeEndTurn).toBeNull()
+    expect(result.currentNodeIndex).toBe(1)
+    expect(result.offHeadSameTurnMessageCount).toBe(2)
+    expect(result.offHeadSameTurnMessageIds).toEqual(['tool1', 'thought2'])
+    // tail 与 head 是两个维度：transport messages 的最新语义已经进入 reasoning，
+    // 但 canonical head 仍停在前面的 tool call。
+    expect(result.tailShape).toBe('reasoning-open')
+    expect(result.summary).toContain('head/messages divergence')
+  })
+
+  test('current_node 不在本次 messages[] 时保守标记 missing，不伪造 rollback', () => {
+    const input = payload([
+      message({ id: 'u1', author: { role: 'user' } }),
+      message({ id: 'a1', content: { content_type: 'thoughts' }, metadata: { reasoning_status: 'is_reasoning' } }),
+    ])
+    input.current_node = 'missing-head'
+
+    const result = diagnoseLatestRun(input)
+    expect(result.headState).toBe('current-node-missing')
+    expect(result.offHeadSameTurnMessageCount).toBe(0)
+    expect(result.summary).toContain('无法直接对齐')
+  })
 })
