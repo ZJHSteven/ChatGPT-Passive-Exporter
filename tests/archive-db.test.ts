@@ -598,7 +598,7 @@ describe('ChatArchiveDb', () => {
         headRollbackObserved: false,
         offHeadSameTurnCount: 2,
       })
-      expect(db.listIncidents({ status: 'open' })[0]?.reason).toContain('complete-no-final')
+      expect(db.listIncidents({ status: 'open' })[0]?.reason).toContain('已确认 turn 完成但没有 final')
     }
     finally {
       db.close()

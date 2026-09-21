@@ -1,5 +1,6 @@
 # 项目状态快照
 
+- 2026-09-21：首轮 head/incident 定向测试暴露的仅是测试兼容项：旧 RunDiagnostic fixture 补 `headState/offHead*` 默认值，incident reason 测试改为校验中文“已确认 turn 完成但没有 final”，生命周期机器字段继续由 `lifecycleClass` 负责，不要求可读 reason 重复英文枚举。
 - 2026-09-21：补 incident 分层回归用例：confirmed complete 的 context-only 明确归 `complete-no-final`；同一事故可同时记录 `tail=reasoning-open + headState=behind-same-turn + offHead=2`；只有 A→B→A 的 head history 才出现 `headRollbackObserved=true`；watchdog 与 client_stopped 分别保持独立 lifecycle class。
 - 2026-09-21：Active Turn Recorder 的 `body-snapshot` 同步扩展为保存 `currentNode/currentNodeStatus/currentNodeEndTurn/headState/offHeadSameTurnMessageCount`。以后即使 incident 分类器再升级，原始 JSONL 也能回放“WSS 已 complete，但 canonical head 仍 in_progress 且后面已有同 turn messages”这一类关键控制面证据。
 - 2026-09-21：incident schema 开始正式分层：新增 `lifecycle_class`、`head_state`、`head_rollback`、`off_head_same_turn_count`。`complete-no-final` 现在是生命周期主类，`tail_shape` 继续只描述死在 reasoning/tool/context 哪一层；head divergence/rollback 是第三个独立维度。旧 WSS complete/async-complete/watchdog/interrupted 记录在数据库迁移时会按已有强证据回填 lifecycle class；rollback 只有 conversation_head_history 对同一 head 至少出现两次时才置位。
