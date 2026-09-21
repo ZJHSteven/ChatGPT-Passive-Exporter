@@ -1,3 +1,11 @@
+## 2026-09-22 浏览器内存尾段恢复 / conversation persistence gap ExecPlan
+
+- [done] 对三个风险会话先做无刷新 CDP 抢救：保存 DOM HTML、纯文本、DOMSnapshot，以及可见 user/assistant 的真实 `data-message-id`；同时在停 daemon 前复制 SQLite/WAL/SHM/turn trace。
+- [done] 解锁 SQLite 后与浏览器现场逐项对账，确认三例都存在“执行/前端现场比 canonical conversation archive 更靠后”的 persistence gap：迁移与异常分析缺整轮执行尾段，Sidebery 至少缺长度上限终止节点，工具过程另存在于 DOM/audit。
+- [pending] 增加只增量、不删除历史的 `chatgpt-archive recover` 入口：复用 `mergeLiveMessagesPage()`，强制 provenance=`browser-memory-recovery`、`updateCurrentState=false`、`classifyTerminal=false`，禁止误用会 DELETE conversation 的旧 `importRaw()`。
+- [pending] 生成三份 recovery bundle：真实 UI message id/role/text 进入 `messages` union；完整 DOM/body 与 DevSpace audit 作为 raw forensic artifact 留在 recovery observation，无法证明的 tool message id/parent/turn id 不伪造。
+- [pending] 将“conversation length cap / send-timeout 后 UI 与 canonical persistence 分叉”提升为新的取证场景，写入 PROGRESS/事故文档；完成定向测试、typecheck，并在真实主库恢复后三次 `show/search` 验证。
+
 ## 2026-09-21 Complete-no-final / head divergence / overlap 收敛 ExecPlan
 
 - [done] 将异常记录改成多维模型：生命周期主类（`complete-no-final` / watchdog 等）与 `tailShape`、`head/messages divergence`、head rollback 证据并列保存，避免把 tool/reasoning/context 尾型误当成根因。
