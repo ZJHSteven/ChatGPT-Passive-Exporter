@@ -350,6 +350,59 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('后续 body 即使 current_node 回退且不再携带新节点，本地 archive 也不会删除已落盘消息', () => {
+    const db = tempDb()
+    try {
+      db.mergeLiveMessagesPage({
+        title: 'Lossless head rollback fixture',
+        conversation_id: 'lossless-head-rollback',
+        current_node: 'assistant-b',
+        messages: [
+          {
+            id: 'user-1', author: { role: 'user' }, recipient: 'all', create_time: 1,
+            content: { content_type: 'text', parts: ['问题'] }, metadata: { turn_exchange_id: 'turn-1' },
+          },
+          {
+            id: 'assistant-a', author: { role: 'assistant' }, recipient: 'all', create_time: 2,
+            content: { content_type: 'text', parts: ['较早回答'] }, metadata: { turn_exchange_id: 'turn-1' },
+          },
+          {
+            id: 'assistant-b', author: { role: 'assistant' }, recipient: 'all', create_time: 3,
+            content: { content_type: 'text', parts: ['后来出现、之后被服务端 head 回退隐藏的回答'] },
+            metadata: { turn_exchange_id: 'turn-1' },
+          },
+        ],
+      }, { observedAt: 1000 })
+
+      // 模拟后续服务器 canonical body 回到 assistant-a，并且响应本身也不再包含 assistant-b。
+      // mergeLiveMessagesPage 必须只做 union/upsert，不能用这份“更短的新快照”删除本地证据。
+      db.mergeLiveMessagesPage({
+        title: 'Lossless head rollback fixture',
+        conversation_id: 'lossless-head-rollback',
+        current_node: 'assistant-a',
+        messages: [
+          {
+            id: 'user-1', author: { role: 'user' }, recipient: 'all', create_time: 1,
+            content: { content_type: 'text', parts: ['问题'] }, metadata: { turn_exchange_id: 'turn-1' },
+          },
+          {
+            id: 'assistant-a', author: { role: 'assistant' }, recipient: 'all', create_time: 2,
+            content: { content_type: 'text', parts: ['较早回答'] }, metadata: { turn_exchange_id: 'turn-1' },
+          },
+        ],
+      }, { observedAt: 2000 })
+
+      expect(db.getMessages('lossless-head-rollback').map(row => row.messageId)).toEqual([
+        'user-1', 'assistant-a', 'assistant-b',
+      ])
+      expect(db.getMarkdown('lossless-head-rollback')).toContain('后来出现、之后被服务端 head 回退隐藏的回答')
+      expect(db.list(10).find(row => row.id === 'lossless-head-rollback')?.currentNode).toBe('assistant-a')
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('singular mapping 会把 edit/regenerate sibling 精确回填为 branch tree', () => {
     const db = tempDb()
     try {
