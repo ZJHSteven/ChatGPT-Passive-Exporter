@@ -1,12 +1,12 @@
 ## 2026-09-21 Complete-no-final / head divergence / overlap 收敛 ExecPlan
 
-- [in_progress] 将异常记录改成多维模型：生命周期主类（`complete-no-final` / watchdog 等）与 `tailShape`、`head/messages divergence`、head rollback 证据并列保存，避免把 tool/reasoning/context 尾型误当成根因。
-- [pending] 在 terminal body 诊断中记录 current_node 对应 message 的 status/end_turn，并识别同一 turn 中“比 current head 更新、但未被 current_node 选中”的 off-head messages；只在真实 head history A→B→A 时标记 rollback。
-- [pending] 审计 archive 导出路径：确认 plural live merge 是否会因为 current_node 回退而丢掉已落库 messages；必要时让本地 Markdown/JSON 导出优先使用无损 union，而不是把 current_node 当历史真相。
-- [pending] 把短 WSS gap 的 catalog reconciliation 改成动态 overlap：`wss-reconnect` / 短 `guardian-recover` 在完整一页稳定旧记录后停止；startup/长盲区/full audit 继续使用深 overlap。body cursor 维持“整页全部已知即停”的现有规则。
+- [done] 将异常记录改成多维模型：生命周期主类（`complete-no-final` / watchdog 等）与 `tailShape`、`head/messages divergence`、head rollback 证据并列保存，避免把 tool/reasoning/context 尾型误当成根因。
+- [done] 在 terminal body 诊断中记录 current_node 对应 message 的 status/end_turn，并识别同一 turn 中“比 current head 更新、但未被 current_node 选中”的 off-head messages；只在真实 head history A→B→A 时标记 rollback。
+- [done] 审计 archive 导出路径并补回归：live plural archive 是 union/upsert，current_node 回退或新 body 变短不会删除已落库 messages；Markdown 保留 forensic union，current_node 单独保存最新 canonical head。
+- [done] 把短 WSS gap 的 catalog reconciliation 改成动态 overlap：`wss-reconnect` 在完整一页稳定旧记录后停止；startup/periodic/guardian-recover 继续使用深 overlap。body cursor 维持“整页全部已知即停”的现有规则。
 - [pending] 回溯历史 ChatGPT 讨论和 incident，寻找“节点突然缩回/刷新后消失/前端显示比刷新后更多”的旧样本，用新 `head/messages divergence` 假说重新标注，但不在没有 A→B→A 证据时声称 rollback。
 - [done] 已回溯 9/13《chatgpt同步持久化》：旧记录明确存在“状态回吃 / UI current_node 切 branch 后步骤消失但服务器未必删除”的现象与分支实证；但该 conversation 的 head history 只有 1 条，无法追溯证明 A→B→A，故只记历史一致性，不升级为 confirmed rollback。
-- [pending] 补齐单元/数据库/daemon 回放测试，跑 typecheck、全套 tests、build；更新 PROGRESS 并逐步提交。
+- [done] 补齐单元/数据库/daemon 回放测试，typecheck、92/92 tests、四套 build 全部通过；PROGRESS 已持续更新并逐步提交。
 
 # ChatGPT Passive Exporter ExecPlan
 
