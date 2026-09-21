@@ -5,6 +5,7 @@
 - [pending] 审计 archive 导出路径：确认 plural live merge 是否会因为 current_node 回退而丢掉已落库 messages；必要时让本地 Markdown/JSON 导出优先使用无损 union，而不是把 current_node 当历史真相。
 - [pending] 把短 WSS gap 的 catalog reconciliation 改成动态 overlap：`wss-reconnect` / 短 `guardian-recover` 在完整一页稳定旧记录后停止；startup/长盲区/full audit 继续使用深 overlap。body cursor 维持“整页全部已知即停”的现有规则。
 - [pending] 回溯历史 ChatGPT 讨论和 incident，寻找“节点突然缩回/刷新后消失/前端显示比刷新后更多”的旧样本，用新 `head/messages divergence` 假说重新标注，但不在没有 A→B→A 证据时声称 rollback。
+- [done] 已回溯 9/13《chatgpt同步持久化》：旧记录明确存在“状态回吃 / UI current_node 切 branch 后步骤消失但服务器未必删除”的现象与分支实证；但该 conversation 的 head history 只有 1 条，无法追溯证明 A→B→A，故只记历史一致性，不升级为 confirmed rollback。
 - [pending] 补齐单元/数据库/daemon 回放测试，跑 typecheck、全套 tests、build；更新 PROGRESS 并逐步提交。
 
 # ChatGPT Passive Exporter ExecPlan
