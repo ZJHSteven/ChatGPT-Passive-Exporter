@@ -31,6 +31,7 @@ function usage() {
 
 Usage:
   chatgpt-archive import <json-file...> [--db <path>]
+  chatgpt-archive recover <recovery-json-file...> [--db <path>]
   chatgpt-archive import-official <chatgpt-export.zip...> [--db <path>]
   chatgpt-archive list [--limit N] [--db <path>]
   chatgpt-archive search <fts-query> [--limit N] [--db <path>]
@@ -60,6 +61,11 @@ Development fallback:
 Import accepts either:
 - one conversation object (messages[] or legacy mapping)
 - an array of conversation objects, e.g. a ChatGPT official conversations.json-style dump
+
+Recovery accepts only payloads explicitly marked:
+- recovery.kind = "browser-memory-recovery"
+- messages[] are union/upserted non-destructively
+- canonical current_node and incident state are never changed by recovery evidence
 `)
 }
 
