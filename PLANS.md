@@ -1,10 +1,10 @@
 ## 2026-09-22 Incident 手机推送收口 ExecPlan
 
-- [in_progress] 修复已确认 incident 被普通 reconcile 刷新后人类可读 reason 退化的问题：`complete-no-final` 必须继续保留“已确认 turn 完成但没有 final”的 lifecycle 语义；`explicit-interrupted` 不允许被后续缺失终止证据的快照降级。
-- [pending] 将手机通知触发从“只看 incident id 是否新建”升级为“看 material lifecycle transition”：新 turn incident 必推；同一 turn 从 watchdog timeout 升级为 confirmed abnormal / explicit interrupted 也要推；单纯 tail/body 细节刷新不重复轰炸。
-- [pending] Bark transport 从兼容 GET URL 切换到官方 V2 `POST /push` JSON；保留 Archive Core 与通知失败隔离，并对瞬时网络错误/429/5xx 做一次轻量重试。
-- [pending] 写入本机 `data/archive-notification.local.json`（Git ignore），用当前手机 Bark key 做真实测试推送；重启 Guardian daemon 后确认 state 中 notification enabled / lastSuccessAt，并继续观察下一次真实 incident 的自动推送。
-- [pending] 回归要求：TypeScript、Vitest 全量、至少一次真实 Bark E2E；完成后更新 PROGRESS 并提交。
+- [done] 修复已确认 incident 被普通 reconcile 刷新后人类可读 reason 退化的问题：`complete-no-final` 继续保留“已确认 turn 完成但没有 final”的 lifecycle 语义；`explicit-interrupted` 不允许被后续缺失终止证据的快照降级。
+- [done] 手机通知触发从“只看 incident id 是否新建”升级为“看 material lifecycle transition”：新 turn incident 必推；同一 turn 从 watchdog timeout 升级为 confirmed abnormal / explicit interrupted 也会再次提醒；单纯 tail/body 细节刷新不重复轰炸。
+- [done] Bark transport 从兼容 GET URL 切换到官方 V2 `POST /push` JSON；Archive Core 与通知失败继续隔离，并对瞬时网络错误/429/5xx 做一次轻量重试。
+- [done] 本机 `data/archive-notification.local.json` 已写入并由 Git ignore；历史 ChatGPT Archive 找回正确 Bark device key 后，真实 Bark E2E 返回 HTTP 200。正式 Guardian daemon 已重启，state 显示 notification enabled/provider=bark，WSS 已恢复 conversations 订阅。
+- [done] 回归完成：TypeScript 通过；Vitest 17 files / 95 tests 全过；真实 Bark E2E 通过。剩余非阻塞可靠性债务：若 Bark/网络连续两次都失败，目前 incident 仍安全保存在 SQLite，但手机通知没有持久 outbox 做跨进程重试。
 
 ## 2026-09-22 浏览器内存尾段恢复 / conversation persistence gap ExecPlan
 
