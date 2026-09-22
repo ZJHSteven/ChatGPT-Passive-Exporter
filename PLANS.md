@@ -5,8 +5,8 @@
 - [done] 当前接续聊天自身再次中断后形成第四个对照样本：canonical body 已有 491 节点且 `current_node` 指向真实 tool result，但 DOM 只显示 user + 合成 timeout error；将其单独命名为 `ui-hidden-canonical-tail`，明确它不是 persistence gap，也不是 confirmed head rollback。
 - [pending] Phase 3/UI observer 后续要把“当前 DOM 可见 message-id 集合”与 canonical body/current_node 同时采样；只有这样才能自动识别 `ui-hidden-canonical-tail`。现阶段只保存 DOM/DOMSnapshot/raw audit，不把 UI-only timeout placeholder 写进 canonical messages。
 - [done] 增加只增量、不删除历史的 `chatgpt-archive recover` 入口：复用 `mergeLiveMessagesPage()`，强制 provenance=`browser-memory-recovery`、`updateCurrentState=false`、`updateIncidents=false`、`insertUnknownOnly=true`。assistant DOM 节点还要求真实 model slug，并排除 timeout/length-cap UI 合成错误卡片；这些 UI-only 证据只进入 raw observation，不污染 canonical messages。
-- [pending] 生成三份 recovery bundle：真实 UI message id/role/text 进入 `messages` union；完整 DOM/body 与 DevSpace audit 作为 raw forensic artifact 留在 recovery observation，无法证明的 tool message id/parent/turn id 不伪造。
-- [pending] 将“conversation length cap / send-timeout 后 UI 与 canonical persistence 分叉”提升为新的取证场景，写入 PROGRESS/事故文档；完成定向测试、typecheck，并在真实主库恢复后三次 `show/search` 验证。
+- [done] 已生成三份 recovery bundle 并对主库执行恢复。后续 hidden-node 对照证明 DOM 的 assistant error card 也可能带 `data-message-id` 却完全不存在于 server body，因此最终 canonical 恢复只保留能证明的消息：迁移聊天缺失 user `bcfba6d2…` 留在 union；三个 timeout/length-cap UI assistant 占位均从 canonical 删除但继续保留在 raw recovery observation。异常分析 user `9ef20fbc…` 已从 recovery 前的 first-party raw body observation 恢复完整 metadata。
+- [done] 已将 conversation length-cap、send-timeout、persistence gap 与 `ui-hidden-canonical-tail` 分层写入 PROGRESS；真实主库完成局部 FTS/Markdown/resource 重建和 message/head 核对。最新 recovery 代码定向数据库测试 20/20、TypeScript 通过，全量 Vitest 17 files / 93 tests 全过。
 
 ## 2026-09-21 Complete-no-final / head divergence / overlap 收敛 ExecPlan
 
