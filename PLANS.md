@@ -4,7 +4,7 @@
 - [done] 解锁 SQLite 后与浏览器现场逐项对账，确认三例都存在“执行/前端现场比 canonical conversation archive 更靠后”的 persistence gap：迁移与异常分析缺整轮执行尾段，Sidebery 至少缺长度上限终止节点，工具过程另存在于 DOM/audit。
 - [done] 当前接续聊天自身再次中断后形成第四个对照样本：canonical body 已有 491 节点且 `current_node` 指向真实 tool result，但 DOM 只显示 user + 合成 timeout error；将其单独命名为 `ui-hidden-canonical-tail`，明确它不是 persistence gap，也不是 confirmed head rollback。
 - [pending] Phase 3/UI observer 后续要把“当前 DOM 可见 message-id 集合”与 canonical body/current_node 同时采样；只有这样才能自动识别 `ui-hidden-canonical-tail`。现阶段只保存 DOM/DOMSnapshot/raw audit，不把 UI-only timeout placeholder 写进 canonical messages。
-- [pending] 增加只增量、不删除历史的 `chatgpt-archive recover` 入口：复用 `mergeLiveMessagesPage()`，强制 provenance=`browser-memory-recovery`、`updateCurrentState=false`、`classifyTerminal=false`，禁止误用会 DELETE conversation 的旧 `importRaw()`。
+- [done] 增加只增量、不删除历史的 `chatgpt-archive recover` 入口：复用 `mergeLiveMessagesPage()`，强制 provenance=`browser-memory-recovery`、`updateCurrentState=false`、`updateIncidents=false`、`insertUnknownOnly=true`。assistant DOM 节点还要求真实 model slug，并排除 timeout/length-cap UI 合成错误卡片；这些 UI-only 证据只进入 raw observation，不污染 canonical messages。
 - [pending] 生成三份 recovery bundle：真实 UI message id/role/text 进入 `messages` union；完整 DOM/body 与 DevSpace audit 作为 raw forensic artifact 留在 recovery observation，无法证明的 tool message id/parent/turn id 不伪造。
 - [pending] 将“conversation length cap / send-timeout 后 UI 与 canonical persistence 分叉”提升为新的取证场景，写入 PROGRESS/事故文档；完成定向测试、typecheck，并在真实主库恢复后三次 `show/search` 验证。
 

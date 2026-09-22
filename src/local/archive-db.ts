@@ -1178,6 +1178,14 @@ export class ChatArchiveDb {
        */
       updateIncidents?: boolean
       /**
+       * 只插入当前数据库里还不存在的 message_id。
+       *
+       * 浏览器内存 recovery 的 payload 通常只含 DOM 可见字段，信息量远少于 first-party body；
+       * 已知 message 若被这种简化 payload upsert，会反向覆盖 canonical metadata/raw_json。
+       * 因此 recovery 必须使用 insertUnknownOnly=true，正常 live body 同步仍保持完整 upsert。
+       */
+      insertUnknownOnly?: boolean
+      /**
        * 是否已有外部证据确认这一轮已经结束。
        * false 时仍可记录 explicit client_stopped/interrupted，但不能把 open reasoning/tool 尾巴
        * 单独解释成异常终止；这用于 watchdog / gap repair 防止误报仍在正常运行的长任务。
@@ -1340,6 +1348,7 @@ export class ChatArchiveDb {
       }
 
       conversation.messages.forEach((message, pageOrdinal) => {
+        if (options.insertUnknownOnly === true && knownBefore.has(message.id)) return
         const rawMessage = record(message.raw)
         const author = record(rawMessage.author)
         const content = record(rawMessage.content)

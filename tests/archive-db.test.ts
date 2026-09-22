@@ -172,7 +172,7 @@ describe('ChatArchiveDb', () => {
     }
   })
 
-  test('浏览器内存 recovery 只补消息，不改 canonical head 或 incident', () => {
+  test('浏览器内存 recovery 只插未知消息，不覆盖已有 canonical message', () => {
     const db = tempDb()
     try {
       db.mergeLiveMessagesPage({
@@ -185,7 +185,7 @@ describe('ChatArchiveDb', () => {
             author: { role: 'user' },
             recipient: 'all',
             content: { content_type: 'text', parts: ['旧问题'] },
-            metadata: { turn_exchange_id: 'turn-old' },
+            metadata: { turn_exchange_id: 'turn-old', canonical_marker: 'keep-me' },
           },
           {
             id: 'assistant-final',
@@ -205,18 +205,18 @@ describe('ChatArchiveDb', () => {
         recovery: { kind: 'browser-memory-recovery', capturedAt: 2000 },
         messages: [
           {
+            id: 'user-old',
+            author: { role: 'user' },
+            recipient: 'all',
+            content: { content_type: 'text', parts: ['DOM 简化副本'] },
+            metadata: { recovery_source: 'browser-memory' },
+          },
+          {
             id: 'user-recovered',
             author: { role: 'user' },
             recipient: 'all',
             content: { content_type: 'text', parts: ['又中断了继续'] },
             metadata: { recovery_source: 'browser-memory' },
-          },
-          {
-            id: 'ui-length-cap',
-            author: { role: 'assistant' },
-            recipient: 'all',
-            content: { content_type: 'text', parts: ['你已达到此对话的长度上限'] },
-            metadata: { recovery_source: 'browser-memory', recovery_ui_state: 'length-cap' },
           },
         ],
       }, {
@@ -226,11 +226,18 @@ describe('ChatArchiveDb', () => {
         updateCurrentState: false,
         classifyTerminal: false,
         updateIncidents: false,
+        insertUnknownOnly: true,
       })
 
       expect(db.getMessages('recovery-chat').map(item => item.messageId)).toEqual(
-        expect.arrayContaining(['user-old', 'assistant-final', 'user-recovered', 'ui-length-cap']),
+        expect.arrayContaining(['user-old', 'assistant-final', 'user-recovered']),
       )
+      expect(db.db.prepare(
+        'SELECT text, metadata_json AS metadataJson FROM messages WHERE conversation_id = ? AND message_id = ?',
+      ).get('recovery-chat', 'user-old')).toMatchObject({
+        text: '旧问题',
+        metadataJson: expect.stringContaining('canonical_marker'),
+      })
       expect(db.db.prepare(
         'SELECT current_node AS currentNode FROM conversations WHERE id = ?',
       ).get('recovery-chat')).toMatchObject({ currentNode: 'assistant-final' })

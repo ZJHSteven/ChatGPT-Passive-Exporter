@@ -300,6 +300,32 @@ async function recoverFile(db, filePath) {
         throw new Error('recovery payload requires messages[]')
       }
 
+      const canonicalMessages = payload.messages.filter((message) => {
+        if (!message || typeof message !== 'object') return false
+        const role = message.author && typeof message.author === 'object'
+          ? message.author.role
+          : null
+        if (role === 'user') return true
+        if (role !== 'assistant') return false
+
+        // ChatGPT 的“消息发送超时 / 已达到长度上限”等错误卡片同样会带 data-message-id，
+        // 但真实样本证明这些 ID 可以完全不存在于 server body。DOM message-id 本身因此不够。
+        // 当前只允许带真实模型标识的 assistant DOM 节点进入 canonical union；其余 UI-only
+        // 节点仍完整保存在 recovery.uiMessages/raw observation 中，供 forensic 对账。
+        const metadata = message.metadata && typeof message.metadata === 'object'
+          ? message.metadata
+          : {}
+        const modelSlug = metadata.recovery_model_slug
+        const content = message.content && typeof message.content === 'object'
+          ? message.content
+          : {}
+        const text = Array.isArray(content.parts) ? content.parts.filter(part => typeof part === 'string').join('\n') : ''
+        if (typeof modelSlug !== 'string' || modelSlug.trim().length === 0) return false
+        if (/消息发送超时|已达到此对话的长度上限|达到此对话的长度上限/u.test(text)) return false
+        return true
+      })
+
+      const mergePayload = { ...payload, messages: canonicalMessages }
       const capturedAt = Number(recovery.capturedAt)
       const observedAt = Number.isFinite(capturedAt) && capturedAt > 0
         ? capturedAt
@@ -307,7 +333,7 @@ async function recoverFile(db, filePath) {
 
       results.push({
         file: absolute,
-        ...db.mergeLiveMessagesPage(payload, {
+        ...db.mergeLiveMessagesPage(mergePayload, {
           observedAt,
           endpoint: 'offline://browser-memory-recovery',
           observationKind: 'browser-memory-recovery',
@@ -315,7 +341,10 @@ async function recoverFile(db, filePath) {
           classifyTerminal: false,
           allowIncompleteTailIncident: false,
           updateIncidents: false,
+          insertUnknownOnly: true,
         }),
+        uiMessageCount: payload.messages.length,
+        canonicalCandidateCount: canonicalMessages.length,
       })
     }
     catch (error) {
