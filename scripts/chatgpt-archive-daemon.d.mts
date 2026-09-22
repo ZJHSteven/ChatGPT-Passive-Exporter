@@ -52,3 +52,19 @@ export function shouldRebuildGuardianForMissingWss(input: {
 /** 从当前页面真实 backend 请求中提取短生命周期、允许复用的请求上下文字段。 */
 export function sanitizeCapturedHeaders(headers: Record<string, unknown>): Record<string, unknown>
 
+/** 新 incident 或同一 incident 的 material lifecycle 升级才触发手机通知。 */
+export function shouldNotifyIncidentTransition(
+  before: null | {
+    id?: unknown
+    incidentKind?: unknown
+    lifecycleClass?: unknown
+    terminalEvidence?: unknown
+  },
+  after: null | {
+    id?: unknown
+    incidentKind?: unknown
+    lifecycleClass?: unknown
+    terminalEvidence?: unknown
+  },
+): boolean
+

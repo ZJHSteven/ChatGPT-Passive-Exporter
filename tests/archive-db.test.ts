@@ -837,6 +837,7 @@ describe('ChatArchiveDb', () => {
         source: 'body-page:wss:conversation-turn-complete',
         lastObservedAt: 2000,
       })
+      expect(db.listIncidents()[0]?.reason).toContain('已确认 turn 完成但没有 final')
 
       // 一个从未由可靠 terminal/watchdog 路径立案的新 turn，普通 reconcile 仍然不能创建事故。
       db.mergeLiveMessagesPage({
@@ -1022,6 +1023,20 @@ describe('ChatArchiveDb', () => {
         incidentKind: 'abnormal-terminal',
         lifecycleClass: 'explicit-interrupted',
         status: 'open',
+      })
+      expect(db.listIncidents()[0]?.reason).toContain('client_stopped')
+
+      // 后续普通 reconcile 即使拿到一个缺少 finish_details 的旧/不完整快照，也只能刷新
+      // body 诊断，不能把已经确认的 explicit interrupted 降回 terminalEvidence=none。
+      db.mergeLiveMessagesPage(timedOut, {
+        observedAt: 1200,
+        classifyTerminal: false,
+        observationKind: 'body-page:reconcile:startup',
+      })
+      expect(db.listIncidents()[0]).toMatchObject({
+        id: firstId,
+        lifecycleClass: 'explicit-interrupted',
+        terminalEvidence: 'client-stopped',
       })
       expect(db.listIncidents()[0]?.reason).toContain('client_stopped')
 

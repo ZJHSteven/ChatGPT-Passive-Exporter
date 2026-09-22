@@ -33,6 +33,17 @@ export interface IncidentNotificationResult {
   error: string | null
 }
 
+export interface IncidentNotificationSendOptions {
+  /** 测试可注入 fetch；生产默认使用 Node 全局 fetch。 */
+  fetchImpl?: typeof fetch
+  /** 单次请求硬超时；通知不能长期阻塞 Archive 主循环。 */
+  timeoutMs?: number
+  /** 总尝试次数。默认 2：首次 + 一次瞬时故障重试。 */
+  maxAttempts?: number
+  /** 两次尝试之间的短退避。 */
+  retryDelayMs?: number
+}
+
 /**
  * 读取本地通知配置。
  *
@@ -66,22 +77,40 @@ export async function loadIncidentNotificationConfig(filePath: string): Promise<
 }
 
 /**
- * 构造 Bark GET API URL。
+ * 构造 Bark V2 JSON 请求。
  *
- * 单独暴露为纯函数是为了测试 URL 编码，同时确保日志/状态只需要记录 HTTP status，
- * 不需要打印包含 deviceToken 的完整 URL。
+ * Bark 仍兼容旧 GET 路径，但 V2 官方推荐标准 REST `POST /push`。
+ * 这样 device key、中文正文、长诊断都留在 HTTPS request body，而不是塞进 URL；
+ * 同时避免长 incident reason 触碰 URL 长度/代理日志边界。
  */
-export function buildBarkIncidentUrl(
+export function buildBarkIncidentRequest(
   config: BarkIncidentNotificationConfig,
   notification: IncidentNotification,
-): URL {
-  const base = config.baseUrl.replace(/\/+$/u, '')
-  const url = new URL(
-    `${base}/${encodeURIComponent(config.deviceToken)}/${encodeURIComponent(notification.title)}/${encodeURIComponent(notification.body)}`,
-  )
-  if (config.group) url.searchParams.set('group', config.group)
-  if (notification.url) url.searchParams.set('url', notification.url)
-  return url
+): { url: URL, init: RequestInit } {
+  const url = new URL(`${config.baseUrl.replace(/\/+$/u, '')}/push`)
+  const payload: Record<string, unknown> = {
+    device_key: config.deviceToken,
+    title: notification.title,
+    body: notification.body,
+  }
+  if (config.group) payload.group = config.group
+  if (notification.url) payload.url = notification.url
+  return {
+    url,
+    init: {
+      method: 'POST',
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(payload),
+    },
+  }
+}
+
+function retryableStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500
+}
+
+function sleep(ms: number): Promise<void> {
+  return ms > 0 ? new Promise(resolve => setTimeout(resolve, ms)) : Promise.resolve()
 }
 
 /**
@@ -93,26 +122,40 @@ export function buildBarkIncidentUrl(
 export async function sendIncidentNotification(
   config: BarkIncidentNotificationConfig | null,
   notification: IncidentNotification,
+  options: IncidentNotificationSendOptions = {},
 ): Promise<IncidentNotificationResult> {
   if (!config) return { attempted: false, ok: false, status: null, error: null }
-  try {
-    const response = await fetch(buildBarkIncidentUrl(config, notification), {
-      method: 'GET',
-      signal: AbortSignal.timeout(8000),
-    })
-    return {
-      attempted: true,
-      ok: response.ok,
-      status: response.status,
-      error: response.ok ? null : `HTTP ${response.status}`,
+  const fetchImpl = options.fetchImpl ?? fetch
+  const timeoutMs = Math.max(1000, options.timeoutMs ?? 8000)
+  const maxAttempts = Math.max(1, Math.min(3, options.maxAttempts ?? 2))
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 750)
+  const request = buildBarkIncidentRequest(config, notification)
+  let last: IncidentNotificationResult = { attempted: true, ok: false, status: null, error: 'notification failed' }
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetchImpl(request.url, {
+        ...request.init,
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      last = {
+        attempted: true,
+        ok: response.ok,
+        status: response.status,
+        error: response.ok ? null : `HTTP ${response.status}`,
+      }
+      if (response.ok || !retryableStatus(response.status) || attempt === maxAttempts) return last
     }
-  }
-  catch (error) {
-    return {
-      attempted: true,
-      ok: false,
-      status: null,
-      error: error instanceof Error ? error.message : String(error),
+    catch (error) {
+      last = {
+        attempted: true,
+        ok: false,
+        status: null,
+        error: error instanceof Error ? error.message : String(error),
+      }
+      if (attempt === maxAttempts) return last
     }
+    await sleep(retryDelayMs)
   }
+  return last
 }

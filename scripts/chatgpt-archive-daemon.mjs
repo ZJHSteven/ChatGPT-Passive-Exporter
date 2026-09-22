@@ -351,6 +351,22 @@ export function sanitizeCapturedHeaders(headers) {
   return sanitized
 }
 
+/**
+ * 判断同一 conversation 的 incident 是否出现了值得再次提醒手机的“实质生命周期变化”。
+ *
+ * tailShape / reason 会随着更完整 body 或分类器升级频繁刷新，不应每次都轰炸手机；
+ * 真正需要二次提醒的是 watchdog timeout 后又拿到 confirmed complete / explicit interrupted
+ * 这类 lifecycle 升级。新 turn 的 incident id 不同，当然也必须通知。
+ */
+export function shouldNotifyIncidentTransition(before, after) {
+  if (!after) return false
+  if (!before) return true
+  if (before.id !== after.id) return true
+  return before.incidentKind !== after.incidentKind
+    || before.lifecycleClass !== after.lifecycleClass
+    || before.terminalEvidence !== after.terminalEvidence
+}
+
 export function extractConversationEvents(payloadData) {
   if (typeof payloadData !== 'string' || payloadData.length > 1_000_000) return []
   let parsed
@@ -762,7 +778,8 @@ async function main() {
   }
 
   const latestOpenIncident = (conversationId) => archive.db.prepare(`
-    SELECT i.id, i.reason, i.terminal_evidence AS terminalEvidence, i.tail_shape AS tailShape,
+    SELECT i.id, i.incident_kind AS incidentKind, i.lifecycle_class AS lifecycleClass,
+           i.reason, i.terminal_evidence AS terminalEvidence, i.tail_shape AS tailShape,
            c.title
     FROM incidents i
     JOIN conversations c ON c.id = i.conversation_id
@@ -779,7 +796,11 @@ async function main() {
       incident.reason || `${incident.terminalEvidence || 'abnormal'} / ${incident.tailShape || 'unknown tail'}`,
     ].filter(Boolean).join('\n')
     const result = await sendIncidentNotification(notificationConfig, {
-      title: 'ChatGPT 异常结束',
+      title: incident.lifecycleClass === 'watchdog-timeout'
+        ? 'ChatGPT 运行超时'
+        : incident.lifecycleClass === 'explicit-interrupted'
+          ? 'ChatGPT 运行中断'
+          : 'ChatGPT 异常结束',
       body,
       url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
     })
@@ -895,7 +916,7 @@ async function main() {
       if (pages === 0) latestDiagnostic = merged.diagnostic
       if (pages === 0 && classifyTerminal) {
         const incidentAfter = latestOpenIncident(conversationId)
-        if (incidentAfter && incidentAfter.id !== incidentBefore?.id) newIncident = incidentAfter
+        if (shouldNotifyIncidentTransition(incidentBefore, incidentAfter)) newIncident = incidentAfter
       }
       newMessages += merged.newMessageCount
       pages += 1

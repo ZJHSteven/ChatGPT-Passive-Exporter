@@ -6,6 +6,7 @@ import {
   extractConversationEvents,
   isConfirmedTerminalTrigger,
   sanitizeCapturedHeaders,
+  shouldNotifyIncidentTransition,
   shouldRebuildGuardianForMissingWss,
   shouldClassifyTerminalForTrigger,
 } from '../scripts/chatgpt-archive-daemon.mjs'
@@ -190,5 +191,25 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       'oai-session-id': 'fresh-session',
       'x-oai-is-client-observation': '1',
     })
+  })
+
+  test('手机通知只跟随新 incident 或 material lifecycle 升级，不跟随 tail 文案抖动', () => {
+    const watchdog = {
+      id: 'incident-1', incidentKind: 'watchdog-timeout', lifecycleClass: 'watchdog-timeout', terminalEvidence: 'none',
+    }
+    const sameWatchdog = { ...watchdog, tailShape: 'tool-result-returned', reason: 'body refreshed' }
+    const confirmed = {
+      ...watchdog, incidentKind: 'abnormal-terminal', lifecycleClass: 'complete-no-final', terminalEvidence: 'none',
+    }
+    const interrupted = {
+      ...confirmed, lifecycleClass: 'explicit-interrupted', terminalEvidence: 'client-stopped',
+    }
+
+    expect(shouldNotifyIncidentTransition(null, watchdog)).toBe(true)
+    expect(shouldNotifyIncidentTransition(watchdog, sameWatchdog)).toBe(false)
+    expect(shouldNotifyIncidentTransition(watchdog, confirmed)).toBe(true)
+    expect(shouldNotifyIncidentTransition(confirmed, interrupted)).toBe(true)
+    expect(shouldNotifyIncidentTransition(interrupted, null)).toBe(false)
+    expect(shouldNotifyIncidentTransition(interrupted, { ...interrupted, id: 'incident-2' })).toBe(true)
   })
 })

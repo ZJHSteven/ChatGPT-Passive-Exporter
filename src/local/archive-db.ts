@@ -1981,7 +1981,9 @@ export class ChatArchiveDb {
 
     const currentIncident = this.db.prepare(`
       SELECT id, status, incident_kind AS incidentKind,
-             lifecycle_class AS lifecycleClass
+             lifecycle_class AS lifecycleClass,
+             terminal_evidence AS terminalEvidence,
+             reason
       FROM incidents
       WHERE conversation_id=? AND turn_key=?
       LIMIT 1
@@ -1990,6 +1992,8 @@ export class ChatArchiveDb {
       status: string
       incidentKind: string
       lifecycleClass: string | null
+      terminalEvidence: string | null
+      reason: string | null
     } | undefined
 
     // head history 只有在 current_node 真正变化时才插一行；因此同一个 head 出现两次以上，
@@ -2027,9 +2031,24 @@ export class ChatArchiveDb {
       && currentIncident?.status === 'open'
       && diagnostic.terminalEvidence !== 'final'
     ) {
+      // reconcile 只能补“body 现在长什么样”，不能推翻已经由更强 lifecycle 信号建立的事实。
+      // 两类典型降级必须阻止：
+      // 1. WSS complete 已确认 complete-no-final，后续仅凭 tool-result/reasoning tail 的 summary
+      //    不能把 reason 刷回“不能据此判死”；
+      // 2. 已明确 client_stopped/interrupted，后续某个缺少 finish_details 的普通快照不能把
+      //    terminal_evidence 从 interrupted 降回 none。
+      const preserveExplicitTerminal = currentIncident.lifecycleClass === 'explicit-interrupted'
+        && diagnostic.terminalEvidence === 'none'
+      const refreshedTerminalEvidence = preserveExplicitTerminal
+        ? currentIncident.terminalEvidence
+        : diagnostic.terminalEvidence
       const refreshedReason = currentIncident.incidentKind === 'watchdog-timeout'
         ? `超过 watchdog 阈值仍未收到 conversation-turn-complete；${diagnostic.summary}`
-        : diagnostic.summary
+        : currentIncident.lifecycleClass === 'complete-no-final'
+          ? `已确认 turn 完成但没有 final；${diagnostic.summary}`
+          : preserveExplicitTerminal
+            ? (currentIncident.reason || diagnostic.summary)
+            : diagnostic.summary
       this.db.prepare(`
         UPDATE incidents
         SET last_observed_at=?,
@@ -2044,7 +2063,7 @@ export class ChatArchiveDb {
       `).run(
         observedAt,
         refreshedReason,
-        diagnostic.terminalEvidence,
+        refreshedTerminalEvidence,
         diagnostic.tailShape,
         diagnostic.headState,
         headRollbackObserved ? 1 : 0,
