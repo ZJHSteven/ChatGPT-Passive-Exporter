@@ -1,7 +1,7 @@
 ## 2026-09-22 Incident 手机推送收口 ExecPlan
 
 - [in_progress] 重新收紧 incident 分层语义：`lifecycleClass` 只回答“为什么这一轮算事故”，`tailShape` 只回答“最后持久化到哪一层”，`reason` 仅作为两者的可读摘要；同时审计历史遗留的笼统 `abnormal-terminal` 桶，避免把 tail subtype 再次误当主类。
-- [in_progress] 将 Bark 通知从 Archive `syncInFlight` 主链彻底旁路化：conversation/body/incident 先完成 SQLite 落盘并释放同步锁，通知只做 fire-and-forget 分支；通知超时/重试不得阻塞下一条 conversation sync。
+- [done] 将 Bark 通知从 Archive `syncInFlight` 主链彻底旁路化：conversation/body/incident 先完成 SQLite 落盘并释放同步锁，通知只做 fire-and-forget 分支；通知超时/重试不得阻塞下一条 conversation sync。TypeScript 与 Vitest 17 files / 95 tests 全过。
 - [done] 修复已确认 incident 被普通 reconcile 刷新后人类可读 reason 退化的问题：`complete-no-final` 继续保留“已确认 turn 完成但没有 final”的 lifecycle 语义；`explicit-interrupted` 不允许被后续缺失终止证据的快照降级。
 - [done] 手机通知触发从“只看 incident id 是否新建”升级为“看 material lifecycle transition”：新 turn incident 必推；同一 turn 从 watchdog timeout 升级为 confirmed abnormal / explicit interrupted 也会再次提醒；单纯 tail/body 细节刷新不重复轰炸。
 - [done] Bark transport 从兼容 GET URL 切换到官方 V2 `POST /push` JSON；Archive Core 与通知失败继续隔离，并对瞬时网络错误/429/5xx 做一次轻量重试。
