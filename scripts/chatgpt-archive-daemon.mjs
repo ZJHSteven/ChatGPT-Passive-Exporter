@@ -824,6 +824,28 @@ async function main() {
     }
   }
 
+  /**
+   * 手机通知是 Archive 的旁路副作用，绝不能成为 conversation/body/SQLite 同步的关键路径。
+   *
+   * 调用方只负责把已经落库的 incident 交给通知分支；Bark 自己的超时、重试、日志失败
+   * 都在这个 detached promise 内消化。这样即使 Bark 卡满整个请求窗口，`syncInFlight`
+   * 也可以立刻释放，下一条 conversation 继续正常归档。
+   *
+   * 注意：这里目前仍是内存级 fire-and-forget；daemon 若在发送完成前被强杀，通知本身
+   * 可能丢失，但 SQLite 中的 incident 事实不会丢。跨进程可靠重试属于后续 outbox 工作。
+   */
+  const dispatchIncidentNotification = (conversationId, incident) => {
+    if (!notificationConfig || !incident) return
+    void notifyIncident(conversationId, incident).catch(async (error) => {
+      notificationLastError = error instanceof Error ? error.message : String(error)
+      await log('incident notification branch failed', {
+        conversationId,
+        provider: notificationConfig.provider,
+        error: notificationLastError,
+      }).catch(() => {})
+    })
+  }
+
   const tripCooldown = async (reason) => {
     cooldownUntil = Date.now() + cooldownMinutes * 60_000
     await log('active API cooldown armed', { reason, cooldownUntil })
@@ -1044,7 +1066,8 @@ async function main() {
             error: error instanceof Error ? error.message : String(error),
           })
         })
-        if (result.newIncident) await notifyIncident(conversationId, result.newIncident)
+        // SQLite/trace 到这里已经完成；通知只从已落库事实分叉出去，不参与 syncInFlight。
+        if (result.newIncident) dispatchIncidentNotification(conversationId, result.newIncident)
       }
       catch (error) {
         syncErrors += 1
