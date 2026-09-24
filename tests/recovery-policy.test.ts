@@ -8,6 +8,8 @@ function diagnostic(overrides: Partial<RunDiagnostic> = {}): RunDiagnostic {
     terminalEvidence: 'client-stopped',
     interruptedReason: 'client_stopped',
     hasFinal: false,
+    hasImageGenerationFinal: false,
+    imageGenerationCount: 0,
     hasReasoningEnded: false,
     tailShape: 'other',
     headState: 'unknown',

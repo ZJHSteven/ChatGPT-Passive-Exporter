@@ -66,6 +66,8 @@ describe('Active Turn Recorder', () => {
         lastMessageId: 'recap-1',
         terminalEvidence: 'none',
         hasFinal: false,
+        hasImageGenerationFinal: false,
+        imageGenerationCount: 0,
         hasReasoningEnded: true,
         tailShape: 'reasoning-ended-no-final',
         currentNode: 'call-open',

@@ -7,6 +7,8 @@ function diagnostic(overrides: Partial<RunDiagnostic>): RunDiagnostic {
   return {
     terminalEvidence: 'none',
     hasFinal: false,
+    hasImageGenerationFinal: false,
+    imageGenerationCount: 0,
     hasReasoningEnded: false,
     tailShape: 'other',
     headState: 'unknown',
