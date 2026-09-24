@@ -1,5 +1,5 @@
 import type { RawChatMessage, RawConversationPayload } from './types'
-import { extractImageAssets, isCompletedImageGenerationMessage } from './image-assets'
+import { extractImageAssets, isCompletedImageGenerationMessage } from './image-assets.ts'
 
 /**
  * “生命状态证据”和“当前快照尾部形态”必须严格分开。
