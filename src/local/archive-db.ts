@@ -2421,7 +2421,8 @@ export class ChatArchiveDb {
         m.conversation_id AS conversationId,
         m.message_id AS messageId,
         c.title AS title,
-        m.raw_json AS rawJson
+        m.raw_json AS rawJson,
+        COALESCE(m.source_observed_at, m.last_seen_at, m.first_seen_at, c.captured_at) AS sourceObservedAt
       FROM messages m
       JOIN conversations c ON c.id = m.conversation_id
       WHERE m.raw_json IS NOT NULL
@@ -2439,6 +2440,25 @@ export class ChatArchiveDb {
       SET resource_count = (
         SELECT count(*) FROM resources r WHERE r.conversation_id = conversations.id
       )
+    `)
+    const upsertImageAsset = this.db.prepare(`
+      INSERT INTO image_assets (
+        conversation_id, message_id, part_index, asset_pointer, file_id, asset_kind,
+        mime_type, expected_size_bytes, width, height, gen_id, parent_gen_id, turn_exchange_id,
+        first_seen_at, last_seen_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(conversation_id, message_id, part_index) DO UPDATE SET
+        asset_pointer=excluded.asset_pointer,
+        file_id=excluded.file_id,
+        asset_kind=excluded.asset_kind,
+        mime_type=excluded.mime_type,
+        expected_size_bytes=excluded.expected_size_bytes,
+        width=excluded.width,
+        height=excluded.height,
+        gen_id=excluded.gen_id,
+        parent_gen_id=excluded.parent_gen_id,
+        turn_exchange_id=excluded.turn_exchange_id,
+        last_seen_at=max(image_assets.last_seen_at, excluded.last_seen_at)
     `)
 
     let inserted = 0
@@ -2496,6 +2516,30 @@ export class ChatArchiveDb {
           )
           ordinals.set(conversationId, ordinal + 1)
           inserted += 1
+        }
+
+        const rawRecord = record(rawMessage)
+        const metadata = record(rawRecord.metadata)
+        const turnExchangeId = stringValue(metadata.turn_exchange_id)
+        const seenAt = numberValue(row.sourceObservedAt) ?? Date.now()
+        for (const asset of extractImageAssets(rawRecord)) {
+          upsertImageAsset.run(
+            conversationId,
+            messageId,
+            asset.partIndex,
+            asset.assetPointer,
+            asset.fileId ?? null,
+            asset.generated ? 'generated-image' : 'image-asset',
+            asset.mimeType ?? null,
+            asset.sizeBytes ?? null,
+            asset.width ?? null,
+            asset.height ?? null,
+            asset.genId ?? null,
+            asset.parentGenId ?? null,
+            turnExchangeId,
+            seenAt,
+            seenAt,
+          )
         }
       }
 
