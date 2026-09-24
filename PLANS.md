@@ -1,3 +1,12 @@
+## 2026-09-24 图片生成归档 / ImageGen incident ExecPlan
+
+- [in_progress] 用《漫画分镜设计》真实会话还原 ImageGen 持久化协议：确认 `role=tool + channel=final + content_type=multimodal_text`、`image_asset_pointer`、`sediment://file_*`、`generation.gen_id`、`notification_channel_id=image_gen` 与 turn lifecycle 的关系，并区分普通 tool/reasoning 尾型。
+- [pending] 被动观察 ChatGPT Web 如何把 `sediment://file_*` 解析成可下载图片：优先利用现有页面/CDP 网络事件与本地 trace，不主动伪造未知请求；只有请求形态完全确认后才考虑受控重放。
+- [pending] 设计 live image asset 持久化：SQLite 只保存结构化元数据/本地相对路径/hash，不把大二进制塞进主库；图片按 conversation/message/part 独立落盘，支持一轮多图、去重、失败重试与 source-missing 语义。
+- [pending] 扩展 rich manifest：不再只保存 `sediment` scheme，而是保留每个 image part 的 pointer、mime、尺寸、字节数、generation/gen_id 等非敏感元数据，并让 `archive show --format resources` 可审计多图。
+- [pending] 增加 ImageGen-aware terminal classification：当同一 turn 已出现最终 image tool node 时，将其识别为“图片生成完成/图片节点”而不是普通 `complete-no-final` error；仍保留 warning/手机通知能力，用于提示“本轮转入图片生成”，并与真正异常 lifecycle 分层。
+- [pending] 增加 fixture、数据库、manifest、incident、下载 resolver 的单元/集成回归；最后用真实漫画会话复放验证 2/4 图场景并更新 PROGRESS。
+
 ## 2026-09-22 Incident 手机推送收口 ExecPlan
 
 - [pending] 补齐 `no-complete / no-final` 实时发现盲区。2026-09-24《漫画分镜设计》真实样本证明：turn 可在没有 `conversation-turn-complete`、也没有可靠 turn-start 的情况下停止生成；此时 `activeTurns` 不会登记，watchdog 无法启动，只有后续新 user turn / gap reconciliation 才能历史补账。手机通知层本身无故障，根因是 incident discovery 不完整。后续需优先研究可被动捕获的 turn-start / stream / alder-conversations 信号；历史补账通知仅作为兜底，不能冒充实时检测。
