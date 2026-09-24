@@ -12,6 +12,7 @@
 
 ## 2026-09-22 浏览器内存尾段恢复 / conversation persistence gap ExecPlan
 
+- [pending] 扩展 UI observer，识别 `ui-virtualizer-blank-view`：同时采样可见 target 的 `visibilityState`、thread scroll container 几何、标准 message DOM 数量、可见文本节点与 canonical `current_node/final`。2026-09-24《漫画分镜设计》已出现 canonical 正常 final、DOM `innerText` 仍有完整消息，但 `[data-message-id]=0` 且内容树整体位于巨大负坐标的真实样本；这应作为 UI-only renderer 故障记录，不得建立新的 server lifecycle incident。
 - [done] 对三个风险会话先做无刷新 CDP 抢救：保存 DOM HTML、纯文本、DOMSnapshot，以及可见 user/assistant 的真实 `data-message-id`；同时在停 daemon 前复制 SQLite/WAL/SHM/turn trace。
 - [done] 解锁 SQLite 后与浏览器现场逐项对账，确认三例都存在“执行/前端现场比 canonical conversation archive 更靠后”的 persistence gap：迁移与异常分析缺整轮执行尾段，Sidebery 至少缺长度上限终止节点，工具过程另存在于 DOM/audit。
 - [done] 当前接续聊天自身再次中断后形成第四个对照样本：canonical body 已有 491 节点且 `current_node` 指向真实 tool result，但 DOM 只显示 user + 合成 timeout error；将其单独命名为 `ui-hidden-canonical-tail`，明确它不是 persistence gap，也不是 confirmed head rollback。
