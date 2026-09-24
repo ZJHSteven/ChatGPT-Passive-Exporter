@@ -2055,7 +2055,7 @@ export class ChatArchiveDb {
   }
 
   /** 列出仍未落盘的 ImageGen 图片；供 Guardian 的机会式被动补全使用。 */
-  listPendingGeneratedImageAssets(limit = 50): ImageAssetRow[] {
+  listPendingGeneratedImageAssets(limit = 50, retryBefore = Date.now() - 5 * 60_000): ImageAssetRow[] {
     const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)))
     return [...this.db.prepare(`
       SELECT conversation_id AS conversationId, message_id AS messageId, part_index AS partIndex,
@@ -2069,9 +2069,10 @@ export class ChatArchiveDb {
              download_error AS downloadError, notification_sent_at AS notificationSentAt
       FROM image_assets
       WHERE asset_kind='generated-image' AND downloaded_at IS NULL
+        AND (last_download_attempt_at IS NULL OR last_download_attempt_at <= ?)
       ORDER BY first_seen_at, conversation_id, message_id, part_index
       LIMIT ?
-    `).iterate(safeLimit)] as unknown as ImageAssetRow[]
+    `).iterate(retryBefore, safeLimit)] as unknown as ImageAssetRow[]
   }
 
   /** 把成功下载后的本地 blob 信息回写到所有引用同一稳定 pointer 的行。 */

@@ -15,6 +15,7 @@
  */
 
 import fs from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import process from 'node:process'
 import { execFileSync, spawn } from 'node:child_process'
@@ -40,6 +41,8 @@ const DEFAULT_STATE = path.join(PROJECT_ROOT, 'data', 'archive-daemon-state.json
 const DEFAULT_LOG = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
 const DEFAULT_TURN_TRACE = path.join(PROJECT_ROOT, 'data', 'active-turn-trace.jsonl')
 const DEFAULT_NOTIFICATION_CONFIG = path.join(PROJECT_ROOT, 'data', 'archive-notification.local.json')
+const DEFAULT_IMAGE_ASSET_DIR = path.join(PROJECT_ROOT, 'data', 'assets', 'chatgpt')
+const IMAGE_ASSET_HYDRATE_INTERVAL_MS = 30_000
 const WINDOWS_HIDE_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-hide-window.ps1')
 const DEFAULT_CDP_TIMEOUT_MS = 10_000
 const DEFAULT_CHROME_SHORTCUT = process.platform === 'win32' && process.env.USERPROFILE
@@ -349,6 +352,35 @@ export function sanitizeCapturedHeaders(headers) {
     if (allowed.has(normalized)) sanitized[normalized] = value
   }
   return sanitized
+}
+
+/** 只从真正的 ChatGPT conversation tab URL 提取 conversation id；不会导航页面。 */
+export function conversationIdFromTargetUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    if (url.hostname !== 'chatgpt.com' && !url.hostname.endsWith('.chatgpt.com')) return null
+    const match = url.pathname.match(/^\/c\/([^/?#]+)$/u)
+    return match?.[1] || null
+  }
+  catch {
+    return null
+  }
+}
+
+/**
+ * 从页面自然产生的 estuary 内容 URL 中只取稳定 file id。
+ * `sig/ts` 等短期签名属于瞬时下载能力，不应该成为长期归档身份。
+ */
+export function estuaryFileIdFromUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    if (!url.pathname.includes('/backend-api/estuary/content')) return null
+    const id = url.searchParams.get('id')
+    return id && /^file_[A-Za-z0-9_-]+$/u.test(id) ? id : null
+  }
+  catch {
+    return null
+  }
 }
 
 /**

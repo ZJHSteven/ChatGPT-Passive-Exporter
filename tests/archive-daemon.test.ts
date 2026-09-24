@@ -3,6 +3,8 @@ import {
   catalogStableOverlapTarget,
   classifyCatalogAsyncStatus,
   classifyConversationEvent,
+  conversationIdFromTargetUrl,
+  estuaryFileIdFromUrl,
   extractConversationEvents,
   isConfirmedTerminalTrigger,
   sanitizeCapturedHeaders,
@@ -12,6 +14,14 @@ import {
 } from '../scripts/chatgpt-archive-daemon.mjs'
 
 describe('ChatGPT Archive daemon WSS parser', () => {
+  test('图片下载辅助只提取稳定 conversation/file id，不依赖短期签名', () => {
+    expect(conversationIdFromTargetUrl('https://chatgpt.com/c/6ab3d7db-3f04-83e9-bad2-8abd105c3898')).toBe('6ab3d7db-3f04-83e9-bad2-8abd105c3898')
+    expect(conversationIdFromTargetUrl('https://chatgpt.com/?chatgpt-archive-guardian=1')).toBeNull()
+    expect(conversationIdFromTargetUrl('https://example.com/c/not-chatgpt')).toBeNull()
+
+    expect(estuaryFileIdFromUrl('https://chatgpt.com/backend-api/estuary/content?id=file_abc123&ts=1&sig=temporary')).toBe('file_abc123')
+    expect(estuaryFileIdFromUrl('https://chatgpt.com/backend-api/conversations/file_abc123')).toBeNull()
+  })
   test('从 conversations topic 中提取 conversation id 与事件类型', () => {
     const frame = JSON.stringify([
       {
