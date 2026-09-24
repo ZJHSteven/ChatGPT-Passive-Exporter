@@ -52,6 +52,12 @@ export function shouldRebuildGuardianForMissingWss(input: {
 /** 从当前页面真实 backend 请求中提取短生命周期、允许复用的请求上下文字段。 */
 export function sanitizeCapturedHeaders(headers: Record<string, unknown>): Record<string, unknown>
 
+/** 从已存在的 ChatGPT conversation target URL 提取 conversation id。 */
+export function conversationIdFromTargetUrl(value: unknown): string | null
+
+/** 从 estuary 内容 URL 中只提取稳定 file id；忽略 ts/sig 等临时签名。 */
+export function estuaryFileIdFromUrl(value: unknown): string | null
+
 /** 新 incident 或同一 incident 的 material lifecycle 升级才触发手机通知。 */
 export function shouldNotifyIncidentTransition(
   before: null | {
