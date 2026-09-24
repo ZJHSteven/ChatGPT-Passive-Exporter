@@ -929,6 +929,144 @@ async function main() {
     })
   }
 
+  /**
+   * 机会式补全 ImageGen 图片本体。
+   *
+   * 被动边界：
+   * 1. 不创建、不导航、不激活任何 conversation tab；
+   * 2. 只连接用户本来已经打开的 ChatGPT conversation target；
+   * 3. 只读取 DOM 中已经自然解析出的 estuary URL；
+   * 4. 真正取图由**该页面自己的 fetch** 完成，浏览器自行附带登录态，daemon 不读取 Cookie；
+   * 5. 找不到已解析 URL 就保持 pending，未来页面自然出现时再补。
+   *
+   * 2026-09-24 的真实漫画会话已经验证：页面上下文 fetch 能得到与 conversation body
+   * `size_bytes` 完全一致的 Blob。之前失败的是浏览器下载管理器落盘链，而不是 fetch 本身；
+   * 因此这里把 Blob 以 data URL 通过本地 CDP 带回，再由 daemon 原子写盘。
+   */
+  const hydratePendingGeneratedImageAssets = async () => {
+    const now = Date.now()
+    if (now - lastImageHydrationAt < IMAGE_ASSET_HYDRATE_INTERVAL_MS) return
+    lastImageHydrationAt = now
+
+    const pending = archive.listPendingGeneratedImageAssets(100)
+    if (pending.length === 0) return
+
+    const targets = await fetch(`${cdpHttp}/json/list`).then(response => response.json())
+    const byConversation = new Map()
+    for (const target of targets) {
+      const conversationId = conversationIdFromTargetUrl(target?.url)
+      if (!conversationId || !target?.webSocketDebuggerUrl) continue
+      if (!byConversation.has(conversationId)) byConversation.set(conversationId, target)
+    }
+
+    const pendingByConversation = new Map()
+    for (const asset of pending) {
+      if (!asset.fileId || !byConversation.has(asset.conversationId)) continue
+      const rows = pendingByConversation.get(asset.conversationId) || []
+      rows.push(asset)
+      pendingByConversation.set(asset.conversationId, rows)
+    }
+    if (pendingByConversation.size === 0) return
+
+    await fs.mkdir(DEFAULT_IMAGE_ASSET_DIR, { recursive: true })
+    for (const [conversationId, assets] of pendingByConversation) {
+      const target = byConversation.get(conversationId)
+      const page = new CdpClient(target.webSocketDebuggerUrl)
+      try {
+        await page.connect()
+        await page.send('Runtime.enable')
+        const runtime = await page.send('Runtime.evaluate', {
+          expression: `Array.from(document.images).map(img => img.currentSrc || img.src || '').filter(src => src.includes('/backend-api/estuary/content'))`,
+          returnByValue: true,
+        }, 5000)
+        const urls = Array.isArray(runtime.result?.value) ? runtime.result.value : []
+        const urlByFileId = new Map()
+        for (const url of urls) {
+          const fileId = estuaryFileIdFromUrl(url)
+          if (fileId && !urlByFileId.has(fileId)) urlByFileId.set(fileId, String(url))
+        }
+
+        for (const asset of assets) {
+          const signedUrl = urlByFileId.get(asset.fileId)
+          if (!signedUrl) continue
+          try {
+            // URL 由当前 DOM 产生并只进入 renderer 表达式；不进入任何日志/SQLite。
+            const fetchExpression = `(${async function downloadInPage(url) {
+              const response = await fetch(url, { credentials: 'include' })
+              const blob = await response.blob()
+              const dataUrl = await new Promise((resolve, reject) => {
+                const reader = new FileReader()
+                reader.onload = () => resolve(String(reader.result || ''))
+                reader.onerror = () => reject(reader.error || new Error('FileReader failed'))
+                reader.readAsDataURL(blob)
+              })
+              return {
+                ok: response.ok,
+                status: response.status,
+                contentType: blob.type || response.headers.get('content-type') || '',
+                size: blob.size,
+                dataUrl,
+              }
+            }})(${JSON.stringify(signedUrl)})`
+            const fetched = await page.send('Runtime.evaluate', {
+              expression: fetchExpression,
+              awaitPromise: true,
+              returnByValue: true,
+            }, 30_000)
+            const result = fetched.result?.value || {}
+            if (!result.ok) throw new Error(`HTTP ${result.status ?? 'unknown'}`)
+            const dataUrl = String(result.dataUrl || '')
+            const comma = dataUrl.indexOf(',')
+            if (comma < 0 || !dataUrl.slice(0, comma).includes(';base64')) throw new Error('page fetch returned no base64 image data')
+            const bytes = Buffer.from(dataUrl.slice(comma + 1), 'base64')
+            if (Number(result.size) !== bytes.length) {
+              throw new Error(`renderer size mismatch blob=${result.size} decoded=${bytes.length}`)
+            }
+            if (asset.expectedSizeBytes !== null && bytes.length !== Number(asset.expectedSizeBytes)) {
+              throw new Error(`size mismatch expected=${asset.expectedSizeBytes} actual=${bytes.length}`)
+            }
+
+            const contentType = String(asset.mimeType || result.contentType || 'image/png').split(';')[0].trim().toLowerCase()
+            if (contentType && !contentType.startsWith('image/')) throw new Error(`unexpected content-type ${contentType}`)
+            const extension = contentType === 'image/jpeg' ? 'jpg'
+              : contentType === 'image/webp' ? 'webp'
+                : contentType === 'image/gif' ? 'gif' : 'png'
+            const safeFileId = String(asset.fileId).replace(/[^A-Za-z0-9_-]/gu, '_')
+            const outputPath = path.join(DEFAULT_IMAGE_ASSET_DIR, `${safeFileId}.${extension}`)
+            const temporaryPath = `${outputPath}.tmp-${process.pid}`
+            await fs.writeFile(temporaryPath, bytes)
+            await fs.rename(temporaryPath, outputPath)
+            const digest = createHash('sha256').update(bytes).digest('hex')
+            archive.markImageAssetDownloaded(asset.assetPointer, {
+              localPath: path.relative(PROJECT_ROOT, outputPath).split(path.sep).join('/'),
+              sha256: digest,
+              actualSizeBytes: bytes.length,
+            })
+            imageHydrationSuccesses += 1
+            await log('image asset hydrated', {
+              conversationId,
+              fileId: asset.fileId,
+              bytes: bytes.length,
+            })
+          }
+          catch (error) {
+            imageHydrationErrors += 1
+            const message = error instanceof Error ? error.message : String(error)
+            archive.markImageAssetDownloadError(asset.assetPointer, message)
+            await log('image asset hydration failed', {
+              conversationId,
+              fileId: asset.fileId,
+              error: message,
+            })
+          }
+        }
+      }
+      finally {
+        page.close()
+      }
+    }
+  }
+
   const tripCooldown = async (reason) => {
     cooldownUntil = Date.now() + cooldownMinutes * 60_000
     await log('active API cooldown armed', { reason, cooldownUntil })
@@ -1622,6 +1760,7 @@ async function main() {
       }
       queueWatchdogDiagnostics()
       await drainDirty()
+      await hydratePendingGeneratedImageAssets()
       // 运行态错误已经写入日志；完整健康迭代成功后清掉 state 里的 transient lastError，
       // 避免 CLI 永远显示一个几小时前已经自动恢复的问题。
       lastError = null
