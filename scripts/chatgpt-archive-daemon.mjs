@@ -713,6 +713,9 @@ async function main() {
   let notificationLastAttemptAt = null
   let notificationLastSuccessAt = null
   let notificationLastError = null
+  let lastImageHydrationAt = 0
+  let imageHydrationSuccesses = 0
+  let imageHydrationErrors = 0
 
   const log = async (message, extra = null) => {
     const line = `[${new Date().toISOString()}] ${message}${extra ? ` ${JSON.stringify(extra)}` : ''}\n`
@@ -780,6 +783,12 @@ async function main() {
       lastAttemptAt: notificationLastAttemptAt,
       lastSuccessAt: notificationLastSuccessAt,
       lastError: notificationLastError,
+    },
+    imageAssets: {
+      lastHydrationAt: lastImageHydrationAt || null,
+      hydrateSuccesses: imageHydrationSuccesses,
+      hydrateErrors: imageHydrationErrors,
+      pendingGenerated: archive.listPendingGeneratedImageAssets(500, Date.now()).length,
     },
     rssBytes: process.memoryUsage().rss,
     heapUsedBytes: process.memoryUsage().heapUsed,
@@ -878,6 +887,48 @@ async function main() {
     })
   }
 
+  /** ImageGen 是值得提醒的业务事件，但不是异常 incident。 */
+  const notifyImageGeneration = async (conversationId, event) => {
+    if (!notificationConfig || !event || event.notificationSentAt) return
+    notificationLastAttemptAt = Date.now()
+    const conversation = archive.db.prepare('SELECT title FROM conversations WHERE id=?').get(conversationId)
+    const conversationTitle = conversation?.title || conversationId
+    const result = await sendIncidentNotification(notificationConfig, {
+      title: 'ChatGPT 图片节点',
+      body: `${conversationTitle}\n本轮已进入并完成 ImageGen，归档识别到 ${event.imageCount} 张图片。`,
+      url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
+    })
+    if (result.ok) {
+      archive.markImageGenerationNotificationSent(conversationId, event.messageId)
+      notificationLastSuccessAt = Date.now()
+      notificationLastError = null
+      await log('image generation notification sent', {
+        conversationId,
+        messageId: event.messageId,
+        imageCount: event.imageCount,
+      })
+    }
+    else if (result.attempted) {
+      notificationLastError = result.error || 'image generation notification failed'
+      await log('image generation notification failed', {
+        conversationId,
+        messageId: event.messageId,
+        error: notificationLastError,
+      })
+    }
+  }
+
+  const dispatchImageGenerationNotification = (conversationId, event) => {
+    if (!notificationConfig || !event || event.notificationSentAt) return
+    void notifyImageGeneration(conversationId, event).catch(async (error) => {
+      notificationLastError = error instanceof Error ? error.message : String(error)
+      await log('image generation notification branch failed', {
+        conversationId,
+        error: notificationLastError,
+      }).catch(() => {})
+    })
+  }
+
   const tripCooldown = async (reason) => {
     cooldownUntil = Date.now() + cooldownMinutes * 60_000
     await log('active API cooldown armed', { reason, cooldownUntil })
@@ -944,6 +995,7 @@ async function main() {
     let pages = 0
     let newMessages = 0
     let latestDiagnostic = null
+    let imageGenerationEvent = null
     const versionMarkerIds = new Set()
     while (true) {
       const normalized = { ...baseMeta, ...pagePayload, conversation_id: conversationId }
@@ -968,6 +1020,9 @@ async function main() {
         incidentKind: trigger.startsWith('watchdog:') ? 'watchdog-timeout' : 'abnormal-terminal',
       })
       if (pages === 0) latestDiagnostic = merged.diagnostic
+      if (pages === 0 && merged.diagnostic.hasImageGenerationFinal) {
+        imageGenerationEvent = archive.getImageGenerationEvent(conversationId, merged.diagnostic.turnExchangeId)
+      }
       if (pages === 0 && classifyTerminal) {
         const incidentAfter = latestOpenIncident(conversationId)
         if (shouldNotifyIncidentTransition(incidentBefore, incidentAfter)) newIncident = incidentAfter
@@ -1034,6 +1089,7 @@ async function main() {
           newMessages,
           diagnostic: latestDiagnostic ?? merged.diagnostic,
           newIncident,
+          imageGenerationEvent,
           exactMapping,
         }
       }
@@ -1100,6 +1156,13 @@ async function main() {
         })
         // SQLite/trace 到这里已经完成；通知只从已落库事实分叉出去，不参与 syncInFlight。
         if (result.newIncident) dispatchIncidentNotification(conversationId, result.newIncident)
+        if (result.imageGenerationEvent && !result.imageGenerationEvent.notificationSentAt) {
+          // startup 只是认识已有历史，不能在重启后把旧图片节点重新推到手机。
+          if (trigger === 'reconcile:startup') {
+            archive.markImageGenerationNotificationSent(conversationId, result.imageGenerationEvent.messageId)
+          }
+          else dispatchImageGenerationNotification(conversationId, result.imageGenerationEvent)
+        }
       }
       catch (error) {
         syncErrors += 1
