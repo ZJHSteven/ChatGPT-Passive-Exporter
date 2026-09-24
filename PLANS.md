@@ -1,5 +1,6 @@
 ## 2026-09-22 Incident 手机推送收口 ExecPlan
 
+- [pending] 补齐 `no-complete / no-final` 实时发现盲区。2026-09-24《漫画分镜设计》真实样本证明：turn 可在没有 `conversation-turn-complete`、也没有可靠 turn-start 的情况下停止生成；此时 `activeTurns` 不会登记，watchdog 无法启动，只有后续新 user turn / gap reconciliation 才能历史补账。手机通知层本身无故障，根因是 incident discovery 不完整。后续需优先研究可被动捕获的 turn-start / stream / alder-conversations 信号；历史补账通知仅作为兜底，不能冒充实时检测。
 - [in_progress] 重新收紧 incident 分层语义：`lifecycleClass` 只回答“为什么这一轮算事故”，`tailShape` 只回答“最后持久化到哪一层”，`reason` 仅作为两者的可读摘要；同时审计历史遗留的笼统 `abnormal-terminal` 桶，避免把 tail subtype 再次误当主类。
 - [done] 将 Bark 通知从 Archive `syncInFlight` 主链彻底旁路化：conversation/body/incident 先完成 SQLite 落盘并释放同步锁，通知只做 fire-and-forget 分支；通知超时/重试不得阻塞下一条 conversation sync。TypeScript 与 Vitest 17 files / 95 tests 全过。
 - [done] 修复已确认 incident 被普通 reconcile 刷新后人类可读 reason 退化的问题：`complete-no-final` 继续保留“已确认 turn 完成但没有 final”的 lifecycle 语义；`explicit-interrupted` 不允许被后续缺失终止证据的快照降级。
