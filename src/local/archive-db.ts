@@ -2801,7 +2801,48 @@ export class ChatArchiveDb {
       WHERE conversation_id = ?
       ORDER BY ordinal
     `).all(conversationId) as unknown as Array<Record<string, unknown> & { dataJson: string }>
-    return rows.map(({ dataJson, ...row }) => ({ ...row, data: JSON.parse(dataJson) }))
+    // 图片二进制下载状态是“可变的本地缓存状态”，不能反向写进可重建的 resources.data_json；
+    // 否则下一次 reindex 就会把 local_path/hash 等本地事实抹掉。CLI 查询时再把 image_assets
+    // 动态叠加到结构化资源上，既保持 resources 可重建，又让用户一眼看到图片是否已经落盘。
+    const imageRows = this.db.prepare(`
+      SELECT message_id AS messageId, part_index AS partIndex,
+             local_path AS localPath, sha256, actual_size_bytes AS actualSizeBytes,
+             downloaded_at AS downloadedAt, last_download_attempt_at AS lastDownloadAttemptAt,
+             download_error AS downloadError
+      FROM image_assets
+      WHERE conversation_id = ?
+    `).all(conversationId) as unknown as Array<{
+      messageId: string
+      partIndex: number
+      localPath: string | null
+      sha256: string | null
+      actualSizeBytes: number | null
+      downloadedAt: number | null
+      lastDownloadAttemptAt: number | null
+      downloadError: string | null
+    }>
+    const imageState = new Map(imageRows.map(item => [`${item.messageId}:${item.partIndex}`, item]))
+
+    return rows.map(({ dataJson, ...row }) => {
+      const data = JSON.parse(dataJson) as Record<string, unknown>
+      if (row.kind !== 'generated-image' && row.kind !== 'image-asset') return { ...row, data }
+      const partIndex = typeof data.partIndex === 'number' ? data.partIndex : null
+      if (partIndex === null || typeof row.messageId !== 'string') return { ...row, data }
+      const local = imageState.get(`${row.messageId}:${partIndex}`)
+      if (!local) return { ...row, data }
+      return {
+        ...row,
+        data: {
+          ...data,
+          localPath: local.localPath,
+          sha256: local.sha256,
+          actualSizeBytes: local.actualSizeBytes,
+          downloadedAt: local.downloadedAt,
+          lastDownloadAttemptAt: local.lastDownloadAttemptAt,
+          downloadError: local.downloadError,
+        },
+      }
+    })
   }
 
   getSource(sourceId: number): ArchiveSourceRow | null {

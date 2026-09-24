@@ -180,6 +180,14 @@ describe('ChatArchiveDb', () => {
         actualSizeBytes: 1001,
         downloadedAt: 2000,
       })
+      const hydratedResource = db.getResources('imagegen-conversation')
+        .find(item => item.kind === 'generated-image' && (item.data as Record<string, unknown>).partIndex === 0)
+      expect(hydratedResource?.data).toMatchObject({
+        localPath: 'assets/file-1.png',
+        sha256: 'abc123',
+        actualSizeBytes: 1001,
+        downloadedAt: 2000,
+      })
       db.markImageGenerationNotificationSent('imagegen-conversation', 'img-tool', 3000)
       expect(db.listPendingGeneratedImageAssets()).toHaveLength(1)
       expect(db.getImageGenerationEvent('imagegen-conversation', 'turn-image')?.notificationSentAt).toBe(3000)
