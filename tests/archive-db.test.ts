@@ -118,6 +118,77 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('ImageGen 多图保存稳定 pointer 元数据，二进制状态独立于 SQLite message', () => {
+    const db = tempDb()
+    try {
+      db.mergeLiveMessagesPage({
+        title: 'ImageGen fixture',
+        conversation_id: 'imagegen-conversation',
+        current_node: 'recap',
+        messages: [
+          {
+            id: 'u1', author: { role: 'user' }, recipient: 'all',
+            content: { content_type: 'text', parts: ['画两张图'] },
+            metadata: { turn_exchange_id: 'turn-image' },
+          },
+          {
+            id: 'img-tool', author: { role: 'tool', name: 'image-tool' }, recipient: 'all', channel: 'final',
+            content: {
+              content_type: 'multimodal_text',
+              parts: [1, 2].map(index => ({
+                content_type: 'image_asset_pointer',
+                asset_pointer: `sediment://file_0000000000000000000000000000000${index}`,
+                mime_type: 'image/png',
+                size_bytes: 1000 + index,
+                width: 1024,
+                height: 768,
+                metadata: { generation: { gen_id: `gen-${index}`, orientation: 'landscape' } },
+              })),
+            },
+            metadata: {
+              turn_exchange_id: 'turn-image',
+              permissions: [{ notification_channel_id: 'image_gen' }],
+            },
+          },
+          {
+            id: 'recap', author: { role: 'assistant' }, recipient: 'all',
+            content: { content_type: 'reasoning_recap', parts: ['done'] },
+            metadata: { turn_exchange_id: 'turn-image', reasoning_status: 'reasoning_ended' },
+          },
+        ],
+      }, { observedAt: 1234, classifyTerminal: true, allowIncompleteTailIncident: true })
+
+      const generatedResources = db.getResources('imagegen-conversation').filter(item => item.kind === 'generated-image')
+      expect(generatedResources).toHaveLength(2)
+      expect(JSON.stringify(generatedResources)).toContain('gen-1')
+
+      const pending = db.listPendingGeneratedImageAssets()
+      expect(pending).toHaveLength(2)
+      expect(pending[0]).toMatchObject({
+        conversationId: 'imagegen-conversation',
+        messageId: 'img-tool',
+        assetKind: 'generated-image',
+        mimeType: 'image/png',
+      })
+
+      const event = db.getImageGenerationEvent('imagegen-conversation', 'turn-image')
+      expect(event).toMatchObject({ messageId: 'img-tool', imageCount: 2, notificationSentAt: null })
+
+      db.markImageAssetDownloaded(pending[0]!.assetPointer, {
+        localPath: 'assets/file-1.png',
+        sha256: 'abc123',
+        actualSizeBytes: 1001,
+        downloadedAt: 2000,
+      })
+      db.markImageGenerationNotificationSent('imagegen-conversation', 'img-tool', 3000)
+      expect(db.listPendingGeneratedImageAssets()).toHaveLength(1)
+      expect(db.getImageGenerationEvent('imagegen-conversation', 'turn-image')?.notificationSentAt).toBe(3000)
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('在线 messages[] 分页只做增量 merge，不会删除旧历史', () => {
     const db = tempDb()
     try {

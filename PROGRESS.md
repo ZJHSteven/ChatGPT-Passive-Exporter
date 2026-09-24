@@ -3,6 +3,7 @@
 - 已用真实《漫画分镜设计》conversation body 确认 ImageGen 结果协议：结果是 `role=tool + channel=final + content_type=multimodal_text`，一条 message 的 `parts[]` 可同时包含多张 `image_asset_pointer`；稳定锚点是 `sediment://file_*`，每张图还带 MIME、字节数、尺寸、`generation.gen_id` 等元数据，message metadata 带 `notification_channel_id=image_gen`。
 - 已确认旧 incident 误报根因：诊断器只把 assistant final 当终态，因此 ImageGen 图片成功返回后追加的 `reasoning_recap` 会被误归 `reasoning-ended-no-final`。现已增加 ImageGen-aware terminal：图片结果仍复用 `terminalEvidence=final` 的既有完成语义，同时以 `tailShape=image-generation-final`、`hasImageGenerationFinal`、`imageGenerationCount` 保留独立可审计形态。
 - 已开始升级 rich manifest：结构化 `image_asset_pointer` 将保存为 `generated-image` / `image-asset`，保留稳定 pointer、file id、MIME、尺寸、字节数和 gen id，不再只剩一个 `sediment` scheme。
+- 已新增 `image_assets` 资产索引：按 conversation/message/part 保存 stable pointer 与生成元数据；下载后的 `local_path/sha256/actual_size`、失败重试信息和手机提示去重时间单独记录。图片二进制仍明确留在 SQLite 外部。
 - 历史下载实验复核：直接 shell 请求短期 estuary URL 只得到 39 B 占位/失败内容；页面 fetch 能拿到正确 Blob，但浏览器下载管理器路径仍曾落成 39 B；最终通过“当前 DOM 的最新签名 URL + 已登录 Chrome Cookie + 本机 fetch 写盘”成功得到 4 张完整 PNG，字节数与 body 元数据一致。下一步把这条链收敛成 Guardian 的被动/机会式资产补全，而不是保存会过期的 signed URL。
 
 # 项目状态快照

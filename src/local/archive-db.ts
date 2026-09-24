@@ -6,6 +6,7 @@ import { gunzipSync, gzipSync } from 'node:zlib'
 import { adaptConversation } from '../core/adapter.ts'
 import { extractMessageText } from '../core/adapter.ts'
 import { buildRichManifest } from '../core/manifest.ts'
+import { extractImageAssets } from '../core/image-assets.ts'
 import { conversationToMarkdown } from '../core/markdown.ts'
 import { diagnoseLatestRun, diagnoseRuns, type RunDiagnostic } from '../core/run-diagnostics.ts'
 import type { CanonicalConversation } from '../core/types.ts'
@@ -130,6 +131,37 @@ export interface ArchiveIncidentRow {
   offHeadSameTurnCount: number
   source: string
   diagnosticJson: string
+}
+
+/**
+ * 在线 conversation body 中发现的图片资产映射。
+ *
+ * 注意：这里只存“索引 + 校验元数据 + 本地文件位置”，PNG/JPEG 二进制始终放在 SQLite 外。
+ * `assetPointer` 是长期稳定身份；带 sig 的 estuary URL 只是瞬时下载能力，绝不写进本表。
+ */
+export interface ImageAssetRow {
+  conversationId: string
+  messageId: string
+  partIndex: number
+  assetPointer: string
+  fileId: string | null
+  assetKind: 'generated-image' | 'image-asset'
+  mimeType: string | null
+  expectedSizeBytes: number | null
+  width: number | null
+  height: number | null
+  genId: string | null
+  parentGenId: string | null
+  turnExchangeId: string | null
+  firstSeenAt: number
+  lastSeenAt: number
+  localPath: string | null
+  sha256: string | null
+  actualSizeBytes: number | null
+  downloadedAt: number | null
+  lastDownloadAttemptAt: number | null
+  downloadError: string | null
+  notificationSentAt: number | null
 }
 
 function normalizeIncidentRow(row: Record<string, unknown>): ArchiveIncidentRow {
@@ -357,6 +389,40 @@ export class ChatArchiveDb {
         FOREIGN KEY(conversation_id, message_id)
           REFERENCES messages(conversation_id, message_id) ON DELETE CASCADE
       );
+
+      -- conversation body 中的图片资产只保存元数据与本地文件引用；大二进制不进入 SQLite。
+      -- 同一个 message 可以有多张图，因此稳定主键必须包含 part_index。
+      CREATE TABLE IF NOT EXISTS image_assets (
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL,
+        part_index INTEGER NOT NULL,
+        asset_pointer TEXT NOT NULL,
+        file_id TEXT,
+        asset_kind TEXT NOT NULL,
+        mime_type TEXT,
+        expected_size_bytes INTEGER,
+        width INTEGER,
+        height INTEGER,
+        gen_id TEXT,
+        parent_gen_id TEXT,
+        turn_exchange_id TEXT,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        local_path TEXT,
+        sha256 TEXT,
+        actual_size_bytes INTEGER,
+        downloaded_at INTEGER,
+        last_download_attempt_at INTEGER,
+        download_error TEXT,
+        notification_sent_at INTEGER,
+        PRIMARY KEY(conversation_id, message_id, part_index)
+      );
+
+      CREATE INDEX IF NOT EXISTS image_assets_pointer
+        ON image_assets(asset_pointer);
+
+      CREATE INDEX IF NOT EXISTS image_assets_pending_generated
+        ON image_assets(asset_kind, downloaded_at, last_download_attempt_at);
 
       -- 官方导出里的附件 manifest。二进制仍留在原 ZIP，数据库记录可定位的 source+entry。
       CREATE TABLE IF NOT EXISTS archive_assets (
@@ -1904,6 +1970,25 @@ export class ChatArchiveDb {
     const insertFts = this.db.prepare('INSERT INTO message_fts (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
     const insertTrigram = this.db.prepare('INSERT INTO message_fts_trigram (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
     const insertResource = this.db.prepare('INSERT INTO resources (conversation_id, message_id, ordinal, kind, label, data_json) VALUES (?, ?, ?, ?, ?, ?)')
+    const upsertImageAsset = this.db.prepare(`
+      INSERT INTO image_assets (
+        conversation_id, message_id, part_index, asset_pointer, file_id, asset_kind,
+        mime_type, expected_size_bytes, width, height, gen_id, parent_gen_id, turn_exchange_id,
+        first_seen_at, last_seen_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(conversation_id, message_id, part_index) DO UPDATE SET
+        asset_pointer=excluded.asset_pointer,
+        file_id=excluded.file_id,
+        asset_kind=excluded.asset_kind,
+        mime_type=excluded.mime_type,
+        expected_size_bytes=excluded.expected_size_bytes,
+        width=excluded.width,
+        height=excluded.height,
+        gen_id=excluded.gen_id,
+        parent_gen_id=excluded.parent_gen_id,
+        turn_exchange_id=excluded.turn_exchange_id,
+        last_seen_at=max(image_assets.last_seen_at, excluded.last_seen_at)
+    `)
 
     const rawMessages: unknown[] = []
     let resourceOrdinal = 0
@@ -1922,6 +2007,30 @@ export class ChatArchiveDb {
         }))
         for (const item of manifest.items) {
           insertResource.run(conversationId, item.messageId || row.messageId, resourceOrdinal++, item.kind, item.label, json(item.data))
+        }
+
+        const rawRecord = record(rawMessage)
+        const rawMetadata = record(rawRecord.metadata)
+        const turnExchangeId = stringValue(rawMetadata.turn_exchange_id)
+        const seenAt = Date.now()
+        for (const asset of extractImageAssets(rawRecord)) {
+          upsertImageAsset.run(
+            conversationId,
+            row.messageId,
+            asset.partIndex,
+            asset.assetPointer,
+            asset.fileId ?? null,
+            asset.generated ? 'generated-image' : 'image-asset',
+            asset.mimeType ?? null,
+            asset.sizeBytes ?? null,
+            asset.width ?? null,
+            asset.height ?? null,
+            asset.genId ?? null,
+            asset.parentGenId ?? null,
+            turnExchangeId,
+            seenAt,
+            seenAt,
+          )
         }
       }
       catch {
@@ -1943,6 +2052,92 @@ export class ChatArchiveDb {
       SET message_count = ?, resource_count = ?, markdown = ?, imported_at = ?
       WHERE id = ?
     `).run(rows.length, resourceOrdinal, markdown, Date.now(), conversationId)
+  }
+
+  /** 列出仍未落盘的 ImageGen 图片；供 Guardian 的机会式被动补全使用。 */
+  listPendingGeneratedImageAssets(limit = 50): ImageAssetRow[] {
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)))
+    return [...this.db.prepare(`
+      SELECT conversation_id AS conversationId, message_id AS messageId, part_index AS partIndex,
+             asset_pointer AS assetPointer, file_id AS fileId, asset_kind AS assetKind,
+             mime_type AS mimeType, expected_size_bytes AS expectedSizeBytes,
+             width, height, gen_id AS genId, parent_gen_id AS parentGenId,
+             turn_exchange_id AS turnExchangeId,
+             first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
+             local_path AS localPath, sha256, actual_size_bytes AS actualSizeBytes,
+             downloaded_at AS downloadedAt, last_download_attempt_at AS lastDownloadAttemptAt,
+             download_error AS downloadError, notification_sent_at AS notificationSentAt
+      FROM image_assets
+      WHERE asset_kind='generated-image' AND downloaded_at IS NULL
+      ORDER BY first_seen_at, conversation_id, message_id, part_index
+      LIMIT ?
+    `).iterate(safeLimit)] as unknown as ImageAssetRow[]
+  }
+
+  /** 把成功下载后的本地 blob 信息回写到所有引用同一稳定 pointer 的行。 */
+  markImageAssetDownloaded(
+    assetPointer: string,
+    input: { localPath: string, sha256: string, actualSizeBytes: number, downloadedAt?: number },
+  ): void {
+    const at = input.downloadedAt ?? Date.now()
+    this.db.prepare(`
+      UPDATE image_assets
+      SET local_path=?, sha256=?, actual_size_bytes=?, downloaded_at=?,
+          last_download_attempt_at=?, download_error=NULL
+      WHERE asset_pointer=?
+    `).run(input.localPath, input.sha256, input.actualSizeBytes, at, at, assetPointer)
+  }
+
+  /** 下载失败只记短错误摘要，stable pointer 仍保留，后续再次看到页面时可以重试。 */
+  markImageAssetDownloadError(assetPointer: string, error: string, attemptedAt = Date.now()): void {
+    this.db.prepare(`
+      UPDATE image_assets
+      SET last_download_attempt_at=?, download_error=?
+      WHERE asset_pointer=?
+    `).run(attemptedAt, error.slice(0, 500), assetPointer)
+  }
+
+  /** ImageGen 手机提示按 message 去重；同一 message 的多张图片只推一次。 */
+  markImageGenerationNotificationSent(conversationId: string, messageId: string, sentAt = Date.now()): void {
+    this.db.prepare(`
+      UPDATE image_assets
+      SET notification_sent_at=COALESCE(notification_sent_at, ?)
+      WHERE conversation_id=? AND message_id=? AND asset_kind='generated-image'
+    `).run(sentAt, conversationId, messageId)
+  }
+
+  /** 找到某个 turn 的 ImageGen 结果组，供 daemon 构造 warning 通知。 */
+  getImageGenerationEvent(conversationId: string, turnExchangeId?: string): {
+    conversationId: string
+    messageId: string
+    imageCount: number
+    notificationSentAt: number | null
+  } | null {
+    const row = turnExchangeId
+      ? this.db.prepare(`
+          SELECT conversation_id AS conversationId, message_id AS messageId, count(*) AS imageCount,
+                 min(notification_sent_at) AS notificationSentAt
+          FROM image_assets
+          WHERE conversation_id=? AND turn_exchange_id=? AND asset_kind='generated-image'
+          GROUP BY conversation_id, message_id
+          ORDER BY max(last_seen_at) DESC
+          LIMIT 1
+        `).get(conversationId, turnExchangeId)
+      : this.db.prepare(`
+          SELECT conversation_id AS conversationId, message_id AS messageId, count(*) AS imageCount,
+                 min(notification_sent_at) AS notificationSentAt
+          FROM image_assets
+          WHERE conversation_id=? AND asset_kind='generated-image'
+          GROUP BY conversation_id, message_id
+          ORDER BY max(last_seen_at) DESC
+          LIMIT 1
+        `).get(conversationId)
+    return (row ?? null) as {
+      conversationId: string
+      messageId: string
+      imageCount: number
+      notificationSentAt: number | null
+    } | null
   }
 
   /**
