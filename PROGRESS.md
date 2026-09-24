@@ -1,3 +1,10 @@
+## 2026-09-24 ImageGen 归档适配
+
+- 已用真实《漫画分镜设计》conversation body 确认 ImageGen 结果协议：结果是 `role=tool + channel=final + content_type=multimodal_text`，一条 message 的 `parts[]` 可同时包含多张 `image_asset_pointer`；稳定锚点是 `sediment://file_*`，每张图还带 MIME、字节数、尺寸、`generation.gen_id` 等元数据，message metadata 带 `notification_channel_id=image_gen`。
+- 已确认旧 incident 误报根因：诊断器只把 assistant final 当终态，因此 ImageGen 图片成功返回后追加的 `reasoning_recap` 会被误归 `reasoning-ended-no-final`。现已增加 ImageGen-aware terminal：图片结果仍复用 `terminalEvidence=final` 的既有完成语义，同时以 `tailShape=image-generation-final`、`hasImageGenerationFinal`、`imageGenerationCount` 保留独立可审计形态。
+- 已开始升级 rich manifest：结构化 `image_asset_pointer` 将保存为 `generated-image` / `image-asset`，保留稳定 pointer、file id、MIME、尺寸、字节数和 gen id，不再只剩一个 `sediment` scheme。
+- 历史下载实验复核：直接 shell 请求短期 estuary URL 只得到 39 B 占位/失败内容；页面 fetch 能拿到正确 Blob，但浏览器下载管理器路径仍曾落成 39 B；最终通过“当前 DOM 的最新签名 URL + 已登录 Chrome Cookie + 本机 fetch 写盘”成功得到 4 张完整 PNG，字节数与 body 元数据一致。下一步把这条链收敛成 Guardian 的被动/机会式资产补全，而不是保存会过期的 signed URL。
+
 # 项目状态快照
 
 - 2026-09-24：抓到《漫画分镜设计》新的 **UI renderer / virtualizer blank-view** 现场，属于既有 `ui-hidden-canonical-tail` 的更强前端子型，而不是新的 lifecycle incident。conversation `6ab3d7db-3f04-83e9-bad2-8abd105c3898` 在 SQLite 中 `terminal_state=final / incident_state=null / current_node=a5f6d078...`，该 current node 正是完整 final；同 turn 后面还存在 off-head tool/thoughts/reasoning_recap 节点，但 canonical head 未回退。用户当前真正可见的 Chrome target `2C032386...` 同时满足：`document.visibilityState=visible`、`body.innerText` 可读到完整历史/最新 final、但标准 `[data-message-id]` 节点数为 0；主 `thread-scroll-container` 为 `flex-col-reverse`，`scrollTop=0 / clientHeight=879 / scrollHeight=12130`，其消息内容子树 rect 约为 `top=-11199px, height=12078px`，符合“数据存在但消息树被 virtualizer/renderer 排到异常坐标而视觉空白”的现象。浏览器同时还存在第二个 hidden 同会话 target `871C75A4...`，只渲染到 11:10 左右旧状态且仍有 7 个旧式 `data-message-id` 节点，证明同 conversation 的两个前端实例已发生 renderer 状态分叉。当前 daemon 另有独立 `guardian=null / lastError=Cannot read properties of null (reading 'page')` 状态，需要后续单独修 Guardian 生命周期，但它不是本次可见页空白的直接原因。

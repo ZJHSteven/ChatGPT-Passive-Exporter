@@ -1,4 +1,5 @@
 import type { RawChatMessage, RawConversationPayload } from './types'
+import { extractImageAssets, isCompletedImageGenerationMessage } from './image-assets'
 
 /**
  * “生命状态证据”和“当前快照尾部形态”必须严格分开。
@@ -16,6 +17,7 @@ export type RunTerminalEvidence =
 
 export type RunTailShape =
   | 'final'
+  | 'image-generation-final'
   | 'tool-call-open'
   | 'reasoning-open'
   | 'reasoning-ended-no-final'
@@ -70,6 +72,10 @@ export interface RunDiagnostic {
   terminalEvidence: RunTerminalEvidence
   interruptedReason?: string
   hasFinal: boolean
+  /** ImageGen 的 tool/final multimodal 节点也是正常业务终态，但不是 assistant final。 */
+  hasImageGenerationFinal: boolean
+  /** 当前 logical turn 最终持久化的生成图片数量；一轮允许多图。 */
+  imageGenerationCount: number
   hasReasoningEnded: boolean
 
   /** 只描述最新持久化快照的尾部，不推断存活/死亡。 */
@@ -360,6 +366,12 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
     : undefined
 
   const hasFinal = turn.some(isFinalAssistant)
+  const imageGenerationMessages = turn.filter(isCompletedImageGenerationMessage)
+  const imageGenerationCount = imageGenerationMessages.reduce(
+    (sum, message) => sum + extractImageAssets(message).filter(asset => asset.generated).length,
+    0,
+  )
+  const hasImageGenerationFinal = imageGenerationCount > 0
   const hasReasoningEnded = turn.some(message => (
     reasoningStatusOf(message) === 'reasoning_ended'
     || contentTypeOf(message) === 'reasoning_recap'
@@ -388,10 +400,14 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
   let terminalEvidence: RunTerminalEvidence = 'none'
   if (interruptedReason === 'client_stopped') terminalEvidence = 'client-stopped'
   else if (interrupted) terminalEvidence = 'interrupted'
-  else if (hasFinal) terminalEvidence = 'final'
+  // 对 lifecycle 来说，成功产出 ImageGen 图片与普通 assistant final 一样，都是明确的
+  // “本轮已经产生最终业务输出”。保留 terminalEvidence='final' 可让现有 incident/recovery
+  // 状态机自然把旧假红牌关掉；具体完成形态由 tailShape/字段继续区分。
+  else if (hasFinal || hasImageGenerationFinal) terminalEvidence = 'final'
 
   let tailShape: RunTailShape = 'other'
   if (hasFinal) tailShape = 'final'
+  else if (hasImageGenerationFinal) tailShape = 'image-generation-final'
   else {
     // 不再用一串“是否曾经出现过 X”的条件互相覆盖，而是只看这一 turn 最后一个真正具有
     // 运行语义的事件。这样 `reasoning → tool call → tool result` 一定归到 tool result；
@@ -434,7 +450,9 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
 
   let summary = '当前 payload 没有明确终止证据；仅凭这份快照不能判断 run 是否仍在执行。'
   if (terminalEvidence === 'final') {
-    summary = 'payload 已包含 final answer，可确认这一轮已经正常完成。'
+    summary = hasImageGenerationFinal && !hasFinal
+      ? `payload 已包含完成的 ImageGen 结果（${imageGenerationCount} 张图片），可确认这一轮已经正常完成；该终态不要求额外 assistant final。`
+      : 'payload 已包含 final answer，可确认这一轮已经正常完成。'
   }
   else if (terminalEvidence === 'client-stopped') {
     summary = 'payload 明确记录 client_stopped，可确认这一轮被客户端中止。'
@@ -490,6 +508,8 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
     terminalEvidence,
     interruptedReason,
     hasFinal,
+    hasImageGenerationFinal,
+    imageGenerationCount,
     hasReasoningEnded,
     tailShape,
     assistantToolCalls,

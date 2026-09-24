@@ -1,4 +1,5 @@
 import type { CanonicalConversation, RichManifest, RichManifestItem } from './types.ts'
+import { extractImageAssets } from './image-assets.ts'
 
 const SANDBOX_RE = /sandbox:\/mnt\/data\/[\p{L}\p{N}._~!$&'()*+,;=:@%\-/]+/gu
 const ASSET_POINTER_RE = /(?:sediment|file-service|asset):\/\/[\w.:%+\-/]+/gu
@@ -25,6 +26,7 @@ export function buildRichManifest(conversation: CanonicalConversation): RichMani
 
   for (const message of conversation.messages) {
     const metadata = message.metadata
+    const structuredAssetPointers = new Set<string>()
 
     const searchGroups = metadata.search_result_groups
     if (Array.isArray(searchGroups) && searchGroups.length > 0) {
@@ -123,6 +125,33 @@ export function buildRichManifest(conversation: CanonicalConversation): RichMani
       }, seen)
     }
 
+    // `image_asset_pointer` 是图片最可靠的结构化入口。尤其是 ImageGen：一条 tool/final
+    // message 可以同时含 2、4 张甚至更多图片，不能再靠“每条消息一个附件”的假设建模。
+    // signed estuary URL 是页面运行时的短期解析结果，不属于 canonical manifest；这里保存
+    // 稳定 pointer + 可审计生成元数据，后续下载器再把它映射到本地 blob。
+    for (const asset of extractImageAssets(message.raw)) {
+      structuredAssetPointers.add(asset.assetPointer)
+      pushUnique(items, {
+        kind: asset.generated ? 'generated-image' : 'image-asset',
+        messageId: message.id,
+        label: asset.fileId ?? asset.assetPointer,
+        data: {
+          partIndex: asset.partIndex,
+          assetPointer: asset.assetPointer,
+          fileId: asset.fileId,
+          mimeType: asset.mimeType,
+          sizeBytes: asset.sizeBytes,
+          width: asset.width,
+          height: asset.height,
+          genId: asset.genId,
+          parentGenId: asset.parentGenId,
+          orientation: asset.orientation,
+          transparentBackground: asset.transparentBackground,
+          generated: asset.generated,
+        },
+      }, seen)
+    }
+
     // sandbox 文件一般只是 assistant 正文中的 Markdown URL，不是独立 attachment 节点。
     for (const match of message.text.matchAll(SANDBOX_RE)) {
       // Markdown 链接形如 `(sandbox:/mnt/data/a.zip)`；正则允许文件名含括号，
@@ -139,6 +168,8 @@ export function buildRichManifest(conversation: CanonicalConversation): RichMani
     // 用户上传图片/语音等可能以 sediment:// 等 pointer 出现；这里只建目录，不主动下载。
     const rawString = JSON.stringify(message.raw)
     for (const match of rawString.matchAll(ASSET_POINTER_RE)) {
+      // 已经由 image_asset_pointer 结构化保存的 pointer 不再重复降级成 generic scheme。
+      if (structuredAssetPointers.has(match[0])) continue
       pushUnique(items, {
         kind: 'asset-pointer',
         messageId: message.id,

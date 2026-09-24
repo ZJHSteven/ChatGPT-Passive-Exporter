@@ -91,7 +91,7 @@ export interface CanonicalConversation {
 
 /** 富媒体/工具审计清单中的统一条目。 */
 export interface RichManifestItem {
-  kind: 'web-search' | 'app-connector' | 'image-group' | 'widget' | 'sandbox-file' | 'asset-pointer' | 'tool-call'
+  kind: 'web-search' | 'app-connector' | 'image-group' | 'widget' | 'sandbox-file' | 'asset-pointer' | 'image-asset' | 'generated-image' | 'tool-call'
   messageId: string
   label: string
   data: unknown

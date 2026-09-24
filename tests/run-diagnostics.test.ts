@@ -32,6 +32,61 @@ describe('最后一轮快照诊断', () => {
     expect(result.hasFinal).toBe(true)
   })
 
+  test('ImageGen tool/final 多图节点是正常终态，不误报 reasoning-ended-no-final', () => {
+    const imagePart = (fileId: string, genId: string) => ({
+      content_type: 'image_asset_pointer',
+      asset_pointer: `sediment://${fileId}`,
+      mime_type: 'image/png',
+      size_bytes: 123456,
+      width: 1055,
+      height: 1491,
+      metadata: {
+        generation: { gen_id: genId, orientation: 'portrait' },
+      },
+    })
+    const result = diagnoseLatestRun(payload([
+      message({
+        id: 'u1', author: { role: 'user' },
+        metadata: { turn_exchange_id: 'turn-image', request_id: 'request-image' },
+      }),
+      message({
+        id: 'image-result',
+        author: { role: 'tool', name: 'image-tool' },
+        channel: 'final',
+        content: {
+          content_type: 'multimodal_text',
+          parts: [
+            imagePart('file_00000000000000000000000000000001', 'gen-1'),
+            imagePart('file_00000000000000000000000000000002', 'gen-2'),
+          ],
+        },
+        metadata: {
+          turn_exchange_id: 'turn-image',
+          request_id: 'request-image',
+          ghostrider: { status: 'final' },
+          permissions: [{ notification_channel_id: 'image_gen' }],
+        },
+      }),
+      // 真机样本在图片节点之后仍会追加 reasoning_recap；它不能重新把 turn 变成 no-final。
+      message({
+        id: 'recap',
+        content: { content_type: 'reasoning_recap', parts: ['Worked for 5m'] },
+        metadata: {
+          turn_exchange_id: 'turn-image',
+          request_id: 'request-image',
+          reasoning_status: 'reasoning_ended',
+        },
+      }),
+    ]))
+
+    expect(result.terminalEvidence).toBe('final')
+    expect(result.tailShape).toBe('image-generation-final')
+    expect(result.hasFinal).toBe(false)
+    expect(result.hasImageGenerationFinal).toBe(true)
+    expect(result.imageGenerationCount).toBe(2)
+    expect(result.summary).toContain('2 张图片')
+  })
+
   test('client_stopped 是明确终止证据', () => {
     const result = diagnoseLatestRun(payload([
       message({ id: 'u1', author: { role: 'user' } }),
