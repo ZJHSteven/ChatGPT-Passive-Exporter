@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import {
+  activeApiAllowed,
   catalogStableOverlapTarget,
   classifyCatalogAsyncStatus,
   classifyConversationEvent,
@@ -193,6 +194,9 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(restoreCooldownUntil({ cooldownUntil: 999 }, 1000)).toBe(0)
     expect(restoreCooldownUntil({ cooldownUntil: 'garbled' }, 1000)).toBe(0)
     expect(restoreCooldownUntil(null, 1000)).toBe(0)
+    expect(activeApiAllowed(2000, 1000)).toBe(false)
+    expect(activeApiAllowed(1000, 1000)).toBe(true)
+    expect(activeApiAllowed(0, 1000)).toBe(true)
   })
 
   test('短 WSS reconnect 只需一整页稳定 overlap，startup/guardian 继续深扫描', () => {

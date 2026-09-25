@@ -10,6 +10,7 @@
 - 为避免证据等级污染，`activeTurns` 虽同时承载 reliable start 与 catalog late-start 的 watchdog 覆盖，但 daemon state 现在额外分出 `queue.reliableActive` / `queue.catalogLateActive`；catalog observation trace 的 `reliableActiveAfter*` 只统计真正可靠 start，不把 late-start 冒充成协议级起点。
 - 近两周异常研究已正式汇总到 `INCIDENT_TAXONOMY.md`：生命周期层现有 `complete-no-final / watchdog-timeout / active-zombie / explicit-interrupted / abnormal-terminal(legacy)`；tail/head 已是结构化数据库维度；`ghost-execution / persistence-stall` 保留为 execution-vs-persistence forensic 维度；`ui-hidden-canonical-tail / ui-virtualizer-blank-view` 保留为 UI-only 维度；`no-complete/no-final` 明确为 discovery coverage blind spot，而不是新的根因枚举。
 - 顺手补了 daemon 重启的限流安全边界：真实 HTTP 429 触发的 `cooldownUntil` 现在从旧 state 恢复，只有仍在未来的 cooldown 才继承。这样热重启新 watchdog 代码不会意外绕过 1 小时 circuit breaker。
+- 部署时又发现 cooldown 与 Guardian recovery 的旧耦合：恢复页成功后会立即做 guardian-recover catalog GET，而 cooldown 会让该 GET 抛错，外层 catch 随即把刚恢复的 Guardian 也关闭。现已把主动 API gate 与被动 CDP/WSS 生命周期拆开：cooldown 期间跳过 startup/guardian/periodic reconciliation，但 Guardian/WSS 保持在线，待 cooldown 到期后再补洞。
 
 ## 2026-09-25 Phase 3 / Phase 4 收口
 

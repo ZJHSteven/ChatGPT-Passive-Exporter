@@ -343,6 +343,12 @@ export function restoreCooldownUntil(previousState, now = Date.now()) {
   return Number.isFinite(value) && value > now ? value : 0
 }
 
+/** cooldown 只禁止主动私有 API；Guardian/CDP/WSS 被动监听必须继续存活。 */
+export function activeApiAllowed(cooldownUntil, now = Date.now()) {
+  const value = Number(cooldownUntil ?? 0)
+  return !Number.isFinite(value) || value <= 0 || now >= value
+}
+
 /**
  * 为不同 reconciliation 场景选择“已经足够重合”的连续稳定条目数。
  *
@@ -1826,12 +1832,20 @@ async function main() {
     // “daemon 已经 ready”和“首次补洞完成”是两个不同状态。先写 ready state，
     // 避免 CLI 因一次 5 页 startup reconcile 超过启动等待时间而误报 started:false。
     await writeState()
-    if (authHeaders && reconcileOnStart && lastReconcileAt === 0) {
+    if (authHeaders && activeApiAllowed(cooldownUntil) && reconcileOnStart && lastReconcileAt === 0) {
       await reconcileCatalog('startup')
     }
-    else if (authHeaders && reason !== 'startup') {
+    else if (authHeaders && activeApiAllowed(cooldownUntil) && reason !== 'startup') {
       // Guardian 自愈意味着中间存在 WSS 盲区；只在恢复后做一次 overlap reconciliation。
       await reconcileCatalog('guardian-recover')
+    }
+    else if (authHeaders && !activeApiAllowed(cooldownUntil) && reason !== 'startup') {
+      // 429 cooldown 只冻结主动 GET；绝不能因为 recovery reconciliation 暂时不能跑，
+      // 就把刚恢复好的 Guardian/WSS 再次拆掉，形成“越限流越失去被动监听”的恶性循环。
+      await log('guardian recovery reconciliation deferred by active API cooldown', {
+        reason,
+        cooldownUntil,
+      })
     }
   }
 
@@ -1871,7 +1885,10 @@ async function main() {
         throw new Error('guardian has no active ChatGPT WSS after readiness grace period')
       }
 
-      if (reconcileHours > 0 && authHeaders && Date.now() - lastReconcileAt >= reconcileHours * 3600_000) {
+      if (reconcileHours > 0
+        && authHeaders
+        && activeApiAllowed(cooldownUntil)
+        && Date.now() - lastReconcileAt >= reconcileHours * 3600_000) {
         await reconcileCatalog('periodic')
       }
       queueWatchdogDiagnostics()

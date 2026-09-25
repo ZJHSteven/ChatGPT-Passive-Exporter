@@ -49,6 +49,9 @@ export function incidentKindForTrigger(trigger: unknown): 'active-zombie' | 'wat
 /** 重启 daemon 时只继承仍未过期的 HTTP 429 circuit breaker。 */
 export function restoreCooldownUntil(previousState: unknown, now?: number): number
 
+/** cooldown 只冻结主动 API；返回 false 时 Guardian/WSS 仍应继续工作。 */
+export function activeApiAllowed(cooldownUntil: unknown, now?: number): boolean
+
 /**
  * 根据 reconciliation 场景选择需要连续看到多少条稳定旧记录才可停止 catalog 扫描。
  * 短 WSS reconnect 默认一整页；startup/periodic/长盲区继续使用更深阈值。
