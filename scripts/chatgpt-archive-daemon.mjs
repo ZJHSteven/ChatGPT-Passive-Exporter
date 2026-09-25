@@ -722,7 +722,7 @@ async function main() {
   const cooldownMinutes = intFlag(flags, 'cooldown-minutes', 60, 1)
   const maxSyncConversations = intFlag(flags, 'max-sync-conversations', 0, 0)
   const wssReconnectGraceMs = intFlag(flags, 'wss-reconnect-grace-ms', 20_000, 1000)
-  const watchdogMinutes = Number(flags.get('watchdog-minutes') ?? 35)
+  const watchdogMinutes = Number(flags.get('watchdog-minutes') ?? 30)
   if (!Number.isFinite(watchdogMinutes) || watchdogMinutes <= 0) throw new Error('--watchdog-minutes must be > 0')
   const watchdogMs = watchdogMinutes * 60_000
 

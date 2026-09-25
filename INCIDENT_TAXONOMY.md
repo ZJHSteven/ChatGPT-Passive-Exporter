@@ -42,7 +42,7 @@ ui = hidden-canonical-tail
 - `watchdog-timeout` 的计时起点来自较可靠的 turn start；
 - `active-zombie` 的计时起点只是 **第一次观察到 catalog active**，真实 POST 必然更早。
 
-因此 catalog late-start 只会让报警**更晚**，不会因为“把扫描时刻当发送时刻”导致提前 35 分钟误报。
+因此 catalog late-start 只会让报警**更晚**，不会因为“把扫描时刻当发送时刻”导致提前 30 分钟误报。
 
 如果 body 后来明确 final / interrupted，late-start active 会被清理，不建立 zombie incident。
 

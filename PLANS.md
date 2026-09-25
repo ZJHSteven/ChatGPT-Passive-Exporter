@@ -2,7 +2,7 @@
 
 - [done] 现场确认 FrameForge 新会话 `6ab63c6c-02f4-83ea-a535-d849e3962d8f` 属于“页面/目录可见、正文 API 可返回、旧执行 resume=404、catalog 长期 active、可靠 start/complete 缺失”的 zombie 样本；已人工结束旧僵尸 turn，并仅发送“异常终止了，请继续。”启动新 turn。
 - [done] 把 `active-zombie / persistent-active-stall` 从仅文档化表型提升为正式 lifecycle class；仍与 `complete-no-final`、`explicit-interrupted`、`ghost-execution / persistence-stall` 分层，不把 tail subtype 当根因。
-- [done] 放宽 watchdog 的 discovery 起点：当 reconciliation 首次看到某 conversation `async_status=3/5`，且没有更可靠的 start 记录时，以“首次观察到 active 的时刻”作为保守的 late-start 下界登记 watchdog。它必然晚于真实 POST，因此只会让超时报警更晚，不会让 35 分钟阈值提前误报。
+- [done] 放宽 watchdog 的 discovery 起点：当 reconciliation 首次看到某 conversation `async_status=3/5`，且没有更可靠的 start 记录时，以“首次观察到 active 的时刻”作为保守的 late-start 下界登记 watchdog。它必然晚于真实 POST，因此只会让超时报警更晚，不会让 30 分钟阈值提前误报。
 - [done] catalog-late-start watchdog 超时后立即抓一次 conversation body；若 body 已明确 final/interrupted，则清理 active，不建 zombie incident；若仍无 final 则建立 `active-zombie` incident 并通知。
 - [done] 审计近两周异常研究聊天与当前 incident schema，已新增 `INCIDENT_TAXONOMY.md`，分清“正式 lifecycle / tail/head 结构维度 / execution-persistence forensic / UI-only / discovery blind spot”，并记录 6 组真实样本。
 - [pending] DevSpace `openai/session` metadata 继续作为更快的 supplementary discovery 候选：后续只在能稳定绑定 metadata -> conversation UUID 后接入，不为本次保底 watchdog 强行修改 DevSpace 服务端。
@@ -132,7 +132,7 @@
 
 - **把“内容已变化”和“现在适合抓最终正文”拆成两个维度**。任何可信 WSS conversation 事件（例如 conversation-created、turn-start/update、turn-complete）一到，就立刻把该 conversation 记为 `dirty/stale`，表示“本地副本可能落后”；但 `dirty` 本身不等于“马上发 body 请求”。
 - `turn-complete` 是正常的 `sync-ready` 触发器：收到后立即安排一次 body overlap 增量同步，同一份 body 同时负责正文归档和 terminal/tail 异常诊断。
-- `turn-start` / conversation-created 只登记 active + dirty，首版不为了一个仍在生成的 turn 每几秒抓 body。若 active 超过可配置 watchdog（当前以约 35 分钟为保守起点）仍无 complete，则安排一次**诊断同步**，从 body 判断当前持久化尾部；只有确有独立信息需求时才考虑 `stream_status`。
+- `turn-start` / conversation-created 只登记 active + dirty，首版不为了一个仍在生成的 turn 每几秒抓 body。若 active 超过可配置 watchdog（当前默认 30 分钟）仍无 complete，则安排一次**诊断同步**，从 body 判断当前持久化尾部；只有确有独立信息需求时才考虑 `stream_status`。
 - WSS gap/reconnect、daemon 冷启动、online 恢复、低频 catalog reconciliation 发现 `update_time` 变化时，属于恢复路径：这些条目可直接进入 `sync-ready`，因为此时无法依赖之前的 complete 事件仍然存在。
 - 后续 Live Stream/SSE mirror 是独立实验层：若能可靠订阅正在生成的 turn，则 `turn-start` 后可以持续保存 transient stream，但这不能反过来改变 Archive Core 的最终 overlap/terminal 同步契约。
 - **2026-09-13 WSS 语义校正**：历史真实抓包并没有出现字面事件 `conversation-turn-start`；已确认的实时业务事件至少包括 `conversation-created`、`conversation-turn-complete` 和 `conversation-update`，其中 `conversation-update + update_type=async-task-update-message` 会在其它异步 conversation 运行过程中推新 message。因此 Phase 2 的 active/progress 入口应以该 async update 为主，`conversation-turn-start` 只作为向前兼容；不能再把“未看到 start”误解成 WSS 只有 created/complete。
