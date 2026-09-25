@@ -1,3 +1,12 @@
+## 2026-09-25 Guardian 自愈与 429 风暴修复 ExecPlan
+
+- [in_progress] 复盘 21:23～21:37 Guardian/CDP 故障链，区分“首次 renderer/CDP 卡顿”与“恢复逻辑把一次故障放大成 REST 风暴”。已确认旧链路会在每次 Guardian recover 后立即执行多页 catalog reconciliation，并在主循环错误后反复拆/建同一 Guardian。
+- [pending] 将 Guardian 健康检查改为连续失败阈值：单次 CDP Runtime 探活超时只记录，不立即拆页；连续失败达到阈值后才重建，成功一次即清零。
+- [pending] 将 Guardian/WSS gap repair 统一为 deferred/debounced reconciliation：先恢复 WSS，被动监听稳定后再允许一次低频 catalog overlap；多次 recover/reconnect 合并为同一 pending repair，并增加全局最小间隔。
+- [pending] 429 cooldown 到期后不再自动执行完整 catalog 扫描作为 probe；先恢复被动 WSS，已知 ready/dirty conversation 继续按全局节流逐条 body 同步，catalog 等正常低频周期或去抖后的 gap repair。
+- [pending] 增加纯函数/状态机测试，覆盖 Guardian 连续失败阈值、gap repair 去抖/最小间隔、cooldown 后不主动深扫；跑定向 Vitest、全量测试与 typecheck。
+- [pending] 部署新 daemon，以 --no-reconcile-on-start 启动；确认 WSS subscriptions 恢复、无立即 catalog sweep、无 429，再恢复常驻运行。
+
 ## 2026-09-25 Active Zombie / Watchdog 兜底 ExecPlan
 
 - [done] 现场确认 FrameForge 新会话 `6ab63c6c-02f4-83ea-a535-d849e3962d8f` 属于“页面/目录可见、正文 API 可返回、旧执行 resume=404、catalog 长期 active、可靠 start/complete 缺失”的 zombie 样本；已人工结束旧僵尸 turn，并仅发送“异常终止了，请继续。”启动新 turn。
