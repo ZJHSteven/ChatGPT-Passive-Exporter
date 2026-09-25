@@ -2007,11 +2007,30 @@ async function main() {
         continue
       }
 
-      // 只做健康观测，不主动激活窗口。最小化窗口应长期保持 hidden 而非 discarded。
-      const runtime = await guardian.page.send('Runtime.evaluate', {
-        expression: `({ visibility: document.visibilityState, discarded: document.wasDiscarded === true, ready: document.readyState })`,
-        returnByValue: true,
-      }, 3000)
+      // 只做健康观测，不主动激活窗口。短暂的 renderer/CDP 抖动先累计失败次数；
+      // 不再“一次 3 秒 timeout 就拆 Guardian”。成功一次立即清零。
+      let runtime = null
+      try {
+        runtime = await guardian.page.send('Runtime.evaluate', {
+          expression: `({ visibility: document.visibilityState, discarded: document.wasDiscarded === true, ready: document.readyState })`,
+          returnByValue: true,
+        }, 3000)
+        guardianHealthFailures = 0
+      }
+      catch (error) {
+        guardianHealthFailures += 1
+        await log('guardian health probe failed', {
+          consecutiveFailures: guardianHealthFailures,
+          threshold: guardianHealthFailureThreshold,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        if (!shouldRebuildGuardianAfterHealthFailures(guardianHealthFailures, guardianHealthFailureThreshold)) {
+          await writeState()
+          await new Promise(resolve => setTimeout(resolve, 5000))
+          continue
+        }
+        throw new Error(`guardian health probe failed ${guardianHealthFailures} consecutive times`)
+      }
       if (runtime.result?.value?.discarded === true) {
         throw new Error('guardian renderer reports document.wasDiscarded=true')
       }
@@ -2031,18 +2050,24 @@ async function main() {
         && authHeaders
         && activeApiAllowed(cooldownUntil)
         && Date.now() - lastReconcileAt >= reconcileHours * 3600_000) {
-        await reconcileCatalog('periodic')
+        await reconcileCatalog('periodic').catch(async (error) => {
+          await log('periodic reconciliation failed; passive Guardian remains online', {
+            error: error instanceof Error ? error.message : String(error),
+          })
+        })
       }
-      // 429 circuit breaker 到期后必须补一次主动 overlap：cooldown 期间可能错过了 WSS reconnect
-      // repair、body sync-ready 或 catalog active discovery。若没有这一步，只靠 6h periodic 会把
-      // active-zombie late-start 再额外拖延数小时。
+      // cooldown 到期只解除“主动 API 禁止”，不再拿完整 catalog 扫描当探针。
+      // 先保持 WSS 在线；已知 ready conversation 由 drainDirty 逐条补 body。
       if (cooldownRecoveryPending && authHeaders && activeApiAllowed(cooldownUntil)) {
         cooldownRecoveryPending = false
         cooldownUntil = 0
-        await reconcileCatalog('cooldown-recover')
+        lastReconcileAt = Date.now()
+        if (pendingGapRepair) pendingGapRepair.lastAt = Date.now()
+        await log('active API cooldown expired; passive-first recovery resumed')
       }
       queueWatchdogDiagnostics()
       await drainDirty()
+      await maybeRunGapRepair()
       await hydratePendingGeneratedImageAssets()
       // 运行态错误已经写入日志；完整健康迭代成功后清掉 state 里的 transient lastError，
       // 避免 CLI 永远显示一个几小时前已经自动恢复的问题。
@@ -2052,9 +2077,9 @@ async function main() {
     catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
       await log('daemon loop error', { error: lastError })
+      // 保留 guardian/window 元数据，让下一轮 establishGuardian 能利用 previousWindowId
+      // 清掉旧窗口里的半死 target。旧实现这里 guardian=null，会丢失这个唯一可靠的定位信息。
       guardian?.page?.close()
-      guardian?.browser?.close()
-      guardian = null
       await writeState()
       await new Promise(resolve => setTimeout(resolve, 3000))
     }
