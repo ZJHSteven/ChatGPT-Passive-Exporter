@@ -10,6 +10,7 @@
 - 第一轮定向测试发现“从未 repair 过”被错误套用最小间隔；已修为只有存在真实 lastAttemptAt 时才应用 10 分钟间隔，首次 repair 只受 debounce 约束。
 - 全量 Vitest 已达到 17 files / 103 tests 通过；首轮 typecheck 仅暴露旁路声明未同步新增两个纯函数导出，现已补齐 `chatgpt-archive-daemon.d.mts`。
 - 补齐两个运行期边界：任何真实 HTTP 429 都会把 periodic 基准推进到 429 时刻，避免长时间运行后 cooldown 刚结束就深扫；CLI 也已透传 Guardian 连续失败阈值与 gap-repair debounce/最小间隔参数。新 `reconcile:gap-repair` 保持与旧在线 gap repair 一致的 incident 分类资格。
+- 最终回归通过：archive-daemon 定向 14/14、全量 Vitest 17 files / 103 tests、`tsc --noEmit` 全部成功。最新 daemon 以 `--no-reconcile-on-start` 重启为 PID 29464；当前 WSS activeSockets=3，四个订阅 topic 完整，Guardian healthFailures=0 / rebuilds=0，且新启动日志只有 daemon starting + guardian ready，没有 catalog reconciliation/body sync/HTTP 429。旧 429 cooldown 仍按真实绝对时间继承，期间只保持被动监听。
 
 # 2026-09-25 Active Zombie / Watchdog 兜底
 
