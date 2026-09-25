@@ -3,6 +3,7 @@
 - 已加入 Guardian 连续健康失败阈值与 deferred gap-repair 的纯函数门控；短 gap repair 只要求一页稳定 overlap，为后续把 WSS 恢复和 REST 扫描解耦做基础。
 - `ensureGuardian()` 现在复用已经探活成功的 CDP session 作为正式 page client，不再 probe 成功后立刻 detach，再用第二个 session 重复 `Runtime.enable`；这直接针对日志中反复出现的 `created=false + Runtime.enable timeout` 模式。
 - daemon 状态已补充 Guardian 连续健康失败/重建计数、pending gap repair、最近 repair 尝试时间；新增默认 3 次健康失败阈值、30 秒 repair debounce 与 10 分钟全局最小 repair 间隔。若启动时继承真实 429 cooldown，periodic 计时也会从本次启动重新计算，避免 cooldown 一结束立刻深扫。
+- 已实现统一的 deferred gap-repair 队列：Guardian recover 与 WSS reconnect 后只登记 pending；真正 catalog overlap 必须等 WSS 在线、debounce/最小间隔满足且不在 cooldown。repair 失败只保留 pending 并重新延迟，不再冒泡到 Guardian rebuild。
 
 # 2026-09-25 Active Zombie / Watchdog 兜底
 

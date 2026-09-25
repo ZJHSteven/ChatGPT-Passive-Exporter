@@ -1708,6 +1708,75 @@ async function main() {
     void drainDirty()
   }
 
+  /**
+   * 把 Guardian/WSS gap 统一压成一个 pending repair。
+   *
+   * 多次 recover/reconnect 只更新 lastAt 和原因集合，不会各自发起一轮 REST 扫描。
+   */
+  const scheduleGapRepair = async (reason) => {
+    const now = Date.now()
+    if (!pendingGapRepair) {
+      pendingGapRepair = {
+        firstAt: now,
+        lastAt: now,
+        reasons: new Set([String(reason || 'unknown')]),
+      }
+    }
+    else {
+      pendingGapRepair.lastAt = now
+      pendingGapRepair.reasons.add(String(reason || 'unknown'))
+    }
+    await log('deferred gap repair scheduled', {
+      reason,
+      firstAt: pendingGapRepair.firstAt,
+      lastAt: pendingGapRepair.lastAt,
+      reasons: [...pendingGapRepair.reasons].sort(),
+    })
+  }
+
+  /**
+   * 真正发起 gap repair 前必须先满足：
+   * 1) WSS 已经恢复；
+   * 2) 最近一次 gap 后已稳定一段时间；
+   * 3) 与上次 repair 尝试有足够间隔；
+   * 4) 不在 429 cooldown。
+   *
+   * 失败只保留 pending 并重新 debounce，绝不能让异常冒泡到 Guardian rebuild。
+   */
+  const maybeRunGapRepair = async () => {
+    if (!pendingGapRepair) return
+    const now = Date.now()
+    if (!shouldRunDeferredGapRepair({
+      now,
+      pendingLastAt: pendingGapRepair.lastAt,
+      lastAttemptAt: lastGapRepairAttemptAt,
+      delayMs: gapRepairDelayMs,
+      minIntervalMs: gapRepairMinIntervalMs,
+      activeSockets: activeSocketIds.size,
+      authAvailable: Boolean(authHeaders),
+      cooldownUntil,
+      reconcileInFlight,
+    })) return
+
+    const repair = pendingGapRepair
+    lastGapRepairAttemptAt = now
+    try {
+      await reconcileCatalog('gap-repair')
+      pendingGapRepair = null
+      await log('deferred gap repair complete', {
+        reasons: [...repair.reasons].sort(),
+      })
+    }
+    catch (error) {
+      repair.lastAt = Date.now()
+      pendingGapRepair = repair
+      await log('deferred gap repair failed', {
+        reasons: [...repair.reasons].sort(),
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
   const attachGuardianEvents = async () => {
     const page = guardian.page
 
