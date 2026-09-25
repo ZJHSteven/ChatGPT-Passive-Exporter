@@ -173,6 +173,8 @@ SQLite 只 merge/insert/update；在线分页绝不能因为当前页没出现�
 
 ## 5. 监控与事故判定
 
+完整的异常分类与真实样本索引见 [`INCIDENT_TAXONOMY.md`](./INCIDENT_TAXONOMY.md)。这里保留运行架构原则；生命周期、tail、head、execution/persistence、UI visibility 必须分轴，不把不同层面的现象混成一个错误枚举。
+
 ### 5.1 主信号
 
 ```text
@@ -203,6 +205,18 @@ body 中可观察：final、interrupted/client_stopped、悬空 tool call、reas
 时做一次或极少量确认。
 
 watchdog 阈值必须可配置，不能把 30 分钟写死成“超过即异常”。
+
+### 5.3 没有可靠 start 时的 catalog late-start
+
+普通跨设备 turn 目前仍可能没有可靠、即时的 start 事件。此时 conversation list 第一次观察到 `async_status=3/5` 可以作为一个**保守 late-start 下界**：真实 POST 一定发生得更早，因此从该观察时刻再计 watchdog 只会延迟报警，不会提前误报。
+
+late-start 与可靠 start 必须保留不同证据等级：daemon state 分别暴露 `reliableActive` 与 `catalogLateActive`，turn trace 的 `reliableActiveAfter*` 不得包含 catalog late-start。
+
+catalog late-start 超过 watchdog 后立即读取一次最新 body：
+
+- 已 final / interrupted：清理 active，不建立 zombie；
+- 仍无 final/明确终止且 catalog 继续 active：建立 `active-zombie` incident；
+- 后续明确 client_stopped/interrupted：同一 turn 升级为 `explicit-interrupted`。
 
 ## 6. Archive daemon 与 OpenCLI 的职责边界
 

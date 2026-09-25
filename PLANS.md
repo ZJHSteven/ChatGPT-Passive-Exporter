@@ -1,10 +1,10 @@
 ## 2026-09-25 Active Zombie / Watchdog 兜底 ExecPlan
 
 - [done] 现场确认 FrameForge 新会话 `6ab63c6c-02f4-83ea-a535-d849e3962d8f` 属于“页面/目录可见、正文 API 可返回、旧执行 resume=404、catalog 长期 active、可靠 start/complete 缺失”的 zombie 样本；已人工结束旧僵尸 turn，并仅发送“异常终止了，请继续。”启动新 turn。
-- [in_progress] 把 `active-zombie / persistent-active-stall` 从仅文档化表型提升为正式 lifecycle class；仍与 `complete-no-final`、`explicit-interrupted`、`ghost-execution / persistence-stall` 分层，不把 tail subtype 当根因。
-- [in_progress] 放宽 watchdog 的 discovery 起点：当 reconciliation 首次看到某 conversation `async_status=3/5`，且没有更可靠的 start 记录时，以“首次观察到 active 的时刻”作为保守的 late-start 下界登记 watchdog。它必然晚于真实 POST，因此只会让超时报警更晚，不会让 35 分钟阈值提前误报。
-- [in_progress] catalog-late-start watchdog 超时后立即抓一次 conversation body；若 body 已明确 final/interrupted，则清理 active，不建 zombie incident；若仍无 final 且 catalog 仍 active，则建立 `active-zombie` incident 并通知。
-- [pending] 审计近两周异常研究聊天与当前 incident schema，列出“已正式分类 / 仅结构维度 / 仅文档表型 / 尚未自动化”的完整矩阵，并把缺失定义补进 PROGRESS/ARCHITECTURE。
+- [done] 把 `active-zombie / persistent-active-stall` 从仅文档化表型提升为正式 lifecycle class；仍与 `complete-no-final`、`explicit-interrupted`、`ghost-execution / persistence-stall` 分层，不把 tail subtype 当根因。
+- [done] 放宽 watchdog 的 discovery 起点：当 reconciliation 首次看到某 conversation `async_status=3/5`，且没有更可靠的 start 记录时，以“首次观察到 active 的时刻”作为保守的 late-start 下界登记 watchdog。它必然晚于真实 POST，因此只会让超时报警更晚，不会让 35 分钟阈值提前误报。
+- [done] catalog-late-start watchdog 超时后立即抓一次 conversation body；若 body 已明确 final/interrupted，则清理 active，不建 zombie incident；若仍无 final 则建立 `active-zombie` incident 并通知。
+- [done] 审计近两周异常研究聊天与当前 incident schema，已新增 `INCIDENT_TAXONOMY.md`，分清“正式 lifecycle / tail/head 结构维度 / execution-persistence forensic / UI-only / discovery blind spot”，并记录 6 组真实样本。
 - [pending] DevSpace `openai/session` metadata 继续作为更快的 supplementary discovery 候选：后续只在能稳定绑定 metadata -> conversation UUID 后接入，不为本次保底 watchdog 强行修改 DevSpace 服务端。
 
 ## 2026-09-25 Phase 3 / Phase 4 收口 ExecPlan
