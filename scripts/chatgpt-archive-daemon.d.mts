@@ -80,6 +80,21 @@ export function catalogStableOverlapTarget(
   options?: { pageSize?: number, deepThreshold?: number },
 ): number
 
+export type ConversationBackendRoute =
+  | { kind: 'catalog', offset: number, limit: number, globalCatalog: boolean, conversationOrigin: string | null, hideSnorlax: string | null }
+  | { kind: 'body-latest', conversationId: string }
+  | { kind: 'body-cursor', conversationId: string, before: string | null }
+  | { kind: 'mapping', conversationId: string }
+
+/** 归一化 ChatGPT conversation 私有 REST URL；不发网络请求。 */
+export function classifyConversationBackendUrl(input: unknown, base?: string): ConversationBackendRoute | null
+
+/** cooldown 期间只屏蔽 Guardian 的 conversation REST，WSS 不受影响。 */
+export function shouldBlockGuardianConversationRest(input: unknown): boolean
+
+/** 判断某个 passive response 是否足够新，可以替代本次 ready 后的主动 replay。 */
+export function passiveObservationMatchesReady(capturedAt: unknown, readyAt: unknown, toleranceMs?: number): boolean
+
 /** 只有“无 WSS”从本次 gap 起持续超过 grace 后，才允许重建 Guardian。 */
 export function shouldRebuildGuardianForMissingWss(input: {
   now: number

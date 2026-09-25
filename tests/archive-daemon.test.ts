@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import {
   activeApiAllowed,
   catalogStableOverlapTarget,
+  classifyConversationBackendUrl,
   classifyCatalogAsyncStatus,
   classifyConversationEvent,
   conversationIdFromTargetUrl,
@@ -11,6 +12,8 @@ import {
   isConfirmedTerminalTrigger,
   restoreCooldownUntil,
   sanitizeCapturedHeaders,
+  passiveObservationMatchesReady,
+  shouldBlockGuardianConversationRest,
   shouldRebuildGuardianAfterHealthFailures,
   shouldRunDeferredGapRepair,
   shouldStartCatalogWatchdog,
@@ -211,6 +214,32 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(catalogStableOverlapTarget('guardian-recover', { pageSize: 28, deepThreshold: 56 })).toBe(56)
     // deepThreshold 即使被错误配置得比一页还小，也不能让深同步比短 gap 更激进。
     expect(catalogStableOverlapTarget('startup', { pageSize: 28, deepThreshold: 1 })).toBe(28)
+  })
+
+  test('conversation backend URL 分类能区分全量 list、TPP list、正文和 cursor', () => {
+    expect(classifyConversationBackendUrl('/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=false&is_starred=false')).toEqual({
+      kind: 'catalog', offset: 0, limit: 28, globalCatalog: true, conversationOrigin: null, hideSnorlax: null,
+    })
+    expect(classifyConversationBackendUrl('/backend-api/conversations?conversation_origin=tpp&expand=false&hide_snorlax=false&limit=20&order=updated&offset=0')).toMatchObject({
+      kind: 'catalog', offset: 0, limit: 20, globalCatalog: false, conversationOrigin: 'tpp',
+    })
+    expect(classifyConversationBackendUrl('/backend-api/conversations/c1?include_has_versions=true&num_turns=10')).toEqual({
+      kind: 'body-latest', conversationId: 'c1',
+    })
+    expect(classifyConversationBackendUrl('/backend-api/conversations/c1/messages?before=abc&include_has_versions=true&num_turns=10')).toEqual({
+      kind: 'body-cursor', conversationId: 'c1', before: 'abc',
+    })
+    expect(classifyConversationBackendUrl('/backend-api/conversation/c1')).toEqual({ kind: 'mapping', conversationId: 'c1' })
+    expect(classifyConversationBackendUrl('https://example.com/backend-api/conversations?offset=0')).toBeNull()
+  })
+
+  test('Guardian cooldown block 只匹配 conversation REST；passive body 必须足够新才可替代 replay', () => {
+    expect(shouldBlockGuardianConversationRest('https://chatgpt.com/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=false&is_starred=false')).toBe(true)
+    expect(shouldBlockGuardianConversationRest('https://chatgpt.com/backend-api/conversations/c1?num_turns=10')).toBe(true)
+    expect(shouldBlockGuardianConversationRest('wss://chatgpt.com/ws')).toBe(false)
+    expect(passiveObservationMatchesReady(10_000, 9_000)).toBe(true)
+    expect(passiveObservationMatchesReady(8_000, 10_000, 1_500)).toBe(false)
+    expect(passiveObservationMatchesReady(8_600, 10_000, 1_500)).toBe(true)
   })
 
   test('Guardian 单次/偶发 CDP 探活失败不会立刻拆页，连续达到阈值才重建', () => {

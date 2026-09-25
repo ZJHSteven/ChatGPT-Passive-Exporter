@@ -748,6 +748,81 @@ function listPath(offset, limit) {
   return `/backend-api/conversations?offset=${offset}&limit=${limit}&order=updated&is_archived=false&is_starred=false`
 }
 
+/**
+ * 把 ChatGPT conversation 私有 REST URL 归一化成少数几类。
+ *
+ * 这个分类器只看 URL，不读取 cookie/token，也不发请求。后续三条路径共用它：
+ * 1) 监听页面自己已经发出的 native response；
+ * 2) 判断某个 native list 是否与 daemon 的全量 catalog 语义等价；
+ * 3) cooldown 期间只屏蔽 Guardian 的 conversation REST，同时保留 WSS。
+ */
+export function classifyConversationBackendUrl(input, base = 'https://chatgpt.com') {
+  try {
+    const url = new URL(String(input || ''), base)
+    if (url.origin !== 'https://chatgpt.com') return null
+
+    if (url.pathname === '/backend-api/conversations') {
+      const offset = Number(url.searchParams.get('offset') ?? '0')
+      const limit = Number(url.searchParams.get('limit') ?? '0')
+      const origin = url.searchParams.get('conversation_origin')
+      const hideSnorlax = url.searchParams.get('hide_snorlax')
+      const globalCatalog = !origin
+        && Number.isFinite(offset)
+        && Number.isFinite(limit)
+        && url.searchParams.get('order') === 'updated'
+        && url.searchParams.get('is_archived') === 'false'
+        && url.searchParams.get('is_starred') === 'false'
+        && (hideSnorlax === null || hideSnorlax === 'false')
+      return {
+        kind: 'catalog',
+        offset: Number.isFinite(offset) ? offset : 0,
+        limit: Number.isFinite(limit) ? limit : 0,
+        globalCatalog,
+        conversationOrigin: origin,
+        hideSnorlax,
+      }
+    }
+
+    const plural = url.pathname.match(/^\/backend-api\/conversations\/([^/]+?)(\/messages)?\/?$/u)
+    if (plural) {
+      const conversationId = decodeURIComponent(plural[1])
+      if (plural[2]) {
+        return {
+          kind: 'body-cursor',
+          conversationId,
+          before: url.searchParams.get('before'),
+        }
+      }
+      return { kind: 'body-latest', conversationId }
+    }
+
+    const singular = url.pathname.match(/^\/backend-api\/conversation\/([^/]+)\/?$/u)
+    if (singular) {
+      return { kind: 'mapping', conversationId: decodeURIComponent(singular[1]) }
+    }
+    return null
+  }
+  catch {
+    return null
+  }
+}
+
+/** 只有 conversation REST 会在 Guardian cooldown 中被本地 CDP block；WSS 不匹配这里。 */
+export function shouldBlockGuardianConversationRest(input) {
+  return classifyConversationBackendUrl(input) !== null
+}
+
+/**
+ * passive body 只替代“这一次 ready 之后页面自然产生的响应”。
+ * 过旧 observation 仍可作为历史证据落库，但不能拿来证明当前 complete 已追平。
+ */
+export function passiveObservationMatchesReady(capturedAt, readyAt, toleranceMs = 1500) {
+  const captured = Number(capturedAt)
+  const ready = Number(readyAt)
+  const tolerance = Math.max(0, Number(toleranceMs) || 0)
+  return Number.isFinite(captured) && Number.isFinite(ready) && captured + tolerance >= ready
+}
+
 async function main() {
   const flags = parseArgs(process.argv.slice(2))
   const cdpHttp = String(flags.get('cdp') || DEFAULT_CDP).replace(/\/$/u, '')
