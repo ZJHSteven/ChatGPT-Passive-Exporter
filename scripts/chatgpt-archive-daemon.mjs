@@ -1854,13 +1854,9 @@ async function main() {
           createdAt: now,
         })
 
-        // 当前 conversations subscribe 经常返回 recovered=false，因此不能假设 gap 内事件会自动回放。
-        // 等新连接完成 connect/subscribe 后做一次 overlap reconciliation，仍然不是高频 list 心跳。
-        setTimeout(() => {
-          if (!stopping && activeSocketIds.has(requestId) && authHeaders) {
-            void reconcileCatalog('wss-reconnect').catch(error => log('reconcile after native WSS reconnect failed', { error: String(error) }))
-          }
-        }, 5000)
+        // 当前 conversations subscribe 经常返回 recovered=false，因此仍需要 overlap repair；
+        // 这里只登记 pending，真正 REST 请求由统一的 deferred gap-repair 门控决定。
+        void scheduleGapRepair('wss-reconnect')
       }
     })
     page.on('Network.webSocketClosed', ({ requestId }) => {
@@ -1945,6 +1941,8 @@ async function main() {
     guardian?.browser?.close()
     guardian = await ensureGuardian(cdpHttp)
     guardianReadyAt = Date.now()
+    guardianHealthFailures = 0
+    if (reason !== 'startup') guardianRebuilds += 1
     wssGeneration += 1
     activeSocketIds = new Set()
     // 新 Guardian 尚未建立第一条 WSS，首次 readiness 也统一使用同一个 gap 时钟。
@@ -1980,19 +1978,16 @@ async function main() {
     // 避免 CLI 因一次 5 页 startup reconcile 超过启动等待时间而误报 started:false。
     await writeState()
     if (authHeaders && activeApiAllowed(cooldownUntil) && reconcileOnStart && lastReconcileAt === 0) {
-      await reconcileCatalog('startup')
-    }
-    else if (authHeaders && activeApiAllowed(cooldownUntil) && reason !== 'startup') {
-      // Guardian 自愈意味着中间存在 WSS 盲区；只在恢复后做一次 overlap reconciliation。
-      await reconcileCatalog('guardian-recover')
-    }
-    else if (authHeaders && !activeApiAllowed(cooldownUntil) && reason !== 'startup') {
-      // 429 cooldown 只冻结主动 GET；绝不能因为 recovery reconciliation 暂时不能跑，
-      // 就把刚恢复好的 Guardian/WSS 再次拆掉，形成“越限流越失去被动监听”的恶性循环。
-      await log('guardian recovery reconciliation deferred by active API cooldown', {
-        reason,
-        cooldownUntil,
+      // 冷启动补账属于主动 REST，与 Guardian 自身存活解耦。
+      await reconcileCatalog('startup').catch(async (error) => {
+        await log('startup reconciliation failed; passive Guardian remains online', {
+          error: error instanceof Error ? error.message : String(error),
+        })
       })
+    }
+    else if (reason !== 'startup') {
+      // Guardian 自愈只负责先恢复被动 WSS；REST gap repair 统一进入低频去抖队列。
+      await scheduleGapRepair('guardian-recover')
     }
   }
 
