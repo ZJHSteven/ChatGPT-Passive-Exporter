@@ -261,6 +261,31 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 结论：没有证据证明本次用户可见限流就是 Fleet 直接造成；旧的 60s list + 350ms 历史审计策略仍然过于激进，因此已收紧并加入可配置策略与真实 429 circuit breaker。
 
 ## 请求头对照
+
+## 2026-09-25 Guardian / 普通网页第一方请求取证
+- 已确认隐藏 Guardian 虽然由 Archive 只用于 CDP/WSS，但它加载的是完整 ChatGPT 首页，因此 ChatGPT 前端自身仍会主动访问私有 REST；这类 native 请求此前不在 daemon 的主动请求日志里。
+- Guardian 的第一方 list 请求与 WSS complete 近乎逐条对齐：
+  - 23:11:04.759 list 200；23:11:04.836 收到 conversation-turn-complete。
+  - 23:16:33.462 list 429；23:16:33.478 收到 complete。
+  - 23:22:54.057 list 429；23:22:54.075 收到 complete。
+  - 23:28:49.108 list 200；23:28:49.116 收到 complete。
+  - 23:34:08.744 list 200；23:34:08.758 收到 complete。
+  - 23:35:35.984 list 429；23:35:36.010 收到 complete。
+  - 23:39:11.915 list 200；23:39:11.930 收到 complete。
+- 结论：完整 ChatGPT 网页会在 conversations WSS 更新后刷新 sidebar/catalog；它不是固定秒级轮询，但在活跃多会话环境里会形成“WSS 更新 → native list fetch → 429/200”的额外请求源。
+- 普通 ChatGPT 页面也观察到 native list：常见形状为 offset=0&limit=28&order=updated&is_archived=false&is_starred=false，并常并发一条 hide_snorlax=true 版本；22:54:56 曾两条同时 429。该 28 条非 hide_snorlax 请求与 daemon listPath(0,28) URL 形状相同。
+- Guardian 首页自己的 native list 形状不同：conversation_origin=tpp&expand=false&hide_snorlax=false&limit=20&order=updated&offset=0，因此服务端可从 query shape 区分 Guardian sidebar 请求和当前 daemon 的 28 条 catalog replay。
+- 历史请求头对照仍成立：正常 sidebar 与 replay 的可见 header 名集合一致，Cookies/User-Agent/Referer 等由同一浏览器生成；但不能宣称服务端“无法区分”，因为 query、频率、访问序列、连接/会话上下文仍可观测。
+- 普通网页 body 也会主动并发/重试。23:37:33 同一 page target 同时请求三个 conversation body：
+  - 6ab37162…「分支 · 动漫比赛截止整理」：该会话刚有 complete，且浏览器导航历史显示该 target 随后真实导航到这个 conversation。
+  - 6ab36ac1…「代理层可靠性校验」：旧会话，无同期 complete。
+  - 6a395b40…「邮件关注提醒」：旧会话，无同期 complete。
+  结果同批出现 429 与 200；6ab37162 首次 abort 后约 3.6 秒又重发并得到 429。
+- 因此 body native 行为不能建模成“收到 complete 就只拉对应 body”。当前证据更符合：真实 route navigation 会拉目标 body，同时前端还可能做其它历史/侧栏 speculative prefetch；这些附加 body 与 WSS complete 没有一一映射。
+- 浏览器 Page.getNavigationHistory 进一步确认该 target 的最近路径为：项目完成汇报 → 分支 · 动漫比赛截止整理 → ChatGPT 首页，支持 23:37 body burst 与 SPA 导航/预取相关，而非三个 complete 同时驱动。
+- 23:37:18 daemon 的一小时 cooldown 到期后，Archive 自己开始 drainDirty：首个 body 200；随后继续补大 conversation，多页 body 后于 23:38:24 再次撞到 HTTP 429，并重新 armed 一小时 cooldown。当前 429 因此至少有两个独立来源：网页 native list/body 与 daemon replay body。
+- 设计结论：优先复用页面已经产生的 native list/body 响应；Guardian 不能再被视为“只有 WSS、没有 REST”的纯被动页面。cooldown 若只禁止 daemon replay，而不约束 Guardian native sidebar/list，仍会绕过 circuit breaker。
+- catalog gap-repair 当前没有“固定只抓一页”的正确性问题：gap-repair 只把 requiredStableOverlap 从 56 降到 28；扫描循环仍在最后一个变化后连续累计稳定条目，任何新/更新 conversation 都会把 stableOverlap 清零。第一页若 28 条全新，则 overlap=0，必然继续翻页。
 - Fleet 不自己保存固定 token；只从 ChatGPT 页面真实 backend 请求中临时捕获允许列表，驻留闭包内存。
 - 当前允许列表：Authorization、OAI session/device/client version/build/language、`X-OAI-IS-Client-Observation`。
 - 每个主动请求按 endpoint 重写 `X-OpenAI-Target-Path/Route`。
