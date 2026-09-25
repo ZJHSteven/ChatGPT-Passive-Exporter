@@ -919,6 +919,18 @@ async function main() {
   // 主循环仍可能在 timeout 前抢跑，因此 delay 实际并不是硬门槛。
   const readySince = new Map()
   const readyNotBefore = new Map()
+  // 页面 native body/list 的短期缓存。body 记录必须保留“写入 SQLite 前已知 message”快照，
+  // 否则 passive merge 后再做 overlap，会被自己刚写进去的数据误判成“整页早已存在”。
+  const passiveBodyPages = new Map()
+  const passiveCatalogPages = new Map()
+  const passivePageObservers = new Map()
+  const passiveCacheMaxAgeMs = 10 * 60_000
+  let passiveBodyResponses = 0
+  let passiveCatalogResponses = 0
+  let passive429Responses = 0
+  let passiveBodyPagesReused = 0
+  let passiveCatalogPagesReused = 0
+  let guardianConversationRestBlocked = false
   // catalogActive 只表示“低频 conversation list 曾看见 async_status=3/5”。
   // 它不是可靠 turn start，因此绝不能进入 watchdog 的 activeTurns.startedAt。
   // 这个集合只用于 catalog 自己识别 active→complete 的 gap repair。
@@ -1023,6 +1035,17 @@ async function main() {
         lastAt: pendingGapRepair.lastAt,
         reasons: [...pendingGapRepair.reasons].sort(),
       } : null,
+      passive: {
+        observedPages: passivePageObservers.size,
+        bodyResponses: passiveBodyResponses,
+        catalogResponses: passiveCatalogResponses,
+        http429Responses: passive429Responses,
+        bodyPagesReused: passiveBodyPagesReused,
+        catalogPagesReused: passiveCatalogPagesReused,
+        bodyCacheEntries: passiveBodyPages.size,
+        catalogCacheEntries: passiveCatalogPages.size,
+        guardianConversationRestBlocked,
+      },
     },
     limits: {
       maxSyncConversations,
