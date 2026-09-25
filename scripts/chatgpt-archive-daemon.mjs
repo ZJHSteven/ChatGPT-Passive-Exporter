@@ -749,6 +749,15 @@ async function main() {
   // 这个集合只用于 catalog 自己识别 active→complete 的 gap repair。
   const catalogActive = new Map()
   const activeTurns = new Map()
+  // activeTurns 现在承载“所有已纳入 watchdog 的 active”：既可能来自可靠 WSS/actor start，
+  // 也可能来自 catalog 首次观察到 active 的保守 late-start。两者不能在取证输出里混称 reliable。
+  const isCatalogLateActive = (active) => String(active?.startType || '').startsWith('catalog:')
+  const reliableActiveIds = () => [...activeTurns.entries()]
+    .filter(([, active]) => !isCatalogLateActive(active))
+    .map(([conversationId]) => conversationId)
+  const catalogLateActiveIds = () => [...activeTurns.entries()]
+    .filter(([, active]) => isCatalogLateActive(active))
+    .map(([conversationId]) => conversationId)
   const turnRecorder = new ActiveTurnRecorder(turnTracePath)
   const eventCounts = new Map()
   // eventCounts 继续按 type 聚合，保持现有状态输出兼容；另加 topic 维度用于 Phase 3 取证。
@@ -814,6 +823,8 @@ async function main() {
       ready: ready.size,
       catalogActive: catalogActive.size,
       active: activeTurns.size,
+      reliableActive: reliableActiveIds().length,
+      catalogLateActive: catalogLateActiveIds().length,
       oldestActiveMs: activeTurns.size > 0
         ? Math.max(...[...activeTurns.values()].map(item => Date.now() - item.startedAt))
         : 0,
@@ -1524,7 +1535,7 @@ async function main() {
               classifiedState: 'active',
               reason,
               wasCatalogActive,
-              reliableActiveAfterIds: activeTurns.keys(),
+              reliableActiveAfterIds: reliableActiveIds(),
               catalogActiveAfterIds: catalogActive.keys(),
             })).catch(async (error) => {
               await log('active turn trace write failed', {
@@ -1545,7 +1556,7 @@ async function main() {
               classifiedState: 'complete',
               reason,
               wasCatalogActive: true,
-              reliableActiveAfterIds: activeTurns.keys(),
+              reliableActiveAfterIds: reliableActiveIds(),
               catalogActiveAfterIds: catalogActive.keys(),
             })).catch(async (error) => {
               await log('active turn trace write failed', {
