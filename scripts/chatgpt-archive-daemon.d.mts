@@ -46,6 +46,9 @@ export function watchdogTriggerForStartType(startType: unknown): 'watchdog:catal
 /** 把同步 trigger 映射成 incident kind。 */
 export function incidentKindForTrigger(trigger: unknown): 'active-zombie' | 'watchdog-timeout' | 'abnormal-terminal'
 
+/** 重启 daemon 时只继承仍未过期的 HTTP 429 circuit breaker。 */
+export function restoreCooldownUntil(previousState: unknown, now?: number): number
+
 /**
  * 根据 reconciliation 场景选择需要连续看到多少条稳定旧记录才可停止 catalog 扫描。
  * 短 WSS reconnect 默认一整页；startup/periodic/长盲区继续使用更深阈值。

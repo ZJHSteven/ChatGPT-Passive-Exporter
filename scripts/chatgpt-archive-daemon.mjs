@@ -335,6 +335,15 @@ export function incidentKindForTrigger(trigger) {
 }
 
 /**
+ * daemon 重启不能把真实 HTTP 429 circuit breaker 清零，否则“重启服务”会变成绕过限流的手段。
+ * 只继承仍位于未来的绝对时间戳；过期、缺失或损坏状态一律视为无 cooldown。
+ */
+export function restoreCooldownUntil(previousState, now = Date.now()) {
+  const value = Number(previousState?.cooldownUntil ?? 0)
+  return Number.isFinite(value) && value > now ? value : 0
+}
+
+/**
  * 为不同 reconciliation 场景选择“已经足够重合”的连续稳定条目数。
  *
  * - 原生 WSS reconnect 的盲区通常只有几秒；此时从最新端向旧端扫描，只要在最后一个差异
@@ -711,6 +720,13 @@ async function main() {
   const watchdogMs = watchdogMinutes * 60_000
 
   await fs.mkdir(path.dirname(statePath), { recursive: true })
+  let previousDaemonState = null
+  try {
+    previousDaemonState = JSON.parse(await fs.readFile(statePath, 'utf8'))
+  }
+  catch {
+    // 首次启动或损坏的旧 state 都不应阻止 daemon 启动。
+  }
   const archive = new ChatArchiveDb(dbPath)
   let guardian = null
   // `guardian === null` 同时出现在“进程第一次启动”和“运行中自愈 catch 已清空旧 Guardian”两种
@@ -719,7 +735,7 @@ async function main() {
   let guardianEstablishedOnce = false
   let authHeaders = null
   let lastAuthAt = null
-  let cooldownUntil = 0
+  let cooldownUntil = restoreCooldownUntil(previousDaemonState)
   let lastReconcileAt = 0
   let lastWssEventAt = null
   let lastWssCreatedAt = null
@@ -780,6 +796,10 @@ async function main() {
     const line = `[${new Date().toISOString()}] ${message}${extra ? ` ${JSON.stringify(extra)}` : ''}\n`
     await fs.appendFile(logPath, line).catch(() => {})
     console.error(line.trim())
+  }
+
+  if (cooldownUntil > Date.now()) {
+    await log('active API cooldown restored from previous daemon state', { cooldownUntil })
   }
 
   const state = () => ({

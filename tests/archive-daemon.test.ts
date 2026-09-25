@@ -8,6 +8,7 @@ import {
   extractConversationEvents,
   incidentKindForTrigger,
   isConfirmedTerminalTrigger,
+  restoreCooldownUntil,
   sanitizeCapturedHeaders,
   shouldStartCatalogWatchdog,
   shouldNotifyIncidentTransition,
@@ -184,6 +185,14 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(incidentKindForTrigger('watchdog:catalog-active-timeout')).toBe('active-zombie')
     expect(incidentKindForTrigger('watchdog:active-timeout')).toBe('watchdog-timeout')
     expect(incidentKindForTrigger('wss:conversation-turn-complete')).toBe('abnormal-terminal')
+  })
+
+  test('daemon 重启继承未过期的 429 cooldown，但不复活旧 cooldown', () => {
+    expect(restoreCooldownUntil({ cooldownUntil: 2000 }, 1000)).toBe(2000)
+    expect(restoreCooldownUntil({ cooldownUntil: 1000 }, 1000)).toBe(0)
+    expect(restoreCooldownUntil({ cooldownUntil: 999 }, 1000)).toBe(0)
+    expect(restoreCooldownUntil({ cooldownUntil: 'garbled' }, 1000)).toBe(0)
+    expect(restoreCooldownUntil(null, 1000)).toBe(0)
   })
 
   test('短 WSS reconnect 只需一整页稳定 overlap，startup/guardian 继续深扫描', () => {
