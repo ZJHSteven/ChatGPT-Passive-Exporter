@@ -938,7 +938,11 @@ async function main() {
   const passiveBodyPages = new Map()
   const passiveCatalogPages = new Map()
   const passivePageObservers = new Map()
-  const passiveCacheMaxAgeMs = 10 * 60_000
+  // body observation 可能恰好发生在一小时 cooldown 开始后。若缓存只有 10 分钟，
+  // cooldown 结束时会忘掉已经免费拿到的 latest page，又重复请求一次。因此缓存寿命至少覆盖
+  // 一个完整 cooldown 再加 10 分钟缓冲；catalog 是否可用于“当前 repair”另有 capturedAt 门槛。
+  const passiveCacheMaxAgeMs = Math.max(10 * 60_000, (cooldownMinutes + 10) * 60_000)
+  const passiveCatalogFreshnessMs = intFlag(flags, 'passive-catalog-freshness-ms', 60_000, 1000)
   let passiveBodyResponses = 0
   let passiveCatalogResponses = 0
   let passiveImageResponses = 0
@@ -1076,6 +1080,7 @@ async function main() {
       gapRepairDelayMs,
       gapRepairMinIntervalMs,
       nativeBodyGraceMs,
+      passiveCatalogFreshnessMs,
       recoveryProbeGapMs,
       recoveryProbeSuccesses,
     },
@@ -1483,13 +1488,14 @@ async function main() {
    * 就是一个只读 server snapshot。真正的正确性边界仍由 reconcileCatalog 的连续 stableOverlap
    * 决定；如果 passive 第 0 页里有变化，扫描会自然继续请求/复用第 1、2…页直到 overlap。
    */
-  const reusablePassiveCatalogPage = (offset, limit) => {
+  const reusablePassiveCatalogPage = (offset, limit, minCapturedAt = 0) => {
     prunePassiveCaches()
-    return passiveCatalogPages.get(`${offset}:${limit}`) || null
+    const entry = passiveCatalogPages.get(`${offset}:${limit}`)
+    if (!entry) return null
+    return Number(entry.capturedAt || 0) >= Number(minCapturedAt || 0) ? entry : null
   }
 
   const syncConversation = async (conversationId, trigger) => {
-    requireRequestWindow()
     const syncReadyAt = Number(readySince.get(conversationId) || Date.now())
     const classifyTerminal = shouldClassifyTerminalForTrigger(trigger)
     const confirmedTerminal = isConfirmedTerminalTrigger(trigger)
@@ -1644,11 +1650,20 @@ async function main() {
   }
 
   const drainDirty = async () => {
-    if (syncInFlight || reconcileInFlight || stopping || Date.now() < cooldownUntil || !authHeaders || !guardian?.page || guardian.page.closed) return
+    if (syncInFlight || reconcileInFlight || stopping) return
     if (maxSyncConversations > 0 && syncedConversations >= maxSyncConversations) return
     if (ready.size === 0) return
     const now = Date.now()
-    const nextReady = [...ready.entries()].find(([conversationId]) => now >= Number(readyNotBefore.get(conversationId) || 0))
+    const activeWindowAvailable = activeApiAllowed(cooldownUntil, now)
+      && Boolean(authHeaders)
+      && Boolean(guardian?.page)
+      && !guardian?.page?.closed
+    const nextReady = [...ready.entries()].find(([conversationId]) => {
+      if (now < Number(readyNotBefore.get(conversationId) || 0)) return false
+      if (activeWindowAvailable) return true
+      const readyAt = Number(readySince.get(conversationId) || now)
+      return Boolean(reusablePassiveBodyPage(conversationId, null, readyAt))
+    })
     if (!nextReady) return
     syncInFlight = true
     try {
@@ -1713,7 +1728,10 @@ async function main() {
         await log('conversation sync failed', { conversationId, trigger, error: lastError })
         // 失败不能把 dirty 事实抹掉；同时保留 ready，等 auth/cooldown/页面恢复后再试。
         ready.set(conversationId, trigger)
-        readyNotBefore.set(conversationId, Date.now() + 5000)
+        if (lastError.startsWith('active API cooldown until ')) {
+          readyNotBefore.set(conversationId, Math.max(Date.now() + 5000, cooldownUntil))
+        }
+        else readyNotBefore.set(conversationId, Date.now() + 5000)
       }
     }
     finally {
@@ -1788,7 +1806,16 @@ async function main() {
 
       const readyAt = readySince.get(conversationId)
       if (readyAt && passiveObservationMatchesReady(capturedAt, readyAt)) {
-        // 页面自己已经把本次 complete 对应的 latest body 拿回来了；不再继续等待 grace。
+        // 页面自己已经把本次 ready 之后的 body 拿回来了；cooldown 只禁止主动 HTTP，
+        // 不禁止使用已经到手的 passive 数据继续 overlap/terminal merge。
+        readyNotBefore.set(conversationId, Date.now())
+        void drainDirty()
+      }
+    }
+    else {
+      const readyAt = readySince.get(conversationId)
+      if (readyAt && passiveObservationMatchesReady(capturedAt, readyAt)) {
+        // cursor 页也可能正好补上上一次 passive latest 所缺的历史页；立即唤醒本地状态机。
         readyNotBefore.set(conversationId, Date.now())
         void drainDirty()
       }
@@ -2030,12 +2057,16 @@ async function main() {
 
   const reconcileCatalog = async (reason) => {
     if (reconcileInFlight) return
-    requireRequestWindow()
     reconcileInFlight = true
+    const reconcileStartedAt = Date.now()
+    const passiveMinCapturedAt = reason === 'gap-repair' && pendingGapRepair
+      ? Number(pendingGapRepair.lastAt || reconcileStartedAt)
+      : reconcileStartedAt - passiveCatalogFreshnessMs
     let offset = 0
     const limit = 28
     let stableOverlap = 0
     let pages = 0
+    let passivePagesUsed = 0
     let dirtyCount = 0
     const requiredStableOverlap = catalogStableOverlapTarget(reason, {
       pageSize: limit,
@@ -2044,7 +2075,7 @@ async function main() {
     try {
       while (stableOverlap < requiredStableOverlap) {
         const route = '/backend-api/conversations'
-        const passiveCatalog = reusablePassiveCatalogPage(offset, limit)
+        const passiveCatalog = reusablePassiveCatalogPage(offset, limit, passiveMinCapturedAt)
         const body = passiveCatalog
           ? { items: passiveCatalog.items }
           : await fetchChecked({
@@ -2053,7 +2084,10 @@ async function main() {
               targetRoute: route,
               kind: 'catalog',
             })
-        if (passiveCatalog) passiveCatalogPagesReused += 1
+        if (passiveCatalog) {
+          passiveCatalogPagesReused += 1
+          passivePagesUsed += 1
+        }
         const items = Array.isArray(body.items) ? body.items : []
         if (items.length === 0) break
         for (const item of items) {
@@ -2163,7 +2197,7 @@ async function main() {
       dirtyCount,
       stableOverlap,
       requiredStableOverlap,
-      passivePagesUsed: passiveCatalogPagesReused,
+      passivePagesUsed,
     })
     await writeState()
     void drainDirty()

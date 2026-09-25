@@ -265,6 +265,9 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 ## 请求头对照
 
 ## 2026-09-25 Guardian / 普通网页第一方请求取证
+- passive 数据现在可在 429 cooldown 内继续做纯本地收口：drainDirty 不再把 cooldown 等同于“什么都不能做”；只要本次 ready 后已有 passive latest body，就可以继续 overlap/terminal merge，只有真正缺页、需要主动 HTTP 时才由 fetchChecked 拒绝。
+- passive body 缓存寿命现在至少覆盖一个完整 cooldown + 10 分钟，避免一小时后忘掉已经免费拿到的 latest page 再重复请求；cursor 页到达时也会立即唤醒等待中的本地 overlap 状态机。
+- passive catalog 加入 freshness 门槛：gap-repair 只能复用本次 gap/reconnect 之后产生的 native list；startup/periodic 只接受默认 60 秒内的新 list，避免拿旧 sidebar 快照证明当前盲区已经补齐。
 - 已补齐 passive catalog 的真正复用：reconcileCatalog 现在会先查同 offset/limit 的页面 native list 缓存，命中则直接用该页继续 stableOverlap 状态机，不再重复 GET 同一页；只有缓存缺页时才主动 fetch。
 - 已补回归测试覆盖最保守边界：第一页 28 条全部为新 conversation 时 stableOverlap 必须保持 0，并继续扫描；只有后续连续 28 条完全稳定后才允许停止。
 - 已实现普通 ChatGPT page 的 CDP passive mirror：只调用 Network.enable，不导航/不 fetch；页面自己的 conversation list/body 200 会被复制，429 会让 daemon 同步进入 cooldown。
