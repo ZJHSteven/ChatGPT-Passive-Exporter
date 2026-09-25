@@ -2238,8 +2238,10 @@ export class ChatArchiveDb {
       const refreshedTerminalEvidence = preserveExplicitTerminal
         ? currentIncident.terminalEvidence
         : diagnostic.terminalEvidence
-      const refreshedReason = currentIncident.incidentKind === 'watchdog-timeout'
-        ? `超过 watchdog 阈值仍未收到 conversation-turn-complete；${diagnostic.summary}`
+      const refreshedReason = currentIncident.lifecycleClass === 'active-zombie'
+        ? `conversation list 持续保持 active 超过 watchdog 阈值，且尚未观察到正常收口；${diagnostic.summary}`
+        : currentIncident.incidentKind === 'watchdog-timeout'
+          ? `超过 watchdog 阈值仍未收到 conversation-turn-complete；${diagnostic.summary}`
         : currentIncident.lifecycleClass === 'complete-no-final'
           ? `已确认 turn 完成但没有 final；${diagnostic.summary}`
           : preserveExplicitTerminal
@@ -2273,16 +2275,18 @@ export class ChatArchiveDb {
       || diagnostic.terminalEvidence === 'interrupted'
     const inferredAbnormal = diagnostic.terminalEvidence === 'none'
       && diagnostic.tailShape !== 'final'
-      && (requestedKind === 'watchdog-timeout' || !diagnostic.hasInTurnSteering)
+      && (requestedKind === 'watchdog-timeout' || requestedKind === 'active-zombie' || !diagnostic.hasInTurnSteering)
     const abnormal = explicitAbnormal || (allowIncompleteTailIncident && inferredAbnormal)
     if (allowCreate && abnormal && diagnostic.terminalEvidence !== 'final') {
       // 同一 turn 从“超时疑似卡住”演进成明确 client_stopped/interrupted 时，升级同一条 incident，
       // 不再因为 terminal/tail 字段变化制造第二条事故记录。
-      const effectiveKind: 'watchdog-timeout' | 'abnormal-terminal' = explicitAbnormal
+      const effectiveKind: 'watchdog-timeout' | 'active-zombie' | 'abnormal-terminal' = explicitAbnormal
         ? 'abnormal-terminal'
         : requestedKind
       const lifecycleClass: ArchiveIncidentRow['lifecycleClass'] = explicitAbnormal
         ? 'explicit-interrupted'
+        : effectiveKind === 'active-zombie'
+          ? 'active-zombie'
         : effectiveKind === 'watchdog-timeout'
           ? 'watchdog-timeout'
           : (allowIncompleteTailIncident || historicalEnded)
@@ -2291,6 +2295,8 @@ export class ChatArchiveDb {
       const incidentId = currentIncident?.id ?? sha256Text(`${conversationId}:${turnKey}`).slice(0, 24)
       const reason = historicalEnded && !explicitAbnormal
         ? `历史 turn 后续已经出现更新的 user turn，可确认该轮已经结束；该轮属于 complete-no-final，持久化尾部为 ${diagnostic.tailShape}。`
+        : effectiveKind === 'active-zombie'
+          ? `conversation list 持续保持 active 超过 watchdog 阈值，且 body 仍未出现 final/明确终止；${diagnostic.summary}`
         : effectiveKind === 'watchdog-timeout'
           ? `超过 watchdog 阈值仍未收到 conversation-turn-complete；${diagnostic.summary}`
           : lifecycleClass === 'complete-no-final'

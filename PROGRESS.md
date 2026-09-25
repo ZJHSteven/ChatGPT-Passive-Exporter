@@ -5,6 +5,7 @@
 - reconciliation 现在第一次看到 `async_status=3/5` 且没有更可靠 active 记录时，会以该观察时刻登记 `activeTurns`；若同一 catalog update 已经在本地明确 final/interrupted，则不会重复起 watchdog。catalog 后续变成 complete 会同时清理 `catalogActive + activeTurns`；watchdog 到期会根据 `startType` 选择普通 timeout 或 `watchdog:catalog-active-timeout`，并立即排一次 body sync。
 - body sync 一旦拿到明确 `final / client_stopped / interrupted`，会同时清掉该 conversation 的可靠/late-start active 与 catalogActive 记忆，避免已经正常收口的 turn 继续污染 watchdog 队列。
 - incident schema 类型定义已扩展出独立 `active-zombie` kind/lifecycle，下一步把具体建案/升级 reason 和通知标题接上并补回归。
+- `active-zombie` 的建案语义已经独立：catalog late-start 超时且 body 仍无 final/明确终止时写 `incident_kind=lifecycle_class=active-zombie`；后续普通 reconcile 刷新只更新 body 诊断，不会把 reason 降级成笼统 tail 描述；若后来出现 `client_stopped/interrupted`，同一 turn 仍会升级成更强的 `explicit-interrupted`。
 
 ## 2026-09-25 Phase 3 / Phase 4 收口
 
