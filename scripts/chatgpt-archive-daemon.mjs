@@ -1440,11 +1440,14 @@ async function main() {
       // 同一个仍活跃 turn 至多每个 watchdog 窗口做一次诊断抓取；没有 complete 时不轮询。
       if (active.lastWatchdogAt && now - active.lastWatchdogAt < watchdogMs) continue
       active.lastWatchdogAt = now
-      markSyncReady(conversationId, 'watchdog:active-timeout', 0)
+      const watchdogTrigger = watchdogTriggerForStartType(active.startType)
+      markSyncReady(conversationId, watchdogTrigger, 0)
       void log('active turn exceeded watchdog; queued diagnostic body sync', {
         conversationId,
         activeForMs: now - active.startedAt,
         lastEventAgoMs: now - active.lastEventAt,
+        startType: active.startType,
+        trigger: watchdogTrigger,
       })
     }
   }
@@ -1485,9 +1488,29 @@ async function main() {
               firstSeenAt: current?.firstSeenAt ?? now,
               lastSeenAt: now,
               asyncStatus: item.async_status,
+              updateTime: item.update_time ?? null,
             })
-            // running 说明该 conversation 当前仍可能继续变化：只标 stale，不抓半成品 body，
-            // 更不能用“第一次扫到 running”的时间启动 watchdog。
+            // 没有可靠 turn-start 时，把“第一次看到 active”作为保守 late-start 下界。
+            // 真实 POST 一定发生得更早，所以 watchdog 只会更晚报警，不会提前误报。
+            const archived = archive.db.prepare(`
+              SELECT update_time AS updateTime, terminal_state AS terminalState
+              FROM conversations WHERE id = ?
+            `).get(id)
+            if (shouldStartCatalogWatchdog({
+              alreadyActive: activeTurns.has(id),
+              catalogUpdateTime: item.update_time ?? null,
+              archivedUpdateTime: archived?.updateTime ?? null,
+              archivedTerminalState: archived?.terminalState ?? null,
+            })) {
+              activeTurns.set(id, {
+                startedAt: current?.firstSeenAt ?? now,
+                lastEventAt: now,
+                lastWatchdogAt: null,
+                startType: `catalog:async-active:${reason}`,
+              })
+            }
+            // running 先标 stale；真正 body 诊断仍等 complete 或 watchdog 超时，避免正常长任务
+            // 在每次 catalog reconciliation 时都主动抓半成品。
             markDirty(id, `catalog:async-active:${reason}`)
             await turnRecorder.append(buildCatalogObservationTrace({
               at: now,
@@ -1509,6 +1532,7 @@ async function main() {
           else if (asyncState === 'complete' && wasCatalogActive) {
             // 低频 list 看到了 active→complete，而 WSS complete 没到：这是典型 gap repair。
             catalogActive.delete(id)
+            activeTurns.delete(id)
             await turnRecorder.append(buildCatalogObservationTrace({
               at: now,
               conversationId: id,
