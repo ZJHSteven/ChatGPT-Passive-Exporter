@@ -1141,6 +1141,38 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('catalog late-start watchdog 会落成 active-zombie lifecycle，而不是普通 watchdog-timeout', () => {
+    const db = tempDb()
+    try {
+      db.mergeLiveMessagesPage({
+        title: 'active zombie fixture',
+        conversation_id: 'active-zombie-fixture',
+        current_node: 'r1',
+        messages: [
+          { id: 'u1', author: { role: 'user' }, recipient: 'all', content: { content_type: 'text', parts: ['开始'] }, metadata: { turn_exchange_id: 'turn-zombie' } },
+          { id: 'r1', author: { role: 'assistant' }, recipient: 'all', content: { content_type: 'thoughts', parts: ['处理中'] }, metadata: { turn_exchange_id: 'turn-zombie', reasoning_status: 'is_reasoning' } },
+        ],
+      }, {
+        observedAt: 1000,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: true,
+        incidentKind: 'active-zombie',
+      })
+
+      const incident = db.listIncidents({ status: 'open' })[0]
+      expect(incident).toMatchObject({
+        turnKey: 'turn-zombie',
+        incidentKind: 'active-zombie',
+        lifecycleClass: 'active-zombie',
+        terminalEvidence: 'none',
+      })
+      expect(incident?.reason).toContain('conversation list 持续保持 active')
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('cursor 历史页会补自己的 turn incident 与工具事实，但不会关闭当前 turn 红牌', () => {
     const db = tempDb()
     try {

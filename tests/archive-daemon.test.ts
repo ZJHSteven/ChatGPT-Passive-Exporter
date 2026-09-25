@@ -6,11 +6,14 @@ import {
   conversationIdFromTargetUrl,
   estuaryFileIdFromUrl,
   extractConversationEvents,
+  incidentKindForTrigger,
   isConfirmedTerminalTrigger,
   sanitizeCapturedHeaders,
+  shouldStartCatalogWatchdog,
   shouldNotifyIncidentTransition,
   shouldRebuildGuardianForMissingWss,
   shouldClassifyTerminalForTrigger,
+  watchdogTriggerForStartType,
 } from '../scripts/chatgpt-archive-daemon.mjs'
 
 describe('ChatGPT Archive daemon WSS parser', () => {
@@ -153,6 +156,34 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(classifyCatalogAsyncStatus(null)).toBe('unknown')
     expect(classifyCatalogAsyncStatus(0)).toBe('unknown')
     expect(classifyCatalogAsyncStatus('garbled')).toBe('unknown')
+  })
+
+  test('catalog active 建立保守 late-start，并抑制同一已终止 update 的重复 watchdog', () => {
+    expect(shouldStartCatalogWatchdog({
+      alreadyActive: false,
+      catalogUpdateTime: 200,
+      archivedUpdateTime: 100,
+      archivedTerminalState: 'final',
+    })).toBe(true)
+    expect(shouldStartCatalogWatchdog({
+      alreadyActive: false,
+      catalogUpdateTime: 100,
+      archivedUpdateTime: 100,
+      archivedTerminalState: 'final',
+    })).toBe(false)
+    expect(shouldStartCatalogWatchdog({
+      alreadyActive: false,
+      catalogUpdateTime: 100,
+      archivedUpdateTime: 100,
+      archivedTerminalState: 'none',
+    })).toBe(true)
+    expect(shouldStartCatalogWatchdog({ alreadyActive: true })).toBe(false)
+
+    expect(watchdogTriggerForStartType('catalog:async-active:wss-reconnect')).toBe('watchdog:catalog-active-timeout')
+    expect(watchdogTriggerForStartType('conversation-update:async-task-update-message')).toBe('watchdog:active-timeout')
+    expect(incidentKindForTrigger('watchdog:catalog-active-timeout')).toBe('active-zombie')
+    expect(incidentKindForTrigger('watchdog:active-timeout')).toBe('watchdog-timeout')
+    expect(incidentKindForTrigger('wss:conversation-turn-complete')).toBe('abnormal-terminal')
   })
 
   test('短 WSS reconnect 只需一整页稳定 overlap，startup/guardian 继续深扫描', () => {

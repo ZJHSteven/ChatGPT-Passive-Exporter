@@ -890,6 +890,8 @@ async function main() {
     const result = await sendIncidentNotification(notificationConfig, {
       title: incident.lifecycleClass === 'watchdog-timeout'
         ? 'ChatGPT 运行超时'
+        : incident.lifecycleClass === 'active-zombie'
+          ? 'ChatGPT 活跃僵尸异常'
         : incident.lifecycleClass === 'explicit-interrupted'
           ? 'ChatGPT 运行中断'
           : 'ChatGPT 异常结束',
