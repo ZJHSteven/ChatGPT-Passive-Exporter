@@ -11,6 +11,8 @@ import {
   isConfirmedTerminalTrigger,
   restoreCooldownUntil,
   sanitizeCapturedHeaders,
+  shouldRebuildGuardianAfterHealthFailures,
+  shouldRunDeferredGapRepair,
   shouldStartCatalogWatchdog,
   shouldNotifyIncidentTransition,
   shouldRebuildGuardianForMissingWss,
@@ -200,13 +202,52 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(activeApiAllowed(0, 1000)).toBe(true)
   })
 
-  test('短 WSS reconnect 只需一整页稳定 overlap，startup/guardian 继续深扫描', () => {
+  test('短 WSS/gap repair 只需一整页稳定 overlap，startup/periodic 继续深扫描', () => {
     expect(catalogStableOverlapTarget('wss-reconnect', { pageSize: 28, deepThreshold: 56 })).toBe(28)
+    expect(catalogStableOverlapTarget('gap-repair', { pageSize: 28, deepThreshold: 56 })).toBe(28)
     expect(catalogStableOverlapTarget('startup', { pageSize: 28, deepThreshold: 56 })).toBe(56)
     expect(catalogStableOverlapTarget('periodic', { pageSize: 28, deepThreshold: 84 })).toBe(84)
     expect(catalogStableOverlapTarget('guardian-recover', { pageSize: 28, deepThreshold: 56 })).toBe(56)
     // deepThreshold 即使被错误配置得比一页还小，也不能让深同步比短 gap 更激进。
     expect(catalogStableOverlapTarget('startup', { pageSize: 28, deepThreshold: 1 })).toBe(28)
+  })
+
+  test('Guardian 单次/偶发 CDP 探活失败不会立刻拆页，连续达到阈值才重建', () => {
+    expect(shouldRebuildGuardianAfterHealthFailures(1, 3)).toBe(false)
+    expect(shouldRebuildGuardianAfterHealthFailures(2, 3)).toBe(false)
+    expect(shouldRebuildGuardianAfterHealthFailures(3, 3)).toBe(true)
+    expect(shouldRebuildGuardianAfterHealthFailures(4, 3)).toBe(true)
+    expect(shouldRebuildGuardianAfterHealthFailures(1, 1)).toBe(true)
+  })
+
+  test('deferred gap repair 必须等待 WSS、debounce、最小间隔，并尊重 429 cooldown', () => {
+    const base = {
+      pendingLastAt: 100_000,
+      lastAttemptAt: 0,
+      delayMs: 30_000,
+      minIntervalMs: 600_000,
+      activeSockets: 1,
+      authAvailable: true,
+      cooldownUntil: 0,
+      reconcileInFlight: false,
+    }
+    expect(shouldRunDeferredGapRepair({ ...base, now: 129_999 })).toBe(false)
+    expect(shouldRunDeferredGapRepair({ ...base, now: 130_000 })).toBe(true)
+    expect(shouldRunDeferredGapRepair({ ...base, now: 999_999, activeSockets: 0 })).toBe(false)
+    expect(shouldRunDeferredGapRepair({ ...base, now: 999_999, authAvailable: false })).toBe(false)
+    expect(shouldRunDeferredGapRepair({ ...base, now: 999_999, cooldownUntil: 1_000_000 })).toBe(false)
+    expect(shouldRunDeferredGapRepair({
+      ...base,
+      now: 700_000,
+      pendingLastAt: 650_000,
+      lastAttemptAt: 200_000,
+    })).toBe(false)
+    expect(shouldRunDeferredGapRepair({
+      ...base,
+      now: 800_000,
+      pendingLastAt: 650_000,
+      lastAttemptAt: 200_000,
+    })).toBe(true)
   })
 
   test('WSS 恢复 grace 从本次 socket gap 起算，而不是 Guardian 启动时间', () => {

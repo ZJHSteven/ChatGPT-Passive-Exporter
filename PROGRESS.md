@@ -6,6 +6,7 @@
 - 已实现统一的 deferred gap-repair 队列：Guardian recover 与 WSS reconnect 后只登记 pending；真正 catalog overlap 必须等 WSS 在线、debounce/最小间隔满足且不在 cooldown。repair 失败只保留 pending 并重新延迟，不再冒泡到 Guardian rebuild。
 - 原生 WSS reconnect 已改为只登记 gap repair；Guardian establish 成功后也只登记 repair，不再同步执行多页 catalog。startup reconciliation 即使失败/429 也只记录错误，健康的 Guardian/WSS 保持在线。
 - 主循环已改为连续 3 次 Runtime 探活失败才重建；periodic REST 失败不会再拆 Guardian；429 cooldown 到期只解除冻结并继续 WSS/逐条 body，同步不再自动执行 `cooldown-recover` 深扫。进入真正 rebuild 时保留旧 guardian/window 元数据，下一轮可以先关闭原半死 target，而不是继续复用同一个 target。
+- 已补单测覆盖 Guardian 连续失败阈值、gap-repair 一页 overlap、WSS/认证/cooldown/debounce/最小间隔门控。
 
 # 2026-09-25 Active Zombie / Watchdog 兜底
 
