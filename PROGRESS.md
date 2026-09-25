@@ -1,3 +1,8 @@
+# 2026-09-25 Active Zombie / Watchdog 兜底
+
+- FrameForge 新会话 `6ab63c6c-02f4-83ea-a535-d849e3962d8f` 现场确认：Web DOM 能完整显示前两轮正文，页面自身 `/backend-api/conversations/{id}?num_turns=10...` 多次 HTTP 200 且可返回约 1.7 MB 解压正文；旧执行的 `/backend-api/f/conversation/resume` 返回 404，随后 body 请求又出现连续 429。Archive 此前 `show` 为空不是“服务器正文不存在”，而是这条新 conversation 一直只处于 `catalogActive`、没有 reliable start/complete，因此 daemon 按旧策略从未把它排进 body sync-ready；页面自己的 body 读取并不会自动等价成 Archive 已持久化。
+- 已开始把 catalog active 作为保守 late-start 下界接入 watchdog：新增 `shouldStartCatalogWatchdog()`、`watchdogTriggerForStartType()` 与 `incidentKindForTrigger()` 纯函数，并让 body sync 能区分普通 `watchdog-timeout` 与未来的 `active-zombie` trigger。下一步把 reconciliation 首次 active 真正登记进 `activeTurns`，再补 lifecycle schema 与测试。
+
 ## 2026-09-25 Phase 3 / Phase 4 收口
 
 - 已用本地 ChatGPT Archive 回溯《分析异常终止原因》《分析会话ID关系》《并发异常研究》《Shadowrocket抓包事件通知》，重新确认 Phase 3/4 的历史结论：Phase 4 不自己实现 Sentinel/PoW/Turnstile，而由真实 ChatGPT 页面完成；Guardian 与 Actor 分离；Phase 3 的跨设备目标不是加入手机已经存在的 HTTP SSE，而是 early discovery 后获取 turn_exchange_id，再晚接 conversation-turn-* 的 catchup/live 通道。DevSpace openai/session 保留为工具型 turn 的补充 discovery/watchdog 证据，MITM/Shadowrocket 保留为可选手机传感器。

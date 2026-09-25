@@ -32,6 +32,20 @@ export function isConfirmedTerminalTrigger(trigger: unknown): boolean
 /** 把 conversation list async_status 分类为 active / complete / unknown。 */
 export function classifyCatalogAsyncStatus(value: unknown): 'active' | 'complete' | 'unknown'
 
+/** catalog 首次观察到 active 时，是否应以该时刻建立保守 late-start watchdog。 */
+export function shouldStartCatalogWatchdog(input?: {
+  alreadyActive?: boolean
+  catalogUpdateTime?: unknown
+  archivedUpdateTime?: unknown
+  archivedTerminalState?: unknown
+}): boolean
+
+/** 根据 active 的 startType 选择普通 watchdog 或 catalog active-zombie watchdog。 */
+export function watchdogTriggerForStartType(startType: unknown): 'watchdog:catalog-active-timeout' | 'watchdog:active-timeout'
+
+/** 把同步 trigger 映射成 incident kind。 */
+export function incidentKindForTrigger(trigger: unknown): 'active-zombie' | 'watchdog-timeout' | 'abnormal-terminal'
+
 /**
  * 根据 reconciliation 场景选择需要连续看到多少条稳定旧记录才可停止 catalog 扫描。
  * 短 WSS reconnect 默认一整页；startup/periodic/长盲区继续使用更深阈值。

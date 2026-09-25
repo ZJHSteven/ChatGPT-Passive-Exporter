@@ -1162,6 +1162,7 @@ async function main() {
     const classifyTerminal = shouldClassifyTerminalForTrigger(trigger)
     const confirmedTerminal = isConfirmedTerminalTrigger(trigger)
     const incidentBefore = classifyTerminal ? latestOpenIncident(conversationId) : null
+    const requestedIncidentKind = incidentKindForTrigger(trigger)
     let newIncident = null
     const basePath = `/backend-api/conversations/${encodeURIComponent(conversationId)}`
     const first = await fetchChecked({
@@ -1206,7 +1207,7 @@ async function main() {
         // watchdog 的语义是“已经超时，所以这个 turn 本身就是需要调查的 incident”。
         // COMPLETE 只决定它是不是 confirmed terminal；不能拿“尚未 COMPLETE”把 watchdog 变成空操作。
         allowIncompleteTailIncident: pages === 0 && (confirmedTerminal || trigger.startsWith('watchdog:')),
-        incidentKind: trigger.startsWith('watchdog:') ? 'watchdog-timeout' : 'abnormal-terminal',
+        incidentKind: requestedIncidentKind,
       })
       if (pages === 0) latestDiagnostic = merged.diagnostic
       if (pages === 0 && merged.diagnostic.hasImageGenerationFinal) {
