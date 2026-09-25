@@ -1476,6 +1476,18 @@ async function main() {
     return passiveObservationMatchesReady(entry.capturedAt, readyAt) ? entry : null
   }
 
+  /**
+   * catalog passive page 只有在“同 offset + 同 limit”且仍位于短期缓存窗口内时才能复用。
+   *
+   * 注意：这里不要求它必须发生在 gap-repair 之后，因为 conversation list 的 offset page 本身
+   * 就是一个只读 server snapshot。真正的正确性边界仍由 reconcileCatalog 的连续 stableOverlap
+   * 决定；如果 passive 第 0 页里有变化，扫描会自然继续请求/复用第 1、2…页直到 overlap。
+   */
+  const reusablePassiveCatalogPage = (offset, limit) => {
+    prunePassiveCaches()
+    return passiveCatalogPages.get(`${offset}:${limit}`) || null
+  }
+
   const syncConversation = async (conversationId, trigger) => {
     requireRequestWindow()
     const syncReadyAt = Number(readySince.get(conversationId) || Date.now())
@@ -2032,12 +2044,16 @@ async function main() {
     try {
       while (stableOverlap < requiredStableOverlap) {
         const route = '/backend-api/conversations'
-        const body = await fetchChecked({
-          url: listPath(offset, limit),
-          targetPath: route,
-          targetRoute: route,
-          kind: 'catalog',
-        })
+        const passiveCatalog = reusablePassiveCatalogPage(offset, limit)
+        const body = passiveCatalog
+          ? { items: passiveCatalog.items }
+          : await fetchChecked({
+              url: listPath(offset, limit),
+              targetPath: route,
+              targetRoute: route,
+              kind: 'catalog',
+            })
+        if (passiveCatalog) passiveCatalogPagesReused += 1
         const items = Array.isArray(body.items) ? body.items : []
         if (items.length === 0) break
         for (const item of items) {
@@ -2147,6 +2163,7 @@ async function main() {
       dirtyCount,
       stableOverlap,
       requiredStableOverlap,
+      passivePagesUsed: passiveCatalogPagesReused,
     })
     await writeState()
     void drainDirty()

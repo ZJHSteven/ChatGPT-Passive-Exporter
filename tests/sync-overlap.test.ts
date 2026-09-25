@@ -12,6 +12,30 @@ function local(rows: Array<[string, number, string?]>): Map<string, LocalCatalog
 }
 
 describe('conversation list overlap', () => {
+  test('第一页整页都是新 conversation 时绝不能停止，必须继续到最后变化后的连续稳定 overlap', () => {
+    const knownRows: Array<[string, number]> = []
+    for (let index = 0; index < 28; index += 1) knownRows.push([`old-${index}`, 1000 - index])
+    const known = local(knownRows)
+    let state = initialCatalogOverlapState()
+
+    const firstPage = Array.from({ length: 28 }, (_, index) => ({
+      id: `new-${index}`,
+      title: `new-${index}`,
+      updateTime: 2000 - index,
+    }))
+    const first = evaluateCatalogPage(firstPage, known, state, { requiredStableItems: 28, pageSize: 28 })
+    expect(first.shouldStop).toBe(false)
+    expect(first.nextState.stableTailItems).toBe(0)
+    expect(first.differences).toHaveLength(28)
+    state = first.nextState
+
+    const secondPage = knownRows.map(([id, updateTime]) => ({ id, title: id, updateTime }))
+    const second = evaluateCatalogPage(secondPage, known, state, { requiredStableItems: 28, pageSize: 28 })
+    expect(second.shouldStop).toBe(true)
+    expect(second.stopReason).toBe('stable-overlap')
+    expect(second.nextState.stableTailItems).toBe(28)
+  })
+
   test('新增/更新会重置 overlap，直到后面连续稳定条目达到阈值才停止', () => {
     const known = local([
       ['old-a', 100], ['old-b', 90], ['old-c', 80], ['old-d', 70],

@@ -265,6 +265,8 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 ## 请求头对照
 
 ## 2026-09-25 Guardian / 普通网页第一方请求取证
+- 已补齐 passive catalog 的真正复用：reconcileCatalog 现在会先查同 offset/limit 的页面 native list 缓存，命中则直接用该页继续 stableOverlap 状态机，不再重复 GET 同一页；只有缓存缺页时才主动 fetch。
+- 已补回归测试覆盖最保守边界：第一页 28 条全部为新 conversation 时 stableOverlap 必须保持 0，并继续扫描；只有后续连续 28 条完全稳定后才允许停止。
 - 已实现普通 ChatGPT page 的 CDP passive mirror：只调用 Network.enable，不导航/不 fetch；页面自己的 conversation list/body 200 会被复制，429 会让 daemon 同步进入 cooldown。
 - passive latest body 会立即非破坏性 merge 到 SQLite，同时保存 merge 前 knownMessageIds；cursor body 只缓存，等真正需要该 cursor 时复用，避免自己污染 overlap。
 - cooldown 期间只对隐藏 Guardian 设置 Network.setBlockedURLs，屏蔽 /backend-api/conversations* 与 singular /backend-api/conversation/*；WSS URL 不匹配这些规则，因此官方 WSS 保持在线。普通用户 ChatGPT tabs 不做 block。
