@@ -3,6 +3,7 @@
 - FrameForge 新会话 `6ab63c6c-02f4-83ea-a535-d849e3962d8f` 现场确认：Web DOM 能完整显示前两轮正文，页面自身 `/backend-api/conversations/{id}?num_turns=10...` 多次 HTTP 200 且可返回约 1.7 MB 解压正文；旧执行的 `/backend-api/f/conversation/resume` 返回 404，随后 body 请求又出现连续 429。Archive 此前 `show` 为空不是“服务器正文不存在”，而是这条新 conversation 一直只处于 `catalogActive`、没有 reliable start/complete，因此 daemon 按旧策略从未把它排进 body sync-ready；页面自己的 body 读取并不会自动等价成 Archive 已持久化。
 - 已开始把 catalog active 作为保守 late-start 下界接入 watchdog：新增 `shouldStartCatalogWatchdog()`、`watchdogTriggerForStartType()` 与 `incidentKindForTrigger()` 纯函数，并让 body sync 能区分普通 `watchdog-timeout` 与未来的 `active-zombie` trigger。下一步把 reconciliation 首次 active 真正登记进 `activeTurns`，再补 lifecycle schema 与测试。
 - reconciliation 现在第一次看到 `async_status=3/5` 且没有更可靠 active 记录时，会以该观察时刻登记 `activeTurns`；若同一 catalog update 已经在本地明确 final/interrupted，则不会重复起 watchdog。catalog 后续变成 complete 会同时清理 `catalogActive + activeTurns`；watchdog 到期会根据 `startType` 选择普通 timeout 或 `watchdog:catalog-active-timeout`，并立即排一次 body sync。
+- body sync 一旦拿到明确 `final / client_stopped / interrupted`，会同时清掉该 conversation 的可靠/late-start active 与 catalogActive 记忆，避免已经正常收口的 turn 继续污染 watchdog 队列。
 
 ## 2026-09-25 Phase 3 / Phase 4 收口
 

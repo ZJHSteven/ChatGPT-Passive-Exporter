@@ -1318,7 +1318,10 @@ async function main() {
         syncedConversations += 1
         // 一次 overlap 同步成功以后，本地副本已经追到本次 observation，因此才清 dirty。
         dirty.delete(conversationId)
-        if (result.diagnostic.terminalEvidence !== 'none') activeTurns.delete(conversationId)
+        if (result.diagnostic.terminalEvidence !== 'none') {
+          activeTurns.delete(conversationId)
+          catalogActive.delete(conversationId)
+        }
         await log('conversation synced', {
           conversationId,
           trigger,
