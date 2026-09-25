@@ -1,3 +1,15 @@
+## 2026-09-25 Phase 3 / Phase 4 收口 ExecPlan
+
+- [done] 用 ChatGPT Archive 回溯并合并《分析异常终止原因》《分析会话ID关系》《并发异常研究》《Shadowrocket抓包事件通知》四条历史主线。最终不再寻找“唯一 start 信号”，而是把本机精确 start、跨设备 early discovery、MCP metadata 辅助发现和 gap recovery 分层。
+- [done] Phase 4 定案为 browser-native Actor：Guardian 永远只做稳定监控；Actor 使用真实 ChatGPT 页面与官方 React send handler，Sentinel、prepare、fresh challenge、PoW、Turnstile 和请求头全交给官方前端处理，Archive 只驱动并观察。默认复用 1 个 Actor；真正并发发送时再扩为 2～3 个小型 Actor pool，不自己实现 PoW solver。
+- [done] DevSpace openai/session 定位为 supplementary discovery plane：它是 MCP 侧同 conversation 的稳定匿名键，可通过本地 binding 关联 canonical conversation UUID；但它天然晚于最初 /f/conversation 建链，且无工具 turn 不会出现，因此可作为工具型长任务的 watchdog/dirty 触发证据，不能冒充所有 turn 的精确 start，也不能直接加入手机已经存在的 HTTP SSE。
+- [done] MITM / Shadowrocket 降级为可选手机传感器，不做主架构依赖。若真机可解密并拿到 endpoint/CID，可提供很早的 generation-intent；若受 pinning/QUIC 等限制，只能提供较弱的网络行为候选信号。
+- [in_progress] Phase 3 主线定为 Live Turn Capture + StreamHub：本机 Actor/Chrome 从真实 POST /backend-api/f/conversation 获得精确 start；跨设备优先寻找账户 WSS early event，然后读取最新 body 得到 turn_exchange_id，晚接 conversation-turn-<turn_exchange_id> 的 catchup/live 通道。监控必须由一条账户级 StreamHub 多路复用，不允许“一条 turn 一个 ChatGPT tab”。
+- [done] 修复第一处 discovery 观测盲区：Guardian 虽已订阅 alder-conversations，旧 parser 却只接受 conversations。解析器现同时接受两者，并在 daemon state 新增 eventTopicCounts，可直接区分 conversation-history-update 等事件来自哪个 topic；事件证据等级保持不变，history-update 在真机验证前仍不会启动 watchdog。
+- [pending] 做 Remote Late-Attach Probe：由 iPhone / Firefox / 独立 profile 启动 3～5 分钟工具 turn，Guardian 同时观察 conversations + alder-conversations；捕获首个 early event 后读取最新 body 的 turn_exchange_id，尝试订阅 conversation-turn-*，验证 ACK、catchups 起点、live delta 与 complete。
+- [pending] 为本机 Actor 增加持久 LiveTurn transport observer。优先使用 CDP Network.streamResourceContent(requestId) + Network.dataReceived 读取页面已经收到的 /f/conversation 流，不改写 fetch/Response；只把脱敏后的 transport 元数据、handoff/topic/turn id 与生命周期写入 transient trace，不把认证头或完整用户/工具正文写入控制面日志。
+- [pending] Remote Late-Attach 证实后实现单例 StreamHub：复用 Guardian/account WSS 动态订阅多个 conversation-turn-* topic，保存 offset/catchup/live 顺序并与 Active Turn Recorder / incident watchdog 统一；DevSpace metadata binding 作为工具型跨设备 turn 的补充唤醒源接入同一状态机。
+
 ## 2026-09-24 图片生成归档 / ImageGen incident ExecPlan
 
 - [in_progress] 用《漫画分镜设计》真实会话还原 ImageGen 持久化协议：确认 `role=tool + channel=final + content_type=multimodal_text`、`image_asset_pointer`、`sediment://file_*`、`generation.gen_id`、`notification_channel_id=image_gen` 与 turn lifecycle 的关系，并区分普通 tool/reasoning 尾型。
