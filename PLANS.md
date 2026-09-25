@@ -148,12 +148,21 @@
 6. 核验并测试 catalog overlap：短 gap 的阈值可以是一页（28 条），但停止条件必须是最后一个变化之后连续 28 条稳定记录；若第一页存在新/变更记录，则必须继续翻页直到真正跨入连续 overlap，绝不能固定只抓一页。
 
 ### 执行步骤
-- [in_progress] 取证并记录 native list/body 行为、请求形状、body burst 对应 conversation。
-- [pending] 设计 Guardian native response capture 与 cooldown 屏蔽策略。
-- [pending] 实现可复用的 passive list/body ingestion，避免与 replay 重复请求。
-- [pending] 增加 cooldown slow-start / native request guard，避免一解封就重新打满。
-- [pending] 为 overlap、native capture、429 cooldown 增加单元/集成测试。
-- [pending] 全量测试、typecheck、部署新版 daemon，并观察 WSS/list/body/429 行为。
+- [done] 取证并记录 native list/body 行为、请求形状、body burst 对应 conversation。
+- [done] 设计 Guardian native response capture 与 cooldown 屏蔽策略。
+- [done] 实现可复用的 passive list/body ingestion，避免与 replay 重复请求。
+- [done] 增加 cooldown slow-start / native request guard，避免一解封就重新打满。
+- [done] 为 overlap、native capture、429 cooldown 增加单元/集成测试。
+- [done] 全量测试、typecheck、部署新版 daemon，并观察 WSS/list/body/429 行为。
+
+### 2026-09-26 01:22 部署结果
+- 定向测试：archive-daemon + sync-overlap 共 26/26 通过。
+- 全量：17 个 Vitest 文件 / 108 tests 全通过；tsc --noEmit 通过。
+- 当前 daemon PID 41336，以 --no-reconcile-on-start 启动；启动期间没有主动 catalog/body。
+- Guardian healthFailures=0 / rebuilds=0；WSS activeSockets=3。
+- 已重新订阅 conversations / alder-conversations / resource-updates / app_notifications 四个 topic。
+- 3 个普通 ChatGPT page 已挂 passive CDP observer；启动观察窗口内 native 429=0。
+- passive catalog/body cache、cooldown 内纯被动收口、Guardian HTTPS REST block、恢复 slow-start 均已部署。
 
 ## 当前执行主线（2026-09-06）
 

@@ -265,6 +265,9 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 ## 请求头对照
 
 ## 2026-09-25 Guardian / 普通网页第一方请求取证
+- 2026-09-26 01:22 最终部署：PID 41336，--no-reconcile-on-start；Guardian healthFailures=0 / rebuilds=0，WSS activeSockets=3，四个 topic（conversations / alder-conversations / resource-updates / app_notifications）均已订阅。
+- 当前 3 个普通 ChatGPT page observer 已挂载；启动窗口 passive http429Responses=0、syncErrors=0，且没有 startup catalog reconciliation / body replay。
+- 最终验证：archive-daemon + sync-overlap 定向 26/26；全量 17 files / 108 tests；tsc --noEmit 全通过。
 - Guardian cooldown block 的 URL pattern 已从 *:// 收紧为显式 https://chatgpt.com/backend-api/conversation*；因此无论真实 WSS pathname 如何，只要是 wss:// scheme 就不会被 REST 黑名单误伤。
 - `chatgpt-archive daemon start` 已透传 native-body-grace-ms、passive-catalog-freshness-ms、recovery-probe-gap-ms、recovery-probe-successes，避免 daemon 内支持但 CLI 启动层静默丢参数。
 - deferred gap-repair 的门禁也改成 passive-aware：cooldown/缺 auth 时仍不允许主动 REST，但若已经有“本次 gap 之后”的 native catalog 第 0 页，可以执行一次纯本地 overlap repair；缺后续页时 fetchChecked 会在发网前拒绝并保留 pending。
