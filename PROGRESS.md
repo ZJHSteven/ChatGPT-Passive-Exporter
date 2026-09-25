@@ -7,6 +7,7 @@
 - 原生 WSS reconnect 已改为只登记 gap repair；Guardian establish 成功后也只登记 repair，不再同步执行多页 catalog。startup reconciliation 即使失败/429 也只记录错误，健康的 Guardian/WSS 保持在线。
 - 主循环已改为连续 3 次 Runtime 探活失败才重建；periodic REST 失败不会再拆 Guardian；429 cooldown 到期只解除冻结并继续 WSS/逐条 body，同步不再自动执行 `cooldown-recover` 深扫。进入真正 rebuild 时保留旧 guardian/window 元数据，下一轮可以先关闭原半死 target，而不是继续复用同一个 target。
 - 已补单测覆盖 Guardian 连续失败阈值、gap-repair 一页 overlap、WSS/认证/cooldown/debounce/最小间隔门控。
+- 第一轮定向测试发现“从未 repair 过”被错误套用最小间隔；已修为只有存在真实 lastAttemptAt 时才应用 10 分钟间隔，首次 repair 只受 debounce 约束。
 
 # 2026-09-25 Active Zombie / Watchdog 兜底
 

@@ -385,9 +385,13 @@ export function shouldRunDeferredGapRepair({
   if (!Number.isFinite(Number(pendingLastAt))) return false
   if (Number(activeSockets) <= 0 || !authAvailable || reconcileInFlight) return false
   if (!activeApiAllowed(cooldownUntil, now)) return false
+  const priorAttemptAt = Number(lastAttemptAt)
+  const intervalDueAt = Number.isFinite(priorAttemptAt) && priorAttemptAt > 0
+    ? priorAttemptAt + Math.max(0, Number(minIntervalMs) || 0)
+    : 0
   const dueAt = Math.max(
     Number(pendingLastAt) + Math.max(0, Number(delayMs) || 0),
-    Number(lastAttemptAt || 0) + Math.max(0, Number(minIntervalMs) || 0),
+    intervalDueAt,
   )
   return Number(now) >= dueAt
 }
