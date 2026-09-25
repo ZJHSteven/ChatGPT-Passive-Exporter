@@ -259,6 +259,7 @@ export function shouldClassifyTerminalForTrigger(trigger) {
   return normalized.startsWith('reconcile:periodic')
     || normalized.startsWith('reconcile:wss-reconnect')
     || normalized.startsWith('reconcile:guardian-recover')
+    || normalized.startsWith('reconcile:cooldown-recover')
 }
 
 /**
@@ -742,6 +743,7 @@ async function main() {
   let authHeaders = null
   let lastAuthAt = null
   let cooldownUntil = restoreCooldownUntil(previousDaemonState)
+  let cooldownRecoveryPending = cooldownUntil > Date.now()
   let lastReconcileAt = 0
   let lastWssEventAt = null
   let lastWssCreatedAt = null
@@ -865,6 +867,7 @@ async function main() {
       requestJitterMs,
     },
     cooldownUntil: cooldownUntil || null,
+    cooldownRecoveryPending,
     notification: {
       enabled: Boolean(notificationConfig),
       provider: notificationConfig?.provider ?? null,
@@ -1159,6 +1162,7 @@ async function main() {
 
   const tripCooldown = async (reason) => {
     cooldownUntil = Date.now() + cooldownMinutes * 60_000
+    cooldownRecoveryPending = true
     await log('active API cooldown armed', { reason, cooldownUntil })
   }
 
@@ -1890,6 +1894,14 @@ async function main() {
         && activeApiAllowed(cooldownUntil)
         && Date.now() - lastReconcileAt >= reconcileHours * 3600_000) {
         await reconcileCatalog('periodic')
+      }
+      // 429 circuit breaker 到期后必须补一次主动 overlap：cooldown 期间可能错过了 WSS reconnect
+      // repair、body sync-ready 或 catalog active discovery。若没有这一步，只靠 6h periodic 会把
+      // active-zombie late-start 再额外拖延数小时。
+      if (cooldownRecoveryPending && authHeaders && activeApiAllowed(cooldownUntil)) {
+        cooldownRecoveryPending = false
+        cooldownUntil = 0
+        await reconcileCatalog('cooldown-recover')
       }
       queueWatchdogDiagnostics()
       await drainDirty()
