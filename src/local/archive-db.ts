@@ -2075,6 +2075,36 @@ export class ChatArchiveDb {
     `).iterate(retryBefore, safeLimit)] as unknown as ImageAssetRow[]
   }
 
+  /**
+   * 按 ChatGPT Web 的稳定 file id 找一条仍未落盘的 ImageGen 资产。
+   *
+   * 这个查询专供“被动网络响应捕获”使用：页面已经自然请求了某个
+   * `/backend-api/estuary/content?id=file_*`，daemon 只需要确认该 file id
+   * 确实属于已经归档的 generated-image，随后才能读取这次浏览器已经收到的响应体。
+   *
+   * 与 `listPendingGeneratedImageAssets()` 不同，这里**不应用失败重试冷却**：
+   * 既然浏览器此刻已经自然拿到了响应，就应该立即利用这次机会，不应因为几分钟前
+   * 的 DOM fallback 失败而把一份现成响应丢掉。
+   */
+  findPendingGeneratedImageAssetByFileId(fileId: string): ImageAssetRow | null {
+    const row = this.db.prepare(`
+      SELECT conversation_id AS conversationId, message_id AS messageId, part_index AS partIndex,
+             asset_pointer AS assetPointer, file_id AS fileId, asset_kind AS assetKind,
+             mime_type AS mimeType, expected_size_bytes AS expectedSizeBytes,
+             width, height, gen_id AS genId, parent_gen_id AS parentGenId,
+             turn_exchange_id AS turnExchangeId,
+             first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
+             local_path AS localPath, sha256, actual_size_bytes AS actualSizeBytes,
+             downloaded_at AS downloadedAt, last_download_attempt_at AS lastDownloadAttemptAt,
+             download_error AS downloadError, notification_sent_at AS notificationSentAt
+      FROM image_assets
+      WHERE asset_kind='generated-image' AND downloaded_at IS NULL AND file_id=?
+      ORDER BY first_seen_at, conversation_id, message_id, part_index
+      LIMIT 1
+    `).get(fileId) as ImageAssetRow | undefined
+    return row ?? null
+  }
+
   /** 把成功下载后的本地 blob 信息回写到所有引用同一稳定 pointer 的行。 */
   markImageAssetDownloaded(
     assetPointer: string,
