@@ -293,6 +293,48 @@ export function classifyCatalogAsyncStatus(value) {
 }
 
 /**
+ * catalog 只能告诉我们“扫描这一刻它仍被服务端标成 active”，不能还原真实 POST 时刻。
+ * 但这个观察时刻可以作为一个保守的 late-start 下界：真实 turn 一定不晚于它开始。
+ *
+ * 为避免把已经正常 final、只是 catalog 的 async_status 暂时滞留为 3 的旧 turn 反复拉进
+ * watchdog，这里会比较 catalog.update_time 与 Archive 已落盘的 terminal snapshot。
+ */
+export function shouldStartCatalogWatchdog({
+  alreadyActive = false,
+  catalogUpdateTime = null,
+  archivedUpdateTime = null,
+  archivedTerminalState = null,
+} = {}) {
+  if (alreadyActive) return false
+  const terminal = String(archivedTerminalState ?? '').trim().toLowerCase()
+  const hasTerminal = terminal && terminal !== 'none' && terminal !== 'unknown'
+  const parseTime = (value) => {
+    if (value === null || value === undefined || value === '') return null
+    const numeric = Number(value)
+    return Number.isFinite(numeric) ? numeric : null
+  }
+  const catalogTime = parseTime(catalogUpdateTime)
+  const archivedTime = parseTime(archivedUpdateTime)
+  if (hasTerminal && catalogTime !== null && archivedTime !== null && catalogTime <= archivedTime) return false
+  return true
+}
+
+/** catalog late-start 超时与可靠 start 超时必须保留不同 lifecycle 语义。 */
+export function watchdogTriggerForStartType(startType) {
+  return String(startType || '').startsWith('catalog:')
+    ? 'watchdog:catalog-active-timeout'
+    : 'watchdog:active-timeout'
+}
+
+/** 把 daemon trigger 映射到持久化 incident kind。 */
+export function incidentKindForTrigger(trigger) {
+  const normalized = String(trigger || '').trim().toLowerCase()
+  if (normalized.startsWith('watchdog:catalog-active-timeout')) return 'active-zombie'
+  if (normalized.startsWith('watchdog:')) return 'watchdog-timeout'
+  return 'abnormal-terminal'
+}
+
+/**
  * 为不同 reconciliation 场景选择“已经足够重合”的连续稳定条目数。
  *
  * - 原生 WSS reconnect 的盲区通常只有几秒；此时从最新端向旧端扫描，只要在最后一个差异
