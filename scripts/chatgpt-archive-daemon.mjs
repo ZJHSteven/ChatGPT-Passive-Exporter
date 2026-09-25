@@ -479,6 +479,7 @@ export function conversationIdFromTargetUrl(value) {
 export function estuaryFileIdFromUrl(value) {
   try {
     const url = new URL(String(value || ''))
+    if (url.hostname !== 'chatgpt.com' && !url.hostname.endsWith('.chatgpt.com')) return null
     if (!url.pathname.includes('/backend-api/estuary/content')) return null
     const id = url.searchParams.get('id')
     return id && /^file_[A-Za-z0-9_-]+$/u.test(id) ? id : null
@@ -486,6 +487,19 @@ export function estuaryFileIdFromUrl(value) {
   catch {
     return null
   }
+}
+
+/**
+ * 把 CDP `Network.getResponseBody` 的返回值还原成原始字节。
+ *
+ * JSON/body API 通常是 UTF-8 文本；图片等二进制响应则由 CDP 以 base64 返回。
+ * 这里单独做一个纯函数，避免各监听器自己猜编码，也便于 fixture 回归。
+ */
+export function decodeCdpResponseBodyBytes(result) {
+  const body = String(result?.body || '')
+  return result?.base64Encoded
+    ? Buffer.from(body, 'base64')
+    : Buffer.from(body, 'utf8')
 }
 
 /**
@@ -927,6 +941,9 @@ async function main() {
   const passiveCacheMaxAgeMs = 10 * 60_000
   let passiveBodyResponses = 0
   let passiveCatalogResponses = 0
+  let passiveImageResponses = 0
+  let passiveImageHydrations = 0
+  let passiveImageCaptureErrors = 0
   let passive429Responses = 0
   let passiveBodyPagesReused = 0
   let passiveCatalogPagesReused = 0
@@ -1039,6 +1056,9 @@ async function main() {
         observedPages: passivePageObservers.size,
         bodyResponses: passiveBodyResponses,
         catalogResponses: passiveCatalogResponses,
+        imageResponses: passiveImageResponses,
+        imageHydrations: passiveImageHydrations,
+        imageCaptureErrors: passiveImageCaptureErrors,
         http429Responses: passive429Responses,
         bodyPagesReused: passiveBodyPagesReused,
         catalogPagesReused: passiveCatalogPagesReused,
@@ -1220,6 +1240,44 @@ async function main() {
   }
 
   /**
+   * 把已经拿到的 ImageGen 原始字节写到 SQLite 外部资产目录，并回写校验信息。
+   *
+   * 注意这里的身份来自 conversation body 中的 stable asset pointer/file id；调用方传入的
+   * signed URL（如果存在）只用于当前一次浏览器请求，绝不进入日志、文件名或数据库。
+   */
+  const persistGeneratedImageAssetBytes = async (asset, bytes, observedContentType = '') => {
+    if (!asset?.fileId) throw new Error('generated image asset has no stable file id')
+    if (!Buffer.isBuffer(bytes)) bytes = Buffer.from(bytes)
+    if (asset.expectedSizeBytes !== null && bytes.length !== Number(asset.expectedSizeBytes)) {
+      throw new Error(`size mismatch expected=${asset.expectedSizeBytes} actual=${bytes.length}`)
+    }
+
+    const contentType = String(asset.mimeType || observedContentType || 'image/png')
+      .split(';')[0]
+      .trim()
+      .toLowerCase()
+    if (contentType && !contentType.startsWith('image/')) {
+      throw new Error(`unexpected content-type ${contentType}`)
+    }
+    const extension = contentType === 'image/jpeg' ? 'jpg'
+      : contentType === 'image/webp' ? 'webp'
+        : contentType === 'image/gif' ? 'gif' : 'png'
+    const safeFileId = String(asset.fileId).replace(/[^A-Za-z0-9_-]/gu, '_')
+    const outputPath = path.join(DEFAULT_IMAGE_ASSET_DIR, `${safeFileId}.${extension}`)
+    const temporaryPath = `${outputPath}.tmp-${process.pid}-${Date.now()}`
+    await fs.mkdir(DEFAULT_IMAGE_ASSET_DIR, { recursive: true })
+    await fs.writeFile(temporaryPath, bytes)
+    await fs.rename(temporaryPath, outputPath)
+    const digest = createHash('sha256').update(bytes).digest('hex')
+    archive.markImageAssetDownloaded(asset.assetPointer, {
+      localPath: path.relative(PROJECT_ROOT, outputPath).split(path.sep).join('/'),
+      sha256: digest,
+      actualSizeBytes: bytes.length,
+    })
+    return { outputPath, digest, bytes: bytes.length, contentType }
+  }
+
+  /**
    * 机会式补全 ImageGen 图片本体。
    *
    * 被动边界：
@@ -1312,26 +1370,7 @@ async function main() {
             if (Number(result.size) !== bytes.length) {
               throw new Error(`renderer size mismatch blob=${result.size} decoded=${bytes.length}`)
             }
-            if (asset.expectedSizeBytes !== null && bytes.length !== Number(asset.expectedSizeBytes)) {
-              throw new Error(`size mismatch expected=${asset.expectedSizeBytes} actual=${bytes.length}`)
-            }
-
-            const contentType = String(asset.mimeType || result.contentType || 'image/png').split(';')[0].trim().toLowerCase()
-            if (contentType && !contentType.startsWith('image/')) throw new Error(`unexpected content-type ${contentType}`)
-            const extension = contentType === 'image/jpeg' ? 'jpg'
-              : contentType === 'image/webp' ? 'webp'
-                : contentType === 'image/gif' ? 'gif' : 'png'
-            const safeFileId = String(asset.fileId).replace(/[^A-Za-z0-9_-]/gu, '_')
-            const outputPath = path.join(DEFAULT_IMAGE_ASSET_DIR, `${safeFileId}.${extension}`)
-            const temporaryPath = `${outputPath}.tmp-${process.pid}`
-            await fs.writeFile(temporaryPath, bytes)
-            await fs.rename(temporaryPath, outputPath)
-            const digest = createHash('sha256').update(bytes).digest('hex')
-            archive.markImageAssetDownloaded(asset.assetPointer, {
-              localPath: path.relative(PROJECT_ROOT, outputPath).split(path.sep).join('/'),
-              sha256: digest,
-              actualSizeBytes: bytes.length,
-            })
+            await persistGeneratedImageAssetBytes(asset, bytes, result.contentType)
             imageHydrationSuccesses += 1
             await log('image asset hydrated', {
               conversationId,
@@ -1760,12 +1799,23 @@ async function main() {
     await client.connect()
     await client.send('Network.enable')
     const pendingBodies = new Map()
+    const pendingImages = new Map()
 
     client.on('Network.responseReceived', ({ requestId, response }) => {
       const requestUrl = String(response?.url || '')
+      const fileId = estuaryFileIdFromUrl(requestUrl)
+      const status = Number(response?.status || 0)
+      if (fileId && status >= 200 && status < 300) {
+        // 这里只记 requestId + stable file id + MIME；短期 signed URL 不进状态/日志。
+        pendingImages.set(requestId, {
+          fileId,
+          contentType: String(response?.mimeType || ''),
+          capturedAt: Date.now(),
+        })
+      }
+
       const route = classifyConversationBackendUrl(requestUrl)
       if (!route) return
-      const status = Number(response?.status || 0)
       if (status === 429) {
         passive429Responses += 1
         void tripCooldown(`observed native ${route.kind} HTTP 429`).catch(() => {})
@@ -1776,6 +1826,52 @@ async function main() {
     })
 
     client.on('Network.loadingFinished', ({ requestId }) => {
+      const imageMeta = pendingImages.get(requestId)
+      if (imageMeta) {
+        pendingImages.delete(requestId)
+        void (async () => {
+          // conversation body 通常先于图片请求完成，但 React 可在很短时间内立即发起图片加载。
+          // 给 passive body merge 一个极短竞态窗口；始终只在 SQLite 已确认这是 generated-image
+          // 后才读取二进制响应体，避免顺手收进普通用户附件。
+          let asset = archive.findPendingGeneratedImageAssetByFileId(imageMeta.fileId)
+          for (const delayMs of [100, 300, 700]) {
+            if (asset) break
+            await new Promise(resolve => setTimeout(resolve, delayMs))
+            asset = archive.findPendingGeneratedImageAssetByFileId(imageMeta.fileId)
+          }
+          if (!asset) return
+
+          passiveImageResponses += 1
+          try {
+            const body = await client.send('Network.getResponseBody', { requestId }, 10_000)
+            const bytes = decodeCdpResponseBodyBytes(body)
+            const stored = await persistGeneratedImageAssetBytes(asset, bytes, imageMeta.contentType)
+            passiveImageHydrations += 1
+            await log('passive image asset captured', {
+              conversationId: asset.conversationId,
+              fileId: asset.fileId,
+              bytes: stored.bytes,
+            })
+          }
+          catch (error) {
+            passiveImageCaptureErrors += 1
+            const message = error instanceof Error ? error.message : String(error)
+            archive.markImageAssetDownloadError(asset.assetPointer, `passive capture: ${message}`)
+            await log('passive image asset capture failed', {
+              conversationId: asset.conversationId,
+              fileId: asset.fileId,
+              error: message,
+            })
+          }
+        })().catch(async (error) => {
+          passiveImageCaptureErrors += 1
+          await log('passive image response handler failed', {
+            fileId: imageMeta.fileId,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        })
+      }
+
       const meta = pendingBodies.get(requestId)
       if (!meta) return
       pendingBodies.delete(requestId)
@@ -1800,6 +1896,7 @@ async function main() {
 
     client.on('Network.loadingFailed', ({ requestId }) => {
       pendingBodies.delete(requestId)
+      pendingImages.delete(requestId)
     })
 
     passivePageObservers.set(target.id, { client, url: target.url })
