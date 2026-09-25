@@ -30,12 +30,13 @@
 
 ## 2026-09-24 图片生成归档 / ImageGen incident ExecPlan
 
-- [in_progress] 用《漫画分镜设计》真实会话还原 ImageGen 持久化协议：确认 `role=tool + channel=final + content_type=multimodal_text`、`image_asset_pointer`、`sediment://file_*`、`generation.gen_id`、`notification_channel_id=image_gen` 与 turn lifecycle 的关系，并区分普通 tool/reasoning 尾型。
-- [pending] 被动观察 ChatGPT Web 如何把 `sediment://file_*` 解析成可下载图片：优先利用现有页面/CDP 网络事件与本地 trace，不主动伪造未知请求；只有请求形态完全确认后才考虑受控重放。
-- [pending] 设计 live image asset 持久化：SQLite 只保存结构化元数据/本地相对路径/hash，不把大二进制塞进主库；图片按 conversation/message/part 独立落盘，支持一轮多图、去重、失败重试与 source-missing 语义。
-- [pending] 扩展 rich manifest：不再只保存 `sediment` scheme，而是保留每个 image part 的 pointer、mime、尺寸、字节数、generation/gen_id 等非敏感元数据，并让 `archive show --format resources` 可审计多图。
-- [pending] 增加 ImageGen-aware terminal classification：当同一 turn 已出现最终 image tool node 时，将其识别为“图片生成完成/图片节点”而不是普通 `complete-no-final` error；仍保留 warning/手机通知能力，用于提示“本轮转入图片生成”，并与真正异常 lifecycle 分层。
-- [pending] 增加 fixture、数据库、manifest、incident、下载 resolver 的单元/集成回归；最后用真实漫画会话复放验证 2/4 图场景并更新 PROGRESS。
+- [done] 用《漫画分镜设计》真实会话还原 ImageGen 持久化协议：确认 `role=tool + channel=final + content_type=multimodal_text`、`image_asset_pointer`、`sediment://file_*`、`generation.gen_id`、`notification_channel_id=image_gen` 与 turn lifecycle 的关系，并区分普通 tool/reasoning 尾型。
+- [done] 确认 ChatGPT Web 会把稳定 `sediment://file_*` 解析为 `/backend-api/estuary/content?id=file_*&...&sig=...` 的短期签名 URL；真实页面 fetch 已验证可取得与 body `size_bytes` 一致的 PNG。长期归档不保存 `sig/ts`。
+- [done] 完成 live image asset 持久化：SQLite 只保存结构化元数据/本地相对路径/hash，不把大二进制塞进主库；图片独立落到 `data/assets/chatgpt/`，支持一轮多图、稳定 pointer 去重、SHA-256 与失败重试。
+- [done] 扩展 rich manifest：结构化 `image_asset_pointer` 现在保存为 `generated-image` / `image-asset`，保留 pointer、file id、MIME、尺寸、字节数、generation/gen_id 等非敏感元数据，`archive show --format resources` 可审计多图。
+- [done] 增加 ImageGen-aware terminal classification：完成的 image tool node 复用 `terminalEvidence=final`，同时以 `tailShape=image-generation-final` 独立标记，不再误建普通 `complete-no-final` error；手机另发“图片节点”提示并按 message 去重。
+- [in_progress] 修复真实环境图片本体仍 pending 的最后缺口：当前 DOM hydration 依赖历史图片仍存在于虚拟化 DOM，真实漫画会话 14 个 generated-image 均未自动落盘。改为主路径被动监听已打开 ChatGPT conversation 页自然发生的 `/estuary/content` 响应，直接通过 CDP 读取响应体并匹配 SQLite 的稳定 file id；不滚动、不导航、不重放请求。DOM signed-URL fetch 仅保留 daemon 冷启动后“页面已经加载过图片”的受控 fallback。
+- [pending] 为被动 estuary 响应捕获增加数据库/daemon 回归，重启 daemon 后用真实漫画会话滚动/自然加载一组历史图片验证自动落盘，并确认 `pendingGenerated` 下降、SHA-256/字节数一致后更新 PROGRESS。
 
 ## 2026-09-22 Incident 手机推送收口 ExecPlan
 
