@@ -265,6 +265,7 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 ## 请求头对照
 
 ## 2026-09-25 Guardian / 普通网页第一方请求取证
+- `chatgpt-archive daemon start` 已透传 native-body-grace-ms、passive-catalog-freshness-ms、recovery-probe-gap-ms、recovery-probe-successes，避免 daemon 内支持但 CLI 启动层静默丢参数。
 - deferred gap-repair 的门禁也改成 passive-aware：cooldown/缺 auth 时仍不允许主动 REST，但若已经有“本次 gap 之后”的 native catalog 第 0 页，可以执行一次纯本地 overlap repair；缺后续页时 fetchChecked 会在发网前拒绝并保留 pending。
 - gap-repair 的 10 分钟 minInterval 现在只对真正具备主动请求窗口的 repair 计时；纯 passive repair 不消耗服务端配额，不会因为一次本地尝试把新到达的 native page 锁死 10 分钟。
 - passive 数据现在可在 429 cooldown 内继续做纯本地收口：drainDirty 不再把 cooldown 等同于“什么都不能做”；只要本次 ready 后已有 passive latest body，就可以继续 overlap/terminal merge，只有真正缺页、需要主动 HTTP 时才由 fetchChecked 拒绝。
