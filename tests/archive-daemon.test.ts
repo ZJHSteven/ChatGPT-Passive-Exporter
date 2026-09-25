@@ -22,7 +22,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(estuaryFileIdFromUrl('https://chatgpt.com/backend-api/estuary/content?id=file_abc123&ts=1&sig=temporary')).toBe('file_abc123')
     expect(estuaryFileIdFromUrl('https://chatgpt.com/backend-api/conversations/file_abc123')).toBeNull()
   })
-  test('从 conversations topic 中提取 conversation id 与事件类型', () => {
+  test('从 conversations / alder-conversations topic 中提取 conversation id、事件类型与来源 topic', () => {
     const frame = JSON.stringify([
       {
         type: 'message',
@@ -62,7 +62,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       },
       {
         type: 'message',
-        topic_id: 'conversations',
+        topic_id: 'alder-conversations',
         payload: {
           type: 'conversation-history-update',
           payload: {
@@ -73,18 +73,22 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     ])
 
     expect(extractConversationEvents(frame)).toEqual([
-      { conversationId: 'conversation-1', type: 'conversation-turn-complete', updateType: null },
-      { conversationId: 'conversation-2', type: 'conversation-created', updateType: null },
-      { conversationId: 'conversation-3', type: 'conversation-update', updateType: 'async-task-update-message' },
-      { conversationId: 'conversation-4', type: 'conversation-history-update', updateType: null },
+      { conversationId: 'conversation-1', type: 'conversation-turn-complete', updateType: null, topic: 'conversations' },
+      { conversationId: 'conversation-2', type: 'conversation-created', updateType: null, topic: 'conversations' },
+      { conversationId: 'conversation-3', type: 'conversation-update', updateType: 'async-task-update-message', topic: 'conversations' },
+      { conversationId: 'conversation-4', type: 'conversation-history-update', updateType: null, topic: 'alder-conversations' },
     ])
   })
 
-  test('忽略非 conversations topic 与非法帧', () => {
+  test('忽略非 conversation catalogue topic 与非法帧', () => {
     expect(extractConversationEvents('not-json')).toEqual([])
     expect(extractConversationEvents(JSON.stringify({
       topic_id: 'app_notifications',
       payload: { type: 'conversation-turn-complete', conversation_id: 'wrong-topic' },
+    }))).toEqual([])
+    expect(extractConversationEvents(JSON.stringify({
+      topic_id: 'resource-updates',
+      payload: { type: 'conversation-history-update', conversation_id: 'wrong-topic-2' },
     }))).toEqual([])
   })
 

@@ -456,14 +456,20 @@ export function extractConversationEvents(payloadData) {
         : typeof candidate.event_type === 'string' ? candidate.event_type : null
       // `message` 是 WSS 总线 envelope，不是 conversation 业务事件本身。
       const isConversationEvent = typeof type === 'string' && type.startsWith('conversation-')
-      if ((topic === 'conversations' || inheritedTopic === 'conversations') && isConversationEvent) {
+      // 2026-09-25：当前 Guardian 会同时订阅 conversations 与 alder-conversations。
+      // 旧 parser 只接受前者，因此后者即使收到 conversation-history-update 也会被业务层静默丢掉。
+      // 这里仅扩展“观察面”；history-update 的证据等级不变，真机时序验证前仍不能直接启动 watchdog。
+      const effectiveTopic = topic ?? inheritedTopic
+      const isConversationTopic = effectiveTopic === 'conversations'
+        || effectiveTopic === 'alder-conversations'
+      if (isConversationTopic && isConversationEvent) {
         const conversationId = findStringField(candidate, ['conversation_id', 'conversationId'])
         const updateType = findStringField(candidate, ['update_type', 'updateType'])
         if (!conversationId) continue
         const key = `${conversationId}:${type}:${updateType || ''}`
         if (!seen.has(key)) {
           seen.add(key)
-          events.push({ conversationId, type, updateType })
+          events.push({ conversationId, type, updateType, topic: effectiveTopic })
         }
       }
     }
@@ -703,6 +709,8 @@ async function main() {
   const activeTurns = new Map()
   const turnRecorder = new ActiveTurnRecorder(turnTracePath)
   const eventCounts = new Map()
+  // eventCounts 继续按 type 聚合，保持现有状态输出兼容；另加 topic 维度用于 Phase 3 取证。
+  const eventTopicCounts = new Map()
   let syncInFlight = false
   let reconcileInFlight = false
   let syncedConversations = 0
@@ -748,6 +756,7 @@ async function main() {
       lastReconnectDelayMs: lastWssReconnectDelayMs,
       reconnectGraceMs: wssReconnectGraceMs,
       eventCounts: Object.fromEntries(eventCounts),
+      eventTopicCounts: Object.fromEntries(eventTopicCounts),
       generation: wssGeneration,
       sentFrames: wssSentFrames,
       receivedFrames: wssReceivedFrames,
@@ -1339,6 +1348,7 @@ async function main() {
       conversationId: event.conversationId,
       type: event.type,
       updateType: event.updateType || null,
+      topic: event.topic || null,
     })
     markDirty(event.conversationId, `wss:${event.type}`)
     if (behavior.startsTurn) {
@@ -1617,13 +1627,16 @@ async function main() {
       for (const event of events) {
         lastWssEventAt = Date.now()
         eventCounts.set(event.type, (eventCounts.get(event.type) || 0) + 1)
+        const topicCountKey = `${event.topic || 'unknown'}:${event.type}`
+        eventTopicCounts.set(topicCountKey, (eventTopicCounts.get(topicCountKey) || 0) + 1)
         observeConversationEvent(event)
       }
       void summaryPromise.then(async (summary) => {
         const controls = Array.isArray(summary.controls) ? summary.controls : []
         const isConversationMessage = controls.some(control => {
           const topic = control.topic_id ?? control.topic
-          return control.type === 'message' && topic === 'conversations'
+          return control.type === 'message'
+            && (topic === 'conversations' || topic === 'alder-conversations')
         })
         if (isConversationMessage && events.length === 0) {
           wssUnparsedConversationFrames += 1
