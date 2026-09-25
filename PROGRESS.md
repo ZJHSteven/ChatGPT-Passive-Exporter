@@ -2,6 +2,7 @@
 
 - 已用本地 ChatGPT Archive 回溯《分析异常终止原因》《分析会话ID关系》《并发异常研究》《Shadowrocket抓包事件通知》，重新确认 Phase 3/4 的历史结论：Phase 4 不自己实现 Sentinel/PoW/Turnstile，而由真实 ChatGPT 页面完成；Guardian 与 Actor 分离；Phase 3 的跨设备目标不是加入手机已经存在的 HTTP SSE，而是 early discovery 后获取 turn_exchange_id，再晚接 conversation-turn-* 的 catchup/live 通道。DevSpace openai/session 保留为工具型 turn 的补充 discovery/watchdog 证据，MITM/Shadowrocket 保留为可选手机传感器。
 - 发现并修复一个直接影响 Remote Late-Attach 实验的观测盲区：正式 Guardian 已经订阅 alder-conversations，但 daemon 的 extractConversationEvents() 仍只接受 conversations，导致 alder 业务事件即使到达也不会进入 event parser。现在两种 catalogue topic 都会解析，并给每个事件保留来源 topic；daemon state 同时新增 eventTopicCounts，以后可直接判断 conversation-history-update 来自哪个订阅面。该改动只扩展观测面，不把 history-update 擅自升级为可靠 turn start。
+- 回归与部署完成：定向 archive-daemon 10/10 tests、全量 Vitest 17 files / 98 tests、TypeScript typecheck 全部通过；正式 daemon 已重启到新代码，Guardian 恢复 3 条 WSS 连接并重新订阅 conversations、alder-conversations、app_notifications、resource-updates，state 已可见 eventTopicCounts。重启后尚无新的 conversation 业务 frame，因此 topic 计数当前为空，后续真机 turn 可直接作为 Remote Late-Attach 取证样本。
 
 ## 2026-09-24 ImageGen 归档适配
 
