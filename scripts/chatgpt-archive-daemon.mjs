@@ -613,26 +613,31 @@ async function ensureGuardian(cdpHttp) {
   let target = targets.find(isGuardianTarget)
   const { browser, version } = await connectBrowser(cdpHttp)
   let created = false
+  let page = null
+  let runtimeAlreadyEnabled = false
 
   // Auto Tab Discard 等扩展可能留下“URL 仍像 Guardian、renderer 已经不响应”的半死 target。
   // 先做一次极短的 Runtime 探活；失败就从 browser-level 关闭 target，再创建全新 Guardian。
+  // 探活成功后直接复用这一条 CDP session 作为正式 page client，避免马上 detach 后又新建
+  // 第二条 session 再做一次 Runtime.enable。故障日志里反复出现的 created=false +
+  // Runtime.enable timeout，正符合“旧 target 探活成功、第二次 attach 卡死”的模式。
   if (target) {
-    let probe = null
     try {
-      probe = new CdpClient(target.webSocketDebuggerUrl)
-      await probe.connect()
-      await probe.send('Runtime.enable', {}, 3000)
-      await probe.send('Runtime.evaluate', {
+      page = new CdpClient(target.webSocketDebuggerUrl)
+      await page.connect()
+      await page.send('Runtime.enable', {}, 3000)
+      runtimeAlreadyEnabled = true
+      await page.send('Runtime.evaluate', {
         expression: 'document.readyState',
         returnByValue: true,
       }, 3000)
     }
     catch {
+      page?.close()
+      page = null
+      runtimeAlreadyEnabled = false
       await browser.send('Target.closeTarget', { targetId: target.id }).catch(() => {})
       target = null
-    }
-    finally {
-      probe?.close()
     }
   }
 
@@ -646,11 +651,13 @@ async function ensureGuardian(cdpHttp) {
     created = true
   }
 
-  const page = new CdpClient(target.webSocketDebuggerUrl)
-  await page.connect()
+  if (!page) {
+    page = new CdpClient(target.webSocketDebuggerUrl)
+    await page.connect()
+  }
   await page.send('Network.enable')
   await page.send('Page.enable')
-  await page.send('Runtime.enable')
+  if (!runtimeAlreadyEnabled) await page.send('Runtime.enable')
   await page.send('Performance.enable')
   await page.send('Page.setLifecycleEventsEnabled', { enabled: true })
 
