@@ -128,6 +128,32 @@
 
 构建一个尽量不主动调用 ChatGPT 私有后端 API 的聊天归档工具：监听页面自己已经发出的请求并复制响应，随后将不同年代/不同接口形态的 ChatGPT conversation payload 归一化，再导出可读 Markdown、原始 JSON 和附件/富媒体清单。
 
+## 2026-09-25 Guardian 第一方请求复用与 429 收口
+
+### 背景
+- 23:09 以后新版 daemon 自身一度没有主动 catalog/body 请求，但隐藏 Guardian 页仍出现 /backend-api/conversations 429。
+- 通过 CDP PerformanceResourceTiming 与 daemon WSS 日志对齐，确认 Guardian 完整 ChatGPT 前端会在收到 conversation-turn-complete 后主动刷新 conversation list；普通 ChatGPT 页还会并发预取多个 conversation body，并在部分请求 429 后很快重发。
+- 因此当前 passive/WSS-first 仍存在一个此前未计入的第一方请求源：Guardian 页面自己的前端网络行为。
+
+### 目标
+1. 把本轮 list/body 429、WSS→list 对齐、普通页 body 并发预取等实测证据写入 PROGRESS.md，明确区分“页面 native 请求”和 daemon replay。
+2. 比较 native conversation-list/body 与 daemon replay 的 URL、headers、触发时点和 payload，回答服务端是否可区分，以及哪些 native 响应可以安全复用。
+3. 追查 23:37 普通页三条 body burst 的 conversation 身份和触发来源，确认它们是否由最近 complete、页面导航/预取、侧栏可见项或其它状态驱动。
+4. Guardian 尽量恢复真正 passive：
+   - 优先监听并复用页面自己已经产生的 list/body 响应；
+   - 在 429 cooldown 期间禁止 Guardian 自己的无关 sidebar/list 请求继续绕过 daemon circuit breaker；
+   - 保留 WSS 通道，不因 REST 冷静期主动拆页或断 WSS。
+5. 只有在 native 响应无法覆盖完整性契约时才保留主动 fallback；主动 fallback 必须低频、单并发、带 slow-start。
+6. 核验并测试 catalog overlap：短 gap 的阈值可以是一页（28 条），但停止条件必须是最后一个变化之后连续 28 条稳定记录；若第一页存在新/变更记录，则必须继续翻页直到真正跨入连续 overlap，绝不能固定只抓一页。
+
+### 执行步骤
+- [in_progress] 取证并记录 native list/body 行为、请求形状、body burst 对应 conversation。
+- [pending] 设计 Guardian native response capture 与 cooldown 屏蔽策略。
+- [pending] 实现可复用的 passive list/body ingestion，避免与 replay 重复请求。
+- [pending] 增加 cooldown slow-start / native request guard，避免一解封就重新打满。
+- [pending] 为 overlap、native capture、429 cooldown 增加单元/集成测试。
+- [pending] 全量测试、typecheck、部署新版 daemon，并观察 WSS/list/body/429 行为。
+
 ## 当前执行主线（2026-09-06）
 
 - 用户侧正式 CLI 名称定为 **ChatGPT Archive**，可执行命令为 `chatgpt-archive`。旧 `npm run archive` 仅作为开发兼容别名保留，不再作为产品名称。
