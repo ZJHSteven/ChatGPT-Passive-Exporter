@@ -170,6 +170,13 @@ describe('ChatArchiveDb', () => {
         assetKind: 'generated-image',
         mimeType: 'image/png',
       })
+      expect(db.findPendingGeneratedImageAssetByFileId('file_00000000000000000000000000000001')).toMatchObject({
+        conversationId: 'imagegen-conversation',
+        messageId: 'img-tool',
+        partIndex: 0,
+        expectedSizeBytes: 1001,
+      })
+      expect(db.findPendingGeneratedImageAssetByFileId('file_not_in_archive')).toBeNull()
 
       const event = db.getImageGenerationEvent('imagegen-conversation', 'turn-image')
       expect(event).toMatchObject({ messageId: 'img-tool', imageCount: 2, notificationSentAt: null })
@@ -187,6 +194,10 @@ describe('ChatArchiveDb', () => {
         sha256: 'abc123',
         actualSizeBytes: 1001,
         downloadedAt: 2000,
+      })
+      expect(db.findPendingGeneratedImageAssetByFileId('file_00000000000000000000000000000001')).toBeNull()
+      expect(db.findPendingGeneratedImageAssetByFileId('file_00000000000000000000000000000002')).toMatchObject({
+        partIndex: 1,
       })
       db.markImageGenerationNotificationSent('imagegen-conversation', 'img-tool', 3000)
       expect(db.listPendingGeneratedImageAssets()).toHaveLength(1)
