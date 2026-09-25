@@ -7,6 +7,7 @@ import {
   effectiveActiveRequestGap,
   classifyConversationEvent,
   conversationIdFromTargetUrl,
+  decodeCdpResponseBodyBytes,
   estuaryFileIdFromUrl,
   extractConversationEvents,
   incidentKindForTrigger,
@@ -31,7 +32,21 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(conversationIdFromTargetUrl('https://example.com/c/not-chatgpt')).toBeNull()
 
     expect(estuaryFileIdFromUrl('https://chatgpt.com/backend-api/estuary/content?id=file_abc123&ts=1&sig=temporary')).toBe('file_abc123')
+    expect(estuaryFileIdFromUrl('https://sub.chatgpt.com/backend-api/estuary/content?id=file_abc123&ts=1')).toBe('file_abc123')
     expect(estuaryFileIdFromUrl('https://chatgpt.com/backend-api/conversations/file_abc123')).toBeNull()
+    expect(estuaryFileIdFromUrl('https://example.com/backend-api/estuary/content?id=file_abc123')).toBeNull()
+  })
+
+  test('CDP 图片响应按 base64 标记无损还原二进制', () => {
+    const binary = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff])
+    expect(decodeCdpResponseBodyBytes({
+      body: binary.toString('base64'),
+      base64Encoded: true,
+    })).toEqual(binary)
+    expect(decodeCdpResponseBodyBytes({
+      body: 'plain text',
+      base64Encoded: false,
+    })).toEqual(Buffer.from('plain text', 'utf8'))
   })
   test('从 conversations / alder-conversations topic 中提取 conversation id、事件类型与来源 topic', () => {
     const frame = JSON.stringify([
