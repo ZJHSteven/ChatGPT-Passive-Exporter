@@ -152,8 +152,8 @@ DevSpace audit metadata 是 execution plane 的稳定匿名键，通常在首次
 
 | 日期 | Conversation / 聊天 | 主要现象 | 当前归类 |
 |---|---|---|---|
-| 2026-09-20 | `6aae9979-dec8-83ea-a6b4-956e57cbd7f1`《自动化课程下载平台》 | 最后工具已结束约 10 小时，catalog 仍 `async_status=3`；UI 长期 Stop，后来变 timeout | `active-zombie` 原始 Ground Truth |
-| 2026-09-21 | `6aace9f9-bc30-83ea-89d7-eb34002caa10`《迁移刷机方案》 | WSS complete/no-final；body 停住后 DevSpace 仍继续数分钟 | `complete-no-final` + `ghost-execution`；tail 分别含 `tool-call-open` / `context-only-no-output` |
+| 2026-09-20 | `6aae9979-dec8-83ea-be9b-7a0f568cd020`《自动化课程下载平台》 | 最后工具已结束约 10 小时，catalog 仍 `async_status=3`；UI 长期 Stop，后来变 timeout | `active-zombie` 原始 Ground Truth |
+| 2026-09-21 | `6aace9f9-bc30-83e9-89d7-eb34002caa10`《迁移刷机方案》 | WSS complete/no-final；body 停住后 DevSpace 仍继续数分钟 | `complete-no-final` + `ghost-execution`；tail 分别含 `tool-call-open` / `context-only-no-output` |
 | 2026-09-21 | `6ab0eeb8-fc9c-83ea-ac21-ddf0b39e9d3b`《异常类型对比分析》 | messages 比 current_node 更靠后；后续又出现长期 active | head/messages divergence；另有 active-zombie 样本 |
 | 2026-09-22 | `6ab15cc0-f730-83ea-8e28-6472dbe176ab`《隐藏节点异常分析》 | canonical 有 491 节点，UI 只显示 user + timeout error | `ui-hidden-canonical-tail` |
 | 2026-09-24 | `6ab3d7db-3f04-83e9-bad2-8abd105c3898`《漫画分镜设计》 | 没有观察到 complete/start，Bark 不触发；另有整页 virtualizer 空白 | `no-complete/no-final` discovery blind spot + `ui-virtualizer-blank-view` |
