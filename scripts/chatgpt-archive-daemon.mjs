@@ -351,6 +351,48 @@ export function activeApiAllowed(cooldownUntil, now = Date.now()) {
 }
 
 /**
+ * Guardian 的一次 Runtime 探活超时不等价于 renderer 已经死亡。
+ *
+ * Chrome 在后台/隐藏窗口、CPU 突发繁忙、多个 CDP client 同时工作时都可能出现短暂抖动。
+ * 只有连续失败达到阈值才允许进入“拆页重建”路径；任意一次成功都会由调用方把计数清零。
+ */
+export function shouldRebuildGuardianAfterHealthFailures(consecutiveFailures, threshold = 3) {
+  const failures = Math.max(0, Math.trunc(Number(consecutiveFailures) || 0))
+  const safeThreshold = Math.max(1, Math.trunc(Number(threshold) || 1))
+  return failures >= safeThreshold
+}
+
+/**
+ * 判断 deferred gap repair 是否已经可以发起一次低频 catalog overlap。
+ *
+ * 这层门控把“恢复 WSS”和“主动扫 REST”彻底拆开：
+ * - 必须已经有 WSS，说明被动监听先恢复成功；
+ * - 最近一次 recover/reconnect 后先等待 debounce 窗口；
+ * - 与上一次 gap-repair 尝试之间还要满足全局最小间隔；
+ * - 429 cooldown、缺认证、已有 reconciliation 时一律不主动请求。
+ */
+export function shouldRunDeferredGapRepair({
+  now,
+  pendingLastAt,
+  lastAttemptAt = 0,
+  delayMs,
+  minIntervalMs,
+  activeSockets,
+  authAvailable,
+  cooldownUntil,
+  reconcileInFlight,
+}) {
+  if (!Number.isFinite(Number(pendingLastAt))) return false
+  if (Number(activeSockets) <= 0 || !authAvailable || reconcileInFlight) return false
+  if (!activeApiAllowed(cooldownUntil, now)) return false
+  const dueAt = Math.max(
+    Number(pendingLastAt) + Math.max(0, Number(delayMs) || 0),
+    Number(lastAttemptAt || 0) + Math.max(0, Number(minIntervalMs) || 0),
+  )
+  return Number(now) >= dueAt
+}
+
+/**
  * 为不同 reconciliation 场景选择“已经足够重合”的连续稳定条目数。
  *
  * - 原生 WSS reconnect 的盲区通常只有几秒；此时从最新端向旧端扫描，只要在最后一个差异
@@ -364,7 +406,7 @@ export function activeApiAllowed(cooldownUntil, now = Date.now()) {
 export function catalogStableOverlapTarget(reason, { pageSize = 28, deepThreshold = 56 } = {}) {
   const safePageSize = Math.max(1, Math.trunc(pageSize))
   const safeDeepThreshold = Math.max(safePageSize, Math.trunc(deepThreshold))
-  return reason === 'wss-reconnect' ? safePageSize : safeDeepThreshold
+  return reason === 'wss-reconnect' || reason === 'gap-repair' ? safePageSize : safeDeepThreshold
 }
 
 /**

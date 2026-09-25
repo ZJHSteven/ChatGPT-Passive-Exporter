@@ -1,3 +1,7 @@
+## 2026-09-25 Guardian 自愈与 429 风暴修复
+
+- 已加入 Guardian 连续健康失败阈值与 deferred gap-repair 的纯函数门控；短 gap repair 只要求一页稳定 overlap，为后续把 WSS 恢复和 REST 扫描解耦做基础。
+
 # 2026-09-25 Active Zombie / Watchdog 兜底
 
 - 按本轮约定把 daemon 的默认 watchdog 从历史 35 分钟收回到 **30 分钟**；命令行 `--watchdog-minutes` 仍可覆盖。catalog late-start 的起点天然晚于真实 POST，因此这一修改不会改变“late-start 只会延迟、不可能提前”的证据边界。
