@@ -1434,18 +1434,21 @@ async function main() {
 
   const syncConversation = async (conversationId, trigger) => {
     requireRequestWindow()
+    const syncReadyAt = Number(readySince.get(conversationId) || Date.now())
     const classifyTerminal = shouldClassifyTerminalForTrigger(trigger)
     const confirmedTerminal = isConfirmedTerminalTrigger(trigger)
     const incidentBefore = classifyTerminal ? latestOpenIncident(conversationId) : null
     const requestedIncidentKind = incidentKindForTrigger(trigger)
     let newIncident = null
     const basePath = `/backend-api/conversations/${encodeURIComponent(conversationId)}`
-    const first = await fetchChecked({
+    const passiveFirst = reusablePassiveBodyPage(conversationId, null, syncReadyAt)
+    const first = passiveFirst?.payload ?? await fetchChecked({
       url: `${basePath}?include_has_versions=true&num_turns=10`,
       targetPath: basePath,
       targetRoute: '/backend-api/conversations/{conversation_id}',
       kind: 'body',
     })
+    if (passiveFirst) passiveBodyPagesReused += 1
     if (!Array.isArray(first.messages)) throw new Error(`conversation ${conversationId} latest body has no messages[]`)
 
     const baseMeta = {
@@ -1456,8 +1459,10 @@ async function main() {
       update_time: first.update_time,
     }
     let pagePayload = first
+    let passivePageEntry = passiveFirst
     let cursor = null
     let pages = 0
+    let passivePagesUsed = passiveFirst ? 1 : 0
     let newMessages = 0
     let latestDiagnostic = null
     let imageGenerationEvent = null
@@ -1470,7 +1475,9 @@ async function main() {
         }
       }
       const ids = (normalized.messages || []).map(message => message?.id).filter(id => typeof id === 'string')
-      const knownBefore = archive.knownMessageIds(conversationId, ids)
+      const knownBefore = passivePageEntry?.knownBeforeIds
+        ? new Set(passivePageEntry.knownBeforeIds)
+        : archive.knownMessageIds(conversationId, ids)
       const allKnownBefore = ids.length > 0 && ids.every(id => knownBefore.has(id))
       const merged = archive.mergeLiveMessagesPage(normalized, {
         observedAt: Date.now(),
@@ -1556,6 +1563,7 @@ async function main() {
           newIncident,
           imageGenerationEvent,
           exactMapping,
+          passivePagesUsed,
         }
       }
       const nextCursor = pageInfo.start_cursor
@@ -1564,12 +1572,17 @@ async function main() {
       }
       cursor = nextCursor
       const messagePath = `${basePath}/messages`
-      pagePayload = await fetchChecked({
+      passivePageEntry = reusablePassiveBodyPage(conversationId, cursor, syncReadyAt)
+      pagePayload = passivePageEntry?.payload ?? await fetchChecked({
         url: `${messagePath}?before=${encodeURIComponent(cursor)}&include_has_versions=true&num_turns=10`,
         targetPath: messagePath,
         targetRoute: '/backend-api/conversations/{conversation_id}/messages',
         kind: 'body',
       })
+      if (passivePageEntry) {
+        passiveBodyPagesReused += 1
+        passivePagesUsed += 1
+      }
       if (!Array.isArray(pagePayload.messages)) throw new Error(`conversation ${conversationId} cursor page has no messages[]`)
     }
   }
@@ -1608,6 +1621,7 @@ async function main() {
           pages: result.pages,
           newMessages: result.newMessages,
           exactMapping: result.exactMapping,
+          passivePagesUsed: result.passivePagesUsed,
           terminal: result.diagnostic.terminalEvidence,
           tail: result.diagnostic.tailShape,
         })

@@ -263,6 +263,8 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 ## 请求头对照
 
 ## 2026-09-25 Guardian / 普通网页第一方请求取证
+- syncConversation 已改为 native-first：本次 complete 后若页面已自然取得 latest body，就直接复用；继续翻历史时若相同 before cursor 已被页面自然取过，也直接复用。日志新增 passivePagesUsed，可直接核算省掉的 replay。
+- overlap 判定使用 passive capture 当时保存的 knownBeforeIds，而不是被 passive merge 后的当前 SQLite 状态，防止“自己先写入→误判整页早已 overlap”。
 - 新增 passive body cache 读取规则：latest page 必须与本次 ready 时点匹配；cursor page 按精确 before cursor 复用，并统一做 10 分钟缓存清理。
 - daemon runtime 已预留 passive body/catalog cache、普通 ChatGPT page observer 与命中/复用计数；state.json 后续可直接看到 native response 捕获量、429 观察量、实际替代 replay 的页数和 Guardian REST block 状态。
 - 已修复 ready delay 只靠 setTimeout、主循环仍可提前 drain 的旧问题：新增 readySince/readyNotBefore 硬门槛；WSS complete 默认给 native body 3 秒 grace，再决定是否主动 replay。
