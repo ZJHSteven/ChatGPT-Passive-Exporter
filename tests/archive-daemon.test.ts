@@ -273,7 +273,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shouldRebuildGuardianAfterHealthFailures(1, 1)).toBe(true)
   })
 
-  test('deferred gap repair 必须等待 WSS、debounce、最小间隔，并尊重 429 cooldown', () => {
+  test('deferred gap repair 必须等待 WSS/debounce；cooldown 时仅允许已有 passive catalog 的纯被动 repair', () => {
     const base = {
       pendingLastAt: 100_000,
       lastAttemptAt: 0,
@@ -289,6 +289,13 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shouldRunDeferredGapRepair({ ...base, now: 999_999, activeSockets: 0 })).toBe(false)
     expect(shouldRunDeferredGapRepair({ ...base, now: 999_999, authAvailable: false })).toBe(false)
     expect(shouldRunDeferredGapRepair({ ...base, now: 999_999, cooldownUntil: 1_000_000 })).toBe(false)
+    expect(shouldRunDeferredGapRepair({
+      ...base,
+      now: 999_999,
+      authAvailable: false,
+      cooldownUntil: 1_000_000,
+      passiveCatalogAvailable: true,
+    })).toBe(true)
     expect(shouldRunDeferredGapRepair({
       ...base,
       now: 700_000,

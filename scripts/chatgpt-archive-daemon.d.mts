@@ -69,6 +69,7 @@ export function shouldRunDeferredGapRepair(input: {
   authAvailable: boolean
   cooldownUntil: unknown
   reconcileInFlight: boolean
+  passiveCatalogAvailable?: boolean
 }): boolean
 
 /**

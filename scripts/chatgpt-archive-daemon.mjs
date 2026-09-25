@@ -382,10 +382,14 @@ export function shouldRunDeferredGapRepair({
   authAvailable,
   cooldownUntil,
   reconcileInFlight,
+  passiveCatalogAvailable = false,
 }) {
   if (!Number.isFinite(Number(pendingLastAt))) return false
-  if (Number(activeSockets) <= 0 || !authAvailable || reconcileInFlight) return false
-  if (!activeApiAllowed(cooldownUntil, now)) return false
+  if (Number(activeSockets) <= 0 || reconcileInFlight) return false
+  const activeWindowAvailable = Boolean(authAvailable) && activeApiAllowed(cooldownUntil, now)
+  // cooldown/缺 auth 只禁止主动 REST；如果页面已经自然给了本次 gap 之后的 catalog 第 0 页，
+  // 仍允许进入一次纯被动 repair。若后续缺页，fetchChecked 会在真正发网前拒绝并保留 pending。
+  if (!activeWindowAvailable && !passiveCatalogAvailable) return false
   const priorAttemptAt = Number(lastAttemptAt)
   const intervalDueAt = Number.isFinite(priorAttemptAt) && priorAttemptAt > 0
     ? priorAttemptAt + Math.max(0, Number(minIntervalMs) || 0)
@@ -2241,6 +2245,8 @@ async function main() {
   const maybeRunGapRepair = async () => {
     if (!pendingGapRepair) return
     const now = Date.now()
+    const passiveSeed = reusablePassiveCatalogPage(0, 28, Number(pendingGapRepair.lastAt || now))
+    const activeWindowAvailable = Boolean(authHeaders) && activeApiAllowed(cooldownUntil, now)
     if (!shouldRunDeferredGapRepair({
       now,
       pendingLastAt: pendingGapRepair.lastAt,
@@ -2251,10 +2257,12 @@ async function main() {
       authAvailable: Boolean(authHeaders),
       cooldownUntil,
       reconcileInFlight,
+      passiveCatalogAvailable: Boolean(passiveSeed),
     })) return
 
     const repair = pendingGapRepair
-    lastGapRepairAttemptAt = now
+    // 10 分钟 minInterval 保护的是主动 REST 频率；纯 passive repair 不消耗服务端配额。
+    if (activeWindowAvailable) lastGapRepairAttemptAt = now
     try {
       await reconcileCatalog('gap-repair')
       pendingGapRepair = null
