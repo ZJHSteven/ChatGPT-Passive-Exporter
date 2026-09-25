@@ -52,6 +52,25 @@ export function restoreCooldownUntil(previousState: unknown, now?: number): numb
 /** cooldown 只冻结主动 API；返回 false 时 Guardian/WSS 仍应继续工作。 */
 export function activeApiAllowed(cooldownUntil: unknown, now?: number): boolean
 
+/** 单次 CDP 健康探活失败不立即拆 Guardian；连续达到阈值后才允许重建。 */
+export function shouldRebuildGuardianAfterHealthFailures(
+  consecutiveFailures: unknown,
+  threshold?: unknown,
+): boolean
+
+/** deferred gap repair 的统一门控：WSS、debounce、最小间隔、cooldown 与并发状态必须同时满足。 */
+export function shouldRunDeferredGapRepair(input: {
+  now: number
+  pendingLastAt: number | null
+  lastAttemptAt?: number
+  delayMs: number
+  minIntervalMs: number
+  activeSockets: number
+  authAvailable: boolean
+  cooldownUntil: unknown
+  reconcileInFlight: boolean
+}): boolean
+
 /**
  * 根据 reconciliation 场景选择需要连续看到多少条稳定旧记录才可停止 catalog 扫描。
  * 短 WSS reconnect 默认一整页；startup/periodic/长盲区继续使用更深阈值。
