@@ -1979,8 +1979,10 @@ async function main() {
     if (!guardian?.page || guardian.page.closed || guardianConversationRestBlocked === enabled) return
     await guardian.page.send('Network.setBlockedURLs', {
       urls: enabled ? [
-        '*://chatgpt.com/backend-api/conversations*',
-        '*://chatgpt.com/backend-api/conversation/*',
+        // 明确限定 HTTPS。不要使用 *://，这样即使未来 WSS 恰好复用相似 pathname，
+        // wss://chatgpt.com/... 也绝不会被 REST cooldown 规则误伤。
+        'https://chatgpt.com/backend-api/conversations*',
+        'https://chatgpt.com/backend-api/conversation/*',
       ] : [],
     }, 3000)
     guardianConversationRestBlocked = enabled
