@@ -4,6 +4,7 @@ import {
   catalogStableOverlapTarget,
   classifyConversationBackendUrl,
   classifyCatalogAsyncStatus,
+  effectiveActiveRequestGap,
   classifyConversationEvent,
   conversationIdFromTargetUrl,
   estuaryFileIdFromUrl,
@@ -240,6 +241,13 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(passiveObservationMatchesReady(10_000, 9_000)).toBe(true)
     expect(passiveObservationMatchesReady(8_000, 10_000, 1_500)).toBe(false)
     expect(passiveObservationMatchesReady(8_600, 10_000, 1_500)).toBe(true)
+  })
+
+  test('cooldown 恢复期先 slow-start，成功探针清零后恢复正常间隔', () => {
+    expect(effectiveActiveRequestGap(6000, 3, 30_000)).toBe(30_000)
+    expect(effectiveActiveRequestGap(5000, 1, 30_000)).toBe(30_000)
+    expect(effectiveActiveRequestGap(6000, 0, 30_000)).toBe(6000)
+    expect(effectiveActiveRequestGap(60_000, 2, 30_000)).toBe(60_000)
   })
 
   test('Guardian 单次/偶发 CDP 探活失败不会立刻拆页，连续达到阈值才重建', () => {

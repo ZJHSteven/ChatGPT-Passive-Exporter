@@ -95,6 +95,9 @@ export function shouldBlockGuardianConversationRest(input: unknown): boolean
 /** 判断某个 passive response 是否足够新，可以替代本次 ready 后的主动 replay。 */
 export function passiveObservationMatchesReady(capturedAt: unknown, readyAt: unknown, toleranceMs?: number): boolean
 
+/** cooldown 恢复期使用更慢的 active request gap。 */
+export function effectiveActiveRequestGap(baseGapMs: unknown, recoveryProbeRemaining: unknown, recoveryProbeGapMs: unknown): number
+
 /** 只有“无 WSS”从本次 gap 起持续超过 grace 后，才允许重建 Guardian。 */
 export function shouldRebuildGuardianForMissingWss(input: {
   now: number

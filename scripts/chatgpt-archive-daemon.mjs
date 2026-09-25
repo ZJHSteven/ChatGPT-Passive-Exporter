@@ -823,6 +823,13 @@ export function passiveObservationMatchesReady(capturedAt, readyAt, toleranceMs 
   return Number.isFinite(captured) && Number.isFinite(ready) && captured + tolerance >= ready
 }
 
+/** cooldown 刚解除时先 slow-start；连续成功若干次后才恢复正常请求间隔。 */
+export function effectiveActiveRequestGap(baseGapMs, recoveryProbeRemaining, recoveryProbeGapMs) {
+  const base = Math.max(0, Number(baseGapMs) || 0)
+  const probeGap = Math.max(0, Number(recoveryProbeGapMs) || 0)
+  return Number(recoveryProbeRemaining) > 0 ? Math.max(base, probeGap) : base
+}
+
 async function main() {
   const flags = parseArgs(process.argv.slice(2))
   const cdpHttp = String(flags.get('cdp') || DEFAULT_CDP).replace(/\/$/u, '')
@@ -854,6 +861,9 @@ async function main() {
   const guardianHealthFailureThreshold = intFlag(flags, 'guardian-health-failures', 3, 1)
   const gapRepairDelayMs = intFlag(flags, 'gap-repair-delay-ms', 30_000, 1000)
   const gapRepairMinIntervalMs = intFlag(flags, 'gap-repair-min-interval-ms', 10 * 60_000, 10_000)
+  const nativeBodyGraceMs = intFlag(flags, 'native-body-grace-ms', 3000, 0)
+  const recoveryProbeGapMs = intFlag(flags, 'recovery-probe-gap-ms', 30_000, 1000)
+  const recoveryProbeSuccesses = intFlag(flags, 'recovery-probe-successes', 3, 1)
   const watchdogMinutes = Number(flags.get('watchdog-minutes') ?? 30)
   if (!Number.isFinite(watchdogMinutes) || watchdogMinutes <= 0) throw new Error('--watchdog-minutes must be > 0')
   const watchdogMs = watchdogMinutes * 60_000
@@ -904,6 +914,11 @@ async function main() {
   // dirty = “本地可能落后”；ready = “现在允许主动抓 body”。二者必须分开。
   const dirty = new Map()
   const ready = new Map()
+  // readySince 用于判断 passive response 是否属于“这一次 complete 之后”的新证据；
+  // readyNotBefore 则真正实现 native grace。旧代码只 setTimeout(drainDirty)，但 ready 已经进 Map，
+  // 主循环仍可能在 timeout 前抢跑，因此 delay 实际并不是硬门槛。
+  const readySince = new Map()
+  const readyNotBefore = new Map()
   // catalogActive 只表示“低频 conversation list 曾看见 async_status=3/5”。
   // 它不是可靠 turn start，因此绝不能进入 watchdog 的 activeTurns.startedAt。
   // 这个集合只用于 catalog 自己识别 active→complete 的 gap repair。
@@ -928,6 +943,7 @@ async function main() {
   let syncErrors = 0
   let lastError = null
   let lastActiveRequestAt = 0
+  let recoveryProbeRemaining = 0
   let notificationConfig = null
   let notificationLastAttemptAt = null
   let notificationLastSuccessAt = null
@@ -1016,9 +1032,13 @@ async function main() {
       guardianHealthFailureThreshold,
       gapRepairDelayMs,
       gapRepairMinIntervalMs,
+      nativeBodyGraceMs,
+      recoveryProbeGapMs,
+      recoveryProbeSuccesses,
     },
     cooldownUntil: cooldownUntil || null,
     cooldownRecoveryPending,
+    recoveryProbeRemaining,
     notification: {
       enabled: Boolean(notificationConfig),
       provider: notificationConfig?.provider ?? null,
@@ -1318,6 +1338,7 @@ async function main() {
     const now = Date.now()
     cooldownUntil = now + cooldownMinutes * 60_000
     cooldownRecoveryPending = true
+    recoveryProbeRemaining = 0
     // 429 本身就是“现在不适合做主动扫描”的强证据。把 periodic 基准推进到本次 429，
     // 防止 daemon 已运行很久时在 cooldown 一结束就因为旧 lastReconcileAt 立即深扫 catalog。
     lastReconcileAt = now
@@ -1331,7 +1352,8 @@ async function main() {
   }
 
   const waitForRequestSlot = async (kind) => {
-    const baseGap = kind === 'catalog' ? reconcileDelayMs : syncDelayMs
+    const configuredGap = kind === 'catalog' ? reconcileDelayMs : syncDelayMs
+    const baseGap = effectiveActiveRequestGap(configuredGap, recoveryProbeRemaining, recoveryProbeGapMs)
     const jitter = requestJitterMs > 0 ? Math.floor(Math.random() * (requestJitterMs + 1)) : 0
     if (lastActiveRequestAt > 0) {
       const waitMs = lastActiveRequestAt + baseGap + jitter - Date.now()
@@ -1354,6 +1376,12 @@ async function main() {
     }
     if (response.status < 200 || response.status >= 300 || !response.body) {
       throw new Error(`ChatGPT backend HTTP ${response.status}: ${response.text.slice(0, 240)}`)
+    }
+    if (recoveryProbeRemaining > 0) {
+      recoveryProbeRemaining -= 1
+      if (recoveryProbeRemaining === 0) {
+        await log('active API recovery probation completed; normal request gap restored')
+      }
     }
     return response.body
   }
@@ -1504,6 +1532,9 @@ async function main() {
     if (syncInFlight || reconcileInFlight || stopping || Date.now() < cooldownUntil || !authHeaders || !guardian?.page || guardian.page.closed) return
     if (maxSyncConversations > 0 && syncedConversations >= maxSyncConversations) return
     if (ready.size === 0) return
+    const now = Date.now()
+    const nextReady = [...ready.entries()].find(([conversationId]) => now >= Number(readyNotBefore.get(conversationId) || 0))
+    if (!nextReady) return
     syncInFlight = true
     try {
       // 每次调度最多只处理一个 conversation。
@@ -1512,13 +1543,15 @@ async function main() {
       // daemon 主循环就会被饿死数十分钟甚至数小时：Guardian Runtime 探活、WSS 缺失检测、
       // watchdog、state.json 刷新都不能按 5 秒节奏执行。主动 API 的节流已经由全局 request gate
       // 负责，因此这里应该采用 cooperative scheduling：处理一条就立刻把控制权还给主循环。
-      const [conversationId, trigger] = ready.entries().next().value
+      const [conversationId, trigger] = nextReady
       ready.delete(conversationId)
       try {
         const result = await syncConversation(conversationId, trigger)
         syncedConversations += 1
         // 一次 overlap 同步成功以后，本地副本已经追到本次 observation，因此才清 dirty。
         dirty.delete(conversationId)
+        readySince.delete(conversationId)
+        readyNotBefore.delete(conversationId)
         if (result.diagnostic.terminalEvidence !== 'none') {
           activeTurns.delete(conversationId)
           catalogActive.delete(conversationId)
@@ -1564,6 +1597,7 @@ async function main() {
         await log('conversation sync failed', { conversationId, trigger, error: lastError })
         // 失败不能把 dirty 事实抹掉；同时保留 ready，等 auth/cooldown/页面恢复后再试。
         ready.set(conversationId, trigger)
+        readyNotBefore.set(conversationId, Date.now() + 5000)
       }
     }
     finally {
@@ -1579,8 +1613,11 @@ async function main() {
 
   const markSyncReady = (conversationId, trigger, delayMs = 500) => {
     if (!conversationId) return
+    const now = Date.now()
     dirty.set(conversationId, trigger)
     ready.set(conversationId, trigger)
+    if (!readySince.has(conversationId)) readySince.set(conversationId, now)
+    readyNotBefore.set(conversationId, now + Math.max(0, Number(delayMs) || 0))
     setTimeout(() => { void drainDirty() }, delayMs)
   }
 
@@ -1613,7 +1650,7 @@ async function main() {
     if (behavior.completesTurn) {
       activeTurns.delete(event.conversationId)
       catalogActive.delete(event.conversationId)
-      markSyncReady(event.conversationId, `wss:${event.type}`, 500)
+      markSyncReady(event.conversationId, `wss:${event.type}`, nativeBodyGraceMs)
     }
     const activeAfterIds = [...activeTurns.keys()]
     void turnRecorder.append(buildWssLifecycleTrace({
@@ -2145,9 +2182,13 @@ async function main() {
       if (cooldownRecoveryPending && authHeaders && activeApiAllowed(cooldownUntil)) {
         cooldownRecoveryPending = false
         cooldownUntil = 0
+        recoveryProbeRemaining = recoveryProbeSuccesses
         lastReconcileAt = Date.now()
         if (pendingGapRepair) pendingGapRepair.lastAt = Date.now()
-        await log('active API cooldown expired; passive-first recovery resumed')
+        await log('active API cooldown expired; passive-first recovery resumed', {
+          recoveryProbeRemaining,
+          recoveryProbeGapMs,
+        })
       }
       queueWatchdogDiagnostics()
       await drainDirty()

@@ -263,6 +263,8 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 ## 请求头对照
 
 ## 2026-09-25 Guardian / 普通网页第一方请求取证
+- 已修复 ready delay 只靠 setTimeout、主循环仍可提前 drain 的旧问题：新增 readySince/readyNotBefore 硬门槛；WSS complete 默认给 native body 3 秒 grace，再决定是否主动 replay。
+- 已加入 cooldown 恢复 slow-start：解封后默认连续 3 个主动请求至少间隔 30 秒，成功满 3 次才恢复原 5–6 秒请求间隔；任一 429 会重新清空 probation 并进入新 cooldown。
 - 已开始把 native-first 方案落到 daemon：新增统一 conversation REST URL 分类器，明确区分全量 catalog、TPP/过滤 catalog、latest body、cursor body、singular mapping；后续 passive observer、cooldown block 与 replay fallback 共用同一分类，避免协议判断分叉。
 - 已明确 Guardian 的 conversation_origin=tpp list 不能直接当作全量 catalog overlap Ground Truth；只有与 daemon 全量 list 语义等价的 global catalog 响应才可替代对应 active page。
 - 已确认隐藏 Guardian 虽然由 Archive 只用于 CDP/WSS，但它加载的是完整 ChatGPT 首页，因此 ChatGPT 前端自身仍会主动访问私有 REST；这类 native 请求此前不在 daemon 的主动请求日志里。
