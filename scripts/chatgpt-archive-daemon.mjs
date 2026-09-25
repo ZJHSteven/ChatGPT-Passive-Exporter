@@ -259,6 +259,7 @@ export function shouldClassifyTerminalForTrigger(trigger) {
   return normalized.startsWith('reconcile:periodic')
     || normalized.startsWith('reconcile:wss-reconnect')
     || normalized.startsWith('reconcile:guardian-recover')
+    || normalized.startsWith('reconcile:gap-repair')
     || normalized.startsWith('reconcile:cooldown-recover')
 }
 
@@ -1239,8 +1240,12 @@ async function main() {
   }
 
   const tripCooldown = async (reason) => {
-    cooldownUntil = Date.now() + cooldownMinutes * 60_000
+    const now = Date.now()
+    cooldownUntil = now + cooldownMinutes * 60_000
     cooldownRecoveryPending = true
+    // 429 本身就是“现在不适合做主动扫描”的强证据。把 periodic 基准推进到本次 429，
+    // 防止 daemon 已运行很久时在 cooldown 一结束就因为旧 lastReconcileAt 立即深扫 catalog。
+    lastReconcileAt = now
     await log('active API cooldown armed', { reason, cooldownUntil })
   }
 

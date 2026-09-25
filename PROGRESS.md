@@ -9,6 +9,7 @@
 - 已补单测覆盖 Guardian 连续失败阈值、gap-repair 一页 overlap、WSS/认证/cooldown/debounce/最小间隔门控。
 - 第一轮定向测试发现“从未 repair 过”被错误套用最小间隔；已修为只有存在真实 lastAttemptAt 时才应用 10 分钟间隔，首次 repair 只受 debounce 约束。
 - 全量 Vitest 已达到 17 files / 103 tests 通过；首轮 typecheck 仅暴露旁路声明未同步新增两个纯函数导出，现已补齐 `chatgpt-archive-daemon.d.mts`。
+- 补齐两个运行期边界：任何真实 HTTP 429 都会把 periodic 基准推进到 429 时刻，避免长时间运行后 cooldown 刚结束就深扫；CLI 也已透传 Guardian 连续失败阈值与 gap-repair debounce/最小间隔参数。新 `reconcile:gap-repair` 保持与旧在线 gap repair 一致的 incident 分类资格。
 
 # 2026-09-25 Active Zombie / Watchdog 兜底
 

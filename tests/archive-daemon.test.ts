@@ -144,6 +144,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shouldClassifyTerminalForTrigger('reconcile:periodic')).toBe(true)
     expect(shouldClassifyTerminalForTrigger('reconcile:wss-reconnect')).toBe(true)
     expect(shouldClassifyTerminalForTrigger('reconcile:guardian-recover')).toBe(true)
+    expect(shouldClassifyTerminalForTrigger('reconcile:gap-repair')).toBe(true)
     expect(shouldClassifyTerminalForTrigger('reconcile:cooldown-recover')).toBe(true)
     expect(shouldClassifyTerminalForTrigger('wss:conversation-created')).toBe(false)
 
