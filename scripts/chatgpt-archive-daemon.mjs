@@ -771,6 +771,9 @@ async function main() {
   const cooldownMinutes = intFlag(flags, 'cooldown-minutes', 60, 1)
   const maxSyncConversations = intFlag(flags, 'max-sync-conversations', 0, 0)
   const wssReconnectGraceMs = intFlag(flags, 'wss-reconnect-grace-ms', 20_000, 1000)
+  const guardianHealthFailureThreshold = intFlag(flags, 'guardian-health-failures', 3, 1)
+  const gapRepairDelayMs = intFlag(flags, 'gap-repair-delay-ms', 30_000, 1000)
+  const gapRepairMinIntervalMs = intFlag(flags, 'gap-repair-min-interval-ms', 10 * 60_000, 10_000)
   const watchdogMinutes = Number(flags.get('watchdog-minutes') ?? 30)
   if (!Number.isFinite(watchdogMinutes) || watchdogMinutes <= 0) throw new Error('--watchdog-minutes must be > 0')
   const watchdogMs = watchdogMinutes * 60_000
@@ -812,8 +815,12 @@ async function main() {
   let conversationSubscriptionRecovered = null
   let lastSafeWssControls = []
   let guardianReadyAt = 0
+  let guardianHealthFailures = 0
+  let guardianRebuilds = 0
   let activeSocketIds = new Set()
   let stopping = false
+  let pendingGapRepair = null
+  let lastGapRepairAttemptAt = 0
   // dirty = “本地可能落后”；ready = “现在允许主动抓 body”。二者必须分开。
   const dirty = new Map()
   const ready = new Map()
@@ -872,6 +879,8 @@ async function main() {
       browser: guardian.version?.Browser ?? null,
       pageClosed: guardian.page?.closed ?? true,
       nativeWindow: guardian.nativeWindow ?? null,
+      healthFailures: guardianHealthFailures,
+      rebuilds: guardianRebuilds,
     } : null,
     wss: {
       activeSockets: activeSocketIds.size,
@@ -908,12 +917,25 @@ async function main() {
       syncInFlight,
       reconcileInFlight,
     },
-    sync: { syncedConversations, syncErrors, lastReconcileAt },
+    sync: {
+      syncedConversations,
+      syncErrors,
+      lastReconcileAt,
+      lastGapRepairAttemptAt: lastGapRepairAttemptAt || null,
+      pendingGapRepair: pendingGapRepair ? {
+        firstAt: pendingGapRepair.firstAt,
+        lastAt: pendingGapRepair.lastAt,
+        reasons: [...pendingGapRepair.reasons].sort(),
+      } : null,
+    },
     limits: {
       maxSyncConversations,
       bodyRequestGapMs: syncDelayMs,
       catalogRequestGapMs: reconcileDelayMs,
       requestJitterMs,
+      guardianHealthFailureThreshold,
+      gapRepairDelayMs,
+      gapRepairMinIntervalMs,
     },
     cooldownUntil: cooldownUntil || null,
     cooldownRecoveryPending,
@@ -940,6 +962,9 @@ async function main() {
   // `--no-reconcile-on-start` 的含义必须是“启动后先纯监听”。旧实现保留
   // lastReconcileAt=0，导致第一轮主循环把 periodic 当成“已经超过 6 小时”而立刻扫 list。
   if (!reconcileOnStart) lastReconcileAt = startedAt
+  // 继承真实 429 cooldown 时也从本次启动重新计算 periodic。
+  // 否则 cooldown 一结束，lastReconcileAt=0 会把低频兜底误判成“早已逾期”，立即深扫 catalog。
+  if (cooldownUntil > startedAt) lastReconcileAt = startedAt
 
   try {
     notificationConfig = await loadIncidentNotificationConfig(notificationConfigPath)
