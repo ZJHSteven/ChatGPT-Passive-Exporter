@@ -1366,6 +1366,11 @@ async function main() {
     // 防止 daemon 已运行很久时在 cooldown 一结束就因为旧 lastReconcileAt 立即深扫 catalog。
     lastReconcileAt = now
     await log('active API cooldown armed', { reason, cooldownUntil })
+    await setGuardianConversationRestBlocked(true).catch(async (error) => {
+      await log('Guardian REST cooldown block failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
   }
 
   const requireRequestWindow = () => {
@@ -1679,6 +1684,167 @@ async function main() {
     if (!readySince.has(conversationId)) readySince.set(conversationId, now)
     readyNotBefore.set(conversationId, now + Math.max(0, Number(delayMs) || 0))
     setTimeout(() => { void drainDirty() }, delayMs)
+  }
+
+  const decodeCdpJsonResponseBody = async (client, requestId) => {
+    const result = await client.send('Network.getResponseBody', { requestId }, 5000)
+    const text = result.base64Encoded
+      ? Buffer.from(String(result.body || ''), 'base64').toString('utf8')
+      : String(result.body || '')
+    return text ? JSON.parse(text) : null
+  }
+
+  const rememberPassiveBodyResponse = async ({ route, payload, capturedAt, requestUrl, targetId }) => {
+    const conversationId = route.conversationId
+    if (!conversationId) return
+
+    if (route.kind === 'mapping') {
+      if (!payload?.mapping || typeof payload.mapping !== 'object') return
+      archive.mergeLiveMappingSnapshot(payload, {
+        observedAt: capturedAt,
+        endpoint: `/backend-api/conversation/${conversationId}`,
+        observationKind: 'mapping-snapshot:passive-native',
+      })
+      passiveBodyResponses += 1
+      return
+    }
+
+    if (!Array.isArray(payload?.messages)) return
+    const normalized = { ...payload, conversation_id: payload.conversation_id || conversationId }
+    const ids = normalized.messages.map(message => message?.id).filter(id => typeof id === 'string')
+    const knownBefore = archive.knownMessageIds(conversationId, ids)
+    const cursor = route.kind === 'body-cursor' ? route.before : null
+    passiveBodyPages.set(passiveBodyKey(conversationId, cursor), {
+      payload: normalized,
+      capturedAt,
+      knownBeforeIds: [...knownBefore],
+      sourceTargetId: targetId,
+      requestUrl,
+    })
+    passiveBodyResponses += 1
+
+    if (route.kind === 'body-latest') {
+      archive.mergeLiveMessagesPage(normalized, {
+        observedAt: capturedAt,
+        endpoint: `/backend-api/conversations/${conversationId}`,
+        pageCursor: null,
+        observationKind: 'body-page:passive-native',
+        updateCurrentState: true,
+        classifyTerminal: false,
+        allowIncompleteTailIncident: false,
+        incidentKind: 'abnormal-terminal',
+      })
+
+      const readyAt = readySince.get(conversationId)
+      if (readyAt && passiveObservationMatchesReady(capturedAt, readyAt)) {
+        // 页面自己已经把本次 complete 对应的 latest body 拿回来了；不再继续等待 grace。
+        readyNotBefore.set(conversationId, Date.now())
+        void drainDirty()
+      }
+    }
+  }
+
+  const rememberPassiveCatalogResponse = ({ route, payload, capturedAt, requestUrl, targetId }) => {
+    passiveCatalogResponses += 1
+    if (!route.globalCatalog || route.limit !== 28 || !Array.isArray(payload?.items)) return
+    passiveCatalogPages.set(`${route.offset}:${route.limit}`, {
+      items: payload.items,
+      capturedAt,
+      sourceTargetId: targetId,
+      requestUrl,
+    })
+  }
+
+  const attachPassivePageObserver = async (target) => {
+    const client = new CdpClient(target.webSocketDebuggerUrl)
+    await client.connect()
+    await client.send('Network.enable')
+    const pendingBodies = new Map()
+
+    client.on('Network.responseReceived', ({ requestId, response }) => {
+      const requestUrl = String(response?.url || '')
+      const route = classifyConversationBackendUrl(requestUrl)
+      if (!route) return
+      const status = Number(response?.status || 0)
+      if (status === 429) {
+        passive429Responses += 1
+        void tripCooldown(`observed native ${route.kind} HTTP 429`).catch(() => {})
+        return
+      }
+      if (status < 200 || status >= 300) return
+      pendingBodies.set(requestId, { route, requestUrl, capturedAt: Date.now() })
+    })
+
+    client.on('Network.loadingFinished', ({ requestId }) => {
+      const meta = pendingBodies.get(requestId)
+      if (!meta) return
+      pendingBodies.delete(requestId)
+      void decodeCdpJsonResponseBody(client, requestId).then(async (payload) => {
+        if (meta.route.kind === 'catalog') {
+          rememberPassiveCatalogResponse({
+            ...meta, payload, targetId: target.id,
+          })
+          return
+        }
+        await rememberPassiveBodyResponse({
+          ...meta, payload, targetId: target.id,
+        })
+      }).catch(async (error) => {
+        await log('passive native response capture failed', {
+          targetId: target.id,
+          kind: meta.route.kind,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
+    })
+
+    client.on('Network.loadingFailed', ({ requestId }) => {
+      pendingBodies.delete(requestId)
+    })
+
+    passivePageObservers.set(target.id, { client, url: target.url })
+    await log('passive ChatGPT page observer attached', { targetId: target.id, url: target.url })
+  }
+
+  const refreshPassivePageObservers = async (targets) => {
+    const eligible = targets.filter(target => target?.type === 'page'
+      && target.id !== guardian?.targetId
+      && typeof target.webSocketDebuggerUrl === 'string'
+      && String(target.url || '').startsWith('https://chatgpt.com/'))
+    const liveIds = new Set(eligible.map(target => target.id))
+
+    for (const [targetId, observer] of passivePageObservers) {
+      if (!liveIds.has(targetId) || observer.client.closed) {
+        observer.client.close()
+        passivePageObservers.delete(targetId)
+      }
+    }
+
+    for (const target of eligible) {
+      if (passivePageObservers.has(target.id)) continue
+      try {
+        await attachPassivePageObserver(target)
+      }
+      catch (error) {
+        await log('passive ChatGPT page observer attach failed', {
+          targetId: target.id,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    prunePassiveCaches()
+  }
+
+  const setGuardianConversationRestBlocked = async (enabled) => {
+    if (!guardian?.page || guardian.page.closed || guardianConversationRestBlocked === enabled) return
+    await guardian.page.send('Network.setBlockedURLs', {
+      urls: enabled ? [
+        '*://chatgpt.com/backend-api/conversations*',
+        '*://chatgpt.com/backend-api/conversation/*',
+      ] : [],
+    }, 3000)
+    guardianConversationRestBlocked = enabled
+    await log(enabled ? 'Guardian conversation REST blocked for cooldown' : 'Guardian conversation REST block released')
   }
 
   const observeConversationEvent = (event) => {
@@ -2013,6 +2179,15 @@ async function main() {
         lastAuthAt = Date.now()
       }
     })
+    page.on('Network.responseReceived', ({ response }) => {
+      const route = classifyConversationBackendUrl(response?.url)
+      // Guardian 自己的 TPP/sidebar list 不属于 daemon replay；它若 429，必须让 daemon 也退避。
+      // active replay 的 global list/body 429 已由 fetchChecked 处理，避免在这里重复续杯 cooldown。
+      if (route?.kind === 'catalog' && !route.globalCatalog && Number(response?.status) === 429) {
+        passive429Responses += 1
+        void tripCooldown('Guardian native catalog HTTP 429').catch(() => {})
+      }
+    })
     page.on('Network.webSocketCreated', ({ requestId, url }) => {
       if (!String(url || '').startsWith('wss://') || !String(url || '').includes('chatgpt.com')) return
       const now = Date.now()
@@ -2121,6 +2296,7 @@ async function main() {
     guardian?.page?.close()
     guardian?.browser?.close()
     guardian = await ensureGuardian(cdpHttp)
+    guardianConversationRestBlocked = false
     guardianReadyAt = Date.now()
     guardianHealthFailures = 0
     if (reason !== 'startup') guardianRebuilds += 1
@@ -2155,6 +2331,9 @@ async function main() {
     while (!authHeaders && Date.now() - waitStarted < 20_000 && !guardian.page.closed) {
       await new Promise(resolve => setTimeout(resolve, 100))
     }
+    if (Date.now() < cooldownUntil && activeSocketIds.size > 0) {
+      await setGuardianConversationRestBlocked(true).catch(() => {})
+    }
     // “daemon 已经 ready”和“首次补洞完成”是两个不同状态。先写 ready state，
     // 避免 CLI 因一次 5 页 startup reconcile 超过启动等待时间而误报 started:false。
     await writeState()
@@ -2187,6 +2366,7 @@ async function main() {
         guardian.page.closed = true
         continue
       }
+      await refreshPassivePageObservers(targets)
 
       // 只做健康观测，不主动激活窗口。短暂的 renderer/CDP 抖动先累计失败次数；
       // 不再“一次 3 秒 timeout 就拆 Guardian”。成功一次立即清零。
@@ -2242,6 +2422,7 @@ async function main() {
       if (cooldownRecoveryPending && authHeaders && activeApiAllowed(cooldownUntil)) {
         cooldownRecoveryPending = false
         cooldownUntil = 0
+        await setGuardianConversationRestBlocked(false).catch(() => {})
         recoveryProbeRemaining = recoveryProbeSuccesses
         lastReconcileAt = Date.now()
         if (pendingGapRepair) pendingGapRepair.lastAt = Date.now()
@@ -2272,6 +2453,8 @@ async function main() {
   }
 
   await log('daemon stopping')
+  for (const observer of passivePageObservers.values()) observer.client.close()
+  passivePageObservers.clear()
   guardian?.page?.close()
   guardian?.browser?.close()
   archive.close()

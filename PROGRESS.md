@@ -263,6 +263,10 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 ## 请求头对照
 
 ## 2026-09-25 Guardian / 普通网页第一方请求取证
+- 已实现普通 ChatGPT page 的 CDP passive mirror：只调用 Network.enable，不导航/不 fetch；页面自己的 conversation list/body 200 会被复制，429 会让 daemon 同步进入 cooldown。
+- passive latest body 会立即非破坏性 merge 到 SQLite，同时保存 merge 前 knownMessageIds；cursor body 只缓存，等真正需要该 cursor 时复用，避免自己污染 overlap。
+- cooldown 期间只对隐藏 Guardian 设置 Network.setBlockedURLs，屏蔽 /backend-api/conversations* 与 singular /backend-api/conversation/*；WSS URL 不匹配这些规则，因此官方 WSS 保持在线。普通用户 ChatGPT tabs 不做 block。
+- Guardian 自己 conversation_origin=tpp 的 native catalog 若返回 429，也会触发 daemon cooldown；active replay 的 429 仍由 fetchChecked 负责，避免同一 replay 响应被重复计时。
 - syncConversation 已改为 native-first：本次 complete 后若页面已自然取得 latest body，就直接复用；继续翻历史时若相同 before cursor 已被页面自然取过，也直接复用。日志新增 passivePagesUsed，可直接核算省掉的 replay。
 - overlap 判定使用 passive capture 当时保存的 knownBeforeIds，而不是被 passive merge 后的当前 SQLite 状态，防止“自己先写入→误判整页早已 overlap”。
 - 新增 passive body cache 读取规则：latest page 必须与本次 ready 时点匹配；cursor page 按精确 before cursor 复用，并统一做 10 分钟缓存清理。
