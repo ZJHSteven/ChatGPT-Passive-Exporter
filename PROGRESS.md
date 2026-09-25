@@ -46,6 +46,7 @@
 - 历史下载实验复核：直接 shell 请求短期 estuary URL 只得到 39 B 占位/失败内容；页面 fetch 能拿到正确 Blob，但浏览器下载管理器路径仍曾落成 39 B；最终通过“当前 DOM 的最新签名 URL + 已登录 Chrome Cookie + 本机 fetch 写盘”成功得到 4 张完整 PNG，字节数与 body 元数据一致。下一步把这条链收敛成 Guardian 的被动/机会式资产补全，而不是保存会过期的 signed URL。
 - ImageGen 手机提示已与异常 incident 分层：正常生图终态不再制造 error incident，但 daemon 会对新完成的 ImageGen tool message 发一次 Bark“图片节点”提示；同一 message 的多图只提醒一次，冷启动历史节点静默标记，避免重启补推旧通知。
 - Guardian 已接入机会式图片补全：每 30 秒最多扫描一次 pending ImageGen 资产，只连接用户本来已经打开的 ChatGPT conversation target，不创建/导航/激活页面；从 DOM 读取自然解析出的 estuary URL，再由**页面自身** `fetch(..., credentials:'include')` 取得 Blob，daemon 不读取 Chrome Cookie。Blob 经本地 CDP 返回后校验 body 的预期字节数，原子写入 `data/assets/chatgpt/` 并回写 SHA-256/本地相对路径。聊天未打开或 DOM 尚无 URL 时不主动导航，资产继续保持 pending。
+- 2026-09-26 真实运行复核发现上述 DOM hydration 仍有盲区：漫画会话当前已索引 14 个 `generated-image`，但 daemon `hydrateSuccesses=0 / pendingGenerated=14`。长会话历史图片被虚拟化后，当前 DOM 与 `performance` 资源表都不存在对应 estuary URL，因此“已打开 conversation tab”并不等于“历史图片可由 DOM 补全”。现开始增加更被动的原生网络响应捕获：只有页面自己自然请求 estuary 时才读取已收到的响应体。为此数据库新增按稳定 `file_id` 查询 pending generated-image 的入口，且被动机会不受此前主动 fallback 的 5 分钟失败冷却影响。
 
 # 项目状态快照
 
