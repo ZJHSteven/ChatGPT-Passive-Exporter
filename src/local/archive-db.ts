@@ -113,9 +113,9 @@ export interface ArchiveIncidentRow {
   conversationId: string
   turnExchangeId: string | null
   turnKey: string
-  incidentKind: 'watchdog-timeout' | 'abnormal-terminal'
+  incidentKind: 'watchdog-timeout' | 'active-zombie' | 'abnormal-terminal'
   /** 生命周期主类：回答“这一轮为什么算事故”，不与 tail/head 结构混在一起。 */
-  lifecycleClass: 'complete-no-final' | 'watchdog-timeout' | 'explicit-interrupted' | 'abnormal-terminal'
+  lifecycleClass: 'complete-no-final' | 'watchdog-timeout' | 'active-zombie' | 'explicit-interrupted' | 'abnormal-terminal'
   detectedAt: number
   lastObservedAt: number
   resolvedAt: number | null
@@ -1235,7 +1235,7 @@ export class ChatArchiveDb {
        */
       updateCurrentState?: boolean
       /** watchdog 超时和已确认 abnormal terminal 都是 incident，但语义不同。 */
-      incidentKind?: 'watchdog-timeout' | 'abnormal-terminal'
+      incidentKind?: 'watchdog-timeout' | 'active-zombie' | 'abnormal-terminal'
       /**
        * 是否允许这次 merge 更新 incident ledger。
        *
@@ -2151,7 +2151,7 @@ export class ChatArchiveDb {
     observedAt = Date.now(),
     allowCreate = true,
     allowIncompleteTailIncident = true,
-    requestedKind: 'watchdog-timeout' | 'abnormal-terminal' = 'abnormal-terminal',
+    requestedKind: 'watchdog-timeout' | 'active-zombie' | 'abnormal-terminal' = 'abnormal-terminal',
     source = 'realtime-body',
     updateConversationState = true,
     historicalEnded = false,
