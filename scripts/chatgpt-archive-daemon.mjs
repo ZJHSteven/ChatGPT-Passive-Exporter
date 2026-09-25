@@ -1409,6 +1409,29 @@ async function main() {
     return response.body
   }
 
+  const passiveBodyKey = (conversationId, cursor = null) => `${conversationId}|${cursor ? `cursor:${cursor}` : 'latest'}`
+
+  const prunePassiveCaches = (now = Date.now()) => {
+    for (const [key, entry] of passiveBodyPages) {
+      if (now - Number(entry.capturedAt || 0) > passiveCacheMaxAgeMs) passiveBodyPages.delete(key)
+    }
+    for (const [key, entry] of passiveCatalogPages) {
+      if (now - Number(entry.capturedAt || 0) > passiveCacheMaxAgeMs) passiveCatalogPages.delete(key)
+    }
+  }
+
+  /**
+   * latest body 必须属于本次 ready/complete 附近，才可以证明“这次变化已经看过”。
+   * cursor page 由 before cursor 精确定位；只要缓存仍新鲜即可复用，因为它代表同一历史分页边界。
+   */
+  const reusablePassiveBodyPage = (conversationId, cursor, readyAt) => {
+    prunePassiveCaches()
+    const entry = passiveBodyPages.get(passiveBodyKey(conversationId, cursor))
+    if (!entry) return null
+    if (cursor) return entry
+    return passiveObservationMatchesReady(entry.capturedAt, readyAt) ? entry : null
+  }
+
   const syncConversation = async (conversationId, trigger) => {
     requireRequestWindow()
     const classifyTerminal = shouldClassifyTerminalForTrigger(trigger)
