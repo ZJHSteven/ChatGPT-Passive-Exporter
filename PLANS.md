@@ -133,6 +133,25 @@
 
 ## 2026-09-25 Guardian 第一方请求复用与 429 收口
 
+## 2026-09-27 Passive Protocol Drift / Native Template Learning
+
+### 目标
+- 不再用主动参数矩阵做日常协议探测；所有持续监控必须来自页面已经自然发出的 Network 请求/响应。
+- 保存稳定 request/response schema fingerprint，能发现 path、query、应用协议 header、POST body key、response schema 的上游漂移。
+- 将“自动发现候选模板”与“主动 replay 使用模板”彻底隔离：候选可自动，promotion 必须人工批准；首版批准状态也不直接驱动 replay。
+- 每日一次本地报告，只在 baseline 锁定后发现未通知 drift 时通过现有 Bark 提醒。
+
+### 当前实现
+- [done] 受控实验确认 TPP include/exclude 是真实 origin filter，并因少量 GET 即触发 429 而停止主动扫描。
+- [done] request fingerprint：route/method/query stable values/protocol header names/POST JSON key paths。
+- [done] response fingerprint：top-level/items/messages/metadata/page_info/mapping schema。
+- [done] cursor/signature/timestamp/file-id 等高熵值归一化，浏览器 transport headers 不参与 signature。
+- [done] Guardian/native user-page observer 接入；Archive replay 排除，避免自我污染 baseline。
+- [done] 24h 初始 learning baseline；baseline 后未知 request/response shape 进入 drift ledger。
+- [done] protocol status/report/approve CLI；report/approval 状态与 daemon ledger 分文件，避免并发覆盖。
+- [in_progress] Windows 每日只读 report 计划任务安装与部署验证。
+- [pending] 观察真实 drift 样本后，再决定 approved candidate 如何安全接入 replay；当前保持不自动消费。
+
 ### 背景
 - 23:09 以后新版 daemon 自身一度没有主动 catalog/body 请求，但隐藏 Guardian 页仍出现 /backend-api/conversations 429。
 - 通过 CDP PerformanceResourceTiming 与 daemon WSS 日志对齐，确认 Guardian 完整 ChatGPT 前端会在收到 conversation-turn-complete 后主动刷新 conversation list；普通 ChatGPT 页还会并发预取多个 conversation body，并在部分请求 429 后很快重发。

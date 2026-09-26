@@ -268,6 +268,14 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 ## 请求头对照
 
 ## 2026-09-25 Guardian / 普通网页第一方请求取证
+- 2026-09-27 List 参数受控实验（随后因 429 立即停止）：当前无 origin 过滤的 `expand=false&hide_snorlax=false&is_archived=false&is_starred=false&limit=20&order=updated&offset=0` 返回 20/21；`conversation_origin=tpp` 返回唯一 1 条且 item 明确 `conversation_origin=tpp`；`exclude_conversation_origin=tpp` 返回普通第一页 20/21。由此确认 TPP 是真实 conversation origin 子集，不是“新版 global list 模式”。
+- 同轮实验确认 `expand=false` 省略后第一页 ID 集合和 schema 不变，当前场景可视为默认/冗余；下一条 `expand=true` 遭 HTTP 429，因此不能从该 429 推断 expand=true 的业务语义。`hide_snorlax`、archived/starred、order 其它值及 body 参数矩阵均停止主动试验，后续只靠 native passive 样本继续研究。
+- `order=updated` 不再写成“严格 update_time 数值倒序”：当前 native 第一页排序与本地 update_time 并非严格降序，可能混有 pinned/特殊 ranking 或本地时间滞后；只把它记录为服务端排序模式名。
+- Protocol Drift Ledger 的 query 会保留 `limit=20`、`hide_snorlax=false` 等稳定语义值；`before/cursor`、`sig`、`ts`、file id 等高变值归一化是为了让 diff 稳定，不是为了隐藏本地数据。全部 header 名可审计，但 fingerprint hash 只使用应用协议头，避免 Chrome `sec-ch-* / priority` 漂移制造假报警。
+- Native Template Learning 采用 quarantine：自动观察/归类 replay candidate，但不会自动替换 Archive 主动模板；人工 approve 记录与 fingerprint ledger 分文件保存，当前 replay 代码尚不消费 approval。这样 A/B、TPP、灰度过滤请求即使被观察到，也不会自动“学歪后持续冲错接口”。
+- 每日协议检查设计为纯本地只读：daemon 持续 passive 写 `protocol-fingerprints.json`；每日任务只执行 `chatgpt-archive protocol report --notify`，有 baseline 之后的新 request/response shape 才 Bark，无变化静默，不访问 ChatGPT API。
+- Protocol Drift Ledger 已开始接入 daemon：Guardian 官方请求与普通 ChatGPT 页请求会被动记录 request shape；Archive 自己的 replay 通过内存 URL 标记排除，避免旧硬编码污染 native baseline。已有 passive JSON response 会复用同一次 Network.getResponseBody 记录 response schema，不增加 ChatGPT HTTP 流量。
+- 2026-09-27 新一轮 native 请求取证发现前端现在会并列请求 `conversation_origin=tpp` 与 `exclude_conversation_origin=tpp`；后者此前未进入 classifier，会被误判成 global catalog。分类器已加入 `excludeConversationOrigin`，只有 include/exclude origin 都为空时才允许标记 `globalCatalog=true`。
 - 2026-09-27 参数矩阵实验确认主动探测本身具有真实限流风险：在严格串行、6 秒间隔下，仅少量 List GET 后再次出现 HTTP 429，因此协议漂移监控禁止使用主动矩阵扫描；chatgpt-protocol-probe.mjs 现在必须显式传 --allow-active-probe 才运行，不能进入 CI/定时健康检查。
 - cooldown 启动边界进一步收紧：daemon 若从 state 恢复真实 cooldown，会在 Guardian reload/navigation 之前先用 HTTPS URL block 屏蔽 conversation REST，WSS 保持不受影响；cooldown 到期时不再要求预先已有 auth 才释放 block，避免“因为 block 导致没 auth、因为没 auth 又永远不解 block”的死锁。
 - 2026-09-26 01:22 最终部署：PID 41336，--no-reconcile-on-start；Guardian healthFailures=0 / rebuilds=0，WSS activeSockets=3，四个 topic（conversations / alder-conversations / resource-updates / app_notifications）均已订阅。
