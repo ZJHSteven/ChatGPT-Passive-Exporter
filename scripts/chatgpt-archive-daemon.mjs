@@ -906,6 +906,9 @@ async function main() {
   // conversation-history-update，本机 Web turn 则由 Phase 3 直接观察 /f/conversation SSE。
   const reconcileHours = Number(flags.get('reconcile-hours') ?? 6)
   const reconcileOnStart = !flags.has('no-reconcile-on-start')
+  // 私有 `/files/download/{file_id}` resolver 目前仅由当前 Web bundle 反向确认，
+  // 尚未完成 Archive 自身的一次 production E2E。默认关闭，必须显式 opt-in。
+  const allowActiveImageResolver = flags.has('allow-active-image-resolver')
   const cooldownMinutes = intFlag(flags, 'cooldown-minutes', 60, 1)
   const maxSyncConversations = intFlag(flags, 'max-sync-conversations', 0, 0)
   const wssReconnectGraceMs = intFlag(flags, 'wss-reconnect-grace-ms', 20_000, 1000)
@@ -1213,6 +1216,7 @@ async function main() {
       lastError: notificationLastError,
     },
     imageAssets: {
+      activeResolverEnabled: allowActiveImageResolver,
       lastHydrationAt: lastImageHydrationAt || null,
       hydrateSuccesses: imageHydrationSuccesses,
       hydrateErrors: imageHydrationErrors,
@@ -1543,6 +1547,7 @@ async function main() {
     }
 
     // DOM/被动网络始终优先；到这里再重新查询一次，避免给刚刚已经补全的资产重复 resolver。
+    if (!allowActiveImageResolver) return
     const activeCandidate = archive.listPendingGeneratedImageAssets(1)[0]
     if (!activeCandidate?.fileId) return
     if (!authHeaders || !guardian?.page || guardian.page.closed || !activeApiAllowed(cooldownUntil)) return

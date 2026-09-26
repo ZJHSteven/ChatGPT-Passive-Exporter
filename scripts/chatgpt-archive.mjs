@@ -59,7 +59,7 @@ Usage:
   chatgpt-archive protocol install-daily [--time HH:mm]
   chatgpt-archive protocol daily-status
   chatgpt-archive protocol uninstall-daily
- chatgpt-archive daemon start [--cdp URL] [--reconcile-hours N] [--db <path>]
+  chatgpt-archive daemon start [--cdp URL] [--reconcile-hours N] [--db <path>] [--allow-active-image-resolver]
   chatgpt-archive daemon status [--state <path>]
   chatgpt-archive daemon stop [--state <path>]
   chatgpt-archive daemon install-startup
@@ -262,6 +262,7 @@ async function daemonCommand(positionals, flags) {
     }
     if (flags.has('no-reconcile-on-start')) childArgs.push('--no-reconcile-on-start')
     if (flags.has('no-auto-launch-chrome')) childArgs.push('--no-auto-launch-chrome')
+    if (flags.has('allow-active-image-resolver')) childArgs.push('--allow-active-image-resolver')
 
     const child = spawn(process.execPath, childArgs, {
       detached: true,
