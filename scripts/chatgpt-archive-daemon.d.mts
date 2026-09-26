@@ -116,6 +116,9 @@ export function conversationIdFromTargetUrl(value: unknown): string | null
 /** 从 estuary 内容 URL 中只提取稳定 file id；忽略 ts/sig 等临时签名。 */
 export function estuaryFileIdFromUrl(value: unknown): string | null
 
+/** 校验 files/download resolver 返回的 signed estuary URL 是否与 stable file id 一致。 */
+export function resolvedEstuaryUrlForFile(payload: unknown, fileId: unknown): string | null
+
 /** 将 CDP Network.getResponseBody 返回值还原为原始响应字节。 */
 export function decodeCdpResponseBodyBytes(result: { body?: unknown, base64Encoded?: unknown } | null | undefined): Buffer
 
