@@ -1521,11 +1521,19 @@ async function main() {
               error: message,
             })
           }
-        }
+       }
+     }
+      catch (error) {
+        imageHydrationErrors += 1
+        await log('image hydration page unavailable; skipped', {
+          conversationId,
+          targetId: target?.id ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        })
       }
-      finally {
-        page.close()
-      }
+     finally {
+       page.close()
+     }
     }
 
     // DOM/被动网络始终优先；到这里再重新查询一次，避免给刚刚已经补全的资产重复 resolver。

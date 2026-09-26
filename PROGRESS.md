@@ -268,6 +268,7 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 ## 请求头对照
 
 ## 2026-09-25 Guardian / 普通网页第一方请求取证
+- 另定位到一个与协议漂移无关的 Guardian 重建放大器：ImageGen DOM 补全 attach 到睡眠/休眠普通 conversation tab 时，`Runtime.enable` timeout 会从 `hydratePendingGeneratedImageAssets()` 冒泡到 daemon 主循环，误关闭健康 Guardian。现已把 per-page hydration attach/evaluate 失败降级为旁路 skip+log，不再触发 Guardian rebuild。
 - 首次 baseline 曾旁听到 46 种首页 backend request / 40 种 response schema，范围包含 billing/settings 等 Archive 无关 API；这会造成无意义 CDP response-body 压力。Drift monitor 已收紧为 Archive 协议面：conversation list/body/batch/init/mapping/stream_status、f/conversation + sentinel、celsius WSS broker、Snorlax/Gizmo sidebar、estuary image；同时 gizmo id 归一化为 `{gizmo_id}`。
 - 2026-09-27 List 参数受控实验（随后因 429 立即停止）：当前无 origin 过滤的 `expand=false&hide_snorlax=false&is_archived=false&is_starred=false&limit=20&order=updated&offset=0` 返回 20/21；`conversation_origin=tpp` 返回唯一 1 条且 item 明确 `conversation_origin=tpp`；`exclude_conversation_origin=tpp` 返回普通第一页 20/21。由此确认 TPP 是真实 conversation origin 子集，不是“新版 global list 模式”。
 - 同轮实验确认 `expand=false` 省略后第一页 ID 集合和 schema 不变，当前场景可视为默认/冗余；下一条 `expand=true` 遭 HTTP 429，因此不能从该 429 推断 expand=true 的业务语义。`hide_snorlax`、archived/starred、order 其它值及 body 参数矩阵均停止主动试验，后续只靠 native passive 样本继续研究。
