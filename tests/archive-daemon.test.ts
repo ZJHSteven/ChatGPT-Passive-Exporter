@@ -9,6 +9,7 @@ import {
   conversationIdFromTargetUrl,
   decodeCdpResponseBodyBytes,
   estuaryFileIdFromUrl,
+  resolvedEstuaryUrlForFile,
   extractConversationEvents,
   incidentKindForTrigger,
   isConfirmedTerminalTrigger,
@@ -48,6 +49,19 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       base64Encoded: false,
     })).toEqual(Buffer.from('plain text', 'utf8'))
   })
+
+  test('files/download resolver 只接受同一 file id 的 ChatGPT estuary URL', () => {
+    const fileId = 'file_abc123'
+    const valid = 'https://chatgpt.com/backend-api/estuary/content?id=file_abc123&ts=1&sig=temporary'
+    expect(resolvedEstuaryUrlForFile({ status: 'success', download_url: valid }, fileId)).toBe(valid)
+    // 当前前端 bundle 兼容缺失 status；只要 download_url 合法仍可使用。
+    expect(resolvedEstuaryUrlForFile({ download_url: valid }, fileId)).toBe(valid)
+    expect(resolvedEstuaryUrlForFile({ status: 'error', download_url: valid }, fileId)).toBeNull()
+    expect(resolvedEstuaryUrlForFile({ status: 'success', download_url: 'https://chatgpt.com/backend-api/estuary/content?id=file_other&sig=x' }, fileId)).toBeNull()
+    expect(resolvedEstuaryUrlForFile({ status: 'success', download_url: 'https://example.com/backend-api/estuary/content?id=file_abc123&sig=x' }, fileId)).toBeNull()
+    expect(resolvedEstuaryUrlForFile({ status: 'success', download_url: 'http://chatgpt.com/backend-api/estuary/content?id=file_abc123&sig=x' }, fileId)).toBeNull()
+  })
+
   test('从 conversations / alder-conversations topic 中提取 conversation id、事件类型与来源 topic', () => {
     const frame = JSON.stringify([
       {
