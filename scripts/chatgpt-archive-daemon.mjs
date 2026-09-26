@@ -45,6 +45,7 @@ const DEFAULT_NOTIFICATION_CONFIG = path.join(PROJECT_ROOT, 'data', 'archive-not
 const DEFAULT_PROTOCOL_LEDGER = path.join(PROJECT_ROOT, 'data', 'protocol-fingerprints.json')
 const DEFAULT_IMAGE_ASSET_DIR = path.join(PROJECT_ROOT, 'data', 'assets', 'chatgpt')
 const IMAGE_ASSET_HYDRATE_INTERVAL_MS = 30_000
+const SLEEPING_TARGET_RETRY_MS = 5 * 60_000
 const WINDOWS_HIDE_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-hide-window.ps1')
 const DEFAULT_CDP_TIMEOUT_MS = 10_000
 const DEFAULT_CHROME_SHORTCUT = process.platform === 'win32' && process.env.USERPROFILE
@@ -973,7 +974,9 @@ async function main() {
   // 否则 passive merge 后再做 overlap，会被自己刚写进去的数据误判成“整页早已存在”。
   const passiveBodyPages = new Map()
   const passiveCatalogPages = new Map()
-  const passivePageObservers = new Map()
+ const passivePageObservers = new Map()
+  const passiveObserverRetryAfter = new Map()
+  const imageHydrationTargetRetryAfter = new Map()
   // body observation 可能恰好发生在一小时 cooldown 开始后。若缓存只有 10 分钟，
   // cooldown 结束时会忘掉已经免费拿到的 latest page，又重复请求一次。因此缓存寿命至少覆盖
   // 一个完整 cooldown 再加 10 分钟缓冲；catalog 是否可用于“当前 repair”另有 capturedAt 门槛。
@@ -1480,10 +1483,11 @@ async function main() {
       rows.push(asset)
       pendingByConversation.set(asset.conversationId, rows)
     }
-    for (const [conversationId, assets] of pendingByConversation) {
-      const target = byConversation.get(conversationId)
-      const page = new CdpClient(target.webSocketDebuggerUrl)
-      try {
+   for (const [conversationId, assets] of pendingByConversation) {
+     const target = byConversation.get(conversationId)
+      if (Date.now() < Number(imageHydrationTargetRetryAfter.get(target?.id) || 0)) continue
+     const page = new CdpClient(target.webSocketDebuggerUrl)
+     try {
         await page.connect()
         await page.send('Runtime.enable')
         const runtime = await page.send('Runtime.evaluate', {
@@ -1497,7 +1501,7 @@ async function main() {
           if (fileId && !urlByFileId.has(fileId)) urlByFileId.set(fileId, String(url))
         }
 
-        for (const asset of assets) {
+       for (const asset of assets) {
           const signedUrl = urlByFileId.get(asset.fileId)
           if (!signedUrl) continue
           try {
@@ -1522,9 +1526,11 @@ async function main() {
             })
           }
        }
+        imageHydrationTargetRetryAfter.delete(target.id)
      }
-      catch (error) {
-        imageHydrationErrors += 1
+     catch (error) {
+        imageHydrationTargetRetryAfter.set(target?.id, Date.now() + SLEEPING_TARGET_RETRY_MS)
+       imageHydrationErrors += 1
         await log('image hydration page unavailable; skipped', {
           conversationId,
           targetId: target?.id ?? null,
@@ -2202,13 +2208,16 @@ async function main() {
       }
     }
 
-    for (const target of eligible) {
-      if (passivePageObservers.has(target.id)) continue
-      try {
-        await attachPassivePageObserver(target)
-      }
-      catch (error) {
-        await log('passive ChatGPT page observer attach failed', {
+   for (const target of eligible) {
+     if (passivePageObservers.has(target.id)) continue
+      if (Date.now() < Number(passiveObserverRetryAfter.get(target.id) || 0)) continue
+     try {
+       await attachPassivePageObserver(target)
+        passiveObserverRetryAfter.delete(target.id)
+     }
+     catch (error) {
+        passiveObserverRetryAfter.set(target.id, Date.now() + SLEEPING_TARGET_RETRY_MS)
+       await log('passive ChatGPT page observer attach failed', {
           targetId: target.id,
           error: error instanceof Error ? error.message : String(error),
         })
