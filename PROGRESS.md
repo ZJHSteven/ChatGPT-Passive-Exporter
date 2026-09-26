@@ -265,6 +265,8 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 ## 请求头对照
 
 ## 2026-09-25 Guardian / 普通网页第一方请求取证
+- 2026-09-27 参数矩阵实验确认主动探测本身具有真实限流风险：在严格串行、6 秒间隔下，仅少量 List GET 后再次出现 HTTP 429，因此协议漂移监控禁止使用主动矩阵扫描；chatgpt-protocol-probe.mjs 现在必须显式传 --allow-active-probe 才运行，不能进入 CI/定时健康检查。
+- cooldown 启动边界进一步收紧：daemon 若从 state 恢复真实 cooldown，会在 Guardian reload/navigation 之前先用 HTTPS URL block 屏蔽 conversation REST，WSS 保持不受影响；cooldown 到期时不再要求预先已有 auth 才释放 block，避免“因为 block 导致没 auth、因为没 auth 又永远不解 block”的死锁。
 - 2026-09-26 01:22 最终部署：PID 41336，--no-reconcile-on-start；Guardian healthFailures=0 / rebuilds=0，WSS activeSockets=3，四个 topic（conversations / alder-conversations / resource-updates / app_notifications）均已订阅。
 - 当前 3 个普通 ChatGPT page observer 已挂载；启动窗口 passive http429Responses=0、syncErrors=0，且没有 startup catalog reconciliation / body replay。
 - 最终验证：archive-daemon + sync-overlap 定向 26/26；全量 17 files / 108 tests；tsc --noEmit 全通过。

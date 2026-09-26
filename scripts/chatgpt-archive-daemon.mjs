@@ -2575,6 +2575,15 @@ async function main() {
     lastSafeWssControls = []
     authHeaders = null
     await attachGuardianEvents()
+    // 如果进程启动时继承了真实 429 cooldown，先在 reload/navigation 之前就挡住
+    // Guardian 自己的 conversation REST。WSS 使用 wss://，不会命中这个 HTTPS block。
+    if (Date.now() < cooldownUntil) {
+      await setGuardianConversationRestBlocked(true).catch(async (error) => {
+        await log('Guardian REST pre-block failed during cooldown startup', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
+    }
     await log('guardian ready', {
       reason,
       targetId: guardian.targetId,
@@ -2597,9 +2606,7 @@ async function main() {
     while (!authHeaders && Date.now() - waitStarted < 20_000 && !guardian.page.closed) {
       await new Promise(resolve => setTimeout(resolve, 100))
     }
-    if (Date.now() < cooldownUntil && activeSocketIds.size > 0) {
-      await setGuardianConversationRestBlocked(true).catch(() => {})
-    }
+    if (Date.now() < cooldownUntil) await setGuardianConversationRestBlocked(true).catch(() => {})
     // “daemon 已经 ready”和“首次补洞完成”是两个不同状态。先写 ready state，
     // 避免 CLI 因一次 5 页 startup reconcile 超过启动等待时间而误报 started:false。
     await writeState()
@@ -2685,7 +2692,7 @@ async function main() {
       }
       // cooldown 到期只解除“主动 API 禁止”，不再拿完整 catalog 扫描当探针。
       // 先保持 WSS 在线；已知 ready conversation 由 drainDirty 逐条补 body。
-      if (cooldownRecoveryPending && authHeaders && activeApiAllowed(cooldownUntil)) {
+      if (cooldownRecoveryPending && activeApiAllowed(cooldownUntil)) {
         cooldownRecoveryPending = false
         cooldownUntil = 0
         await setGuardianConversationRestBlocked(false).catch(() => {})
