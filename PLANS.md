@@ -36,7 +36,8 @@
 - [done] 扩展 rich manifest：结构化 `image_asset_pointer` 现在保存为 `generated-image` / `image-asset`，保留 pointer、file id、MIME、尺寸、字节数、generation/gen_id 等非敏感元数据，`archive show --format resources` 可审计多图。
 - [done] 增加 ImageGen-aware terminal classification：完成的 image tool node 复用 `terminalEvidence=final`，同时以 `tailShape=image-generation-final` 独立标记，不再误建普通 `complete-no-final` error；手机另发“图片节点”提示并按 message 去重。
 - [in_progress] 修复真实环境图片本体仍 pending 的最后缺口：当前 DOM hydration 依赖历史图片仍存在于虚拟化 DOM，真实漫画会话 14 个 generated-image 均未自动落盘。改为主路径被动监听已打开 ChatGPT conversation 页自然发生的 `/estuary/content` 响应，直接通过 CDP 读取响应体并匹配 SQLite 的稳定 file id；不滚动、不导航、不重放请求。DOM signed-URL fetch 仅保留 daemon 冷启动后“页面已经加载过图片”的受控 fallback。
-- [pending] 为被动 estuary 响应捕获增加数据库/daemon 回归，重启 daemon 后用真实漫画会话滚动/自然加载一组历史图片验证自动落盘，并确认 `pendingGenerated` 下降、SHA-256/字节数一致后更新 PROGRESS。
+- [in_progress] 追加严格受控的 active resolver fallback。2026-09-27 当前 ChatGPT Web bundle 已确认标准图片解析逻辑：稳定 `sediment://file_*` 去 scheme 后调用 `Request.safeGet('/files/download/{file_id}')`，仅接受 `status=success + download_url`；普通页面 `fetch(...credentials)` 因缺应用层 Authorization 返回 403。daemon 将复用已经存在、只驻留内存的 first-party authHeaders，并通过 Guardian 请求 `/backend-api/files/download/{file_id}`；返回 URL 必须再次校验为 ChatGPT `/backend-api/estuary/content` 且 `id` 与 stable file id 完全一致。被动响应/DOM signed URL 始终优先，主动 resolver 每个 hydration 周期最多补 1 张并继续服从统一请求间隔与 429 cooldown。
+- [pending] 为 resolver payload 校验、被动 estuary 响应捕获、active fallback 增加回归；重启 daemon 后验证真实 pending 图片开始落盘，确认 `pendingGenerated` 下降、SHA-256/字节数一致后更新 PROGRESS。
 
 ## 2026-09-22 Incident 手机推送收口 ExecPlan
 
