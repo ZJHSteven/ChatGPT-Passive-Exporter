@@ -5,8 +5,9 @@ import { describe, expect, test } from 'vitest'
 import {
   buildProtocolRequestShape,
   buildProtocolResponseShape,
-  classifyProtocolReplayCandidate,
-  ProtocolDriftLedger,
+ classifyProtocolReplayCandidate,
+  isArchiveProtocolRoute,
+ ProtocolDriftLedger,
 } from '../src/local/protocol-drift.ts'
 
 describe('protocol drift fingerprinting', () => {
@@ -30,7 +31,7 @@ describe('protocol drift fingerprinting', () => {
     expect(shape?.protocolHeaderNames).toContain('x-openai-target-path')
   })
 
-  test('browser transport headers are recorded but do not split the protocol signature', async () => {
+ test('browser transport headers are recorded but do not split the protocol signature', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protocol-header-'))
     const file = path.join(dir, 'ledger.json')
     const ledger = await ProtocolDriftLedger.open(file, { now: 1000, baselineWindowMs: 60_000 })
@@ -48,6 +49,15 @@ describe('protocol drift fingerprinting', () => {
     })!
     expect(first.signature).toBe(second.signature)
     expect(Object.keys(ledger.state.variants)).toHaveLength(1)
+ })
+
+  test('daemon drift scope excludes unrelated account/settings APIs and normalizes gizmo ids', () => {
+    expect(isArchiveProtocolRoute('/backend-api/settings/user')).toBe(false)
+    expect(isArchiveProtocolRoute('/backend-api/conversations')).toBe(true)
+    expect(isArchiveProtocolRoute('/backend-api/gizmos/{gizmo_id}/conversations')).toBe(true)
+    expect(buildProtocolRequestShape({
+      url: 'https://chatgpt.com/backend-api/gizmos/g-p-123/conversations?limit=5',
+    })?.route).toBe('/backend-api/gizmos/{gizmo_id}/conversations')
   })
 
   test('filtered TPP catalog is not a global replay candidate', () => {

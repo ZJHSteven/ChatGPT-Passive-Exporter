@@ -145,6 +145,9 @@ function requestSignaturePayload(shape: ProtocolRequestShape) {
 function normalizePathname(pathname: string): string {
   if (pathname === '/backend-api/conversations/batch') return pathname
   if (pathname === '/backend-api/conversation/init') return pathname
+  if (/^\/backend-api\/gizmos\/[^/]+\/conversations$/u.test(pathname)) {
+    return '/backend-api/gizmos/{gizmo_id}/conversations'
+  }
   if (pathname.startsWith('/backend-api/f/conversation')) {
     return pathname.replace(/\/[0-9a-f-]{20,}$/iu, '/{id}')
   }
@@ -162,6 +165,23 @@ function normalizePathname(pathname: string): string {
     return '/backend-api/conversation/{conversation_id}'
   }
   return pathname
+}
+
+export function isArchiveProtocolRoute(route: string): boolean {
+  return route === '/backend-api/conversations'
+    || route === '/backend-api/conversations/batch'
+    || route === '/backend-api/conversations/{conversation_id}'
+    || route === '/backend-api/conversations/{conversation_id}/messages'
+    || route === '/backend-api/conversation/init'
+    || route === '/backend-api/conversation/{conversation_id}'
+    || route === '/backend-api/conversation/{conversation_id}/stream_status'
+    || route === '/backend-api/f/conversation'
+    || route === '/backend-api/f/conversation/{id}'
+    || route === '/backend-api/estuary/content'
+    || route === '/backend-api/gizmos/snorlax/sidebar'
+    || route === '/backend-api/gizmos/{gizmo_id}/conversations'
+    || route === '/backend-api/celsius/ws/user'
+    || route.startsWith('/backend-api/sentinel/chat-requirements/')
 }
 
 function normalizeQueryValue(key: string, value: string): string {
@@ -350,6 +370,7 @@ export class ProtocolDriftLedger {
   observeRequest(input: ProtocolRequestInput): ProtocolObserveRequestResult | null {
     const shape = buildProtocolRequestShape(input)
     if (!shape) return null
+    if (!isArchiveProtocolRoute(shape.route)) return null
     const now = input.observedAt ?? Date.now()
     this.refreshBaselineLock(now)
     const signature = hashShape(requestSignaturePayload(shape))
