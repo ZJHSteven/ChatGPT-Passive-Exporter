@@ -8,6 +8,8 @@ import { ChatArchiveDb } from '../src/local/archive-db.ts'
 import { importOfficialExportZips } from '../src/local/official-export.ts'
 import { clusterCompletionBursts, readTurnTraceTail } from '../src/local/turn-trace-reader.ts'
 import { actorStatus, resetActor, sendActorPrompt } from '../src/local/chatgpt-actor.ts'
+import { ProtocolDriftLedger } from '../src/local/protocol-drift.ts'
+import { loadIncidentNotificationConfig, sendIncidentNotification } from '../src/local/incident-notifier.ts'
 
 /**
  * 全局 `chatgpt-archive` 通过 npm link/全局 shim 可以从任意工作目录启动。
@@ -22,9 +24,15 @@ const DEFAULT_DAEMON_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemo
 const DEFAULT_DAEMON_LOG_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
 const DEFAULT_TURN_TRACE_PATH = path.join(PROJECT_ROOT, 'data', 'active-turn-trace.jsonl')
 const DEFAULT_ACTOR_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-actor-state.json')
+const DEFAULT_PROTOCOL_LEDGER_PATH = path.join(PROJECT_ROOT, 'data', 'protocol-fingerprints.json')
+const DEFAULT_NOTIFICATION_CONFIG_PATH = path.join(PROJECT_ROOT, 'data', 'archive-notification.local.json')
+const DEFAULT_PROTOCOL_REPORT_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'protocol-report-state.json')
+const DEFAULT_PROTOCOL_APPROVALS_PATH = path.join(PROJECT_ROOT, 'data', 'protocol-template-approvals.json')
 const WINDOWS_STARTUP_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-archive-startup.ps1')
 const WINDOWS_STARTUP_LAUNCHER = path.join(PROJECT_ROOT, 'scripts', 'windows-archive-daemon-launcher.vbs')
 const WINDOWS_STARTUP_TASK = 'ChatGPT Archive Daemon'
+const WINDOWS_PROTOCOL_TASK_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-protocol-drift-task.ps1')
+const WINDOWS_PROTOCOL_TASK = 'ChatGPT Archive Protocol Drift'
 
 function usage() {
   console.log(`ChatGPT Archive CLI
@@ -44,8 +52,14 @@ Usage:
   chatgpt-archive turn-trace [--limit N] [--trace <path>] [--cluster-ms N]
   chatgpt-archive actor send --prompt-file <path> [--cdp URL] [--trace <path>] [--state <path>]
   chatgpt-archive actor status [--cdp URL] [--state <path>]
-  chatgpt-archive actor reset [--cdp URL] [--state <path>]
-  chatgpt-archive daemon start [--cdp URL] [--reconcile-hours N] [--db <path>]
+ chatgpt-archive actor reset [--cdp URL] [--state <path>]
+  chatgpt-archive protocol status [--ledger <path>]
+  chatgpt-archive protocol report [--notify] [--ledger <path>]
+  chatgpt-archive protocol approve <request-signature> [--ledger <path>]
+  chatgpt-archive protocol install-daily [--time HH:mm]
+  chatgpt-archive protocol daily-status
+  chatgpt-archive protocol uninstall-daily
+ chatgpt-archive daemon start [--cdp URL] [--reconcile-hours N] [--db <path>]
   chatgpt-archive daemon status [--state <path>]
   chatgpt-archive daemon stop [--state <path>]
   chatgpt-archive daemon install-startup
@@ -98,6 +112,21 @@ function dbPath(flags) {
 function daemonStatePath(flags) {
   const explicit = flags.get('state')
   return explicit === undefined ? DEFAULT_DAEMON_STATE_PATH : path.resolve(String(explicit))
+}
+
+async function readJsonOr(filePath, fallback) {
+  try { return JSON.parse(await fs.readFile(filePath, 'utf8')) }
+  catch (error) {
+    if (error?.code === 'ENOENT') return fallback
+    throw error
+  }
+}
+
+async function writeJsonAtomic(filePath, value) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
+  const temporary = filePath + '.tmp-' + process.pid
+  await fs.writeFile(temporary, JSON.stringify(value, null, 2))
+  await fs.rename(temporary, filePath)
 }
 
 function isPidAlive(pid) {
@@ -224,8 +253,9 @@ async function daemonCommand(positionals, flags) {
       'watchdog-minutes',
       'chrome-shortcut',
       'chrome-start-timeout-ms',
-      'notification-config',
-      'turn-trace',
+     'notification-config',
+      'protocol-ledger',
+     'turn-trace',
     ]
     for (const name of passFlags) {
       if (flags.has(name)) childArgs.push(`--${name}`, String(flags.get(name)))
@@ -255,6 +285,147 @@ async function daemonCommand(positionals, flags) {
   }
 
   throw new Error(`Unknown daemon action: ${action}`)
+}
+
+async function protocolCommand(positionals, flags) {
+  const action = positionals[0]
+  if (!action) throw new Error('protocol requires status|report|approve|install-daily|daily-status|uninstall-daily')
+
+  if (['install-daily', 'daily-status', 'uninstall-daily'].includes(action)) {
+    if (process.platform !== 'win32') throw new Error(action + ' is currently Windows-only')
+    const helperAction = action === 'install-daily'
+      ? 'Install'
+      : action === 'uninstall-daily' ? 'Uninstall' : 'Status'
+    const args = [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy', 'Bypass',
+      '-File', WINDOWS_PROTOCOL_TASK_HELPER,
+      '-Action', helperAction,
+      '-TaskName', WINDOWS_PROTOCOL_TASK,
+    ]
+    if (helperAction === 'Install') {
+      const dailyAt = String(flags.get('time') || '12:00')
+      if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(dailyAt)) throw new Error('--time must be HH:mm')
+      args.push(
+        '-NodeExe', process.execPath,
+        '-CliScript', fileURLToPath(import.meta.url),
+        '-LauncherScript', WINDOWS_STARTUP_LAUNCHER,
+        '-ProjectRoot', PROJECT_ROOT,
+        '-DailyAt', dailyAt,
+      )
+    }
+    const child = spawn('pwsh.exe', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    const exitCode = await new Promise((resolve, reject) => {
+      child.on('error', reject)
+      child.on('close', resolve)
+    })
+    if (exitCode !== 0) throw new Error('Protocol drift scheduled task failed (' + exitCode + '): ' + (stderr.trim() || stdout.trim()))
+    console.log(stdout.trim() || JSON.stringify({ action, ok: true }))
+    return
+  }
+
+  const ledgerPath = flags.has('ledger')
+    ? path.resolve(String(flags.get('ledger')))
+    : DEFAULT_PROTOCOL_LEDGER_PATH
+  const ledger = await ProtocolDriftLedger.open(ledgerPath)
+  const reportStatePath = flags.has('report-state')
+    ? path.resolve(String(flags.get('report-state')))
+    : DEFAULT_PROTOCOL_REPORT_STATE_PATH
+  const approvalsPath = flags.has('approvals')
+    ? path.resolve(String(flags.get('approvals')))
+    : DEFAULT_PROTOCOL_APPROVALS_PATH
+
+  if (action === 'status') {
+    const reportState = await readJsonOr(reportStatePath, { version: 1, notified: {} })
+    const approvals = await readJsonOr(approvalsPath, { version: 1, approvals: {} })
+    console.log(JSON.stringify({
+      summary: ledger.summary(),
+      pending: ledger.pendingChanges({ unreportedOnly: false }),
+      reportStatePath,
+      notifiedCount: Object.keys(reportState.notified || {}).length,
+      approvalsPath,
+      approvals: approvals.approvals || {},
+    }, null, 2))
+    return
+  }
+
+  if (action === 'approve') {
+    const signature = positionals[1]
+    if (!signature) throw new Error('protocol approve requires a request signature')
+    const variant = ledger.state.variants[signature]
+    if (!variant?.candidate?.eligible) {
+      throw new Error('request signature is missing or not replay-eligible: ' + signature)
+    }
+    const approvals = await readJsonOr(approvalsPath, { version: 1, approvals: {} })
+    approvals.version = 1
+    approvals.approvals = approvals.approvals || {}
+    approvals.approvals[signature] = {
+      approvedAt: Date.now(),
+      family: variant.candidate.family,
+      route: variant.shape.route,
+      method: variant.shape.method,
+      query: variant.shape.query,
+    }
+    await writeJsonAtomic(approvalsPath, approvals)
+    console.log(JSON.stringify({ ledgerPath, approvalsPath, signature, approved: true }, null, 2))
+    return
+  }
+
+  if (action === 'report') {
+    const summary = ledger.summary()
+    const allPending = ledger.pendingChanges({ unreportedOnly: false })
+    const reportState = await readJsonOr(reportStatePath, { version: 1, notified: {} })
+    reportState.version = 1
+    reportState.notified = reportState.notified || {}
+    const changeKey = change => change.kind + ':' + change.requestSignature + ':' + (change.responseSignature || '')
+    const pending = allPending.filter(change => !reportState.notified[changeKey(change)])
+    let notification = null
+    if (flags.has('notify') && pending.length > 0 && summary.baselineMode === 'locked') {
+      const notificationPath = flags.has('notification-config')
+        ? path.resolve(String(flags.get('notification-config')))
+        : DEFAULT_NOTIFICATION_CONFIG_PATH
+      const config = await loadIncidentNotificationConfig(notificationPath)
+      const lines = pending.slice(0, 8).map((change) => {
+        const suffix = change.kind === 'response'
+          ? ' response=' + change.responseSignature
+          : ''
+        const query = Object.keys(change.query).length > 0
+          ? ' ' + JSON.stringify(change.query)
+          : ''
+        return change.kind + ' ' + change.method + ' ' + change.route + query + ' [' + change.requestSignature + suffix + ']'
+      })
+      if (pending.length > lines.length) lines.push('…另有 ' + (pending.length - lines.length) + ' 项')
+      const result = await sendIncidentNotification(config, {
+        title: 'ChatGPT 协议漂移 ' + pending.length + ' 项',
+        body: lines.join('\n'),
+      })
+      notification = result
+      if (result.ok) {
+        const now = Date.now()
+        for (const change of pending) reportState.notified[changeKey(change)] = now
+        await writeJsonAtomic(reportStatePath, reportState)
+      }
+    }
+    console.log(JSON.stringify({
+      summary,
+      pending,
+      notification,
+      reportStatePath,
+    }, null, 2))
+    return
+  }
+
+  throw new Error('Unknown protocol action: ' + action)
 }
 
 function limit(flags, fallback) {
@@ -434,6 +605,11 @@ async function main() {
       return
     }
     throw new Error('actor requires send|status|reset')
+  }
+
+  if (command === 'protocol') {
+    await protocolCommand(positionals, flags)
+    return
   }
 
   const archive = new ChatArchiveDb(dbPath(flags))
