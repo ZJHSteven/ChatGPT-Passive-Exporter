@@ -494,6 +494,30 @@ export function estuaryFileIdFromUrl(value) {
 }
 
 /**
+ * 校验 `/files/download/{file_id}` resolver 的返回值，并只放行同一 stable file id 的
+ * ChatGPT estuary URL。短期 sig/ts 只作为本次下载能力返回给调用者，不做持久化。
+ *
+ * 当前 Web bundle 的标准逻辑允许 `status` 缺失；若存在则必须为 `success`。
+ */
+export function resolvedEstuaryUrlForFile(payload, fileId) {
+  if (!payload || typeof payload !== 'object') return null
+  const status = typeof payload.status === 'string' ? payload.status : null
+  if (status !== null && status !== 'success') return null
+  if (typeof payload.download_url !== 'string' || !payload.download_url) return null
+  if (typeof fileId !== 'string' || !/^file_[A-Za-z0-9_-]+$/u.test(fileId)) return null
+  try {
+    const url = new URL(payload.download_url, 'https://chatgpt.com')
+    if (url.protocol !== 'https:') return null
+    if (url.hostname !== 'chatgpt.com' && !url.hostname.endsWith('.chatgpt.com')) return null
+    if (estuaryFileIdFromUrl(url.toString()) !== fileId) return null
+    return url.toString()
+  }
+  catch {
+    return null
+  }
+}
+
+/**
  * 把 CDP `Network.getResponseBody` 的返回值还原成原始字节。
  *
  * JSON/body API 通常是 UTF-8 文本；图片等二进制响应则由 CDP 以 base64 返回。
@@ -988,6 +1012,10 @@ async function main() {
   let lastImageHydrationAt = 0
   let imageHydrationSuccesses = 0
   let imageHydrationErrors = 0
+  let activeImageResolverAttempts = 0
+  let activeImageResolverSuccesses = 0
+  let activeImageResolverErrors = 0
+  let lastActiveImageResolverAt = 0
 
   const log = async (message, extra = null) => {
     const line = `[${new Date().toISOString()}] ${message}${extra ? ` ${JSON.stringify(extra)}` : ''}\n`
@@ -1102,6 +1130,10 @@ async function main() {
       lastHydrationAt: lastImageHydrationAt || null,
       hydrateSuccesses: imageHydrationSuccesses,
       hydrateErrors: imageHydrationErrors,
+      activeResolverAttempts: activeImageResolverAttempts,
+      activeResolverSuccesses: activeImageResolverSuccesses,
+      activeResolverErrors: activeImageResolverErrors,
+      lastActiveResolverAt: lastActiveImageResolverAt || null,
       pendingGenerated: archive.listPendingGeneratedImageAssets(500, Date.now()).length,
     },
     rssBytes: process.memoryUsage().rss,
@@ -1286,15 +1318,57 @@ async function main() {
     return { outputPath, digest, bytes: bytes.length, contentType }
   }
 
+  /** 在已登录 ChatGPT renderer 中下载一个已经解析好的 signed estuary URL。 */
+  const fetchImageBytesInPage = async (page, signedUrl) => {
+    const fetchExpression = `(${async function downloadInPage(url) {
+      const response = await fetch(url, { credentials: 'include' })
+      const blob = await response.blob()
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ''))
+        reader.onerror = () => reject(reader.error || new Error('FileReader failed'))
+        reader.readAsDataURL(blob)
+      })
+      return {
+        ok: response.ok,
+        status: response.status,
+        contentType: blob.type || response.headers.get('content-type') || '',
+        size: blob.size,
+        dataUrl,
+      }
+    }})(${JSON.stringify(signedUrl)})`
+    const fetched = await page.send('Runtime.evaluate', {
+      expression: fetchExpression,
+      awaitPromise: true,
+      returnByValue: true,
+    }, 30_000)
+    const result = fetched.result?.value || {}
+    if (!result.ok) throw new Error(`HTTP ${result.status ?? 'unknown'}`)
+    const dataUrl = String(result.dataUrl || '')
+    const comma = dataUrl.indexOf(',')
+    if (comma < 0 || !dataUrl.slice(0, comma).includes(';base64')) {
+      throw new Error('page fetch returned no base64 image data')
+    }
+    const bytes = Buffer.from(dataUrl.slice(comma + 1), 'base64')
+    if (Number(result.size) !== bytes.length) {
+      throw new Error(`renderer size mismatch blob=${result.size} decoded=${bytes.length}`)
+    }
+    return { bytes, contentType: String(result.contentType || '') }
+  }
+
   /**
-   * 机会式补全 ImageGen 图片本体。
+   * 补全 ImageGen 图片本体：被动优先，严格受控主动 resolver 兜底。
    *
-   * 被动边界：
+   * 被动主路径：
    * 1. 不创建、不导航、不激活任何 conversation tab；
    * 2. 只连接用户本来已经打开的 ChatGPT conversation target；
    * 3. 只读取 DOM 中已经自然解析出的 estuary URL；
    * 4. 真正取图由**该页面自己的 fetch** 完成，浏览器自行附带登录态，daemon 不读取 Cookie；
-   * 5. 找不到已解析 URL 就保持 pending，未来页面自然出现时再补。
+   * 5. per-tab Network observer 还会直接截获页面自己已经收到的 estuary 响应。
+   *
+   * 主动兜底仅用于长期 pending/off-head 图片：每个 hydration 周期最多 1 张；使用当前 Web
+   * bundle 已确认的 `/files/download/{file_id}` resolver，并复用 Guardian 已捕获的 first-party
+   * authHeaders。resolver 与图片下载都不保存 signed URL/token/cookie，并继续服从统一节流/429 cooldown。
    *
    * 2026-09-24 的真实漫画会话已经验证：页面上下文 fetch 能得到与 conversation body
    * `size_bytes` 完全一致的 Blob。之前失败的是浏览器下载管理器落盘链，而不是 fetch 本身；
@@ -1323,9 +1397,6 @@ async function main() {
       rows.push(asset)
       pendingByConversation.set(asset.conversationId, rows)
     }
-    if (pendingByConversation.size === 0) return
-
-    await fs.mkdir(DEFAULT_IMAGE_ASSET_DIR, { recursive: true })
     for (const [conversationId, assets] of pendingByConversation) {
       const target = byConversation.get(conversationId)
       const page = new CdpClient(target.webSocketDebuggerUrl)
@@ -1348,38 +1419,8 @@ async function main() {
           if (!signedUrl) continue
           try {
             // URL 由当前 DOM 产生并只进入 renderer 表达式；不进入任何日志/SQLite。
-            const fetchExpression = `(${async function downloadInPage(url) {
-              const response = await fetch(url, { credentials: 'include' })
-              const blob = await response.blob()
-              const dataUrl = await new Promise((resolve, reject) => {
-                const reader = new FileReader()
-                reader.onload = () => resolve(String(reader.result || ''))
-                reader.onerror = () => reject(reader.error || new Error('FileReader failed'))
-                reader.readAsDataURL(blob)
-              })
-              return {
-                ok: response.ok,
-                status: response.status,
-                contentType: blob.type || response.headers.get('content-type') || '',
-                size: blob.size,
-                dataUrl,
-              }
-            }})(${JSON.stringify(signedUrl)})`
-            const fetched = await page.send('Runtime.evaluate', {
-              expression: fetchExpression,
-              awaitPromise: true,
-              returnByValue: true,
-            }, 30_000)
-            const result = fetched.result?.value || {}
-            if (!result.ok) throw new Error(`HTTP ${result.status ?? 'unknown'}`)
-            const dataUrl = String(result.dataUrl || '')
-            const comma = dataUrl.indexOf(',')
-            if (comma < 0 || !dataUrl.slice(0, comma).includes(';base64')) throw new Error('page fetch returned no base64 image data')
-            const bytes = Buffer.from(dataUrl.slice(comma + 1), 'base64')
-            if (Number(result.size) !== bytes.length) {
-              throw new Error(`renderer size mismatch blob=${result.size} decoded=${bytes.length}`)
-            }
-            await persistGeneratedImageAssetBytes(asset, bytes, result.contentType)
+            const { bytes, contentType } = await fetchImageBytesInPage(page, signedUrl)
+            await persistGeneratedImageAssetBytes(asset, bytes, contentType)
             imageHydrationSuccesses += 1
             await log('image asset hydrated', {
               conversationId,
@@ -1402,6 +1443,73 @@ async function main() {
       finally {
         page.close()
       }
+    }
+
+    // DOM/被动网络始终优先；到这里再重新查询一次，避免给刚刚已经补全的资产重复 resolver。
+    const activeCandidate = archive.listPendingGeneratedImageAssets(1)[0]
+    if (!activeCandidate?.fileId) return
+    if (!authHeaders || !guardian?.page || guardian.page.closed || !activeApiAllowed(cooldownUntil)) return
+
+    const resolverPath = `/backend-api/files/download/${encodeURIComponent(activeCandidate.fileId)}`
+    activeImageResolverAttempts += 1
+    lastActiveImageResolverAt = Date.now()
+    let resolverPayload
+    try {
+      resolverPayload = await fetchChecked({
+        url: resolverPath,
+        targetPath: resolverPath,
+        targetRoute: '/backend-api/files/download/{file_id}',
+        kind: 'body',
+      })
+    }
+    catch (error) {
+      activeImageResolverErrors += 1
+      const message = error instanceof Error ? error.message : String(error)
+      // 认证/限流/Guardian 生命周期属于 transport 状态，不污染具体图片的 download_error。
+      const transportFailure = /HTTP 429|auth context expired|active API cooldown|no captured first-party auth context|guardian page unavailable/iu.test(message)
+      if (!transportFailure) archive.markImageAssetDownloadError(activeCandidate.assetPointer, `resolver: ${message}`)
+      await log('image asset resolver failed', {
+        conversationId: activeCandidate.conversationId,
+        fileId: activeCandidate.fileId,
+        error: message,
+      })
+      return
+    }
+
+    const signedUrl = resolvedEstuaryUrlForFile(resolverPayload, activeCandidate.fileId)
+    if (!signedUrl) {
+      activeImageResolverErrors += 1
+      imageHydrationErrors += 1
+      const message = 'resolver returned no matching ChatGPT estuary URL'
+      archive.markImageAssetDownloadError(activeCandidate.assetPointer, message)
+      await log('image asset resolver rejected payload', {
+        conversationId: activeCandidate.conversationId,
+        fileId: activeCandidate.fileId,
+      })
+      return
+    }
+
+    try {
+      const { bytes, contentType } = await fetchImageBytesInPage(guardian.page, signedUrl)
+      await persistGeneratedImageAssetBytes(activeCandidate, bytes, contentType)
+      activeImageResolverSuccesses += 1
+      imageHydrationSuccesses += 1
+      await log('image asset hydrated via resolver', {
+        conversationId: activeCandidate.conversationId,
+        fileId: activeCandidate.fileId,
+        bytes: bytes.length,
+      })
+    }
+    catch (error) {
+      activeImageResolverErrors += 1
+      imageHydrationErrors += 1
+      const message = error instanceof Error ? error.message : String(error)
+      archive.markImageAssetDownloadError(activeCandidate.assetPointer, `resolver download: ${message}`)
+      await log('image asset resolver download failed', {
+        conversationId: activeCandidate.conversationId,
+        fileId: activeCandidate.fileId,
+        error: message,
+      })
     }
   }
 
