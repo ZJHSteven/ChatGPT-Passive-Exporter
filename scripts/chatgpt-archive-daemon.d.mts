@@ -82,7 +82,7 @@ export function catalogStableOverlapTarget(
 ): number
 
 export type ConversationBackendRoute =
-  | { kind: 'catalog', offset: number, limit: number, globalCatalog: boolean, conversationOrigin: string | null, hideSnorlax: string | null }
+  | { kind: 'catalog', offset: number, limit: number, globalCatalog: boolean, conversationOrigin: string | null, excludeConversationOrigin: string | null, hideSnorlax: string | null }
   | { kind: 'body-latest', conversationId: string }
   | { kind: 'body-cursor', conversationId: string, before: string | null }
   | { kind: 'mapping', conversationId: string }

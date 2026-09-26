@@ -32,6 +32,7 @@ import {
   sendIncidentNotification,
 } from '../src/local/incident-notifier.ts'
 import { summarizeFrame as summarizeWssFrame } from './wss-stability-probe.mjs'
+import { ProtocolDriftLedger } from '../src/local/protocol-drift.ts'
 
 const DEFAULT_CDP = 'http://127.0.0.1:9222'
 const GUARDIAN_MARKER = 'chatgpt-archive-guardian'
@@ -41,6 +42,7 @@ const DEFAULT_STATE = path.join(PROJECT_ROOT, 'data', 'archive-daemon-state.json
 const DEFAULT_LOG = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
 const DEFAULT_TURN_TRACE = path.join(PROJECT_ROOT, 'data', 'active-turn-trace.jsonl')
 const DEFAULT_NOTIFICATION_CONFIG = path.join(PROJECT_ROOT, 'data', 'archive-notification.local.json')
+const DEFAULT_PROTOCOL_LEDGER = path.join(PROJECT_ROOT, 'data', 'protocol-fingerprints.json')
 const DEFAULT_IMAGE_ASSET_DIR = path.join(PROJECT_ROOT, 'data', 'assets', 'chatgpt')
 const IMAGE_ASSET_HYDRATE_INTERVAL_MS = 30_000
 const WINDOWS_HIDE_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-hide-window.ps1')
@@ -806,10 +808,12 @@ export function classifyConversationBackendUrl(input, base = 'https://chatgpt.co
     if (url.pathname === '/backend-api/conversations') {
       const offset = Number(url.searchParams.get('offset') ?? '0')
       const limit = Number(url.searchParams.get('limit') ?? '0')
-      const origin = url.searchParams.get('conversation_origin')
-      const hideSnorlax = url.searchParams.get('hide_snorlax')
-      const globalCatalog = !origin
-        && Number.isFinite(offset)
+     const origin = url.searchParams.get('conversation_origin')
+      const excludeOrigin = url.searchParams.get('exclude_conversation_origin')
+     const hideSnorlax = url.searchParams.get('hide_snorlax')
+     const globalCatalog = !origin
+        && !excludeOrigin
+       && Number.isFinite(offset)
         && Number.isFinite(limit)
         && url.searchParams.get('order') === 'updated'
         && url.searchParams.get('is_archived') === 'false'
@@ -819,10 +823,11 @@ export function classifyConversationBackendUrl(input, base = 'https://chatgpt.co
         kind: 'catalog',
         offset: Number.isFinite(offset) ? offset : 0,
         limit: Number.isFinite(limit) ? limit : 0,
-        globalCatalog,
-        conversationOrigin: origin,
-        hideSnorlax,
-      }
+       globalCatalog,
+       conversationOrigin: origin,
+        excludeConversationOrigin: excludeOrigin,
+       hideSnorlax,
+     }
     }
 
     const plural = url.pathname.match(/^\/backend-api\/conversations\/([^/]+?)(\/messages)?\/?$/u)
@@ -884,6 +889,9 @@ async function main() {
   const notificationConfigPath = flags.has('notification-config')
     ? path.resolve(String(flags.get('notification-config')))
     : DEFAULT_NOTIFICATION_CONFIG
+  const protocolLedgerPath = flags.has('protocol-ledger')
+    ? path.resolve(String(flags.get('protocol-ledger')))
+    : DEFAULT_PROTOCOL_LEDGER
   // 这里的 delay 不是“同步完以后随便睡一下”，而是所有主动 backend 请求之间的
   // **全局最小间隔**。Backlog 追平宁可花一两个小时，也不要因为一次启动积压 100+ 条
   // conversation 就短时间连续打几十个请求。
@@ -1006,6 +1014,9 @@ async function main() {
   let lastActiveRequestAt = 0
   let recoveryProbeRemaining = 0
   let notificationConfig = null
+  let protocolLedger = null
+  let protocolFlushTimer = null
+  let activeReplayRequestUrl = null
   let notificationLastAttemptAt = null
   let notificationLastSuccessAt = null
   let notificationLastError = null
@@ -1021,6 +1032,77 @@ async function main() {
     const line = `[${new Date().toISOString()}] ${message}${extra ? ` ${JSON.stringify(extra)}` : ''}\n`
     await fs.appendFile(logPath, line).catch(() => {})
     console.error(line.trim())
+  }
+
+  try {
+    protocolLedger = await ProtocolDriftLedger.open(protocolLedgerPath)
+  }
+  catch (error) {
+    await log('protocol drift ledger unavailable; monitoring disabled', {
+      filePath: protocolLedgerPath,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  const scheduleProtocolLedgerFlush = () => {
+    if (!protocolLedger || protocolFlushTimer) return
+    protocolFlushTimer = setTimeout(() => {
+      protocolFlushTimer = null
+      void protocolLedger.flush().catch(async (error) => {
+        await log('protocol drift ledger flush failed', {
+          error: error instanceof Error ? error.message : String(error),
+        }).catch(() => {})
+      })
+    }, 2000)
+  }
+
+  const relativeBackendUrl = (input) => {
+    try {
+      const url = new URL(String(input || ''), 'https://chatgpt.com')
+      return url.pathname + url.search
+    }
+    catch { return String(input || '') }
+  }
+
+  const observeProtocolRequest = (request, sourceKind, targetId, observedAt = Date.now()) => {
+    if (!protocolLedger || !String(request?.url || '').includes('/backend-api/')) return null
+    const result = protocolLedger.observeRequest({
+      url: request.url,
+      method: request.method,
+      headers: request.headers,
+      postData: request.postData,
+      sourceKind,
+      targetId,
+      observedAt,
+    })
+    if (!result) return null
+    if (result.isNew) {
+      void log(result.pending ? 'protocol request drift observed' : 'protocol request baseline learned', {
+        signature: result.signature,
+        sourceKind,
+        candidateFamily: result.candidate.family,
+        candidateEligible: result.candidate.eligible,
+      })
+    }
+    scheduleProtocolLedgerFlush()
+    return result.signature
+  }
+
+  const observeProtocolResponse = (requestSignature, response, observedAt = Date.now()) => {
+    if (!protocolLedger || !requestSignature) return
+    const result = protocolLedger.observeResponse(requestSignature, {
+      status: response?.status,
+      contentType: response?.contentType ?? response?.mimeType ?? null,
+      body: response?.body,
+      observedAt,
+    })
+    if (result?.isNew) {
+      void log(result.pending ? 'protocol response drift observed' : 'protocol response baseline learned', {
+        requestSignature,
+        responseSignature: result.signature,
+      })
+    }
+    scheduleProtocolLedgerFlush()
   }
 
   if (cooldownUntil > Date.now()) {
@@ -1064,8 +1146,9 @@ async function main() {
       conversationSubscriptionRecovered,
       lastControls: lastSafeWssControls,
     },
-    authContext: { available: Boolean(authHeaders), capturedAt: lastAuthAt },
-    queue: {
+   authContext: { available: Boolean(authHeaders), capturedAt: lastAuthAt },
+    protocol: protocolLedger ? protocolLedger.summary() : { enabled: false, filePath: protocolLedgerPath },
+   queue: {
       dirty: dirty.size,
       ready: ready.size,
       catalogActive: catalogActive.size,
@@ -1546,11 +1629,18 @@ async function main() {
     lastActiveRequestAt = Date.now()
   }
 
-  const fetchChecked = async (request) => {
-    requireRequestWindow()
-    await waitForRequestSlot(request.kind === 'catalog' ? 'catalog' : 'body')
-    const response = await pageFetchJson(guardian.page, { ...request, headers: authHeaders })
-    if (response.status === 429) {
+ const fetchChecked = async (request) => {
+   requireRequestWindow()
+   await waitForRequestSlot(request.kind === 'catalog' ? 'catalog' : 'body')
+    activeReplayRequestUrl = relativeBackendUrl(request.url)
+    let response
+    try {
+      response = await pageFetchJson(guardian.page, { ...request, headers: authHeaders })
+    }
+    finally {
+      activeReplayRequestUrl = null
+    }
+   if (response.status === 429) {
       await tripCooldown('HTTP 429')
       throw new Error('ChatGPT backend returned HTTP 429')
     }
@@ -1947,16 +2037,36 @@ async function main() {
 
   const attachPassivePageObserver = async (target) => {
     const client = new CdpClient(target.webSocketDebuggerUrl)
-    await client.connect()
-    await client.send('Network.enable')
-    const pendingBodies = new Map()
-    const pendingImages = new Map()
+   await client.connect()
+   await client.send('Network.enable')
+   const pendingBodies = new Map()
+   const pendingImages = new Map()
+    const protocolRequestSignatures = new Map()
+    const pendingProtocolResponses = new Map()
 
-    client.on('Network.responseReceived', ({ requestId, response }) => {
-      const requestUrl = String(response?.url || '')
-      const fileId = estuaryFileIdFromUrl(requestUrl)
-      const status = Number(response?.status || 0)
-      if (fileId && status >= 200 && status < 300) {
+    client.on('Network.requestWillBeSent', ({ requestId, request }) => {
+      if (!String(request?.url || '').includes('/backend-api/')) return
+      const signature = observeProtocolRequest(request, 'user-page', target.id)
+      if (signature) protocolRequestSignatures.set(requestId, signature)
+    })
+
+   client.on('Network.responseReceived', ({ requestId, response }) => {
+     const requestUrl = String(response?.url || '')
+     const fileId = estuaryFileIdFromUrl(requestUrl)
+     const status = Number(response?.status || 0)
+      const protocolSignature = protocolRequestSignatures.get(requestId) || null
+      const mimeType = String(response?.mimeType || '')
+      if (protocolSignature
+        && status >= 200 && status < 300
+        && /json/u.test(mimeType)
+        && !requestUrl.includes('/backend-api/f/conversation')) {
+        pendingProtocolResponses.set(requestId, {
+          requestSignature: protocolSignature,
+          status,
+          contentType: mimeType,
+        })
+      }
+     if (fileId && status >= 200 && status < 300) {
         // 这里只记 requestId + stable file id + MIME；短期 signed URL 不进状态/日志。
         pendingImages.set(requestId, {
           fileId,
@@ -2023,11 +2133,25 @@ async function main() {
         })
       }
 
-      const meta = pendingBodies.get(requestId)
-      if (!meta) return
+     const meta = pendingBodies.get(requestId)
+      const protocolMeta = pendingProtocolResponses.get(requestId)
+      if (!meta && !protocolMeta) {
+        protocolRequestSignatures.delete(requestId)
+        return
+      }
       pendingBodies.delete(requestId)
-      void decodeCdpJsonResponseBody(client, requestId).then(async (payload) => {
-        if (meta.route.kind === 'catalog') {
+      pendingProtocolResponses.delete(requestId)
+      protocolRequestSignatures.delete(requestId)
+     void decodeCdpJsonResponseBody(client, requestId).then(async (payload) => {
+        if (protocolMeta) {
+          observeProtocolResponse(protocolMeta.requestSignature, {
+            status: protocolMeta.status,
+            contentType: protocolMeta.contentType,
+            body: payload,
+          })
+        }
+        if (!meta) return
+       if (meta.route.kind === 'catalog') {
           rememberPassiveCatalogResponse({
             ...meta, payload, targetId: target.id,
           })
@@ -2037,18 +2161,20 @@ async function main() {
           ...meta, payload, targetId: target.id,
         })
       }).catch(async (error) => {
-        await log('passive native response capture failed', {
-          targetId: target.id,
-          kind: meta.route.kind,
-          error: error instanceof Error ? error.message : String(error),
-        })
+       await log('passive native response capture failed', {
+         targetId: target.id,
+          kind: meta?.route?.kind ?? 'protocol',
+         error: error instanceof Error ? error.message : String(error),
+       })
       })
     })
 
-    client.on('Network.loadingFailed', ({ requestId }) => {
-      pendingBodies.delete(requestId)
-      pendingImages.delete(requestId)
-    })
+   client.on('Network.loadingFailed', ({ requestId }) => {
+     pendingBodies.delete(requestId)
+     pendingImages.delete(requestId)
+      pendingProtocolResponses.delete(requestId)
+      protocolRequestSignatures.delete(requestId)
+   })
 
     passivePageObservers.set(target.id, { client, url: target.url })
     await log('passive ChatGPT page observer attached', { targetId: target.id, url: target.url })
@@ -2390,8 +2516,10 @@ async function main() {
     }
   }
 
-  const attachGuardianEvents = async () => {
-    const page = guardian.page
+ const attachGuardianEvents = async () => {
+   const page = guardian.page
+    const guardianProtocolRequestSignatures = new Map()
+    const guardianProtocolResponses = new Map()
 
     /**
      * 只记录 WSS 的协议控制面，不记录业务正文。
@@ -2437,22 +2565,62 @@ async function main() {
       return summary
     }
 
-    page.on('Network.requestWillBeSent', ({ request }) => {
-      if (!String(request?.url || '').includes('/backend-api/')) return
-      const headers = sanitizeCapturedHeaders(request.headers)
-      if (typeof headers.authorization === 'string' && headers.authorization.length > 20) {
-        authHeaders = headers
-        lastAuthAt = Date.now()
+    page.on('Network.requestWillBeSent', ({ requestId, request }) => {
+     if (!String(request?.url || '').includes('/backend-api/')) return
+     const headers = sanitizeCapturedHeaders(request.headers)
+     if (typeof headers.authorization === 'string' && headers.authorization.length > 20) {
+       authHeaders = headers
+       lastAuthAt = Date.now()
+     }
+      const relativeUrl = relativeBackendUrl(request.url)
+      const isArchiveReplay = Boolean(activeReplayRequestUrl && relativeUrl === activeReplayRequestUrl)
+      if (!isArchiveReplay) {
+        const signature = observeProtocolRequest(request, 'guardian-native', guardian.targetId)
+        if (signature) guardianProtocolRequestSignatures.set(requestId, signature)
       }
+   })
+    page.on('Network.responseReceived', ({ requestId, response }) => {
+     const route = classifyConversationBackendUrl(response?.url)
+      const protocolSignature = guardianProtocolRequestSignatures.get(requestId) || null
+      const status = Number(response?.status || 0)
+      const mimeType = String(response?.mimeType || '')
+      if (protocolSignature
+        && status >= 200 && status < 300
+        && /json/u.test(mimeType)
+        && !String(response?.url || '').includes('/backend-api/f/conversation')) {
+        guardianProtocolResponses.set(requestId, {
+          requestSignature: protocolSignature,
+          status,
+          contentType: mimeType,
+        })
+      }
+     // Guardian 自己的 TPP/sidebar list 不属于 daemon replay；它若 429，必须让 daemon 也退避。
+     // active replay 的 global list/body 429 已由 fetchChecked 处理，避免在这里重复续杯 cooldown。
+      if (route?.kind === 'catalog' && !route.globalCatalog && status === 429) {
+       passive429Responses += 1
+       void tripCooldown('Guardian native catalog HTTP 429').catch(() => {})
+     }
+   })
+    page.on('Network.loadingFinished', ({ requestId }) => {
+      const meta = guardianProtocolResponses.get(requestId)
+      guardianProtocolRequestSignatures.delete(requestId)
+      if (!meta) return
+      guardianProtocolResponses.delete(requestId)
+      void decodeCdpJsonResponseBody(page, requestId).then((payload) => {
+        observeProtocolResponse(meta.requestSignature, {
+          status: meta.status,
+          contentType: meta.contentType,
+          body: payload,
+        })
+      }).catch(async (error) => {
+        await log('guardian protocol response fingerprint failed', {
+          error: error instanceof Error ? error.message : String(error),
+        }).catch(() => {})
+      })
     })
-    page.on('Network.responseReceived', ({ response }) => {
-      const route = classifyConversationBackendUrl(response?.url)
-      // Guardian 自己的 TPP/sidebar list 不属于 daemon replay；它若 429，必须让 daemon 也退避。
-      // active replay 的 global list/body 429 已由 fetchChecked 处理，避免在这里重复续杯 cooldown。
-      if (route?.kind === 'catalog' && !route.globalCatalog && Number(response?.status) === 429) {
-        passive429Responses += 1
-        void tripCooldown('Guardian native catalog HTTP 429').catch(() => {})
-      }
+    page.on('Network.loadingFailed', ({ requestId }) => {
+      guardianProtocolRequestSignatures.delete(requestId)
+      guardianProtocolResponses.delete(requestId)
     })
     page.on('Network.webSocketCreated', ({ requestId, url }) => {
       if (!String(url || '').startsWith('wss://') || !String(url || '').includes('chatgpt.com')) return
@@ -2704,11 +2872,12 @@ async function main() {
           recoveryProbeGapMs,
         })
       }
-      queueWatchdogDiagnostics()
-      await drainDirty()
-      await maybeRunGapRepair()
-      await hydratePendingGeneratedImageAssets()
-      // 运行态错误已经写入日志；完整健康迭代成功后清掉 state 里的 transient lastError，
+     queueWatchdogDiagnostics()
+     await drainDirty()
+     await maybeRunGapRepair()
+     await hydratePendingGeneratedImageAssets()
+      if (protocolLedger?.refreshBaselineLock()) scheduleProtocolLedgerFlush()
+     // 运行态错误已经写入日志；完整健康迭代成功后清掉 state 里的 transient lastError，
       // 避免 CLI 永远显示一个几小时前已经自动恢复的问题。
       lastError = null
       await writeState()
@@ -2725,8 +2894,19 @@ async function main() {
     await new Promise(resolve => setTimeout(resolve, 5000))
   }
 
-  await log('daemon stopping')
-  for (const observer of passivePageObservers.values()) observer.client.close()
+ await log('daemon stopping')
+  if (protocolFlushTimer) {
+    clearTimeout(protocolFlushTimer)
+    protocolFlushTimer = null
+  }
+  if (protocolLedger) {
+    await protocolLedger.flush().catch(async (error) => {
+      await log('protocol drift ledger final flush failed', {
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => {})
+    })
+  }
+ for (const observer of passivePageObservers.values()) observer.client.close()
   passivePageObservers.clear()
   guardian?.page?.close()
   guardian?.browser?.close()

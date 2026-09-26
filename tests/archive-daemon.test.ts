@@ -247,11 +247,14 @@ describe('ChatGPT Archive daemon WSS parser', () => {
   })
 
   test('conversation backend URL 分类能区分全量 list、TPP list、正文和 cursor', () => {
-    expect(classifyConversationBackendUrl('/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=false&is_starred=false')).toEqual({
-      kind: 'catalog', offset: 0, limit: 28, globalCatalog: true, conversationOrigin: null, hideSnorlax: null,
-    })
-    expect(classifyConversationBackendUrl('/backend-api/conversations?conversation_origin=tpp&expand=false&hide_snorlax=false&limit=20&order=updated&offset=0')).toMatchObject({
-      kind: 'catalog', offset: 0, limit: 20, globalCatalog: false, conversationOrigin: 'tpp',
+   expect(classifyConversationBackendUrl('/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=false&is_starred=false')).toEqual({
+      kind: 'catalog', offset: 0, limit: 28, globalCatalog: true, conversationOrigin: null, excludeConversationOrigin: null, hideSnorlax: null,
+   })
+   expect(classifyConversationBackendUrl('/backend-api/conversations?conversation_origin=tpp&expand=false&hide_snorlax=false&limit=20&order=updated&offset=0')).toMatchObject({
+     kind: 'catalog', offset: 0, limit: 20, globalCatalog: false, conversationOrigin: 'tpp',
+   })
+    expect(classifyConversationBackendUrl('/backend-api/conversations?exclude_conversation_origin=tpp&expand=false&hide_snorlax=false&is_archived=false&is_starred=false&limit=20&order=updated&offset=0')).toMatchObject({
+      kind: 'catalog', offset: 0, limit: 20, globalCatalog: false, conversationOrigin: null, excludeConversationOrigin: 'tpp',
     })
     expect(classifyConversationBackendUrl('/backend-api/conversations/c1?include_has_versions=true&num_turns=10')).toEqual({
       kind: 'body-latest', conversationId: 'c1',
