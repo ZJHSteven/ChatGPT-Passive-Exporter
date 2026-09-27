@@ -43,6 +43,13 @@ export function shouldStartCatalogWatchdog(input?: {
 /** 根据 active 的 startType 选择普通 watchdog 或 catalog active-zombie watchdog。 */
 export function watchdogTriggerForStartType(startType: unknown): 'watchdog:catalog-active-timeout' | 'watchdog:active-timeout'
 
+/** watchdog 只在首次超时或“新进展后再次超时”时调查，不按固定间隔轮询 zombie。 */
+export function shouldQueueWatchdogDiagnostic(
+  active: { startedAt?: unknown, lastEventAt?: unknown, lastWatchdogAt?: unknown } | null | undefined,
+  now?: number,
+  watchdogMs?: number,
+): boolean
+
 /** 把同步 trigger 映射成 incident kind。 */
 export function incidentKindForTrigger(trigger: unknown): 'active-zombie' | 'watchdog-timeout' | 'abnormal-terminal'
 

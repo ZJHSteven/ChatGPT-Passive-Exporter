@@ -1,3 +1,11 @@
+## 2026-09-27 Phase 3 transport 与 Watchdog 正确性
+
+- 真实 ChatGPT Web A/B 实验已把两类 conduit credential 分开：`POST /backend-api/f/conversation/prepare` 返回的 350 字符 `conduit_token` 与正式发送请求头 `x-conduit-token` 完全相同；同一 SSE 另行下发 419 字符 `resume_conversation_token.token`，二者不是同一个 token。该 SSE 同时直接暴露 `conversation_id` 与 `turn_exchange_id`。
+- 同一长工具 turn 实测累计约 329 KB SSE、17 次 `: ping` 后正常 `[DONE]`，全程没有 `stream_handoff`；近期独立 CDP 样本则存在“初始 SSE 仅给 handoff，正文转 `conversation-turn-*` WSS”的另一种模式。因此 handoff 是服务器选择的 transport 分支，不是所有 turn 的必经步骤，目前也没有证据表明客户端能强制 handoff。
+- late-open 实验中，第二标签可以从 conversation detail 看到当时已持久化的中间快照，但官方 `/f/conversation/resume` 因没有当前 resume credential 返回 404；随后 12 秒 DOM 不再增长且无新请求。由此确认“能看到进行中快照”不等价于已重新挂上 live SSE。跨设备如何重新获得当前 resume credential 仍是 Phase 3 的未决 discovery 问题。
+- 外部近期真实 CDP 证据确认存在 `safety_review_update`：review active 时正文可暂时停更，但 SSE 仍以约 15 秒 `: ping` 保活。因此安全审核先作为 transient activity/forensic 维度记录，不能把它直接等同于 `complete-no-final` 或 `active-zombie`，也不能把“正文暂时不增长”判作死亡。
+- 修复 active-zombie watchdog 的固定轮询副作用：旧实现第一次超时后仍按每 30 分钟再次主动抓 conversation body。现在首次超时只调查一次；只有之后出现新的 WSS lifecycle 进展，或 catalog `update_time` 真正变化，才重新武装，并从最后进展再等待一个完整 watchdog 窗口。同一个 `async_status=3` / 同一 update_time 被 reconciliation 重复看到不会再制造请求节拍。
+
 ## 2026-09-25 Guardian 自愈与 429 风暴修复
 
 - 已加入 Guardian 连续健康失败阈值与 deferred gap-repair 的纯函数门控；短 gap repair 只要求一页稳定 overlap，为后续把 WSS 恢复和 REST 扫描解耦做基础。

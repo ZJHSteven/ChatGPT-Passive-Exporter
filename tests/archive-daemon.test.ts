@@ -19,6 +19,7 @@ import {
   shouldBlockGuardianConversationRest,
   shouldRebuildGuardianAfterHealthFailures,
   shouldRunDeferredGapRepair,
+  shouldQueueWatchdogDiagnostic,
   shouldStartCatalogWatchdog,
   shouldNotifyIncidentTransition,
   shouldRebuildGuardianForMissingWss,
@@ -223,6 +224,22 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(incidentKindForTrigger('watchdog:catalog-active-timeout')).toBe('active-zombie')
     expect(incidentKindForTrigger('watchdog:active-timeout')).toBe('watchdog-timeout')
     expect(incidentKindForTrigger('wss:conversation-turn-complete')).toBe('abnormal-terminal')
+  })
+
+  test('watchdog 首次超时只调查一次；新进展后再次静默满窗口才重新武装', () => {
+    const watchdogMs = 30 * 60_000
+    const active = { startedAt: 0, lastEventAt: 0, lastWatchdogAt: null }
+    expect(shouldQueueWatchdogDiagnostic(active, watchdogMs - 1, watchdogMs)).toBe(false)
+    expect(shouldQueueWatchdogDiagnostic(active, watchdogMs, watchdogMs)).toBe(true)
+
+    const diagnosed = { ...active, lastWatchdogAt: watchdogMs }
+    // 没有任何新进展时，即使又过很多个 watchdog 窗口也不重复抓 body。
+    expect(shouldQueueWatchdogDiagnostic(diagnosed, watchdogMs * 2, watchdogMs)).toBe(false)
+    expect(shouldQueueWatchdogDiagnostic(diagnosed, watchdogMs * 20, watchdogMs)).toBe(false)
+
+    const progressed = { ...diagnosed, lastEventAt: watchdogMs + 5_000 }
+    expect(shouldQueueWatchdogDiagnostic(progressed, watchdogMs * 2, watchdogMs)).toBe(false)
+    expect(shouldQueueWatchdogDiagnostic(progressed, watchdogMs * 2 + 5_000, watchdogMs)).toBe(true)
   })
 
   test('daemon 重启继承未过期的 429 cooldown，但不复活旧 cooldown', () => {
