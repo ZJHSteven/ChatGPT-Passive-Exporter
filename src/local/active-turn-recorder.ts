@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { RunDiagnostic } from '../core/run-diagnostics'
+import type { LiveTransportEvent } from './live-turn-transport'
 
 /**
  * Active Turn Recorder 只保存“运行控制面”元数据，不保存用户正文、工具正文、Cookie、
@@ -101,7 +102,7 @@ export interface CatalogObservationTrace extends ActiveTurnTraceBase {
   catalogActiveConversationIdsAfter: string[]
 }
 
-export type ActiveTurnTrace = WssLifecycleTrace | BodySnapshotTrace | CatalogObservationTrace | ActorSubmitTrace
+export type ActiveTurnTrace = WssLifecycleTrace | BodySnapshotTrace | CatalogObservationTrace | ActorSubmitTrace | LiveTransportEvent
 
 /**
  * 为了让 JSONL 可稳定 diff / 测试，conversation id 一律排序后写出。

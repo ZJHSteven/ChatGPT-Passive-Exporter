@@ -34,6 +34,7 @@ import {
 import { summarizeFrame as summarizeWssFrame } from './wss-stability-probe.mjs'
 import { ProtocolDriftLedger } from '../src/local/protocol-drift.ts'
 import { diagnoseLatestRun } from '../src/core/run-diagnostics.ts'
+import { LiveTurnTransportTracker } from '../src/local/live-turn-transport.ts'
 
 const DEFAULT_CDP = 'http://127.0.0.1:9222'
 const GUARDIAN_MARKER = 'chatgpt-archive-guardian'
@@ -2203,10 +2204,44 @@ async function main() {
    await client.send('Network.enable')
    const pendingBodies = new Map()
    const pendingImages = new Map()
+    const liveTransports = new Map()
     const protocolRequestSignatures = new Map()
     const pendingProtocolResponses = new Map()
 
+    const appendLiveTransport = (event) => {
+      void turnRecorder.append(event).catch(async (error) => {
+        await log('live turn transport trace write failed', {
+          targetId: target.id,
+          requestId: event?.cdpRequestId ?? null,
+          event: event?.event ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        }).catch(() => {})
+      })
+    }
+
+    const startLiveTransport = (requestId, request) => {
+      const url = String(request?.url || '')
+      if (request?.method !== 'POST') return
+      const transport = url.endsWith('/backend-api/f/conversation')
+        ? 'conversation'
+        : url.endsWith('/backend-api/f/conversation/resume') ? 'resume' : null
+      if (!transport) return
+      const tracker = new LiveTurnTransportTracker({
+        cdpRequestId: String(requestId),
+        transport,
+        requestStartedAt: Date.now(),
+        emit: appendLiveTransport,
+      })
+      liveTransports.set(requestId, {
+        tracker,
+        ready: false,
+        pending: [],
+        enablePromise: null,
+      })
+    }
+
     client.on('Network.requestWillBeSent', ({ requestId, request }) => {
+      startLiveTransport(requestId, request)
       if (!String(request?.url || '').includes('/backend-api/')) return
       const signature = observeProtocolRequest(request, 'user-page', target.id)
       if (signature) protocolRequestSignatures.set(requestId, signature)
@@ -2216,6 +2251,31 @@ async function main() {
      const requestUrl = String(response?.url || '')
      const fileId = estuaryFileIdFromUrl(requestUrl)
      const status = Number(response?.status || 0)
+      const live = liveTransports.get(requestId)
+      if (live) {
+        const liveMimeType = String(response?.mimeType || '')
+        if (status >= 200 && status < 300 && liveMimeType.includes('text/event-stream')) {
+          live.enablePromise = client.send('Network.streamResourceContent', { requestId }, 10_000)
+            .then((result) => {
+              live.tracker.ingestBase64(result?.bufferedData, Date.now())
+              live.ready = true
+              for (const chunk of live.pending) live.tracker.ingestBase64(chunk.data, chunk.at)
+              live.pending = []
+            })
+            .catch(async (error) => {
+              liveTransports.delete(requestId)
+              await log('live turn streamResourceContent unavailable', {
+                targetId: target.id,
+                requestId,
+                transport: live.tracker.transport,
+                error: error instanceof Error ? error.message : String(error),
+              })
+            })
+        }
+        else {
+          liveTransports.delete(requestId)
+        }
+      }
       const protocolSignature = protocolRequestSignatures.get(requestId) || null
       const mimeType = String(response?.mimeType || '')
       if (protocolSignature
@@ -2248,7 +2308,25 @@ async function main() {
       pendingBodies.set(requestId, { route, requestUrl, capturedAt: Date.now() })
     })
 
+    client.on('Network.dataReceived', ({ requestId, data }) => {
+      const live = liveTransports.get(requestId)
+      if (!live || typeof data !== 'string' || !data) return
+      const chunk = { data, at: Date.now() }
+      if (!live.ready) live.pending.push(chunk)
+      else live.tracker.ingestBase64(data, chunk.at)
+    })
+
     client.on('Network.loadingFinished', ({ requestId }) => {
+      const live = liveTransports.get(requestId)
+      if (live) {
+        const finish = () => {
+          if (!liveTransports.has(requestId)) return
+          live.tracker.finish(Date.now())
+          liveTransports.delete(requestId)
+        }
+        if (live.enablePromise) void live.enablePromise.then(finish, () => {})
+        else finish()
+      }
       const imageMeta = pendingImages.get(requestId)
       if (imageMeta) {
         pendingImages.delete(requestId)
@@ -2332,6 +2410,16 @@ async function main() {
     })
 
    client.on('Network.loadingFailed', ({ requestId }) => {
+     const live = liveTransports.get(requestId)
+     if (live) {
+       const fail = () => {
+         if (!liveTransports.has(requestId)) return
+         live.tracker.fail('Network.loadingFailed', Date.now())
+         liveTransports.delete(requestId)
+       }
+       if (live.enablePromise) void live.enablePromise.then(fail, fail)
+       else fail()
+     }
      pendingBodies.delete(requestId)
      pendingImages.delete(requestId)
       pendingProtocolResponses.delete(requestId)
