@@ -320,7 +320,10 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
     await client.send('Page.navigate', { url: targetUrl })
     await waitForComposer(client, timeoutMs)
     await clearAndTypePrompt(client, options.prompt)
-    await waitForSendButtonReady(client, Math.min(timeoutMs, 5000))
+    // hidden/background actor 会受到 Chrome/React 后台调度影响；当前 2026-09-27 UI 在
+    // ProseMirror 已有文字后仍可能数秒才挂载 submit button。发送延迟不是业务故障，直接复用
+    // 整轮 actor timeout，避免拿激进的 5s UI deadline 制造假失败。
+    await waitForSendButtonReady(client, timeoutMs)
 
     const pageUrlBefore = String(await evaluateValue(client, 'location.href') || targetUrl)
     const expectedConversationId = options.conversationId ? String(options.conversationId).trim() : null
