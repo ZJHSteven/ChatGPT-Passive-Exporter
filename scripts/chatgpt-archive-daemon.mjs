@@ -33,6 +33,7 @@ import {
 } from '../src/local/incident-notifier.ts'
 import { summarizeFrame as summarizeWssFrame } from './wss-stability-probe.mjs'
 import { ProtocolDriftLedger } from '../src/local/protocol-drift.ts'
+import { diagnoseLatestRun } from '../src/core/run-diagnostics.ts'
 
 const DEFAULT_CDP = 'http://127.0.0.1:9222'
 const GUARDIAN_MARKER = 'chatgpt-archive-guardian'
@@ -275,9 +276,22 @@ export function shouldClassifyTerminalForTrigger(trigger) {
  * `terminalEvidence=none + 非 final tail` 提升成异常 incident。
  */
 export function isConfirmedTerminalTrigger(trigger) {
-  const normalized = String(trigger || '').trim().toLowerCase()
+  const normalized = String(trigger || '').trim().toLowerCase().replace(/:settle$/u, '')
   if (normalized.startsWith('wss:') && normalized.includes('complete')) return true
   return normalized.startsWith('reconcile:') && normalized.endsWith(':async-complete')
+}
+
+/**
+ * complete 是强 lifecycle 证据，但 conversation body 的持久化可能比 WSS complete 慢一拍。
+ *
+ * 第一次 complete 同步若仍只看到 terminalEvidence=none，不应立即把 reasoning/tool/in_progress
+ * 快照推成 complete-no-final 手机告警。先保存事实并进入一次有界 settle；`:settle` 二次复核后
+ * 仍无终态，才允许正式立案。显式 final / interrupted 不需要等待。
+ */
+export function shouldDeferConfirmedTerminalIncident(trigger, diagnostic) {
+  const normalized = String(trigger || '').trim().toLowerCase()
+  if (normalized.endsWith(':settle')) return false
+  return isConfirmedTerminalTrigger(normalized) && diagnostic?.terminalEvidence === 'none'
 }
 
 /**
@@ -938,6 +952,7 @@ async function main() {
   const gapRepairDelayMs = intFlag(flags, 'gap-repair-delay-ms', 30_000, 1000)
   const gapRepairMinIntervalMs = intFlag(flags, 'gap-repair-min-interval-ms', 10 * 60_000, 10_000)
   const nativeBodyGraceMs = intFlag(flags, 'native-body-grace-ms', 3000, 0)
+  const completeSettleMs = intFlag(flags, 'complete-settle-ms', 15_000, 1000)
   const recoveryProbeGapMs = intFlag(flags, 'recovery-probe-gap-ms', 30_000, 1000)
   const recoveryProbeSuccesses = intFlag(flags, 'recovery-probe-successes', 3, 1)
   const watchdogMinutes = Number(flags.get('watchdog-minutes') ?? 30)
@@ -1223,6 +1238,7 @@ async function main() {
       gapRepairDelayMs,
       gapRepairMinIntervalMs,
       nativeBodyGraceMs,
+      completeSettleMs,
       passiveCatalogFreshnessMs,
       recoveryProbeGapMs,
       recoveryProbeSuccesses,
@@ -1742,7 +1758,6 @@ async function main() {
     const syncReadyAt = Number(readySince.get(conversationId) || Date.now())
     const classifyTerminal = shouldClassifyTerminalForTrigger(trigger)
     const confirmedTerminal = isConfirmedTerminalTrigger(trigger)
-    const incidentBefore = classifyTerminal ? latestOpenIncident(conversationId) : null
     const requestedIncidentKind = incidentKindForTrigger(trigger)
     let newIncident = null
     const basePath = `/backend-api/conversations/${encodeURIComponent(conversationId)}`
@@ -1755,6 +1770,18 @@ async function main() {
     })
     if (passiveFirst) passiveBodyPagesReused += 1
     if (!Array.isArray(first.messages)) throw new Error(`conversation ${conversationId} latest body has no messages[]`)
+
+    // 先在内存中预诊断最新页，再决定本次 observation 有没有资格创建 incident。
+    // 这样 complete 已经到达、但 body 仍落后一拍时，仍然可以正常落 messages/raw observation，
+    // 同时把“异常立案”推迟到唯一一次 settle 复核，避免把正常持久化延迟发成 Bark 红牌。
+    const preliminaryDiagnostic = diagnoseLatestRun({
+      ...first,
+      conversation_id: first.conversation_id || conversationId,
+    })
+    const terminalSettleNeeded = classifyTerminal
+      && shouldDeferConfirmedTerminalIncident(trigger, preliminaryDiagnostic)
+    const classifyTerminalNow = classifyTerminal && !terminalSettleNeeded
+    const incidentBefore = classifyTerminalNow ? latestOpenIncident(conversationId) : null
 
     const baseMeta = {
       title: first.title,
@@ -1790,17 +1817,19 @@ async function main() {
         pageCursor: cursor,
         observationKind: `body-page:${trigger}`,
         updateCurrentState: pages === 0,
-        classifyTerminal: pages === 0 && classifyTerminal,
+        classifyTerminal: pages === 0 && classifyTerminalNow,
         // watchdog 的语义是“已经超时，所以这个 turn 本身就是需要调查的 incident”。
         // COMPLETE 只决定它是不是 confirmed terminal；不能拿“尚未 COMPLETE”把 watchdog 变成空操作。
-        allowIncompleteTailIncident: pages === 0 && (confirmedTerminal || trigger.startsWith('watchdog:')),
+        allowIncompleteTailIncident: pages === 0
+          && !terminalSettleNeeded
+          && (confirmedTerminal || trigger.startsWith('watchdog:')),
         incidentKind: requestedIncidentKind,
       })
       if (pages === 0) latestDiagnostic = merged.diagnostic
       if (pages === 0 && merged.diagnostic.hasImageGenerationFinal) {
         imageGenerationEvent = archive.getImageGenerationEvent(conversationId, merged.diagnostic.turnExchangeId)
       }
-      if (pages === 0 && classifyTerminal) {
+      if (pages === 0 && classifyTerminalNow) {
         const incidentAfter = latestOpenIncident(conversationId)
         if (shouldNotifyIncidentTransition(incidentBefore, incidentAfter)) newIncident = incidentAfter
       }
@@ -1869,6 +1898,7 @@ async function main() {
           imageGenerationEvent,
           exactMapping,
           passivePagesUsed,
+          terminalSettleNeeded,
         }
       }
       const nextCursor = pageInfo.start_cursor
