@@ -1959,6 +1959,20 @@ async function main() {
           activeTurns.delete(conversationId)
           catalogActive.delete(conversationId)
         }
+        if (result.terminalSettleNeeded) {
+          // 给第一方页面一个短窗口自然拉取/持久化最终 body。markSyncReady 现在就登记
+          // readySince、但通过 notBefore 延迟执行，因此窗口内页面自然产生的 body response
+          // 可以被 passive cache 复用；只有窗口结束仍没有足够新的 passive body 时，才会
+          // 发生最多一次主动 GET。`:settle` 触发器本身不会再次进入 settle，避免循环。
+          markSyncReady(conversationId, `${trigger}:settle`, completeSettleMs)
+          await log('confirmed terminal body still unsettled; scheduled one bounded settle recheck', {
+            conversationId,
+            trigger,
+            settleMs: completeSettleMs,
+            tail: result.diagnostic.tailShape,
+            currentNodeStatus: result.diagnostic.currentNodeStatus ?? null,
+          })
+        }
         await log('conversation synced', {
           conversationId,
           trigger,
