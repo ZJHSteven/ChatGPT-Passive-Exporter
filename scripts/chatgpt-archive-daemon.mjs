@@ -1072,6 +1072,8 @@ async function main() {
   const passiveBodyPages = new Map()
   const passiveCatalogPages = new Map()
  const passivePageObservers = new Map()
+  // Phase 3 只在内存/state 暴露当前 in-flight transport 的生命体征；不保存正文或 token。
+  const activeLiveTransports = new Map()
   const passiveObserverRetryAfter = new Map()
   const imageHydrationTargetRetryAfter = new Map()
   // body observation 可能恰好发生在一小时 cooldown 开始后。若缓存只有 10 分钟，
@@ -1248,6 +1250,12 @@ async function main() {
       observedConversationEventTypes: [...observedConversationEventTypes].sort(),
       conversationSubscriptionRecovered,
       lastControls: lastSafeWssControls,
+    },
+    liveTransport: {
+      active: activeLiveTransports.size,
+      streams: [...activeLiveTransports.values()]
+        .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))
+        .slice(-32),
     },
    authContext: { available: Boolean(authHeaders), capturedAt: lastAuthAt },
     protocol: protocolLedger ? protocolLedger.summary() : { enabled: false, filePath: protocolLedgerPath },
@@ -2209,6 +2217,16 @@ async function main() {
     const pendingProtocolResponses = new Map()
 
     const appendLiveTransport = (event) => {
+      const key = `${target.id}:${event?.cdpRequestId ?? ''}`
+      const state = activeLiveTransports.get(key)
+      if (state) {
+        state.conversationId = event?.conversationId ?? state.conversationId ?? null
+        state.turnExchangeId = event?.turnExchangeId ?? state.turnExchangeId ?? null
+        state.lastControlAt = event?.at ?? Date.now()
+        state.lastControlEvent = event?.event ?? null
+        state.bytesObserved = event?.bytesObserved ?? state.bytesObserved ?? 0
+        state.pingCount = event?.pingCount ?? state.pingCount ?? 0
+      }
       void turnRecorder.append(event).catch(async (error) => {
         await log('live turn transport trace write failed', {
           targetId: target.id,
@@ -2232,8 +2250,25 @@ async function main() {
         requestStartedAt: Date.now(),
         emit: appendLiveTransport,
       })
+      const liveKey = `${target.id}:${requestId}`
+      activeLiveTransports.set(liveKey, {
+        targetId: target.id,
+        cdpRequestId: String(requestId),
+        transport,
+        startedAt: Date.now(),
+        lastDataAt: null,
+        dataEvents: 0,
+        dataBytes: 0,
+        conversationId: null,
+        turnExchangeId: null,
+        lastControlAt: null,
+        lastControlEvent: null,
+        bytesObserved: 0,
+        pingCount: 0,
+      })
       liveTransports.set(requestId, {
         tracker,
+        liveKey,
         ready: false,
         pending: [],
         enablePromise: null,
@@ -2308,10 +2343,16 @@ async function main() {
       pendingBodies.set(requestId, { route, requestUrl, capturedAt: Date.now() })
     })
 
-    client.on('Network.dataReceived', ({ requestId, data }) => {
+    client.on('Network.dataReceived', ({ requestId, data, dataLength }) => {
       const live = liveTransports.get(requestId)
       if (!live || typeof data !== 'string' || !data) return
       const chunk = { data, at: Date.now() }
+      const state = activeLiveTransports.get(live.liveKey)
+      if (state) {
+        state.lastDataAt = chunk.at
+        state.dataEvents += 1
+        state.dataBytes += Number.isFinite(Number(dataLength)) ? Number(dataLength) : Buffer.from(data, 'base64').byteLength
+      }
       if (!live.ready) live.pending.push(chunk)
       else live.tracker.ingestBase64(data, chunk.at)
     })
@@ -2323,6 +2364,7 @@ async function main() {
           if (!liveTransports.has(requestId)) return
           live.tracker.finish(Date.now())
           liveTransports.delete(requestId)
+          activeLiveTransports.delete(live.liveKey)
         }
         if (live.enablePromise) void live.enablePromise.then(finish, () => {})
         else finish()
@@ -2418,6 +2460,7 @@ async function main() {
            || 'Network.loadingFailed'
          live.tracker.fail(reason, Date.now())
          liveTransports.delete(requestId)
+         activeLiveTransports.delete(live.liveKey)
        }
        if (live.enablePromise) void live.enablePromise.then(fail, fail)
        else fail()
