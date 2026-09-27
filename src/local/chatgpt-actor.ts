@@ -291,6 +291,15 @@ async function isSendButtonReady(client: ActorCdpClient): Promise<boolean> {
   })()`) === true
 }
 
+async function waitForSendButtonReady(client: ActorCdpClient, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await isSendButtonReady(client)) return
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  throw new Error('ChatGPT actor send button did not become ready before timeout')
+}
+
 export async function sendActorPrompt(options: ActorSendOptions): Promise<Record<string, unknown>> {
   const timeoutMs = options.timeoutMs ?? 20_000
   if (!options.prompt.trim()) throw new Error('actor prompt is empty')
@@ -311,6 +320,7 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
     await client.send('Page.navigate', { url: targetUrl })
     await waitForComposer(client, timeoutMs)
     await clearAndTypePrompt(client, options.prompt)
+    await waitForSendButtonReady(client, Math.min(timeoutMs, 5000))
 
     const pageUrlBefore = String(await evaluateValue(client, 'location.href') || targetUrl)
     const expectedConversationId = options.conversationId ? String(options.conversationId).trim() : null
