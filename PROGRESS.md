@@ -1,3 +1,12 @@
+## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
+
+- WSS 术语与证据等级已独立固化到 `WSS_PROTOCOL.md`：`conversations / alder-conversations / resource-updates / app_notifications` 是账户级 topic；`conversation-created / conversation-turn-complete / conversation-update / conversation-history-update` 是 topic 内业务事件；`async-task-update-message / async-task-steering-message` 是 update subtype；`safety_review_update / resume_conversation_token / stream_handoff / message_stream_complete` 属于 HTTP SSE，不能再混称 WSS topic。当前 2026-09-28 daemon 再次显式订阅四个 topic，实际解析到的 conversation business message 仍来自 `conversations`。
+- 修复 active-zombie watchdog 跨 turn 计时：真实样本证明同一 conversation 可长期保持 sticky `async_status=3`，而新的 user turn 已经开始。watchdog 现在把最近一次 body diagnostic 的 turn key 保存在 active 状态中；后续若诊断已切到另一个 turn，就以当前观察时刻重新起 late-start 窗口，并禁止仅凭新 turn 的 open tail 继承旧 turn 年龄立案。
+- Phase 4 Actor 已从“只能新建聊天”推进到“新建 + 续接已有聊天”。真实 E2E 在同一个 Actor target 中完成 `ACTORNEW927 -> ACTORCONTINUE927`；随后 2026-09-28 前端再次漂移为 ProseMirror + `<form data-chatgpt-composer>`，旧的“任何 form 都视为未 hydration”保护会永久阻塞。现已改为只拒绝无官方标记的原生 form，并继续让 Sentinel/prepare/challenge/PoW/Turnstile 全由第一方页面处理。
+- Phase 3 HTTP LiveTurn observer 已接入正式 daemon：对普通 ChatGPT page 被动观察 `POST /backend-api/f/conversation` / `/resume`，`streamResourceContent()` 先接启用前缓冲字节，后续 `Network.dataReceived.data` 接增量；控制面只保存 CID/turn id、字节数、ping、resume credential 的 SHA-256+长度、Safety Review、handoff、message-stream-complete、DONE 与网络收口，不保存正文、Authorization 或原始 token。
+- 2026-09-28 07:43～07:44 production E2E 使用既有测试会话发送 `PHASE3LIVE928`：Actor `cdpRequestId=33772.765` 在 23ms 内绑定 CID；LiveTurn 随后得到 416 字符 resume credential 的 hash、`turn_exchange_id=a8965a8f-1671-47fc-9821-4fc2228d0bb7`、`message-stream-complete`、`[DONE]` 与 `stream-finished`；账户 WSS 同轮收到 `conversation-turn-complete`；约 8 秒后 body snapshot 与 SQLite 均以同一 turn id 落成 assistant `final/end_turn=true`，daemon `syncErrors=0`、队列清零。最新 DONE 后的 Chrome `loadingFailed` 已被正确归为正常 `stream-finished`，不再误报 stream-failed。
+- E2E 同时发现 forensic JSONL 的并发 append 可乱序：LiveTurn tracker 的 emit 顺序正确，但 fire-and-forget `fs.appendFile()` 可能让文件中的 `stream-bound/resume-token/complete` 顺序漂移。`ActiveTurnRecorder` 已改为单 Promise writer tail 串行落盘；一次写失败只拒绝自身，不毒死后续队列。后续 production trace 从该提交起可把文件行序当作 emit 顺序使用。
+
 ## 2026-09-27 Phase 3 transport 与 Watchdog 正确性
 
 - 真实 ChatGPT Web A/B 实验已把两类 conduit credential 分开：`POST /backend-api/f/conversation/prepare` 返回的 350 字符 `conduit_token` 与正式发送请求头 `x-conduit-token` 完全相同；同一 SSE 另行下发 419 字符 `resume_conversation_token.token`，二者不是同一个 token。该 SSE 同时直接暴露 `conversation_id` 与 `turn_exchange_id`。
