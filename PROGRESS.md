@@ -6,6 +6,9 @@
 - Phase 3 HTTP LiveTurn observer 已接入正式 daemon：对普通 ChatGPT page 被动观察 `POST /backend-api/f/conversation` / `/resume`，`streamResourceContent()` 先接启用前缓冲字节，后续 `Network.dataReceived.data` 接增量；控制面只保存 CID/turn id、字节数、ping、resume credential 的 SHA-256+长度、Safety Review、handoff、message-stream-complete、DONE 与网络收口，不保存正文、Authorization 或原始 token。
 - 2026-09-28 07:43～07:44 production E2E 使用既有测试会话发送 `PHASE3LIVE928`：Actor `cdpRequestId=33772.765` 在 23ms 内绑定 CID；LiveTurn 随后得到 416 字符 resume credential 的 hash、`turn_exchange_id=a8965a8f-1671-47fc-9821-4fc2228d0bb7`、`message-stream-complete`、`[DONE]` 与 `stream-finished`；账户 WSS 同轮收到 `conversation-turn-complete`；约 8 秒后 body snapshot 与 SQLite 均以同一 turn id 落成 assistant `final/end_turn=true`，daemon `syncErrors=0`、队列清零。最新 DONE 后的 Chrome `loadingFailed` 已被正确归为正常 `stream-finished`，不再误报 stream-failed。
 - E2E 同时发现 forensic JSONL 的并发 append 可乱序：LiveTurn tracker 的 emit 顺序正确，但 fire-and-forget `fs.appendFile()` 可能让文件中的 `stream-bound/resume-token/complete` 顺序漂移。`ActiveTurnRecorder` 已改为单 Promise writer tail 串行落盘；一次写失败只拒绝自身，不毒死后续队列。后续 production trace 从该提交起可把文件行序当作 emit 顺序使用。
+- trace writer 部署后用 `TRACEORDER928` 重新 production smoke，当前 JSONL 已严格按 `stream-bound -> resume-token -> message-stream-complete -> done -> stream-finished` 落盘，证明串行 writer 在真实 CDP 回调并发下生效。
+- 完成 Tab 隔离 A/B：独立 Tab B 发短 turn 后，Tab A 长 SSE 的 `lastDataAt` 仍继续推进且 66KB -> 91KB，证明不同 renderer 的 HTTP SSE 互不取消。随后在另一长 turn `33772.2242` 活跃时，同一个 A tab 真实点击 sidebar 切到另一 conversation，旧 SSE 仍从 7 events/19.8KB 增长到 27/58KB，并继续到 276/186KB，证明 SPA route change 本身也不会 Abort 原流。
+- 但同-tab UI 不是 conversation 级隔离：旧 A2 turn 运行时，新 route 的 ProseMirror 已有 `SAMETABB928` 文本却不渲染 send button；旧 A2 完成后，它的响应还出现在当前 href 已切到 B 的 DOM 尾部。结论是“一个 renderer 可保活跨路由旧 SSE，但不能安全充当并发多 Actor”。Guardian 继续独立；单 Actor 可顺序复用；需要真正并发发送时扩小型 Actor pool。账户 WSS topic 不需要按 topic 拆 tab。
 
 ## 2026-09-27 Phase 3 transport 与 Watchdog 正确性
 

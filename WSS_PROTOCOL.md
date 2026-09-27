@@ -186,3 +186,32 @@ catalog async_status
   -> 不能单独证明模型正在计算
 ```
 
+## 10. 2026-09-28 Tab / renderer 隔离实验
+
+这组实验专门回答“Guardian / Actor 是否必须分 tab、一个 tab 能否轮转监听多个并发 SSE”。
+
+### 不同 tab：HTTP SSE 彼此独立
+
+Tab A 在 conversation `6ab9ab7e-...` 运行长工具 turn，原始 SSE `33772.1637` 已有 20 个 `dataReceived` / 66KB。随后独立 Tab B（另一个 renderer/target）在另一 conversation 发送短 turn；B 的 submit 时刻为 `1790552999191`。A 在 B 发送之后仍继续收到数据，`lastDataAt` 推进到 `1790553017851`，并增长为 24 个 event / 91KB，最终正常收到 6 个 ping、`message-stream-complete`、DONE，累计约 259KB。
+
+因此**不同 renderer 的 page-local SSE 天然隔离**：B 导航/发送不会取消 A。无需为了同一账户 WSS 的不同 topic 开多个 tab；但不同 tab 对“并发发送/各自 page-local SSE”确实提供真实故障与 UI 状态隔离。
+
+### 同一个 tab：SPA 导航不杀旧 SSE，但 UI active-generation 状态跨路由
+
+第二轮 Tab A2 原始 SSE `33772.2242` 活跃时，在同一个 ChatGPT tab 中真实点击 sidebar 跳到另一 conversation：
+
+- 点击前：7 个 data event / 19.8KB；
+- 点击后 4 秒：旧 A2 SSE 仍活着，27 个 event / 58KB；
+- 后续继续到至少 276 个 event / 186KB，并最终正常完成。
+
+因此当前 ChatGPT SPA route change **不会自动 Abort 已经在跑的 `/f/conversation`**。
+
+但同 renderer 的 UI 状态不是按 conversation 完全隔离：切到 B 后，B 的 ProseMirror 可以输入 `SAMETABB928`，但 A2 仍运行时页面不渲染 send button；A2 完成后，其长答案还出现在当时 href 已经是 B 的 DOM 尾部。canonical archive 仍按真正 CID/turn 分离，这属于 renderer/UI active-generation 状态跨路由。
+
+架构含义：
+
+- **Guardian**：继续独立 tab；一个 Guardian 页可同时订阅多个账户 topic，不需要“一个 topic 一个 tab”。
+- **Actor**：单 tab 适合顺序发送；真正并发发送需要小型 Actor pool（例如 2～3 个 renderer），不能靠同 tab sidebar 轮转安全地产生多个并发 turn。
+- **Live observer**：同一 renderer 的旧 SSE 可以跨 SPA route 继续被 CDP 观察，因此“监听”本身不要求一 turn 一 tab；但若需要同时启动新 turn，UI 的全局 active-generation 状态成为限制。
+- **未来 StreamHub**：动态 `conversation-turn-*` WSS 若验证可 late-attach，仍应由一个账户级 Hub 多路复用，不应退化成一 turn 一个 tab。
+
