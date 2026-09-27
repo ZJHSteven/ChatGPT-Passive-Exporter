@@ -2381,11 +2381,17 @@ async function main() {
           const wasCatalogActive = catalogActive.has(id)
           if (asyncState === 'active') {
             const current = catalogActive.get(id)
+            const nextUpdateTime = item.update_time ?? null
+            const catalogProgressed = Boolean(
+              current
+              && nextUpdateTime !== null
+              && String(nextUpdateTime) !== String(current.updateTime ?? ''),
+            )
             catalogActive.set(id, {
               firstSeenAt: current?.firstSeenAt ?? now,
               lastSeenAt: now,
               asyncStatus: item.async_status,
-              updateTime: item.update_time ?? null,
+              updateTime: nextUpdateTime,
             })
             // 没有可靠 turn-start 时，把“第一次看到 active”作为保守 late-start 下界。
             // 真实 POST 一定发生得更早，所以 watchdog 只会更晚报警，不会提前误报。
@@ -2405,6 +2411,12 @@ async function main() {
                 lastWatchdogAt: null,
                 startType: `catalog:async-active:${reason}`,
               })
+            }
+            else if (catalogProgressed) {
+              const active = activeTurns.get(id)
+              // reconciliation 再次看见同一个 async_status=3 不是“新进展”。只有服务端
+              // update_time 真正变化才推进 lastEventAt，从而重新武装下一次 watchdog。
+              if (active && String(active.startType || '').startsWith('catalog:')) active.lastEventAt = now
             }
             // running 先标 stale；真正 body 诊断仍等 complete 或 watchdog 超时，避免正常长任务
             // 在每次 catalog reconciliation 时都主动抓半成品。
