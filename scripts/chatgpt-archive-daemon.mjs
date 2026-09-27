@@ -367,6 +367,60 @@ export function shouldQueueWatchdogDiagnostic(active, now = Date.now(), watchdog
   return current - lastEventAt >= threshold
 }
 
+/**
+ * 从一次 body 诊断里提取稳定的 turn 身份。
+ *
+ * turn_exchange_id 最强；旧/异常 payload 缺它时再依次退化到 request/user/last message。
+ * 这个 key 只用于 watchdog 防止“同一 conversation 的旧计时跨到新 turn”，不写回 canonical 数据。
+ */
+export function watchdogDiagnosticTurnKey(diagnostic) {
+  for (const value of [
+    diagnostic?.turnExchangeId,
+    diagnostic?.requestId,
+    diagnostic?.userMessageId,
+    diagnostic?.lastMessageId,
+  ]) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
+}
+
+/**
+ * catalog late-start 只能先知道 conversation active，不知道具体 turn。
+ * 如果一次 watchdog 已经诊断过 turn A，而后续 body 明确变成 turn B，A 的 startedAt 绝不能
+ * 继续给 B 计时。此时把“第一次确认看到 B”的时刻作为新的保守 late-start 下界，并要求 B
+ * 自己重新等满一个 watchdog 窗口。
+ *
+ * 返回 changed=true 时，调用方仍可记录 body 中显式 interrupted/client_stopped；只是不得仅凭
+ * open reasoning/tool tail 建 active-zombie/watchdog-timeout。
+ */
+export function reconcileWatchdogDiagnosticTurn(active, diagnostic, now = Date.now()) {
+  if (!active || typeof active !== 'object') return { changed: false, turnKey: null, nextActive: active }
+  const turnKey = watchdogDiagnosticTurnKey(diagnostic)
+  if (!turnKey) return { changed: false, turnKey: null, nextActive: active }
+  const previous = typeof active.lastDiagnosticTurnKey === 'string' && active.lastDiagnosticTurnKey
+    ? active.lastDiagnosticTurnKey
+    : null
+  if (previous && previous !== turnKey) {
+    return {
+      changed: true,
+      turnKey,
+      nextActive: {
+        ...active,
+        startedAt: now,
+        lastEventAt: now,
+        lastWatchdogAt: null,
+        lastDiagnosticTurnKey: turnKey,
+      },
+    }
+  }
+  return {
+    changed: false,
+    turnKey,
+    nextActive: { ...active, lastDiagnosticTurnKey: turnKey },
+  }
+}
+
 /** 把 daemon trigger 映射到持久化 incident kind。 */
 export function incidentKindForTrigger(trigger) {
   const normalized = String(trigger || '').trim().toLowerCase()
@@ -1778,6 +1832,23 @@ async function main() {
       ...first,
       conversation_id: first.conversation_id || conversationId,
     })
+    let watchdogTurnChanged = false
+    if (String(trigger || '').startsWith('watchdog:')) {
+      const currentActive = activeTurns.get(conversationId)
+      if (currentActive) {
+        const reconciled = reconcileWatchdogDiagnosticTurn(currentActive, preliminaryDiagnostic, Date.now())
+        watchdogTurnChanged = reconciled.changed
+        activeTurns.set(conversationId, reconciled.nextActive)
+        if (watchdogTurnChanged) {
+          void log('watchdog body belongs to a newer turn; reset late-start timer', {
+            conversationId,
+            trigger,
+            previousTurnKey: currentActive.lastDiagnosticTurnKey ?? null,
+            turnKey: reconciled.turnKey,
+          })
+        }
+      }
+    }
     const terminalSettleNeeded = classifyTerminal
       && shouldDeferConfirmedTerminalIncident(trigger, preliminaryDiagnostic)
     const classifyTerminalNow = classifyTerminal && !terminalSettleNeeded
@@ -1822,6 +1893,7 @@ async function main() {
         // COMPLETE 只决定它是不是 confirmed terminal；不能拿“尚未 COMPLETE”把 watchdog 变成空操作。
         allowIncompleteTailIncident: pages === 0
           && !terminalSettleNeeded
+          && !watchdogTurnChanged
           && (confirmedTerminal || trigger.startsWith('watchdog:')),
         incidentKind: requestedIncidentKind,
       })

@@ -20,6 +20,8 @@ import {
   shouldRebuildGuardianAfterHealthFailures,
   shouldRunDeferredGapRepair,
   shouldQueueWatchdogDiagnostic,
+  watchdogDiagnosticTurnKey,
+  reconcileWatchdogDiagnosticTurn,
   shouldStartCatalogWatchdog,
   shouldNotifyIncidentTransition,
   shouldRebuildGuardianForMissingWss,
@@ -269,6 +271,34 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     const progressed = { ...diagnosed, lastEventAt: watchdogMs + 5_000 }
     expect(shouldQueueWatchdogDiagnostic(progressed, watchdogMs * 2, watchdogMs)).toBe(false)
     expect(shouldQueueWatchdogDiagnostic(progressed, watchdogMs * 2 + 5_000, watchdogMs)).toBe(true)
+  })
+
+  test('catalog watchdog 不能把旧 turn 的计时跨到同 conversation 的新 turn', () => {
+    const active = {
+      startedAt: 0,
+      lastEventAt: 0,
+      lastWatchdogAt: 30 * 60_000,
+      lastDiagnosticTurnKey: 'turn-a',
+      startType: 'catalog:async-active:periodic',
+    }
+    expect(watchdogDiagnosticTurnKey({
+      turnExchangeId: 'turn-b', requestId: 'req-b', userMessageId: 'user-b', lastMessageId: 'last-b',
+    })).toBe('turn-b')
+
+    const changed = reconcileWatchdogDiagnosticTurn(active, { turnExchangeId: 'turn-b' }, 40 * 60_000)
+    expect(changed).toMatchObject({ changed: true, turnKey: 'turn-b' })
+    expect(changed.nextActive).toMatchObject({
+      startedAt: 40 * 60_000,
+      lastEventAt: 40 * 60_000,
+      lastWatchdogAt: null,
+      lastDiagnosticTurnKey: 'turn-b',
+    })
+    expect(shouldQueueWatchdogDiagnostic(changed.nextActive, 70 * 60_000 - 1, 30 * 60_000)).toBe(false)
+    expect(shouldQueueWatchdogDiagnostic(changed.nextActive, 70 * 60_000, 30 * 60_000)).toBe(true)
+
+    const same = reconcileWatchdogDiagnosticTurn(changed.nextActive, { turnExchangeId: 'turn-b' }, 71 * 60_000)
+    expect(same.changed).toBe(false)
+    expect(same.nextActive.startedAt).toBe(40 * 60_000)
   })
 
   test('daemon 重启继承未过期的 429 cooldown，但不复活旧 cooldown', () => {

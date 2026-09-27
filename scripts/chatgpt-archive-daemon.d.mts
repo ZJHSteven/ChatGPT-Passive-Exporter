@@ -51,10 +51,30 @@ export function watchdogTriggerForStartType(startType: unknown): 'watchdog:catal
 
 /** watchdog 只在首次超时或“新进展后再次超时”时调查，不按固定间隔轮询 zombie。 */
 export function shouldQueueWatchdogDiagnostic(
-  active: { startedAt?: unknown, lastEventAt?: unknown, lastWatchdogAt?: unknown } | null | undefined,
+  active: { startedAt?: unknown, lastEventAt?: unknown, lastWatchdogAt?: unknown, lastDiagnosticTurnKey?: unknown } | null | undefined,
   now?: number,
   watchdogMs?: number,
 ): boolean
+
+/** 从 body diagnostic 提取 watchdog 用的稳定 turn key。 */
+export function watchdogDiagnosticTurnKey(diagnostic: {
+  turnExchangeId?: unknown
+  requestId?: unknown
+  userMessageId?: unknown
+  lastMessageId?: unknown
+} | null | undefined): string | null
+
+/** 若 watchdog 发现同一 conversation 已切到新 turn，则重置 late-start 计时。 */
+export function reconcileWatchdogDiagnosticTurn(
+  active: Record<string, unknown> | null | undefined,
+  diagnostic: {
+    turnExchangeId?: unknown
+    requestId?: unknown
+    userMessageId?: unknown
+    lastMessageId?: unknown
+  } | null | undefined,
+  now?: number,
+): { changed: boolean, turnKey: string | null, nextActive: any }
 
 /** 把同步 trigger 映射成 incident kind。 */
 export function incidentKindForTrigger(trigger: unknown): 'active-zombie' | 'watchdog-timeout' | 'abnormal-terminal'
