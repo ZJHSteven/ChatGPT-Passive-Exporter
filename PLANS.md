@@ -1,3 +1,16 @@
+## 2026-09-27 WSS 语义、Zombie 时序、Phase 3/4 继续实现 ExecPlan
+
+- [in_progress] 重新建立 WSS 分层词汇表：严格区分 `socket -> topic -> message envelope -> business event/update_type`；用 2026-09-27 当前 Guardian 真机 state/log 标注哪些 topic/event 仍活跃、哪些只有历史/桌面 App 证据、哪些只是兼容分支。重点纠正：`conversation-created / conversation-turn-complete / conversation-update / conversation-history-update` 都是业务事件类型，不是 topic；当前稳定生命周期事件来自 `conversations`，`conversation-history-update` 只保留为 `alder-conversations` 候选，尚无本机 Web 新鲜真机样本。
+- [pending] 修复 catalog late-start watchdog 的跨 turn 计时污染：`activeTurns` 以 conversation 为键时，sticky `async_status=3` 可能跨过新 user turn；如果上一次 watchdog/body 诊断对应 turn A，而下一次诊断已变成 turn B，必须先把 B 视为新的 late-start 下界并重新等待完整 watchdog 窗口，不能继承 A 的计时立即给 B 立 `active-zombie`。
+- [pending] WSS state 拆分 `explicitSubscribedTopics` 与 `observedMessageTopics`；短时间没看到 subscribe ACK 不再等价于 topic 退役。保留当前 `conversations / alder-conversations / app_notifications / resource-updates` 订阅面，同时记录实际收到业务 message 的 topic。
+- [pending] 捕获当前 `conversation-update` 的真实 2026-09-27 wire shape。现有 WSS control summary 已再次看到 `async-task-update-message / async-task-steering-message`，但正式 `eventCounts` 仍只解析到 `conversation-created / conversation-turn-complete`，说明 update 的当前 envelope 与旧 fixture 可能不同；先脱敏保存结构，再决定是否扩 parser，禁止凭旧测试臆改。
+- [pending] Phase 3 LiveTurn observer：被动接入普通 ChatGPT 页已经发生的 `POST /backend-api/f/conversation` SSE，使用 CDP stream resource/content + dataReceived 增量解析，只保存控制面元数据：conversation/turn id、resume credential 是否出现（只存 hash/长度，绝不存原 token）、`: ping`、`stream_handoff`、`safety_review_update`、`message_stream_complete`、`[DONE]`、loadingFinished/loadingFailed。Safety Review 作为 transient forensic 维度，不提升为 lifecycle 根因。
+- [pending] Remote Late-Attach / Native UI Attach A/B：让 A 页发长 turn，B 页只导航到同 conversation，观察 B 是否由第一方 JS 自动发 `/f/conversation/resume`、从哪里取得 resume credential；同时验证 A 页已有 SSE 在 B 页导航/发送时是否继续。再做“同一页导航离开 A”实验，确认 page-local SSE 是否被 cancel。用数据决定单 Tab / 双 Tab / StreamHub，而不是先验架构偏好。
+- [pending] Phase 4 Actor 第二阶段：在现有 `actor send` 新建聊天基础上增加 `--conversation <UUID>`，通过官方 React composer 在已有 conversation 发送一个新 turn；保持 Sentinel/prepare/challenge/PoW/Turnstile 全由第一方页面完成。`steer`、project 内新建、move project、archive、delete 继续标记为未实现，逐项先抓第一方 native 行为再扩展。
+- [pending] Protocol Drift Learning 从“只报警”升级为受控维护流水线：passive 观察新 shape -> 自动生成候选 adapter/template/fixture（quarantine）-> 本地静态/fixture 验证 -> 人工 approve -> 单次 canary -> 才允许生产 replay。永不让未审候选直接自动请求 ChatGPT，404/401/403/429 立即熔断并报警。
+- [pending] 增加 Recovery Capsule 设计：每个长 turn 在关键里程碑/临近执行窗口时可落一个小型状态胶囊，保存用户目标摘要、已确认结论、完成动作、关键文件/commit、未决问题、下一步、拟给用户的最终回复要点；不保存隐藏 chain-of-thought。DevSpace audit 继续保存原始工具调用，Capsule 负责补足“为什么做到这里/接下来准备收什么尾”。
+- [pending] 用本地真实 `reasoning_recap` + DevSpace audit 统计长 turn 分布，重新决定 checkpoint/watchdog 阈值；25~26 分钟只能作为高风险经验峰，不再写成硬上限。checkpoint 可以早于 watchdog，多级提醒而不宣布故障。
+
 ## 2026-09-27 Phase 3 Token / Handoff 与 Watchdog 正确性 ExecPlan
 
 - [done] 用真实 ChatGPT Web A/B 标签完成 transport 取证：`/f/conversation/prepare` 返回 350 字符发送 `conduit_token`，正式 `/f/conversation` 的 `x-conduit-token` 与之逐字相同；SSE 另行下发 419 字符 `resume_conversation_token.token`，与发送 token 不同，并直接暴露 `conversation_id` / `turn_exchange_id`。
