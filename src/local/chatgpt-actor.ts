@@ -214,8 +214,11 @@ async function waitForComposer(client: ActorCdpClient, timeoutMs: number): Promi
       // 2026-09-19 真机验证：ChatGPT 的静态/早期 hydration shell 会把 composer 放在原生
       // <form> 中；此时过早点 send 会触发浏览器 GET fallback，URL 会变成
       // /?prompt-textarea=...，根本不会发 /f/conversation。React 完成接管后，稳定 composer
-      // 已脱离该原生 form。必须等到这个状态再输入/发送，不能只看“textarea 已经出现在 DOM”。
-      return input.closest('form') === null
+      // 当时已脱离该原生 form。2026-09-28 当前 ProseMirror 又重新位于真正的 React
+      // <form data-chatgpt-composer> 内，所以不能再把“任何 form”都当成未 hydration。
+      // 无 form 或带官方 data-chatgpt-composer 标记的 form 都可发送；只有无标记原生 form 拒绝。
+      const form = input.closest('form')
+      return form === null || form.hasAttribute('data-chatgpt-composer')
     })()`)
     if (ready === true) return
     await new Promise(resolve => setTimeout(resolve, 100))
