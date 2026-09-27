@@ -331,6 +331,28 @@ export function watchdogTriggerForStartType(startType) {
     : 'watchdog:active-timeout'
 }
 
+/**
+ * watchdog 只负责“超时后调查一次”，不能退化成固定周期 body 轮询器。
+ *
+ * 第一次超过阈值时允许调查；调查完成以后，如果再也没有新的运行进展，就保持沉默。
+ * 只有 later WSS/catalog 证据把 lastEventAt 推进到上一次 watchdog 之后，才重新武装，
+ * 并且要从最后一次进展再等满一个完整 watchdog 窗口才能第二次调查。
+ */
+export function shouldQueueWatchdogDiagnostic(active, now = Date.now(), watchdogMs = 30 * 60_000) {
+  const startedAt = Number(active?.startedAt)
+  const lastEventAt = Number(active?.lastEventAt)
+  const lastWatchdogAt = active?.lastWatchdogAt === null || active?.lastWatchdogAt === undefined
+    ? null
+    : Number(active.lastWatchdogAt)
+  const current = Number(now)
+  const threshold = Math.max(0, Number(watchdogMs) || 0)
+  if (!Number.isFinite(startedAt) || !Number.isFinite(current)) return false
+  if (current - startedAt < threshold) return false
+  if (lastWatchdogAt === null || !Number.isFinite(lastWatchdogAt)) return true
+  if (!Number.isFinite(lastEventAt) || lastEventAt <= lastWatchdogAt) return false
+  return current - lastEventAt >= threshold
+}
+
 /** 把 daemon trigger 映射到持久化 incident kind。 */
 export function incidentKindForTrigger(trigger) {
   const normalized = String(trigger || '').trim().toLowerCase()
