@@ -2323,9 +2323,8 @@ async function main() {
   const queueWatchdogDiagnostics = () => {
     const now = Date.now()
     for (const [conversationId, active] of activeTurns) {
-      if (now - active.startedAt < watchdogMs) continue
+      if (!shouldQueueWatchdogDiagnostic(active, now, watchdogMs)) continue
       // 同一个仍活跃 turn 至多每个 watchdog 窗口做一次诊断抓取；没有 complete 时不轮询。
-      if (active.lastWatchdogAt && now - active.lastWatchdogAt < watchdogMs) continue
       active.lastWatchdogAt = now
       const watchdogTrigger = watchdogTriggerForStartType(active.startType)
       markSyncReady(conversationId, watchdogTrigger, 0)
