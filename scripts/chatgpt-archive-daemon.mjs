@@ -1047,6 +1047,8 @@ async function main() {
   let wssUnparsedConversationFrames = 0
   let wssGeneration = 0
   let subscribedTopics = new Set()
+  let observedMessageTopics = new Set()
+  let observedDirectEventTypes = new Set()
   let conversationSubscriptionRecovered = null
   let lastSafeWssControls = []
   let guardianReadyAt = 0
@@ -1240,6 +1242,9 @@ async function main() {
       parsedEventFrames: wssParsedEventFrames,
       unparsedConversationFrames: wssUnparsedConversationFrames,
       subscribedTopics: [...subscribedTopics].sort(),
+      explicitSubscribedTopics: [...subscribedTopics].sort(),
+      observedMessageTopics: [...observedMessageTopics].sort(),
+      observedDirectEventTypes: [...observedDirectEventTypes].sort(),
       conversationSubscriptionRecovered,
       lastControls: lastSafeWssControls,
     },
@@ -2723,6 +2728,17 @@ async function main() {
             conversationSubscriptionRecovered = control.recovered
           }
         }
+        if (direction === 'received' && control.type === 'message' && topic) {
+          observedMessageTopics.add(topic)
+        }
+        if (
+          direction === 'received'
+          && typeof control.type === 'string'
+          && control.type.startsWith('conversation-')
+          && control.type !== 'message'
+        ) {
+          observedDirectEventTypes.add(control.type)
+        }
       }
 
       const safeEntry = {
@@ -2808,6 +2824,8 @@ async function main() {
         lastWssReconnectDelayMs = now - Number(gapStartedAt)
         // 新连接必须重新完成 subscribe；清掉上一条 socket 的 ACK，避免状态页显示陈旧恢复状态。
         subscribedTopics = new Set()
+        observedMessageTopics = new Set()
+        observedDirectEventTypes = new Set()
         conversationSubscriptionRecovered = null
         void log('ChatGPT WSS reconnected natively', {
           delayMs: lastWssReconnectDelayMs,
@@ -2910,6 +2928,8 @@ async function main() {
     // 新 Guardian 尚未建立第一条 WSS，首次 readiness 也统一使用同一个 gap 时钟。
     wssGapStartedAt = guardianReadyAt
     subscribedTopics = new Set()
+    observedMessageTopics = new Set()
+    observedDirectEventTypes = new Set()
     conversationSubscriptionRecovered = null
     lastSafeWssControls = []
     authHeaders = null
