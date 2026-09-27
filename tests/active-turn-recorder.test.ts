@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import {
+  ActiveTurnRecorder,
   buildBodySnapshotTrace,
   buildCatalogObservationTrace,
   buildWssLifecycleTrace,
@@ -127,6 +131,31 @@ describe('Active Turn Recorder', () => {
       catalogActiveAfter: 1,
       catalogActiveConversationIdsAfter: ['conversation-3'],
     })
+  })
+
+  test('并发 fire-and-forget append 仍按调用顺序落盘', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'active-turn-recorder-'))
+    const file = path.join(dir, 'trace.jsonl')
+    const recorder = new ActiveTurnRecorder(file)
+    const records = Array.from({ length: 40 }, (_, index) => ({
+      version: 1 as const,
+      at: index,
+      kind: 'wss-lifecycle' as const,
+      conversationId: `conversation-${index}`,
+      type: 'conversation-turn-complete',
+      updateType: null,
+      startsTurn: false,
+      completesTurn: true,
+      asyncProgress: false,
+      activeBefore: 0,
+      activeAfter: 0,
+      activeConversationIdsBefore: [],
+      activeConversationIdsAfter: [],
+    }))
+    await Promise.all(records.map(record => recorder.append(record)))
+    const written = (await fs.readFile(file, 'utf8')).trim().split(/\r?\n/u).map(line => JSON.parse(line))
+    expect(written.map(record => record.at)).toEqual(records.map(record => record.at))
+    await fs.rm(dir, { recursive: true, force: true })
   })
 })
 

@@ -246,15 +246,22 @@ export function buildActorSubmitTrace(input: {
 export class ActiveTurnRecorder {
   readonly filePath: string
   private readonly ready: Promise<void>
+  private writeTail: Promise<void>
 
   constructor(filePath: string) {
     this.filePath = filePath
     this.ready = fs.mkdir(path.dirname(filePath), { recursive: true }).then(() => undefined)
+    this.writeTail = this.ready
   }
 
-  async append(record: ActiveTurnTrace): Promise<void> {
-    await this.ready
-    await fs.appendFile(this.filePath, `${JSON.stringify(record)}\n`)
+  append(record: ActiveTurnTrace): Promise<void> {
+    const line = `${JSON.stringify(record)}\n`
+    // WSS / SSE 回调会 fire-and-forget 并发调用 append。多个 fs.appendFile 虽然各自追加整行，
+    // 但 Promise 完成/内核排队顺序不保证与 emit 顺序完全一致；forensic trace 必须严格保序。
+    // 用单条 Promise tail 串行化所有 writer，同时让一次失败只拒绝自己的 append，不把队列毒死。
+    const write = this.writeTail.then(() => fs.appendFile(this.filePath, line))
+    this.writeTail = write.catch(() => undefined)
+    return write
   }
 }
 
