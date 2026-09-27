@@ -5,6 +5,7 @@
 - late-open 实验中，第二标签可以从 conversation detail 看到当时已持久化的中间快照，但官方 `/f/conversation/resume` 因没有当前 resume credential 返回 404；随后 12 秒 DOM 不再增长且无新请求。由此确认“能看到进行中快照”不等价于已重新挂上 live SSE。跨设备如何重新获得当前 resume credential 仍是 Phase 3 的未决 discovery 问题。
 - 外部近期真实 CDP 证据确认存在 `safety_review_update`：review active 时正文可暂时停更，但 SSE 仍以约 15 秒 `: ping` 保活。因此安全审核先作为 transient activity/forensic 维度记录，不能把它直接等同于 `complete-no-final` 或 `active-zombie`，也不能把“正文暂时不增长”判作死亡。
 - 修复 active-zombie watchdog 的固定轮询副作用：旧实现第一次超时后仍按每 30 分钟再次主动抓 conversation body。现在首次超时只调查一次；只有之后出现新的 WSS lifecycle 进展，或 catalog `update_time` 真正变化，才重新武装，并从最后进展再等待一个完整 watchdog 窗口。同一个 `async_status=3` / 同一 update_time 被 reconciliation 重复看到不会再制造请求节拍。
+- 修复 `conversation-turn-complete → body` 的持久化竞态：旧逻辑 complete 后仅等 3 秒，若 body 仍停在 `reasoning-open/tool-call-open/reasoning-ended-no-final/in_progress` 就会立即建立 `complete-no-final` 并推 Bark。现在第一次 confirmed-terminal 同步仍正常保存 messages/raw observation，但只要 body 尚无明确 final/interrupted 就先不立案；随后进入一次 15 秒 settle，优先复用页面自然产生的 passive body，缺失时才允许最多一次主动 body 复核。第二次仍无 final 才正式立案，`:settle` 不会再次递归等待。
 
 ## 2026-09-25 Guardian 自愈与 429 风暴修复
 

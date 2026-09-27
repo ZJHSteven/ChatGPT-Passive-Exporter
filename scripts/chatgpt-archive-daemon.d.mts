@@ -29,6 +29,12 @@ export function shouldClassifyTerminalForTrigger(trigger: unknown): boolean
 /** 判断 trigger 是否已提供 WSS/catalog 层面的“服务端确定结束”证据。 */
 export function isConfirmedTerminalTrigger(trigger: unknown): boolean
 
+/** complete 已到但 body 尚未显式终止时，是否应先做一次有界 settle 再立 incident。 */
+export function shouldDeferConfirmedTerminalIncident(
+  trigger: unknown,
+  diagnostic: { terminalEvidence?: unknown } | null | undefined,
+): boolean
+
 /** 把 conversation list async_status 分类为 active / complete / unknown。 */
 export function classifyCatalogAsyncStatus(value: unknown): 'active' | 'complete' | 'unknown'
 

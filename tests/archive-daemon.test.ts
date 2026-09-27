@@ -24,6 +24,7 @@ import {
   shouldNotifyIncidentTransition,
   shouldRebuildGuardianForMissingWss,
   shouldClassifyTerminalForTrigger,
+  shouldDeferConfirmedTerminalIncident,
   watchdogTriggerForStartType,
 } from '../scripts/chatgpt-archive-daemon.mjs'
 
@@ -184,8 +185,36 @@ describe('ChatGPT Archive daemon WSS parser', () => {
 
     expect(isConfirmedTerminalTrigger('wss:conversation-turn-complete')).toBe(true)
     expect(isConfirmedTerminalTrigger('reconcile:periodic:async-complete')).toBe(true)
+    expect(isConfirmedTerminalTrigger('reconcile:periodic:async-complete:settle')).toBe(true)
     expect(isConfirmedTerminalTrigger('watchdog:active-timeout')).toBe(false)
     expect(isConfirmedTerminalTrigger('reconcile:wss-reconnect')).toBe(false)
+  })
+
+  test('complete 首次 body 未收敛时只延迟立案一次，settle 复核不再循环', () => {
+    expect(shouldDeferConfirmedTerminalIncident(
+      'wss:conversation-turn-complete',
+      { terminalEvidence: 'none' },
+    )).toBe(true)
+    expect(shouldDeferConfirmedTerminalIncident(
+      'wss:conversation-turn-complete:settle',
+      { terminalEvidence: 'none' },
+    )).toBe(false)
+    expect(shouldDeferConfirmedTerminalIncident(
+      'reconcile:periodic:async-complete',
+      { terminalEvidence: 'none' },
+    )).toBe(true)
+    expect(shouldDeferConfirmedTerminalIncident(
+      'wss:conversation-turn-complete',
+      { terminalEvidence: 'final' },
+    )).toBe(false)
+    expect(shouldDeferConfirmedTerminalIncident(
+      'wss:conversation-turn-complete',
+      { terminalEvidence: 'interrupted' },
+    )).toBe(false)
+    expect(shouldDeferConfirmedTerminalIncident(
+      'watchdog:active-timeout',
+      { terminalEvidence: 'none' },
+    )).toBe(false)
   })
 
   test('conversation list async_status 只把已实测值分类为 active/complete', () => {
