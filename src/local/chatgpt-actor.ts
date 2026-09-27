@@ -208,6 +208,7 @@ async function waitForComposer(client: ActorCdpClient, timeoutMs: number): Promi
       const input = document.querySelector('textarea[aria-label="与 ChatGPT 聊天"]')
         || document.querySelector('textarea')
         || document.querySelector('#prompt-textarea')
+        || document.querySelector('[contenteditable="true"][role="textbox"]')
       if (document.readyState !== 'complete' || !input) return false
 
       // 2026-09-19 真机验证：ChatGPT 的静态/早期 hydration shell 会把 composer 放在原生
@@ -242,6 +243,7 @@ async function clearAndTypePrompt(client: ActorCdpClient, prompt: string): Promi
     const input = document.querySelector('textarea[aria-label="与 ChatGPT 聊天"]')
       || document.querySelector('textarea')
       || document.querySelector('#prompt-textarea')
+      || document.querySelector('[contenteditable="true"][role="textbox"]')
     if (!input) return false
     input.focus()
     return true
@@ -267,6 +269,8 @@ async function clearAndTypePrompt(client: ActorCdpClient, prompt: string): Promi
 async function clickSendHandler(client: ActorCdpClient): Promise<void> {
   const result = await evaluateValue(client, `(() => {
     const button = document.querySelector('button[data-testid="send-button"]')
+      || document.querySelector('button[aria-label="发送"]')
+      || document.querySelector('button[aria-label="Send"]')
     if (!button || button.disabled) return false
     button.click()
     return true
@@ -281,6 +285,8 @@ async function clickSendHandler(client: ActorCdpClient): Promise<void> {
 async function isSendButtonReady(client: ActorCdpClient): Promise<boolean> {
   return await evaluateValue(client, `(() => {
     const button = document.querySelector('button[data-testid="send-button"]')
+      || document.querySelector('button[aria-label="发送"]')
+      || document.querySelector('button[aria-label="Send"]')
     return Boolean(button && !button.disabled)
   })()`) === true
 }
