@@ -2409,12 +2409,14 @@ async function main() {
       })
     })
 
-   client.on('Network.loadingFailed', ({ requestId }) => {
+   client.on('Network.loadingFailed', ({ requestId, errorText, canceled, blockedReason }) => {
      const live = liveTransports.get(requestId)
      if (live) {
        const fail = () => {
          if (!liveTransports.has(requestId)) return
-         live.tracker.fail('Network.loadingFailed', Date.now())
+         const reason = [errorText, blockedReason, canceled === true ? 'canceled' : null].filter(Boolean).join('; ')
+           || 'Network.loadingFailed'
+         live.tracker.fail(reason, Date.now())
          liveTransports.delete(requestId)
        }
        if (live.enablePromise) void live.enablePromise.then(fail, fail)

@@ -91,6 +91,7 @@ export class LiveTurnTransportTracker {
   private bytesObserved = 0
   private pingCount = 0
   private boundEmitted = false
+  private doneSeen = false
   private lastSafetyActive: boolean | null | undefined = undefined
   private seenResumeHashes = new Set<string>()
   private seenHandoffTopics = new Set<string>()
@@ -133,6 +134,10 @@ export class LiveTurnTransportTracker {
   }
 
   fail(reason: unknown, at = Date.now()): void {
+    if (this.doneSeen) {
+      this.emitEvent('stream-finished', at)
+      return
+    }
     this.emitEvent('stream-failed', at, {
       loadingFailedReason: safeString(reason) ?? String(reason ?? 'unknown').slice(0, 240),
     })
@@ -152,6 +157,7 @@ export class LiveTurnTransportTracker {
     if (dataLines.length === 0) return
     const joined = dataLines.join('\n').trim()
     if (joined === '[DONE]') {
+      this.doneSeen = true
       this.emitEvent('done', at)
       return
     }

@@ -49,4 +49,15 @@ describe('LiveTurn transport control-plane recorder', () => {
     expect(events.filter(event => event.event === 'resume-token')).toHaveLength(1)
     expect(events.filter(event => event.event === 'safety-review').map(event => event.safetyReviewActive)).toEqual([true, false])
   })
+
+  test('已经看到 DONE 后的 Chrome loadingFailed 视为正常流收口', () => {
+    const events: any[] = []
+    const tracker = new LiveTurnTransportTracker({
+      cdpRequestId: '3.4', transport: 'conversation', requestStartedAt: 3000, emit: event => events.push(event),
+    })
+    tracker.ingestText('data: {"conversation_id":"c3"}\n\ndata: [DONE]\n\n', 3100)
+    tracker.fail('net::ERR_ABORTED', 3200)
+    expect(events.map(event => event.event)).toEqual(['stream-bound', 'done', 'stream-finished'])
+    expect(events.some(event => event.event === 'stream-failed')).toBe(false)
+  })
 })
