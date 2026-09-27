@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { buildActorSubmitTrace } from '../src/local/active-turn-recorder.ts'
-import { conversationIdFromUrl } from '../src/local/chatgpt-actor.ts'
+import { actorConversationUrl, conversationIdFromUrl } from '../src/local/chatgpt-actor.ts'
 
 describe('ChatGPT single actor helpers', () => {
   test('只把真实 /c/<uuid> 视为 conversation 绑定完成', () => {
@@ -10,6 +10,14 @@ describe('ChatGPT single actor helpers', () => {
     expect(conversationIdFromUrl('https://chatgpt.com/c/6aae3805-792c-83ea-8ad7-ebe9d0c083b1')).toBe(
       '6aae3805-792c-83ea-8ad7-ebe9d0c083b1',
     )
+  })
+
+  test('Actor 新聊天与续聊 URL 都只接受 canonical UUID', () => {
+    expect(actorConversationUrl()).toBe('https://chatgpt.com/')
+    expect(actorConversationUrl('6aae3805-792c-83ea-8ad7-ebe9d0c083b1')).toBe(
+      'https://chatgpt.com/c/6aae3805-792c-83ea-8ad7-ebe9d0c083b1',
+    )
+    expect(() => actorConversationUrl('WEB:temporary-id')).toThrow(/invalid ChatGPT conversation UUID/u)
   })
 
   test('actor-submit 使用 requestWillBeSent 时刻作为可靠本地 start', () => {

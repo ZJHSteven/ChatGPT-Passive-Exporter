@@ -27,6 +27,7 @@ interface ActorSendOptions {
   statePath: string
   tracePath: string
   prompt: string
+  conversationId?: string | null
   timeoutMs?: number
 }
 
@@ -227,6 +228,15 @@ export function conversationIdFromUrl(url: string): string | null {
   return match?.[1] ?? null
 }
 
+/** Actor 只接受 canonical UUID conversation；project/branch 临时 URL 不在这个入口里猜。 */
+export function actorConversationUrl(conversationId?: string | null): string {
+  if (!conversationId) return CHATGPT_HOME
+  const normalized = String(conversationId).trim()
+  const url = `https://chatgpt.com/c/${normalized}`
+  if (conversationIdFromUrl(url) !== normalized) throw new Error(`invalid ChatGPT conversation UUID: ${conversationId}`)
+  return url
+}
+
 async function clearAndTypePrompt(client: ActorCdpClient, prompt: string): Promise<void> {
   const focused = await evaluateValue(client, `(() => {
     const input = document.querySelector('textarea[aria-label="与 ChatGPT 聊天"]')
@@ -289,12 +299,15 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
     await client.send('Runtime.enable')
     await client.send('Network.enable')
 
-    // 每次 send 默认从全新聊天开始，但始终复用同一个 renderer/target。
-    await client.send('Page.navigate', { url: CHATGPT_HOME })
+    // 默认从全新聊天开始；显式给 conversationId 时则导航到已有 canonical conversation。
+    // 两种模式都始终复用同一个 renderer/target，并让第一方页面自己的 React/网络栈完成发送。
+    const targetUrl = actorConversationUrl(options.conversationId)
+    await client.send('Page.navigate', { url: targetUrl })
     await waitForComposer(client, timeoutMs)
     await clearAndTypePrompt(client, options.prompt)
 
-    const pageUrlBefore = String(await evaluateValue(client, 'location.href') || CHATGPT_HOME)
+    const pageUrlBefore = String(await evaluateValue(client, 'location.href') || targetUrl)
+    const expectedConversationId = options.conversationId ? String(options.conversationId).trim() : null
     // CDP event callback 与下面的轮询循环是异步交错的。使用显式 holder 可以让 TypeScript
     // 正确表达“回调稍后会填值”，避免把主循环里的变量误判成永远为 null/never。
     const submitState: { event: { at: number; requestId: string } | null } = { event: null }
@@ -340,7 +353,7 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
         const href = String(await evaluateValue(client, 'location.href') || '')
         conversationId = conversationIdFromUrl(href)
         const submitEvent = submitState.event
-        if (submitEvent && conversationId) {
+        if (submitEvent && conversationId && (!expectedConversationId || conversationId === expectedConversationId)) {
           boundAt = Date.now()
           // response 通常早于 URL bind，但给它一个很短的观察窗口，不因缺 response 阻塞发送控制面。
           if (responseStatus === null) await new Promise(resolve => setTimeout(resolve, 150))
@@ -377,6 +390,7 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
             responseStatus,
             responseMimeType,
             pageUrlBefore,
+            mode: expectedConversationId ? 'continue' : 'new',
           }
         }
 

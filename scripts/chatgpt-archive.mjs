@@ -50,7 +50,7 @@ Usage:
   chatgpt-archive reindex [--all] [--db <path>]
   chatgpt-archive incidents [--status open|resolved] [--limit N] [--db <path>]
   chatgpt-archive turn-trace [--limit N] [--trace <path>] [--cluster-ms N]
-  chatgpt-archive actor send --prompt-file <path> [--cdp URL] [--trace <path>] [--state <path>]
+  chatgpt-archive actor send --prompt-file <path> [--conversation <UUID>] [--cdp URL] [--trace <path>] [--state <path>]
   chatgpt-archive actor status [--cdp URL] [--state <path>]
  chatgpt-archive actor reset [--cdp URL] [--state <path>]
   chatgpt-archive protocol status [--ledger <path>]
@@ -601,6 +601,7 @@ async function main() {
         statePath: actorStatePath,
         tracePath,
         prompt,
+        conversationId: typeof flags.get('conversation') === 'string' ? String(flags.get('conversation')) : null,
         timeoutMs,
       }), null, 2))
       return
