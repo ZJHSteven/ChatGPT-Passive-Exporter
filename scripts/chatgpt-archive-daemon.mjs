@@ -1049,7 +1049,7 @@ async function main() {
   let wssGeneration = 0
   let subscribedTopics = new Set()
   let observedMessageTopics = new Set()
-  let observedDirectEventTypes = new Set()
+  let observedConversationEventTypes = new Set()
   let conversationSubscriptionRecovered = null
   let lastSafeWssControls = []
   let guardianReadyAt = 0
@@ -1245,7 +1245,7 @@ async function main() {
       subscribedTopics: [...subscribedTopics].sort(),
       explicitSubscribedTopics: [...subscribedTopics].sort(),
       observedMessageTopics: [...observedMessageTopics].sort(),
-      observedDirectEventTypes: [...observedDirectEventTypes].sort(),
+      observedConversationEventTypes: [...observedConversationEventTypes].sort(),
       conversationSubscriptionRecovered,
       lastControls: lastSafeWssControls,
     },
@@ -2827,7 +2827,7 @@ async function main() {
           && control.type.startsWith('conversation-')
           && control.type !== 'message'
         ) {
-          observedDirectEventTypes.add(control.type)
+          observedConversationEventTypes.add(control.type)
         }
       }
 
@@ -2915,7 +2915,7 @@ async function main() {
         // 新连接必须重新完成 subscribe；清掉上一条 socket 的 ACK，避免状态页显示陈旧恢复状态。
         subscribedTopics = new Set()
         observedMessageTopics = new Set()
-        observedDirectEventTypes = new Set()
+        observedConversationEventTypes = new Set()
         conversationSubscriptionRecovered = null
         void log('ChatGPT WSS reconnected natively', {
           delayMs: lastWssReconnectDelayMs,
@@ -3019,7 +3019,7 @@ async function main() {
     wssGapStartedAt = guardianReadyAt
     subscribedTopics = new Set()
     observedMessageTopics = new Set()
-    observedDirectEventTypes = new Set()
+    observedConversationEventTypes = new Set()
     conversationSubscriptionRecovered = null
     lastSafeWssControls = []
     authHeaders = null
