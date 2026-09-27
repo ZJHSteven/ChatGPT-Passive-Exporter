@@ -1,3 +1,16 @@
+## 2026-09-27 Phase 3 Token / Handoff 与 Watchdog 正确性 ExecPlan
+
+- [done] 用真实 ChatGPT Web A/B 标签完成 transport 取证：`/f/conversation/prepare` 返回 350 字符发送 `conduit_token`，正式 `/f/conversation` 的 `x-conduit-token` 与之逐字相同；SSE 另行下发 419 字符 `resume_conversation_token.token`，与发送 token 不同，并直接暴露 `conversation_id` / `turn_exchange_id`。
+- [done] 复现纯 SSE 路径：GPT-5.6 Thinking 工具型长 turn 累计约 329 KB SSE、17 次 `: ping` 后 `[DONE]`，全程没有 `stream_handoff`；证明 handoff 不是所有 turn 的必经路径。
+- [done] 复现 late-open 失败路径：第二标签页可通过 conversation detail 看到当时已持久化的中间快照，但官方 `/f/conversation/resume` 在没有 resume conduit credential 时返回 404；随后 12 秒页面正文不再增长且无新请求，证明“看到进行中快照”不能等同于已成功 live attach。
+- [done] 交叉核验近期逆向实现：发送 conduit token 来自 `/f/conversation/prepare`；handoff/resume 实现把 SSE `resume_conversation_token.token` 作为 `/f/conversation/resume` 的 `x-conduit-token`。近期真机资料同时存在“纯 SSE 到 DONE”和“SSE handoff 后正文走 conversation-turn-* WSS”两种模式，当前没有可靠证据表明客户端可以强制 handoff。
+- [done] 记录 safety review 新证据：近期真实 CDP 项目已观测 `safety_review_update`；review active 时 SSE 可以继续保持 `: ping` 心跳而暂时无正文，因此 review 是独立 transient activity/forensic 维度，不能先验等同于 `complete-no-final` 或 `active-zombie`，也不能把“正文停止增长”直接判死。
+- [in_progress] 修正 watchdog：catalog late-start 超时只允许首次进入 diagnostic/立案，不能把同一长期 `active-zombie` 当作每 30 分钟一次的 conversation-body 轮询器；只有新 catalog update / 新 lifecycle 证据 / 被动 body 更新后才允许再次诊断。
+- [in_progress] 修正 WSS complete → body settle 竞态：`conversation-turn-complete` 到达后，如果首次 body 仍是 `in_progress` / `reasoning-open` / `tool-call-open` 等开放快照，不立即创建/通知 `complete-no-final`；先给第一方页面被动响应一个有界 settle window，再至多补一次受控 body 复核，最终仍无 final 才立案。
+- [pending] Phase 3 LiveTurn observer：从官方页面已经发出的 `/f/conversation` SSE 被动解析 `resume_conversation_token`、`turn_exchange_id`、`stream_handoff`、`safety_review_update`、`: ping`、`message_stream_complete`；若出现 `conversation-turn-*` WSS，则将 catchup/live encoded SSE 合并进同一 turn trace。不得持久化原始 token。
+- [pending] 继续 Remote Late-Attach Probe：重点研究“非发送设备如何取得当前 turn 的 resume credential”。同 profile 不再假定自动共享；`RESUME_TOKEN_STORE_KEY` 只能作为有条件证据，必须以当前 turn 的实际官方请求为准。
+- [pending] Phase 4 第二轮 controlled smoke：继续使用单 Actor、官方 React send handler；验证 prepare → send → CID bind → LiveTurn observer → WSS complete/body sync。Guardian 保持独立监控，不与 Actor 合并。
+
 ## 2026-09-25 Guardian 自愈与 429 风暴修复 ExecPlan
 
 - [done] 复盘 21:23～21:37 Guardian/CDP 故障链，区分“首次 renderer/CDP 卡顿”与“恢复逻辑把一次故障放大成 REST 风暴”。确认旧链路会在每次 Guardian recover 后立即执行多页 catalog reconciliation，并在主循环错误后反复拆/建同一 Guardian。
