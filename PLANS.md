@@ -8,6 +8,7 @@
 
 ## 2026-09-27 WSS 语义、Zombie 时序、Phase 3/4 继续实现 ExecPlan
 
+- [done] 收拢 Phase 3 A/B 实验的请求预算副作用：确认多开真实 ChatGPT 页面本身会叠加第一方 sidebar/TPP/settings/catalog 请求并触发 429；本轮累计 20 次 429 被 daemon 被动观察后正常进入 1h cooldown，protocol learning 的 `approvedReplayTemplates=0`，未发生自动 replay 风暴。已关闭明确测试页，保留正常页 + Guardian + 单 Actor；archive/delete 等 UI 新实验等 cooldown 自然结束后再做。
 - [done] 重新建立 WSS 分层词汇表：已新增 `WSS_PROTOCOL.md`，严格区分 `socket -> topic -> message envelope -> business event/update_type`，并按当前真机/历史/兼容三档标注证据。`conversation-created / conversation-turn-complete / conversation-update / conversation-history-update` 都是业务事件类型，不是 topic；当前稳定生命周期事件来自 `conversations`，`conversation-history-update` 仍只是 `alder-conversations` 候选。
 - [done] 修复 catalog late-start watchdog 的跨 turn 计时污染：watchdog body 现在记录 turn identity；若同一 conversation 的诊断已从 turn A 变成 turn B，B 会以“首次确认看到 B”的时刻重新开始完整 watchdog 窗口，不能继承 A 的年龄直接立 `active-zombie`。
 - [done] WSS state 已拆分 `explicitSubscribedTopics / observedMessageTopics / observedConversationEventTypes / eventTopicCounts`；短时间没看到 subscribe ACK 不再等价于 topic 退役。2026-09-28 当前 daemon 已再次确认四个显式 topic，实际 conversation business message 目前来自 `conversations`。
