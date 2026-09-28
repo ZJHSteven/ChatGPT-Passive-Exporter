@@ -215,3 +215,51 @@ Tab A 在 conversation `6ab9ab7e-...` 运行长工具 turn，原始 SSE `33772.1
 - **Live observer**：同一 renderer 的旧 SSE 可以跨 SPA route 继续被 CDP 观察，因此“监听”本身不要求一 turn 一 tab；但若需要同时启动新 turn，UI 的全局 active-generation 状态成为限制。
 - **未来 StreamHub**：动态 `conversation-turn-*` WSS 若验证可 late-attach，仍应由一个账户级 Hub 多路复用，不应退化成一 turn 一个 tab。
 
+## 11. 2026-09-28 same-profile resume credential 来源：IndexedDB persisted atom
+
+此前 A/B late-attach 已反复证明：Tab A 原始 `/f/conversation` SSE 收到 `resume_conversation_token.token` 后，Tab B 打开同一正在运行的 conversation 可以自动发 `/f/conversation/resume`，且 B 请求使用的 resume credential 与 A 原 SSE token 完全相同。但 token 从哪里到达 B 一直没有闭环。
+
+2026-09-28 经过逐层排除与哈希比对，same-profile 路径现已确认：
+
+```text
+Tab A original SSE
+  -> resume_conversation_token.token
+  -> first-party frontend persists resume capability
+  -> IndexedDB: codex-browser-host
+       object store: records
+       key: codex.browser.persistedAtomState
+       field: chatgpt-conversation-resume-tokens-v1
+       index: [user/account identity, conversation_id]
+       value.token: <419-char resume token>
+
+Tab B (same Chrome profile)
+  -> opens running conversation
+  -> reads shared persisted atom
+  -> x-conduit-token
+  -> POST /backend-api/f/conversation/resume
+  -> replay + live SSE
+```
+
+关键因果证据不是“B resume 后能找到 token”，而是一个全新的 turn `6ab9c001-...`：A 的 original SSE 在 `33772.6554` 首先记录 419 字符 resume token（只保存 SHA-256）。**B 此时仍停留在旧 conversation、从未导航进该新 CID**；在这个 pre-navigation 时刻扫描 B 所共享的 `codex-browser-host / records / codex.browser.persistedAtomState`，已经找到：
+
+```text
+$.chatgpt-conversation-resume-tokens-v1.[<user/account>, "6ab9c001-..."] .token
+```
+
+该字段长度 419，SHA-256 与 A 原始 SSE token 精确一致。因此 token 是 A 获得 SSE credential 后就进入 profile 共享 persisted state，不是 B 导航后从 conversation detail 临时生成。
+
+同时已经排除本次 same-profile 样本中的几个简单来源：
+
+- `RESUME_TOKEN_STORE_KEY` localStorage：导航前/成功 resume 后均为空容器，无 CID/token hash；
+- Cookie（含 HttpOnly）：无 value hash 匹配；
+- `BroadcastChannel` / `window.postMessage` / 可见 Service Worker message：fresh B 从 `about:blank` 注入监听，首页等待与导航期间均无 token 消息；
+- 账户 WSS：fresh B 从首页建立三条 WSS 到导航进入 active conversation，只观察到 connect/presence/subscribe/reply，本次没有 frame 含 resume token hash；
+- `stream_status`：protocol ledger 与实时 probe 均确认 JSON 只有 `status`，响应头也无 token；
+- conversation detail：一组时间线中 B `/resume` 已在页面启动约 4.36 秒发出，而 `/conversations/{cid}?num_turns=...` 到约 8.74 秒才开始，故 detail body 不可能是该次 credential 来源。
+
+### 重要边界：same-profile A/B 不再能证明跨设备 reacquisition
+
+这个发现改变 Remote Late-Attach 实验解释：两个 Chrome tab 虽然在 UI 体验上与手机/电脑相似（sidebar 不一定实时刷新），但它们共享 `codex-browser-host` IndexedDB，因此**协议层并不独立**。same-profile A/B 可以证明 `/resume`、replay/live 语义和多流并存，但不能回答“iPhone/Firefox/另一个 profile 如何得到正在运行 turn 的 resume credential”。
+
+下一步真正的 Remote Late-Attach 必须使用独立 storage context（独立 Chrome profile、Firefox 或手机）重新取证；如果独立客户端仍能 `/resume`，再寻找服务端账户级 credential reacquisition 路径。
+

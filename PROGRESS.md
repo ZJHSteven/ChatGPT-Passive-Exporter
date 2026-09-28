@@ -10,6 +10,8 @@
 - trace writer 部署后用 `TRACEORDER928` 重新 production smoke，当前 JSONL 已严格按 `stream-bound -> resume-token -> message-stream-complete -> done -> stream-finished` 落盘，证明串行 writer 在真实 CDP 回调并发下生效。
 - 完成 Tab 隔离 A/B：独立 Tab B 发短 turn 后，Tab A 长 SSE 的 `lastDataAt` 仍继续推进且 66KB -> 91KB，证明不同 renderer 的 HTTP SSE 互不取消。随后在另一长 turn `33772.2242` 活跃时，同一个 A tab 真实点击 sidebar 切到另一 conversation，旧 SSE 仍从 7 events/19.8KB 增长到 27/58KB，并继续到 276/186KB，证明 SPA route change 本身也不会 Abort 原流。
 - 但同-tab UI 不是 conversation 级隔离：旧 A2 turn 运行时，新 route 的 ProseMirror 已有 `SAMETABB928` 文本却不渲染 send button；旧 A2 完成后，它的响应还出现在当前 href 已切到 B 的 DOM 尾部。结论是“一个 renderer 可保活跨路由旧 SSE，但不能安全充当并发多 Actor”。Guardian 继续独立；单 Actor 可顺序复用；需要真正并发发送时扩小型 Actor pool。账户 WSS topic 不需要按 topic 拆 tab。
+- same-profile resume token 来源已经闭环：A 原始 SSE 的 `resume_conversation_token.token` 会进入 profile 共享的 IndexedDB `codex-browser-host / records / codex.browser.persistedAtomState / chatgpt-conversation-resume-tokens-v1`。新 turn `6ab9c001-...` 的因果实验中，B 尚停在旧 conversation、未导航进新 CID 时，该 IndexedDB 已存在 419 字符 token，SHA-256 与 A 原始 SSE 完全一致；因此不是 B 导航后才从 detail/body 获得。此前已排除 localStorage、cookie、BroadcastChannel、window message、可见 Service Worker message、账户 WSS、`stream_status` body/header 和 conversation detail 作为这次 same-profile token 直接来源。
+- 这一发现同时收紧 Remote Late-Attach 证据边界：same-profile 两 tab 虽然 UI 体验近似手机↔电脑，但协议上共享 IndexedDB，不能再用它证明跨设备 credential reacquisition。真正跨设备实验必须换独立 storage context（独立 profile / Firefox / iPhone）；same-profile 实验仍可用于验证 `/resume` replay/live、多 SSE 并存和 UI/renderer 隔离。
 
 ## 2026-09-27 Phase 3 transport 与 Watchdog 正确性
 
