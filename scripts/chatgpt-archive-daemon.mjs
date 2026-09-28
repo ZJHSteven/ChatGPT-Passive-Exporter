@@ -1056,6 +1056,11 @@ async function main() {
   let guardianHealthFailures = 0
   let guardianRebuilds = 0
   let activeSocketIds = new Set()
+  // 逐 socket 的控制面遥测只保存在内存/state/log 中，用来回答“到底是哪一条 WSS 在轮换”。
+  // 这里故意不保存完整 URL/query、正文、cookie、token 或认证头；requestId 只是本次 CDP
+  // 会话里的短生命周期标识，topic/recovered 则是判断 conversations transport 是否换代的关键证据。
+  let wssSocketTelemetry = new Map()
+  let recentWssSocketLifecycles = []
   let stopping = false
   let pendingGapRepair = null
   let lastGapRepairAttemptAt = 0
@@ -1250,6 +1255,20 @@ async function main() {
       observedConversationEventTypes: [...observedConversationEventTypes].sort(),
       conversationSubscriptionRecovered,
       lastControls: lastSafeWssControls,
+      sockets: [...wssSocketTelemetry.values()]
+        .map(socket => ({
+          requestId: socket.requestId,
+          generation: socket.generation,
+          createdAt: socket.createdAt,
+          ageMs: Math.max(0, Date.now() - Number(socket.createdAt || Date.now())),
+          sentSubscribedTopics: [...socket.sentSubscribedTopics].sort(),
+          acknowledgedTopics: [...socket.acknowledgedTopics].sort(),
+          recoveredByTopic: Object.fromEntries([...socket.recoveredByTopic.entries()].sort(([a], [b]) => a.localeCompare(b))),
+          observedMessageTopics: [...socket.observedMessageTopics].sort(),
+          controlFrames: socket.controlFrames,
+        }))
+        .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0)),
+      recentSocketLifecycles: recentWssSocketLifecycles,
     },
     liveTransport: {
       active: activeLiveTransports.size,
@@ -2840,7 +2859,7 @@ async function main() {
      * 2) conversations 已订阅，但没有业务 frame；
      * 3) 收到了 conversations message frame，但我们的 event parser 没跟上 schema。
      */
-    const observeWssControlFrame = async (direction, payloadData) => {
+    const observeWssControlFrame = async (requestId, direction, payloadData) => {
       const summary = summarizeWssFrame(payloadData)
       const now = Date.now()
       lastWssFrameAt = now
@@ -2851,18 +2870,27 @@ async function main() {
       if (controls.length === 0) return summary
 
       lastWssControlAt = now
+      const socket = wssSocketTelemetry.get(requestId) || null
+      const newlyObservedMessageTopics = []
       for (const control of controls) {
         const topic = typeof control.topic_id === 'string'
           ? control.topic_id
           : typeof control.topic === 'string' ? control.topic : null
         if (control.type === 'subscribe' && topic) {
           if (direction === 'sent') subscribedTopics.add(topic)
+          if (direction === 'sent' && socket) socket.sentSubscribedTopics.add(topic)
+          if (direction === 'received' && socket) {
+            socket.acknowledgedTopics.add(topic)
+            if (typeof control.recovered === 'boolean') socket.recoveredByTopic.set(topic, control.recovered)
+          }
           if (direction === 'received' && topic === 'conversations' && typeof control.recovered === 'boolean') {
             conversationSubscriptionRecovered = control.recovered
           }
         }
         if (direction === 'received' && control.type === 'message' && topic) {
           observedMessageTopics.add(topic)
+          if (socket && !socket.observedMessageTopics.has(topic)) newlyObservedMessageTopics.push(topic)
+          if (socket) socket.observedMessageTopics.add(topic)
         }
         if (
           direction === 'received'
@@ -2873,15 +2901,35 @@ async function main() {
           observedConversationEventTypes.add(control.type)
         }
       }
+      if (socket) socket.controlFrames += 1
 
       const safeEntry = {
         at: now,
+        requestId,
         direction,
         bytes: summary.bytes,
         controls: controls.slice(0, 16),
       }
       lastSafeWssControls.push(safeEntry)
       if (lastSafeWssControls.length > 12) lastSafeWssControls = lastSafeWssControls.slice(-12)
+
+      // subscribe/connect 控制帧数量很低，直接带 requestId 落日志，后续才能还原 topic 属于哪条 socket。
+      // 普通 message 不逐帧刷日志，只在某条 socket 第一次看到一个 message topic 时记一次。
+      if (controls.some(control => control.type === 'subscribe' || control.type === 'connect')) {
+        await log('ChatGPT WSS socket control observed', {
+          requestId,
+          direction,
+          activeSockets: activeSocketIds.size,
+          controls: controls.slice(0, 16),
+        })
+      }
+      if (newlyObservedMessageTopics.length > 0) {
+        await log('ChatGPT WSS socket observed first message topic', {
+          requestId,
+          topics: [...new Set(newlyObservedMessageTopics)].sort(),
+          activeSockets: activeSocketIds.size,
+        })
+      }
       return summary
     }
 
@@ -2945,13 +2993,33 @@ async function main() {
     page.on('Network.webSocketCreated', ({ requestId, url }) => {
       if (!String(url || '').startsWith('wss://') || !String(url || '').includes('chatgpt.com')) return
       const now = Date.now()
+      const activeSocketsBefore = activeSocketIds.size
       const gapStartedAt = wssGapStartedAt
       const isNativeReconnect = Number.isFinite(gapStartedAt)
         && Number.isFinite(lastWssClosedAt)
         && Number(lastWssClosedAt) >= guardianReadyAt
       activeSocketIds.add(requestId)
+      wssSocketTelemetry.set(requestId, {
+        requestId,
+        generation: wssGeneration,
+        createdAt: now,
+        sentSubscribedTopics: new Set(),
+        acknowledgedTopics: new Set(),
+        recoveredByTopic: new Map(),
+        observedMessageTopics: new Set(),
+        controlFrames: 0,
+      })
       lastWssCreatedAt = now
       wssGapStartedAt = null
+
+      void log('ChatGPT WSS socket created', {
+        requestId,
+        generation: wssGeneration,
+        activeSocketsBefore,
+        activeSocketsAfter: activeSocketIds.size,
+        globalGapStartedAt: Number.isFinite(gapStartedAt) ? gapStartedAt : null,
+        classifiedNativeReconnect: isNativeReconnect,
+      })
 
       if (isNativeReconnect) {
         lastWssReconnectDelayMs = now - Number(gapStartedAt)
@@ -2974,18 +3042,38 @@ async function main() {
     page.on('Network.webSocketClosed', ({ requestId }) => {
       if (!activeSocketIds.delete(requestId)) return
       const now = Date.now()
+      const socket = wssSocketTelemetry.get(requestId) || null
+      wssSocketTelemetry.delete(requestId)
       lastWssClosedAt = now
       // 只有最后一条 WSS 都关闭时才进入 gap；若旧连接关闭时新连接已并存，监听面并未中断。
       if (activeSocketIds.size === 0) wssGapStartedAt = now
+
+      const lifecycle = {
+        requestId,
+        generation: socket?.generation ?? wssGeneration,
+        createdAt: socket?.createdAt ?? null,
+        closedAt: now,
+        lifetimeMs: socket?.createdAt ? Math.max(0, now - Number(socket.createdAt)) : null,
+        sentSubscribedTopics: socket ? [...socket.sentSubscribedTopics].sort() : [],
+        acknowledgedTopics: socket ? [...socket.acknowledgedTopics].sort() : [],
+        recoveredByTopic: socket ? Object.fromEntries([...socket.recoveredByTopic.entries()].sort(([a], [b]) => a.localeCompare(b))) : {},
+        observedMessageTopics: socket ? [...socket.observedMessageTopics].sort() : [],
+        controlFrames: socket?.controlFrames ?? 0,
+        activeSocketsAfter: activeSocketIds.size,
+        enteredGlobalGap: activeSocketIds.size === 0,
+      }
+      recentWssSocketLifecycles.push(lifecycle)
+      if (recentWssSocketLifecycles.length > 32) recentWssSocketLifecycles = recentWssSocketLifecycles.slice(-32)
+      void log('ChatGPT WSS socket closed', lifecycle)
     })
     page.on('Network.webSocketFrameSent', ({ requestId, response }) => {
       if (!activeSocketIds.has(requestId)) return
-      void observeWssControlFrame('sent', response?.payloadData)
+      void observeWssControlFrame(requestId, 'sent', response?.payloadData)
     })
     page.on('Network.webSocketFrameReceived', ({ requestId, response }) => {
       if (!activeSocketIds.has(requestId)) return
       const payloadData = response?.payloadData
-      const summaryPromise = observeWssControlFrame('received', payloadData)
+      const summaryPromise = observeWssControlFrame(requestId, 'received', payloadData)
       const events = extractConversationEvents(payloadData)
       if (events.length > 0) wssParsedEventFrames += 1
       for (const event of events) {
@@ -3058,6 +3146,7 @@ async function main() {
     if (reason !== 'startup') guardianRebuilds += 1
     wssGeneration += 1
     activeSocketIds = new Set()
+    wssSocketTelemetry = new Map()
     // 新 Guardian 尚未建立第一条 WSS，首次 readiness 也统一使用同一个 gap 时钟。
     wssGapStartedAt = guardianReadyAt
     subscribedTopics = new Set()
