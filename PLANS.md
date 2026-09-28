@@ -1,3 +1,11 @@
+## 2026-09-28 WSS 轮换 / gap-repair / cooldown / DevSpace start 取证 ExecPlan
+
+- [in_progress] 先补 WSS 逐 socket 可观测性：记录 `requestId`、创建/关闭时间、该 socket 实际发送/收到的 subscribe topic、`recovered`、消息 topic 与关闭时仍承载的 topic；只记录控制面，不记录正文、cookie、token 或认证头。
+- [pending] 用 Git 历史和现有 daemon 日志定位“过去约 30–40 分钟原生 WSS 轮换会触发 fallback，而 2026-09-27 夜间未触发”的行为变化；严格区分代码逻辑变化与 ChatGPT 前端从单 socket 演化为多 socket/重叠换线的上游变化。
+- [pending] 完整审计 gap-repair/cooldown：列出触发源、30 秒 debounce、10 分钟主动 REST 最小间隔、60 分钟 429 cooldown、passive cache 例外、Guardian native REST block、cooldown 到期 slow-start 与 periodic 6h 的相互作用；先解释和取证，不先放宽生产门控。
+- [pending] 复核 DevSpace `openai/session metadata` supplementary start 方案当前实现度：确认 metadata 是否已进入 watcher、如何识别首次工具调用、metadata -> canonical conversation UUID binding 需要什么证据、未绑定时如何避免误把旧 tenant/session 当新 turn。
+- [pending] 在新 socket 日志上线并自然经历至少一次 WSS 轮换后，用真实证据决定修复语义：优先按 `conversations/alder-conversations` transport generation 或 subscribe/recovered 状态触发 gap repair，而不是继续依赖“所有 ChatGPT WSS 数量归零”。
+
 ## 2026-09-27 WSS 语义、Zombie 时序、Phase 3/4 继续实现 ExecPlan
 
 - [done] 重新建立 WSS 分层词汇表：已新增 `WSS_PROTOCOL.md`，严格区分 `socket -> topic -> message envelope -> business event/update_type`，并按当前真机/历史/兼容三档标注证据。`conversation-created / conversation-turn-complete / conversation-update / conversation-history-update` 都是业务事件类型，不是 topic；当前稳定生命周期事件来自 `conversations`，`conversation-history-update` 仍只是 `alder-conversations` 候选。
