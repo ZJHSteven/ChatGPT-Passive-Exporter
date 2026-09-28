@@ -1064,6 +1064,9 @@ async function main() {
   let stopping = false
   let pendingGapRepair = null
   let lastGapRepairAttemptAt = 0
+  // 只记录 gap-repair 当前被哪一道门卡住；用于解释“为什么没有 fallback”，不参与决策。
+  let lastGapRepairGate = null
+  let lastGapRepairGateSignature = null
   // dirty = “本地可能落后”；ready = “现在允许主动抓 body”。二者必须分开。
   const dirty = new Map()
   const ready = new Map()
@@ -1301,6 +1304,7 @@ async function main() {
         lastAt: pendingGapRepair.lastAt,
         reasons: [...pendingGapRepair.reasons].sort(),
       } : null,
+      gapRepairGate: lastGapRepairGate,
       passive: {
         observedPages: passivePageObservers.size,
         bodyResponses: passiveBodyResponses,
@@ -1742,13 +1746,21 @@ async function main() {
 
   const tripCooldown = async (reason) => {
     const now = Date.now()
+    const previousCooldownUntil = Number(cooldownUntil || 0)
+    const wasAlreadyCooling = previousCooldownUntil > now
     cooldownUntil = now + cooldownMinutes * 60_000
     cooldownRecoveryPending = true
     recoveryProbeRemaining = 0
     // 429 本身就是“现在不适合做主动扫描”的强证据。把 periodic 基准推进到本次 429，
     // 防止 daemon 已运行很久时在 cooldown 一结束就因为旧 lastReconcileAt 立即深扫 catalog。
     lastReconcileAt = now
-    await log('active API cooldown armed', { reason, cooldownUntil })
+    await log('active API cooldown armed', {
+      reason,
+      cooldownUntil,
+      wasAlreadyCooling,
+      previousCooldownUntil: previousCooldownUntil > 0 ? previousCooldownUntil : null,
+      extensionMs: wasAlreadyCooling ? Math.max(0, cooldownUntil - previousCooldownUntil) : null,
+    })
     await setGuardianConversationRestBlocked(true).catch(async (error) => {
       await log('Guardian REST cooldown block failed', {
         error: error instanceof Error ? error.message : String(error),
@@ -2807,11 +2819,15 @@ async function main() {
    * 失败只保留 pending 并重新 debounce，绝不能让异常冒泡到 Guardian rebuild。
    */
   const maybeRunGapRepair = async () => {
-    if (!pendingGapRepair) return
+    if (!pendingGapRepair) {
+      lastGapRepairGate = null
+      lastGapRepairGateSignature = null
+      return
+    }
     const now = Date.now()
     const passiveSeed = reusablePassiveCatalogPage(0, 28, Number(pendingGapRepair.lastAt || now))
     const activeWindowAvailable = Boolean(authHeaders) && activeApiAllowed(cooldownUntil, now)
-    if (!shouldRunDeferredGapRepair({
+    const eligible = shouldRunDeferredGapRepair({
       now,
       pendingLastAt: pendingGapRepair.lastAt,
       lastAttemptAt: lastGapRepairAttemptAt,
@@ -2822,7 +2838,57 @@ async function main() {
       cooldownUntil,
       reconcileInFlight,
       passiveCatalogAvailable: Boolean(passiveSeed),
-    })) return
+    })
+
+    const debounceDueAt = Number(pendingGapRepair.lastAt) + gapRepairDelayMs
+    const intervalDueAt = lastGapRepairAttemptAt > 0
+      ? lastGapRepairAttemptAt + gapRepairMinIntervalMs
+      : 0
+    const blockers = []
+    if (activeSocketIds.size <= 0) blockers.push('no-active-wss')
+    if (reconcileInFlight) blockers.push('reconcile-in-flight')
+    if (!activeWindowAvailable && !passiveSeed) {
+      if (!authHeaders) blockers.push('no-auth')
+      if (!activeApiAllowed(cooldownUntil, now)) blockers.push('active-api-cooldown')
+      blockers.push('no-passive-catalog-after-gap')
+    }
+    if (now < debounceDueAt) blockers.push('debounce')
+    if (intervalDueAt > 0 && now < intervalDueAt) blockers.push('active-repair-min-interval')
+    const gate = {
+      at: now,
+      eligible,
+      blockers,
+      activeSockets: activeSocketIds.size,
+      authAvailable: Boolean(authHeaders),
+      activeWindowAvailable,
+      passiveCatalogAvailable: Boolean(passiveSeed),
+      reconcileInFlight,
+      cooldownUntil: cooldownUntil || null,
+      debounceDueAt,
+      intervalDueAt: intervalDueAt || null,
+      pendingFirstAt: pendingGapRepair.firstAt,
+      pendingLastAt: pendingGapRepair.lastAt,
+      reasons: [...pendingGapRepair.reasons].sort(),
+    }
+    lastGapRepairGate = gate
+    const gateSignature = JSON.stringify({
+      eligible: gate.eligible,
+      blockers: gate.blockers,
+      activeSockets: gate.activeSockets,
+      authAvailable: gate.authAvailable,
+      activeWindowAvailable: gate.activeWindowAvailable,
+      passiveCatalogAvailable: gate.passiveCatalogAvailable,
+      reconcileInFlight: gate.reconcileInFlight,
+      cooldownUntil: gate.cooldownUntil,
+      debounceDueAt: gate.debounceDueAt,
+      intervalDueAt: gate.intervalDueAt,
+      reasons: gate.reasons,
+    })
+    if (gateSignature !== lastGapRepairGateSignature) {
+      lastGapRepairGateSignature = gateSignature
+      await log('deferred gap repair gate changed', gate)
+    }
+    if (!eligible) return
 
     const repair = pendingGapRepair
     // 10 分钟 minInterval 保护的是主动 REST 频率；纯 passive repair 不消耗服务端配额。
@@ -2830,6 +2896,8 @@ async function main() {
     try {
       await reconcileCatalog('gap-repair')
       pendingGapRepair = null
+      lastGapRepairGate = null
+      lastGapRepairGateSignature = null
       await log('deferred gap repair complete', {
         reasons: [...repair.reasons].sort(),
       })
