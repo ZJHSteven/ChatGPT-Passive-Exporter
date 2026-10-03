@@ -140,6 +140,16 @@ export function passiveObservationMatchesReady(capturedAt: unknown, readyAt: unk
 /** cooldown 恢复期使用更慢的 active request gap。 */
 export function effectiveActiveRequestGap(baseGapMs: unknown, recoveryProbeRemaining: unknown, recoveryProbeGapMs: unknown): number
 
+/** 判断 WSS topic 是否属于 conversation 生命周期传输面。 */
+export function isConversationTransportTopic(topic: unknown): boolean
+
+/** 同一 Guardian 内 conversation carrier requestId 换代时才触发 gap repair。 */
+export function shouldRepairConversationTransport(
+  observedCarrierBefore: unknown,
+  currentRequestId: unknown,
+  nextRequestId: unknown,
+): boolean
+
 /** 只有“无 WSS”从本次 gap 起持续超过 grace 后，才允许重建 Guardian。 */
 export function shouldRebuildGuardianForMissingWss(input: {
   now: number

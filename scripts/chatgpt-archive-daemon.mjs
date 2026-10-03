@@ -353,7 +353,7 @@ export function watchdogTriggerForStartType(startType) {
  * 只有 later WSS/catalog 证据把 lastEventAt 推进到上一次 watchdog 之后，才重新武装，
  * 并且要从最后一次进展再等满一个完整 watchdog 窗口才能第二次调查。
  */
-export function shouldQueueWatchdogDiagnostic(active, now = Date.now(), watchdogMs = 30 * 60_000) {
+export function shouldQueueWatchdogDiagnostic(active, now = Date.now(), watchdogMs = 45 * 60_000) {
   const startedAt = Number(active?.startedAt)
   const lastEventAt = Number(active?.lastEventAt)
   const lastWatchdogAt = active?.lastWatchdogAt === null || active?.lastWatchdogAt === undefined
@@ -1062,6 +1062,31 @@ export function effectiveActiveRequestGap(baseGapMs, recoveryProbeRemaining, rec
   return Number(recoveryProbeRemaining) > 0 ? Math.max(base, probeGap) : base
 }
 
+/**
+ * 判断某个 WSS topic 是否属于 conversation 生命周期传输面。
+ *
+ * ChatGPT 当前稳定存在多条物理 WSS：conversation、通知、资源更新彼此独立。
+ * gap repair 只应该跟随真正承载 conversation 生命周期的 transport 换代，
+ * 不能因为 app_notifications/resource-updates 自己轮换就去扫 conversation catalog。
+ */
+export function isConversationTransportTopic(topic) {
+  return topic === 'conversations' || topic === 'alder-conversations'
+}
+
+/**
+ * 同一个 Guardian 生命周期内，只要已经见过一条 conversation carrier，
+ * 后续换到另一条 requestId 就视为 transport generation 发生变化。
+ *
+ * 第一次建立 carrier 属于正常启动，不触发 repair；旧 carrier 先关闭再建立新 carrier，
+ * 或新旧 carrier overlap 后换代，两种形态都返回 true。
+ */
+export function shouldRepairConversationTransport(observedCarrierBefore, currentRequestId, nextRequestId) {
+  const next = typeof nextRequestId === 'string' ? nextRequestId.trim() : ''
+  if (!next) return false
+  const current = typeof currentRequestId === 'string' ? currentRequestId.trim() : ''
+  return Boolean(observedCarrierBefore) && current !== next
+}
+
 async function main() {
   const flags = parseArgs(process.argv.slice(2))
   const cdpHttp = String(flags.get('cdp') || DEFAULT_CDP).replace(/\/$/u, '')
@@ -1103,7 +1128,7 @@ async function main() {
   const completeSettleMs = intFlag(flags, 'complete-settle-ms', 15_000, 1000)
   const recoveryProbeGapMs = intFlag(flags, 'recovery-probe-gap-ms', 30_000, 1000)
   const recoveryProbeSuccesses = intFlag(flags, 'recovery-probe-successes', 3, 1)
-  const watchdogMinutes = Number(flags.get('watchdog-minutes') ?? 30)
+  const watchdogMinutes = Number(flags.get('watchdog-minutes') ?? 45)
   if (!Number.isFinite(watchdogMinutes) || watchdogMinutes <= 0) throw new Error('--watchdog-minutes must be > 0')
   const watchdogMs = watchdogMinutes * 60_000
 
@@ -1140,6 +1165,14 @@ async function main() {
   let wssParsedEventFrames = 0
   let wssUnparsedConversationFrames = 0
   let wssGeneration = 0
+  // conversation transport 与物理 WSS 总数分开追踪。一个 Guardian 内第一次看到 carrier
+  // 只是初始化；之后 requestId 改变才代表真正的 transport generation 换代。
+  let conversationTransportRequestId = null
+  let lastConversationTransportRequestId = null
+  let conversationTransportGeneration = 0
+  let conversationTransportObservedInGuardian = false
+  let lastConversationTransportChangedAt = null
+  let lastConversationTransportClosedAt = null
   let subscribedTopics = new Set()
   let observedMessageTopics = new Set()
   let observedConversationEventTypes = new Set()
@@ -1341,6 +1374,14 @@ async function main() {
       eventCounts: Object.fromEntries(eventCounts),
       eventTopicCounts: Object.fromEntries(eventTopicCounts),
       generation: wssGeneration,
+      conversationTransport: {
+        requestId: conversationTransportRequestId,
+        lastRequestId: lastConversationTransportRequestId,
+        generation: conversationTransportGeneration,
+        observedInGuardian: conversationTransportObservedInGuardian,
+        lastChangedAt: lastConversationTransportChangedAt,
+        lastClosedAt: lastConversationTransportClosedAt,
+      },
       sentFrames: wssSentFrames,
       receivedFrames: wssReceivedFrames,
       parsedEventFrames: wssParsedEventFrames,
@@ -3148,6 +3189,34 @@ async function main() {
         if (control.type === 'subscribe' && topic) {
           if (direction === 'sent') subscribedTopics.add(topic)
           if (direction === 'sent' && socket) socket.sentSubscribedTopics.add(topic)
+          if (direction === 'sent' && socket && isConversationTransportTopic(topic)) {
+            const shouldRepair = shouldRepairConversationTransport(
+              conversationTransportObservedInGuardian,
+              conversationTransportRequestId,
+              requestId,
+            )
+            if (conversationTransportRequestId !== requestId) {
+              const previousRequestId = conversationTransportRequestId ?? lastConversationTransportRequestId
+              lastConversationTransportRequestId = conversationTransportRequestId ?? lastConversationTransportRequestId
+              conversationTransportRequestId = requestId
+              conversationTransportGeneration += 1
+              conversationTransportObservedInGuardian = true
+              lastConversationTransportChangedAt = now
+              await log('ChatGPT conversation transport generation changed', {
+                previousRequestId,
+                requestId,
+                generation: conversationTransportGeneration,
+                topic,
+                shouldRepair,
+                activeSockets: activeSocketIds.size,
+              })
+              if (shouldRepair) {
+                // 这里只登记 repair；30 秒 debounce、10 分钟 active repair 最小间隔、
+                // 429 cooldown 和 passive catalog 复用仍全部走统一 gap-repair 门控。
+                void scheduleGapRepair('conversation-transport-rotation')
+              }
+            }
+          }
           if (direction === 'received' && socket) {
             socket.acknowledgedTopics.add(topic)
             if (typeof control.recovered === 'boolean') socket.recoveredByTopic.set(topic, control.recovered)
@@ -3303,9 +3372,9 @@ async function main() {
           createdAt: now,
         })
 
-        // 当前 conversations subscribe 经常返回 recovered=false，因此仍需要 overlap repair；
-        // 这里只登记 pending，真正 REST 请求由统一的 deferred gap-repair 门控决定。
-        void scheduleGapRepair('wss-reconnect')
+        // global-zero 现在只保留为遥测。真正的 conversation fallback 由
+        // conversations/alder-conversations carrier generation 换代触发；这样通知/资源 socket
+        // 独立轮换不会误扫 catalog，3→4→3 的 overlap handover 也不会漏 repair。
       }
     })
     page.on('Network.webSocketClosed', ({ requestId }) => {
@@ -3314,6 +3383,16 @@ async function main() {
       const socket = wssSocketTelemetry.get(requestId) || null
       wssSocketTelemetry.delete(requestId)
       lastWssClosedAt = now
+      if (conversationTransportRequestId === requestId) {
+        lastConversationTransportRequestId = requestId
+        conversationTransportRequestId = null
+        lastConversationTransportClosedAt = now
+        void log('ChatGPT conversation transport carrier closed', {
+          requestId,
+          generation: conversationTransportGeneration,
+          activeSocketsAfter: activeSocketIds.size,
+        })
+      }
       // 只有最后一条 WSS 都关闭时才进入 gap；若旧连接关闭时新连接已并存，监听面并未中断。
       if (activeSocketIds.size === 0) wssGapStartedAt = now
 
@@ -3416,6 +3495,11 @@ async function main() {
     wssGeneration += 1
     activeSocketIds = new Set()
     wssSocketTelemetry = new Map()
+    conversationTransportRequestId = null
+    lastConversationTransportRequestId = null
+    conversationTransportObservedInGuardian = false
+    lastConversationTransportChangedAt = null
+    lastConversationTransportClosedAt = null
     // 新 Guardian 尚未建立第一条 WSS，首次 readiness 也统一使用同一个 gap 时钟。
     wssGapStartedAt = guardianReadyAt
     subscribedTopics = new Set()

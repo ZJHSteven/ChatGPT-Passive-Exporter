@@ -5,6 +5,7 @@ import {
   classifyConversationBackendUrl,
   classifyCatalogAsyncStatus,
   effectiveActiveRequestGap,
+  isConversationTransportTopic,
   classifyConversationEvent,
   conversationIdFromTargetUrl,
   decodeCdpResponseBodyBytes,
@@ -21,6 +22,7 @@ import {
   shouldRebuildGuardianAfterHealthFailures,
   shouldRunDeferredGapRepair,
   shouldQueueWatchdogDiagnostic,
+  shouldRepairConversationTransport,
   watchdogDiagnosticTurnKey,
   reconcileWatchdogDiagnosticTurn,
   shouldStartCatalogWatchdog,
@@ -32,6 +34,21 @@ import {
 } from '../scripts/chatgpt-archive-daemon.mjs'
 
 describe('ChatGPT Archive daemon WSS parser', () => {
+  test('conversation transport repair 只跟随 conversation carrier 换代', () => {
+    expect(isConversationTransportTopic('conversations')).toBe(true)
+    expect(isConversationTransportTopic('alder-conversations')).toBe(true)
+    expect(isConversationTransportTopic('app_notifications')).toBe(false)
+    expect(isConversationTransportTopic('resource-updates')).toBe(false)
+
+    // Guardian 第一次建立 conversation carrier 是正常初始化，不应额外扫 catalog。
+    expect(shouldRepairConversationTransport(false, null, 'socket-a')).toBe(false)
+    // 同一 socket 重复订阅 conversations/alder 不算换代。
+    expect(shouldRepairConversationTransport(true, 'socket-a', 'socket-a')).toBe(false)
+    // 无论旧 carrier 已先关闭（current=null）还是 overlap handover，都应 repair。
+    expect(shouldRepairConversationTransport(true, null, 'socket-b')).toBe(true)
+    expect(shouldRepairConversationTransport(true, 'socket-a', 'socket-b')).toBe(true)
+  })
+
   test('turn-topic WSS 只提取 subscribe/ACK/catchup/live 控制面，不泄露 encoded_item 正文', () => {
     const topic = 'conversation-turn-11111111-2222-3333-4444-555555555555'
     const sent = JSON.stringify([{ id: 5, command: { type: 'subscribe', topic_id: topic, offset: '0' } }])
