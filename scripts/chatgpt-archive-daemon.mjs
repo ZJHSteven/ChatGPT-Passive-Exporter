@@ -722,6 +722,99 @@ export function extractConversationEvents(payloadData) {
   return events
 }
 
+/**
+ * 只提取 `conversation-turn-*` WSS 的控制面摘要。
+ *
+ * 这里刻意不返回 `encoded_item` 正文，只保留 topic、offset 是否存在、catchup 数量和内层类型，
+ * 方便测试/状态页判断第一方前端是否真的发生 handoff。真正的 encoded SSE 由 daemon 内部另一条
+ * 仅内存路径喂给 `LiveTurnTransportTracker`，不会进入日志或 state。
+ */
+export function summarizeTurnTopicWssFrame(payloadData) {
+  if (typeof payloadData !== 'string' || payloadData.length > 5_000_000) return []
+  let parsed
+  try { parsed = JSON.parse(payloadData) }
+  catch { return [] }
+  const frames = Array.isArray(parsed) ? parsed : [parsed]
+  const rows = []
+  const isTurnTopic = topic => typeof topic === 'string' && topic.startsWith('conversation-turn-')
+
+  const summarizeStreamEnvelope = (value, topic, source) => {
+    if (!value || typeof value !== 'object') return
+    const payload = value.payload && typeof value.payload === 'object' ? value.payload : null
+    const inner = payload?.payload && typeof payload.payload === 'object' ? payload.payload : null
+    if (payload?.type !== 'conversation-turn-stream' || !inner) return
+    rows.push({
+      source,
+      topic,
+      innerType: typeof inner.type === 'string' ? inner.type : null,
+      hasEncodedItem: typeof inner.encoded_item === 'string',
+      encodedBytes: typeof inner.encoded_item === 'string' ? Buffer.byteLength(inner.encoded_item, 'utf8') : 0,
+      offsetPresent: value.offset != null,
+      streamItemIdPresent: typeof inner.stream_item_id === 'string',
+      parentStreamItemIdPresent: typeof inner.parent_stream_item_id === 'string',
+    })
+  }
+
+  for (const frame of frames) {
+    if (!frame || typeof frame !== 'object') continue
+    const command = frame.command && typeof frame.command === 'object' ? frame.command : null
+    if (command?.type === 'subscribe' && isTurnTopic(command.topic_id)) {
+      rows.push({
+        source: 'subscribe',
+        topic: command.topic_id,
+        offset: command.offset == null ? null : String(command.offset),
+      })
+    }
+
+    const reply = frame.reply && typeof frame.reply === 'object' ? frame.reply : null
+    if (reply?.type === 'subscribe' && isTurnTopic(reply.topic_id)) {
+      const catchups = Array.isArray(reply.catchups) ? reply.catchups : []
+      rows.push({
+        source: 'reply',
+        topic: reply.topic_id,
+        recovered: typeof reply.recovered === 'boolean' ? reply.recovered : null,
+        catchupCount: catchups.length,
+        lastOffsetPresent: reply.last_offset != null,
+      })
+      for (const catchup of catchups) summarizeStreamEnvelope(catchup, reply.topic_id, 'catchup')
+    }
+
+    if (frame.type === 'message' && isTurnTopic(frame.topic_id)) {
+      summarizeStreamEnvelope(frame, frame.topic_id, 'message')
+    }
+  }
+  return rows
+}
+
+/** 仅 daemon 内部使用：从 turn-topic reply/message 中取出 encoded SSE，不写日志。 */
+function extractTurnTopicEncodedItems(payloadData) {
+  if (typeof payloadData !== 'string' || payloadData.length > 5_000_000) return []
+  let parsed
+  try { parsed = JSON.parse(payloadData) }
+  catch { return [] }
+  const frames = Array.isArray(parsed) ? parsed : [parsed]
+  const items = []
+  const isTurnTopic = topic => typeof topic === 'string' && topic.startsWith('conversation-turn-')
+
+  const consume = (value, inheritedTopic = null, depth = 0) => {
+    if (!value || depth > 8) return
+    if (Array.isArray(value)) {
+      for (const child of value) consume(child, inheritedTopic, depth + 1)
+      return
+    }
+    if (typeof value !== 'object') return
+    const topic = isTurnTopic(value.topic_id) ? value.topic_id : inheritedTopic
+    if (topic && typeof value.encoded_item === 'string' && value.encoded_item) {
+      items.push({ topic, encodedItem: value.encoded_item })
+    }
+    for (const child of Object.values(value)) {
+      if (child && typeof child === 'object') consume(child, topic, depth + 1)
+    }
+  }
+  for (const frame of frames) consume(frame)
+  return items
+}
+
 async function waitForTarget(cdpHttp, targetId, timeoutMs = 5000) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
@@ -2244,6 +2337,7 @@ async function main() {
    const pendingBodies = new Map()
    const pendingImages = new Map()
     const liveTransports = new Map()
+    const turnWssTrackers = new Map()
     const protocolRequestSignatures = new Map()
     const pendingProtocolResponses = new Map()
 
@@ -2266,6 +2360,98 @@ async function main() {
           error: error instanceof Error ? error.message : String(error),
         }).catch(() => {})
       })
+    }
+
+    const appendTurnWssControl = (event) => {
+      void turnRecorder.append({
+        version: 1,
+        at: Date.now(),
+        kind: 'turn-wss-control',
+        targetId: target.id,
+        ...event,
+      }).catch(async (error) => {
+        await log('turn WSS control trace write failed', {
+          targetId: target.id,
+          event: event?.event ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        }).catch(() => {})
+      })
+    }
+
+    const ensureTurnWssTracker = (requestId, topic) => {
+      const trackerKey = `${requestId}:${topic}`
+      const existing = turnWssTrackers.get(trackerKey)
+      if (existing) return existing
+      const cdpRequestId = `wss:${requestId}:${topic}`
+      const tracker = new LiveTurnTransportTracker({
+        cdpRequestId,
+        transport: 'turn-wss',
+        requestStartedAt: Date.now(),
+        emit: appendLiveTransport,
+      })
+      const liveKey = `${target.id}:${cdpRequestId}`
+      activeLiveTransports.set(liveKey, {
+        targetId: target.id,
+        cdpRequestId,
+        transport: 'turn-wss',
+        startedAt: Date.now(),
+        lastDataAt: null,
+        dataEvents: 0,
+        dataBytes: 0,
+        conversationId: null,
+        turnExchangeId: topic.slice('conversation-turn-'.length) || null,
+        lastControlAt: Date.now(),
+        lastControlEvent: 'subscribe',
+        bytesObserved: 0,
+        pingCount: 0,
+      })
+      const entry = { tracker, liveKey, requestId, topic, finished: false }
+      turnWssTrackers.set(trackerKey, entry)
+      return entry
+    }
+
+    const finishTurnWssTracker = (entry, failedReason = null) => {
+      if (!entry || entry.finished) return
+      entry.finished = true
+      if (failedReason) entry.tracker.fail(failedReason, Date.now())
+      else entry.tracker.finish(Date.now())
+      activeLiveTransports.delete(entry.liveKey)
+      turnWssTrackers.delete(`${entry.requestId}:${entry.topic}`)
+    }
+
+    const observeTurnWssFrame = (requestId, direction, payloadData) => {
+      const rows = summarizeTurnTopicWssFrame(payloadData)
+      for (const row of rows) {
+        const topic = row?.topic
+        if (typeof topic !== 'string' || !topic.startsWith('conversation-turn-')) continue
+        const entry = ensureTurnWssTracker(String(requestId), topic)
+        appendTurnWssControl({
+          event: row.source,
+          cdpRequestId: String(requestId),
+          topic,
+          direction,
+          offset: row.offset ?? null,
+          recovered: row.recovered ?? null,
+          catchupCount: row.catchupCount ?? null,
+          lastOffsetPresent: row.lastOffsetPresent ?? null,
+          innerType: row.innerType ?? null,
+          hasEncodedItem: row.hasEncodedItem ?? null,
+          encodedBytes: row.encodedBytes ?? null,
+        })
+        if (row.innerType === 'done') finishTurnWssTracker(entry)
+      }
+      if (direction !== 'received') return
+      for (const item of extractTurnTopicEncodedItems(payloadData)) {
+        const entry = ensureTurnWssTracker(String(requestId), item.topic)
+        entry.tracker.ingestText(item.encodedItem, Date.now())
+        const state = activeLiveTransports.get(entry.liveKey)
+        if (state) {
+          state.lastDataAt = Date.now()
+          state.dataEvents = Number(state.dataEvents || 0) + 1
+          state.dataBytes = Number(state.dataBytes || 0) + Buffer.byteLength(item.encodedItem, 'utf8')
+        }
+        if (/data:\s*\[DONE\]/u.test(item.encodedItem)) finishTurnWssTracker(entry)
+      }
     }
 
     const startLiveTransport = (requestId, request) => {
@@ -2311,6 +2497,21 @@ async function main() {
       if (!String(request?.url || '').includes('/backend-api/')) return
       const signature = observeProtocolRequest(request, 'user-page', target.id)
       if (signature) protocolRequestSignatures.set(requestId, signature)
+    })
+
+    // Phase 3 turn-WSS 只做被动观察：不创建 socket、不发 subscribe。只要第一方页面自然 handoff，
+    // CDP 就会看到 subscribe / ACK / catchups / live message，并把 encoded SSE 合流进现有 tracker。
+    client.on('Network.webSocketFrameSent', ({ requestId, response }) => {
+      observeTurnWssFrame(requestId, 'sent', response?.payloadData)
+    })
+    client.on('Network.webSocketFrameReceived', ({ requestId, response }) => {
+      observeTurnWssFrame(requestId, 'received', response?.payloadData)
+    })
+    client.on('Network.webSocketClosed', ({ requestId }) => {
+      for (const entry of [...turnWssTrackers.values()]) {
+        if (String(entry.requestId) !== String(requestId)) continue
+        finishTurnWssTracker(entry, 'websocket-closed-before-turn-done')
+      }
     })
 
    client.on('Network.responseReceived', ({ requestId, response }) => {

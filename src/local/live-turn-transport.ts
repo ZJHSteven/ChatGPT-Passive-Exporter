@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-export type LiveTransportKind = 'conversation' | 'resume'
+export type LiveTransportKind = 'conversation' | 'resume' | 'turn-wss'
 export type LiveTransportEventType =
   | 'stream-bound'
   | 'resume-token'

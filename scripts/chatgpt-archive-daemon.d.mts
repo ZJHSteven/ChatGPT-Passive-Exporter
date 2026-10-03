@@ -20,6 +20,14 @@ export interface ArchiveWssEventBehavior {
 /** 从 ChatGPT conversations topic 的 WSS frame 中抽取最小事件身份。 */
 export function extractConversationEvents(payloadData: unknown): ArchiveWssEvent[]
 
+export type TurnTopicWssSummary =
+  | { source: 'subscribe', topic: string, offset: string | null }
+  | { source: 'reply', topic: string, recovered: boolean | null, catchupCount: number, lastOffsetPresent: boolean }
+  | { source: 'catchup' | 'message', topic: string, innerType: string | null, hasEncodedItem: boolean, encodedBytes: number, offsetPresent: boolean, streamItemIdPresent: boolean, parentStreamItemIdPresent: boolean }
+
+/** 脱敏汇总第一方 conversation-turn-* subscribe/ACK/catchup/live frame。 */
+export function summarizeTurnTopicWssFrame(payloadData: unknown): TurnTopicWssSummary[]
+
 /** 将 WSS event 分类为 dirty / active / sync-ready 行为，不触碰网络。 */
 export function classifyConversationEvent(type: unknown, updateType?: unknown): ArchiveWssEventBehavior
 

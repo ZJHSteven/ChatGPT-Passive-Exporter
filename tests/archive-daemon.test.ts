@@ -11,6 +11,7 @@ import {
   estuaryFileIdFromUrl,
   resolvedEstuaryUrlForFile,
   extractConversationEvents,
+  summarizeTurnTopicWssFrame,
   incidentKindForTrigger,
   isConfirmedTerminalTrigger,
   restoreCooldownUntil,
@@ -31,6 +32,53 @@ import {
 } from '../scripts/chatgpt-archive-daemon.mjs'
 
 describe('ChatGPT Archive daemon WSS parser', () => {
+  test('turn-topic WSS 只提取 subscribe/ACK/catchup/live 控制面，不泄露 encoded_item 正文', () => {
+    const topic = 'conversation-turn-11111111-2222-3333-4444-555555555555'
+    const sent = JSON.stringify([{ id: 5, command: { type: 'subscribe', topic_id: topic, offset: '0' } }])
+    expect(summarizeTurnTopicWssFrame(sent)).toEqual([
+      { source: 'subscribe', topic, offset: '0' },
+    ])
+
+    const catchup = {
+      type: 'message',
+      topic_id: topic,
+      offset: 'opaque-1',
+      payload: {
+        type: 'conversation-turn-stream',
+        payload: {
+          type: 'stream-item',
+          stream_item_id: 'item-1',
+          parent_stream_item_id: 'parent-1',
+          encoded_item: 'data: {"secret":"must-not-leak"}\n\n',
+        },
+      },
+    }
+    const received = JSON.stringify([
+      { type: 'reply', reply: { type: 'subscribe', topic_id: topic, recovered: true, last_offset: 'opaque-1', catchups: [catchup] } },
+      { ...catchup, offset: 'opaque-2' },
+      { type: 'message', topic_id: topic, payload: { type: 'conversation-turn-stream', payload: { type: 'done' } } },
+    ])
+    const summary = summarizeTurnTopicWssFrame(received)
+    expect(summary).toEqual([
+      { source: 'reply', topic, recovered: true, catchupCount: 1, lastOffsetPresent: true },
+      {
+        source: 'catchup', topic, innerType: 'stream-item', hasEncodedItem: true,
+        encodedBytes: Buffer.byteLength('data: {"secret":"must-not-leak"}\n\n'), offsetPresent: true,
+        streamItemIdPresent: true, parentStreamItemIdPresent: true,
+      },
+      {
+        source: 'message', topic, innerType: 'stream-item', hasEncodedItem: true,
+        encodedBytes: Buffer.byteLength('data: {"secret":"must-not-leak"}\n\n'), offsetPresent: true,
+        streamItemIdPresent: true, parentStreamItemIdPresent: true,
+      },
+      {
+        source: 'message', topic, innerType: 'done', hasEncodedItem: false,
+        encodedBytes: 0, offsetPresent: false, streamItemIdPresent: false, parentStreamItemIdPresent: false,
+      },
+    ])
+    expect(JSON.stringify(summary)).not.toContain('must-not-leak')
+  })
+
   test('图片下载辅助只提取稳定 conversation/file id，不依赖短期签名', () => {
     expect(conversationIdFromTargetUrl('https://chatgpt.com/c/6ab3d7db-3f04-83e9-bad2-8abd105c3898')).toBe('6ab3d7db-3f04-83e9-bad2-8abd105c3898')
     expect(conversationIdFromTargetUrl('https://chatgpt.com/?chatgpt-archive-guardian=1')).toBeNull()
