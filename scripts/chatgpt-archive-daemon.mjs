@@ -35,6 +35,11 @@ import { summarizeFrame as summarizeWssFrame } from './wss-stability-probe.mjs'
 import { ProtocolDriftLedger } from '../src/local/protocol-drift.ts'
 import { diagnoseLatestRun } from '../src/core/run-diagnostics.ts'
 import { LiveTurnTransportTracker } from '../src/local/live-turn-transport.ts'
+import {
+  DevSpaceAuditBridge,
+  defaultDevSpaceDbPath,
+  uniqueDevSpaceCandidateForTurn,
+} from '../src/local/devspace-audit-bridge.ts'
 
 const DEFAULT_CDP = 'http://127.0.0.1:9222'
 const GUARDIAN_MARKER = 'chatgpt-archive-guardian'
@@ -46,6 +51,9 @@ const DEFAULT_TURN_TRACE = path.join(PROJECT_ROOT, 'data', 'active-turn-trace.js
 const DEFAULT_NOTIFICATION_CONFIG = path.join(PROJECT_ROOT, 'data', 'archive-notification.local.json')
 const DEFAULT_PROTOCOL_LEDGER = path.join(PROJECT_ROOT, 'data', 'protocol-fingerprints.json')
 const DEFAULT_IMAGE_ASSET_DIR = path.join(PROJECT_ROOT, 'data', 'assets', 'chatgpt')
+const DEVSPACE_POLL_OVERLAP_MS = 10_000
+const DEVSPACE_INITIAL_LOOKBACK_MS = 2 * 60_000
+const DEVSPACE_CREATED_BIND_WINDOW_MS = 45_000
 const IMAGE_ASSET_HYDRATE_INTERVAL_MS = 30_000
 const SLEEPING_TARGET_RETRY_MS = 5 * 60_000
 const WINDOWS_HIDE_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-hide-window.ps1')
@@ -1102,6 +1110,9 @@ async function main() {
   const protocolLedgerPath = flags.has('protocol-ledger')
     ? path.resolve(String(flags.get('protocol-ledger')))
     : DEFAULT_PROTOCOL_LEDGER
+  const devSpaceDbPath = flags.has('devspace-db')
+    ? path.resolve(String(flags.get('devspace-db')))
+    : defaultDevSpaceDbPath()
   // 这里的 delay 不是“同步完以后随便睡一下”，而是所有主动 backend 请求之间的
   // **全局最小间隔**。Backlog 追平宁可花一两个小时，也不要因为一次启动积压 100+ 条
   // conversation 就短时间连续打几十个请求。
@@ -1141,6 +1152,7 @@ async function main() {
     // 首次启动或损坏的旧 state 都不应阻止 daemon 启动。
   }
   const archive = new ChatArchiveDb(dbPath)
+  const devSpaceAuditBridge = new DevSpaceAuditBridge(devSpaceDbPath)
   let guardian = null
   // `guardian === null` 同时出现在“进程第一次启动”和“运行中自愈 catch 已清空旧 Guardian”两种
   // 场景；不能再仅凭 null 决定 reason。否则运行中 WSS/renderer 故障会被误标成 startup，
@@ -1229,6 +1241,19 @@ async function main() {
   // 这个集合只用于 catalog 自己识别 active→complete 的 gap repair。
   const catalogActive = new Map()
   const activeTurns = new Map()
+  // metadata 尚未解出 canonical conversation 时，也先保存 first-tool 的真实时间。
+  // binding 晚到以后仍以这个时间作为 watchdog.startedAt，不让发现延迟污染超时起点。
+  const unboundDevSpaceTurns = new Map()
+  const recentConversationCreated = new Map()
+  const recentConversationComplete = new Map()
+  const seenDevSpaceAuditIds = new Map()
+  let devSpacePollSinceAt = Date.now() - DEVSPACE_INITIAL_LOOKBACK_MS
+  let devSpaceLastPollAt = null
+  let devSpaceLastAuditAt = null
+  let devSpaceLastError = null
+  let devSpaceAuditsObserved = 0
+  let devSpaceBindingsCreated = 0
+  let devSpaceBindingMirrors = 0
   // activeTurns 现在承载“所有已纳入 watchdog 的 active”：既可能来自可靠 WSS/actor start，
   // 也可能来自 catalog 首次观察到 active 的保守 late-start。两者不能在取证输出里混称 reliable。
   const isCatalogLateActive = (active) => String(active?.startType || '').startsWith('catalog:')
@@ -1412,6 +1437,27 @@ async function main() {
       streams: [...activeLiveTransports.values()]
         .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))
         .slice(-32),
+    },
+    devspace: {
+      dbPath: devSpaceDbPath,
+      lastPollAt: devSpaceLastPollAt,
+      lastAuditAt: devSpaceLastAuditAt,
+      lastError: devSpaceLastError,
+      auditsObserved: devSpaceAuditsObserved,
+      bindingsCreated: devSpaceBindingsCreated,
+      bindingMirrors: devSpaceBindingMirrors,
+      unboundActive: unboundDevSpaceTurns.size,
+      bindings: archive.listDevSpaceMetadataBindings({ limit: 100 }).map(binding => ({
+        metadataIdHash: createHash('sha256').update(binding.metadataId).digest('hex').slice(0, 16),
+        conversationId: binding.conversationId,
+        firstSeenAt: binding.firstSeenAt,
+        lastSeenAt: binding.lastSeenAt,
+        boundAt: binding.boundAt,
+        evidence: binding.evidence,
+        confidence: binding.confidence,
+        lastTurnExchangeId: binding.lastTurnExchangeId,
+        lifecycleState: binding.lifecycleState,
+      })),
     },
    authContext: { available: Boolean(authHeaders), capturedAt: lastAuthAt },
     protocol: protocolLedger ? protocolLedger.summary() : { enabled: false, filePath: protocolLedgerPath },
