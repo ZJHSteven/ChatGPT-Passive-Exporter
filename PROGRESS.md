@@ -1,6 +1,7 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
 - 2026-10-04 生产收口：此前代码已包含 DevSpace audit bridge / first-tool watchdog，但常驻 daemon 仍是 06:28 启动的旧进程，state 中没有 `devspace` 字段。当前 HEAD 全量 Vitest 20 files / 127 tests 通过后，已通过现有 `ChatGPT Archive Daemon` 登录计划任务重启到 PID 58824；新 state 已暴露 `devspace`，bridge 实际轮询 `~/.local/share/devspace/devspace.sqlite`，当前 `lastError=null`、已观察 audit、出现 provisional `unboundActive`，WSS 已重新订阅 `conversations/alder-conversations/app_notifications/resource-updates/calpico-chatgpt-messaging`。DevSpace 7676 同时保持 `/healthz=200`。
+- 2026-10-04 Git 收口：`data/` 无任何受版本控制文件，且包含主 SQLite/WAL、trace、assets、protocol probes 等本机运行态数据；现已整目录加入 `.gitignore`，避免 `git add .` 误提交本地聊天库。
 - 2026-10-03 新增本地 `DevSpaceAuditBridge`：Archive 直接读取 DevSpace append-only `tool_audit`，不新增网络服务；默认路径与 DevSpace storage 默认值一致。读取只带 audit id / metadata id / tool / 时间 / 脱敏 request-meta，不读取 args/result 正文。bridge 支持按短时间窗分组 metadata，并提供“当前 body turn 内只有唯一未绑定 metadata 时才接受”的轻量候选函数；同时可在 DevSpace 新 binding 表已经迁移后镜像 Archive 的 authoritative 结果。老 DevSpace 进程尚未迁移新列/新表时自动兼容，不把缺表当 daemon 致命错误。
 - Archive SQLite 新增 `devspace_metadata_bindings`：metadata 第一次出现时即以 `unbound` 保存真实 first-tool 时间，后续只原位补 canonical conversation、turn_exchange_id/request_id、evidence/confidence 与 active/closed lifecycle，不因后续工具调用覆盖 firstSeenAt。另提供按已确认 turn 读取极小 tool/time window 的查询，供后验唯一候选 binding 使用。
 - DevSpace bridge 的 binding mirror 会在每次需要写入时重新探测新表，因此 DevSpace 即使晚于 Archive 完成热重载/migration，也不要求重启 Archive 才能开始双向留档；CLI 同时新增 `--devspace-db` 透传，默认仍使用 DevSpace 自己的标准 state DB 路径。

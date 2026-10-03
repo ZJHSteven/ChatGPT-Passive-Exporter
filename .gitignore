@@ -9,6 +9,9 @@ data/wss-probe-*.jsonl.summary.json
 dist/
 
 # Local archive database/runtime state
+# data/ 全部属于本机运行态/取证产物（主 SQLite、WAL、trace、assets、protocol probes 等），
+# 仓库没有任何需要版本控制的 data/ 文件。整目录忽略，避免误用 `git add .` 把聊天库提交进去。
+data/
 data/*.sqlite
 data/*.sqlite-*
 data/raw/
