@@ -2248,6 +2248,9 @@ async function main() {
       try {
         const result = await syncConversation(conversationId, trigger)
         syncedConversations += 1
+        // body 一旦给出 turn_exchange_id，就可以把 earlier provisional metadata 做后验校验；
+        // 该步骤只读局部时间窗，不扫描整库。
+        reconcileDevSpaceBindingFromBody(conversationId, result.diagnostic)
         // 一次 overlap 同步成功以后，本地副本已经追到本次 observation，因此才清 dirty。
         dirty.delete(conversationId)
         readySince.delete(conversationId)
@@ -2255,6 +2258,13 @@ async function main() {
         if (result.diagnostic.terminalEvidence !== 'none') {
           activeTurns.delete(conversationId)
           catalogActive.delete(conversationId)
+          archive.updateDevSpaceBindingTurn({
+            conversationId,
+            turnExchangeId: result.diagnostic.turnExchangeId ?? null,
+            requestId: result.diagnostic.requestId ?? null,
+            observedAt: Date.now(),
+            lifecycleState: 'closed',
+          })
         }
         if (result.terminalSettleNeeded) {
           // 给第一方页面一个短窗口自然拉取/持久化最终 body。markSyncReady 现在就登记
@@ -3100,6 +3110,10 @@ async function main() {
   const observeConversationEvent = (event) => {
     const behavior = classifyConversationEvent(event.type, event.updateType)
     const now = Date.now()
+    if (event.type === 'conversation-created') {
+      recentConversationCreated.set(event.conversationId, now)
+      tryBindRecentCreatedConversations()
+    }
     const activeBeforeIds = [...activeTurns.keys()]
     // 只记录生命周期元数据，不记录消息正文。并发实验需要精确知道每个
     // conversation 的 created/complete 时刻，否则 eventCounts 只能给总数，
@@ -3124,8 +3138,14 @@ async function main() {
       activeTurns.get(event.conversationId).lastEventAt = now
     }
     if (behavior.completesTurn) {
+      recentConversationComplete.set(event.conversationId, now)
       activeTurns.delete(event.conversationId)
       catalogActive.delete(event.conversationId)
+      archive.updateDevSpaceBindingTurn({
+        conversationId: event.conversationId,
+        observedAt: now,
+        lifecycleState: 'closed',
+      })
       markSyncReady(event.conversationId, `wss:${event.type}`, nativeBodyGraceMs)
     }
     const activeAfterIds = [...activeTurns.keys()]
@@ -3440,6 +3460,9 @@ async function main() {
     if (activeWindowAvailable) lastGapRepairAttemptAt = now
     try {
       await reconcileCatalog('gap-repair')
+      // provisional metadata 已经等满 watchdog 后，repair 给出了 catalog active 集合；
+      // 仍然只在一对一唯一解时绑定，不把 fallback 本身当成猜测许可。
+      tryBindTimedOutDevSpaceFromCatalog()
       pendingGapRepair = null
       lastGapRepairGate = null
       lastGapRepairGateSignature = null
@@ -3877,6 +3900,10 @@ async function main() {
         continue
       }
       await refreshPassivePageObservers(targets)
+      // DevSpace SQLite 是本地 append-only 数据源；跟随 5 秒主循环轮询即可把 first-tool
+      // 发现延迟压到秒级，同时完全不消耗 ChatGPT backend 请求预算。
+      pollDevSpaceAudits()
+      checkUnboundDevSpaceTimeouts()
 
       // 只做健康观测，不主动激活窗口。短暂的 renderer/CDP 抖动先累计失败次数；
       // 不再“一次 3 秒 timeout 就拆 Guardian”。成功一次立即清零。
@@ -3979,8 +4006,9 @@ async function main() {
   passivePageObservers.clear()
   guardian?.page?.close()
   guardian?.browser?.close()
-  archive.close()
   await writeState()
+  devSpaceAuditBridge.close()
+  archive.close()
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
