@@ -326,3 +326,49 @@ COMPLETE
 
 Phase 3 架构含义：Remote Late-Attach 不应再把 `/resume` 当作 universal 跨设备入口。对没有 resume credential 的 turn，若要获得实时 delta，下一条值得验证的主路线是动态 `conversation-turn-*` WSS 的 catchup/live；否则只能接受 `stream_status + final body` 的非实时降级路径。
 
+## 13. `conversation-turn-*` WSS：已知 wire shape 与当前证据边界
+
+2026-10-03 对多套近期独立实现做交叉核对，turn-topic 的订阅与返回 shape 高度一致：
+
+```json
+[
+  {
+    "id": 5,
+    "command": {
+      "type": "subscribe",
+      "topic_id": "conversation-turn-<turn-id>",
+      "offset": "0"
+    }
+  }
+]
+```
+
+订阅回复：
+
+```text
+reply.type = subscribe
+reply.topic_id = conversation-turn-...
+reply.recovered = true/false
+reply.last_offset = <opaque, optional>
+reply.catchups[] = historical turn-stream messages
+```
+
+实时/历史 message：
+
+```text
+type = message
+topic_id = conversation-turn-...
+offset = <opaque>
+payload.type = conversation-turn-stream
+payload.payload.type = stream-item | heartbeat | done
+stream-item.encoded_item = <SSE-framed text>
+```
+
+其中 `encoded_item` 已是 `event:/data:` 形式的 SSE 文本，不应再自行猜测 base64/压缩编码。近期实现也显示 `resume_conversation_token` JWT 可携带 `turn_topic_id`；正常 handoff 应优先相信服务端下发的 topic，而不是永久假设它一定等于字符串拼接结果。
+
+当前本账户证据边界必须单独注明：`active-turn-trace.jsonl` 截至 2026-10-03 的 `stream-handoff` 计数仍为 0，正式 daemon 也没有历史 `conversation-turn-*` subscribe/ACK fixture。因此上述 wire shape 是近期独立实现/公开浏览器审计的强交叉证据，但还不是本账户 first-party 捕获。
+
+项目已增加纯被动 recorder：不自行创建认证 WSS、不主动 subscribe。只要第一方页面自然 handoff，CDP 会记录 subscribe/ACK/catchup/live 的脱敏控制面，并将仅内存中的 `encoded_item` 送入现有 LiveTurn parser。这样下一次自然样本出现后即可把本节从“交叉实现证据”升级为“本账户真机证据”。
+
+另一个 2026-10-03 新鲜变化：Guardian fresh reload 同时观察到新的账户 topic `calpico-chatgpt-messaging`，与 `resource-updates` 共用一条 socket；`conversations / alder-conversations / app_notifications / resource-updates` 仍存在。它目前只记为新订阅面，不赋予未验证的 conversation lifecycle 语义。
+
