@@ -134,6 +134,10 @@ function isInterestingTarget(info) {
 function safeUrl(raw) {
   try {
     const u = new URL(raw)
+    if (!u.hostname.endsWith('chatgpt.com')) {
+      if (u.protocol === 'about:') return 'about:blank'
+      return `<non-chatgpt:${u.protocol.replace(':', '') || 'unknown'}>`
+    }
     const safeQuery = new URLSearchParams()
     for (const [key, value] of u.searchParams.entries()) {
       if (/^(?:offset|limit|order|num_turns|include_has_versions|expand|is_archived|is_starred|hide_snorlax)$/u.test(key)) {
@@ -145,7 +149,7 @@ function safeUrl(raw) {
     return `${u.origin}${u.pathname}${query ? `?${query}` : ''}`
   }
   catch {
-    return String(raw || '').slice(0, 500)
+    return '<non-chatgpt-or-invalid>'
   }
 }
 
@@ -429,6 +433,7 @@ async function main() {
   const sockets = new Map()
   let lastIdbSignature = null
   let stopping = false
+  let helperTargetId = null
 
   const requestKey = (sessionId, requestId) => `${sessionId || 'browser'}:${requestId}`
   const sessionMeta = sessionId => sessions.get(sessionId) || { targetId: null, type: null, url: null, title: null }
@@ -621,6 +626,21 @@ async function main() {
     catch {}
   }
 
+  // 专用 helper 从 about:blank 起步，确保 Network.enable 发生在第一条官方 WSS 建立之前。
+  // 它只用于被动观察账户 topic，不做 conversation/list/status 等主动 API 调用。
+  const helper = await cdp.send('Target.createTarget', { url: 'about:blank' })
+  helperTargetId = helper.targetId || null
+  if (helperTargetId) {
+    const deadline = Date.now() + 7000
+    while (!targetSessions.has(helperTargetId) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    const helperSessionId = targetSessions.get(helperTargetId)
+    if (!helperSessionId) throw new Error('cross-device helper target did not attach in time')
+    await cdp.send('Page.navigate', { url: 'https://chatgpt.com/?cross-device-flight=1' }, helperSessionId)
+    write({ kind: 'helper-created', at: Date.now(), targetId: helperTargetId, sessionId: helperSessionId })
+  }
+
   const sampleIdb = async () => {
     const pageEntry = [...sessions.entries()].find(([, meta]) => meta.type === 'page' && String(meta.url || '').startsWith('https://chatgpt.com'))
     if (!pageEntry) return
@@ -671,6 +691,10 @@ async function main() {
     stopping = true
     clearInterval(idbTimer)
     write({ kind: 'recorder-stop', at: Date.now(), reason, sessions: sessions.size, trackedRequests: requests.size, trackedSockets: sockets.size })
+    if (helperTargetId) {
+      await cdp.send('Target.closeTarget', { targetId: helperTargetId }).catch(() => {})
+      helperTargetId = null
+    }
     await new Promise(resolve => stream.end(resolve))
     cdp.close()
   }
