@@ -59,6 +59,58 @@ function payload() {
 }
 
 describe('ChatArchiveDb', () => {
+  test('DevSpace metadata 可先未绑定落盘，再原位绑定并保存 turn 状态', () => {
+    const db = tempDb()
+    try {
+      const first = db.observeDevSpaceMetadata({
+        metadataId: 'meta-chat-1',
+        auditId: 'audit-1',
+        auditAt: 1000,
+      })
+      expect(first).toMatchObject({
+        metadataId: 'meta-chat-1',
+        conversationId: null,
+        firstSeenAt: 1000,
+        lifecycleState: 'unbound',
+      })
+      db.observeDevSpaceMetadata({
+        metadataId: 'meta-chat-1',
+        auditId: 'audit-2',
+        auditAt: 2000,
+      })
+      const bound = db.bindDevSpaceMetadata({
+        metadataId: 'meta-chat-1',
+        conversationId: 'conversation-1',
+        evidence: 'wss:conversation-created+devspace:first-tool',
+        confidence: 'high',
+        observedAt: 2500,
+        lifecycleState: 'active',
+      })
+      expect(bound).toMatchObject({
+        conversationId: 'conversation-1',
+        firstSeenAt: 1000,
+        lastSeenAt: 2000,
+        boundAt: 2500,
+        lifecycleState: 'active',
+      })
+      expect(db.updateDevSpaceBindingTurn({
+        conversationId: 'conversation-1',
+        turnExchangeId: 'turn-1',
+        requestId: 'request-1',
+        observedAt: 3000,
+        lifecycleState: 'closed',
+      })).toBe(1)
+      expect(db.getDevSpaceMetadataBinding('meta-chat-1')).toMatchObject({
+        lastTurnExchangeId: 'turn-1',
+        lastRequestId: 'request-1',
+        lifecycleState: 'closed',
+      })
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('导入 canonical conversation 并避免重复累计', () => {
     const db = tempDb()
     try {

@@ -133,6 +133,23 @@ export interface ArchiveIncidentRow {
   diagnosticJson: string
 }
 
+/** DevSpace 聊天级 metadata 与 canonical ChatGPT conversation 的持久 binding。 */
+export interface DevSpaceMetadataBindingRow {
+  metadataId: string
+  conversationId: string | null
+  firstSeenAt: number
+  lastSeenAt: number
+  boundAt: number | null
+  lastVerifiedAt: number | null
+  evidence: string | null
+  confidence: string | null
+  lastTurnExchangeId: string | null
+  lastRequestId: string | null
+  lastAuditId: string | null
+  lastAuditAt: number | null
+  lifecycleState: 'unbound' | 'active' | 'closed'
+}
+
 /**
  * 在线 conversation body 中发现的图片资产映射。
  *
@@ -531,6 +548,31 @@ export class ChatArchiveDb {
 
       CREATE INDEX IF NOT EXISTS incidents_conversation_status
         ON incidents(conversation_id, status, detected_at DESC);
+
+      -- DevSpace 的 openai/session 是 conversation 级匿名键，不是 turn key。
+      -- 未绑定 metadata 也必须先落盘：第一次 remote tool call 就是我们想保留的 start 下界；
+      -- 后续一旦通过 WSS/body/correlation 解出 canonical conversation，再原位补 binding。
+      CREATE TABLE IF NOT EXISTS devspace_metadata_bindings (
+        metadata_id TEXT PRIMARY KEY,
+        conversation_id TEXT,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        bound_at INTEGER,
+        last_verified_at INTEGER,
+        evidence TEXT,
+        confidence TEXT,
+        last_turn_exchange_id TEXT,
+        last_request_id TEXT,
+        last_audit_id TEXT,
+        last_audit_at INTEGER,
+        lifecycle_state TEXT NOT NULL DEFAULT 'unbound'
+      );
+
+      CREATE INDEX IF NOT EXISTS devspace_metadata_bindings_conversation
+        ON devspace_metadata_bindings(conversation_id, last_seen_at DESC);
+
+      CREATE INDEX IF NOT EXISTS devspace_metadata_bindings_unbound
+        ON devspace_metadata_bindings(lifecycle_state, last_seen_at DESC);
     `)
 
     // 旧 prototype 数据库已经存在于用户机器上，因此采用“增量加列”而不是粗暴 DROP/重建。
@@ -2809,6 +2851,172 @@ export class ChatArchiveDb {
   getMarkdown(conversationId: string): string | null {
     const row = this.db.prepare('SELECT markdown FROM conversations WHERE id = ?').get(conversationId) as { markdown?: string } | undefined
     return typeof row?.markdown === 'string' ? row.markdown : null
+  }
+
+  /** 记录一次 DevSpace tool audit；第一次时间永远不被后续调用覆盖。 */
+  observeDevSpaceMetadata(input: {
+    metadataId: string
+    auditId: string
+    auditAt: number
+  }): DevSpaceMetadataBindingRow {
+    const metadataId = input.metadataId.trim()
+    if (!metadataId) throw new Error('metadataId must not be empty')
+    const auditAt = Math.max(0, Math.trunc(input.auditAt))
+    this.db.prepare(`
+      INSERT INTO devspace_metadata_bindings (
+        metadata_id, conversation_id, first_seen_at, last_seen_at,
+        last_audit_id, last_audit_at, lifecycle_state
+      ) VALUES (?, NULL, ?, ?, ?, ?, 'unbound')
+      ON CONFLICT(metadata_id) DO UPDATE SET
+        last_seen_at=max(devspace_metadata_bindings.last_seen_at, excluded.last_seen_at),
+        last_audit_id=CASE
+          WHEN excluded.last_audit_at >= COALESCE(devspace_metadata_bindings.last_audit_at, 0)
+          THEN excluded.last_audit_id ELSE devspace_metadata_bindings.last_audit_id END,
+        last_audit_at=max(COALESCE(devspace_metadata_bindings.last_audit_at, 0), excluded.last_audit_at)
+    `).run(metadataId, auditAt, auditAt, input.auditId, auditAt)
+    return this.getDevSpaceMetadataBinding(metadataId)!
+  }
+
+  getDevSpaceMetadataBinding(metadataId: string): DevSpaceMetadataBindingRow | null {
+    const row = this.db.prepare(`
+      SELECT metadata_id AS metadataId, conversation_id AS conversationId,
+             first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
+             bound_at AS boundAt, last_verified_at AS lastVerifiedAt,
+             evidence, confidence,
+             last_turn_exchange_id AS lastTurnExchangeId,
+             last_request_id AS lastRequestId,
+             last_audit_id AS lastAuditId, last_audit_at AS lastAuditAt,
+             lifecycle_state AS lifecycleState
+      FROM devspace_metadata_bindings
+      WHERE metadata_id = ?
+      LIMIT 1
+    `).get(metadataId) as DevSpaceMetadataBindingRow | undefined
+    return row ?? null
+  }
+
+  listDevSpaceMetadataBindings(input: {
+    onlyUnbound?: boolean
+    sinceAt?: number
+    limit?: number
+  } = {}): DevSpaceMetadataBindingRow[] {
+    const clauses: string[] = []
+    const params: Array<string | number> = []
+    if (input.onlyUnbound) clauses.push('conversation_id IS NULL')
+    if (input.sinceAt !== undefined) {
+      clauses.push('last_seen_at >= ?')
+      params.push(Math.max(0, Math.trunc(input.sinceAt)))
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
+    params.push(Math.max(1, Math.trunc(input.limit ?? 100)))
+    return this.db.prepare(`
+      SELECT metadata_id AS metadataId, conversation_id AS conversationId,
+             first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
+             bound_at AS boundAt, last_verified_at AS lastVerifiedAt,
+             evidence, confidence,
+             last_turn_exchange_id AS lastTurnExchangeId,
+             last_request_id AS lastRequestId,
+             last_audit_id AS lastAuditId, last_audit_at AS lastAuditAt,
+             lifecycle_state AS lifecycleState
+      FROM devspace_metadata_bindings
+      ${where}
+      ORDER BY last_seen_at DESC
+      LIMIT ?
+    `).all(...params) as unknown as DevSpaceMetadataBindingRow[]
+  }
+
+  /** Archive 负责推断；一旦绑定，后续 observe 不再把 lifecycle 打回 unbound。 */
+  bindDevSpaceMetadata(input: {
+    metadataId: string
+    conversationId: string
+    evidence: string
+    confidence: string
+    observedAt: number
+    turnExchangeId?: string | null
+    requestId?: string | null
+    lifecycleState?: 'active' | 'closed'
+  }): DevSpaceMetadataBindingRow {
+    const observedAt = Math.max(0, Math.trunc(input.observedAt))
+    const existing = this.getDevSpaceMetadataBinding(input.metadataId)
+    const firstSeenAt = existing?.firstSeenAt ?? observedAt
+    this.db.prepare(`
+      INSERT INTO devspace_metadata_bindings (
+        metadata_id, conversation_id, first_seen_at, last_seen_at,
+        bound_at, last_verified_at, evidence, confidence,
+        last_turn_exchange_id, last_request_id, lifecycle_state
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(metadata_id) DO UPDATE SET
+        conversation_id=excluded.conversation_id,
+        bound_at=COALESCE(devspace_metadata_bindings.bound_at, excluded.bound_at),
+        last_verified_at=excluded.last_verified_at,
+        evidence=excluded.evidence,
+        confidence=excluded.confidence,
+        last_turn_exchange_id=COALESCE(excluded.last_turn_exchange_id, devspace_metadata_bindings.last_turn_exchange_id),
+        last_request_id=COALESCE(excluded.last_request_id, devspace_metadata_bindings.last_request_id),
+        lifecycle_state=excluded.lifecycle_state
+    `).run(
+      input.metadataId,
+      input.conversationId,
+      firstSeenAt,
+      Math.max(existing?.lastSeenAt ?? 0, observedAt),
+      observedAt,
+      observedAt,
+      input.evidence,
+      input.confidence,
+      input.turnExchangeId ?? null,
+      input.requestId ?? null,
+      input.lifecycleState ?? 'active',
+    )
+    return this.getDevSpaceMetadataBinding(input.metadataId)!
+  }
+
+  updateDevSpaceBindingTurn(input: {
+    conversationId: string
+    turnExchangeId?: string | null
+    requestId?: string | null
+    observedAt: number
+    lifecycleState?: 'active' | 'closed'
+  }): number {
+    const result = this.db.prepare(`
+      UPDATE devspace_metadata_bindings
+      SET last_turn_exchange_id=COALESCE(?, last_turn_exchange_id),
+          last_request_id=COALESCE(?, last_request_id),
+          last_verified_at=max(COALESCE(last_verified_at, 0), ?),
+          lifecycle_state=COALESCE(?, lifecycle_state)
+      WHERE conversation_id = ?
+    `).run(
+      input.turnExchangeId ?? null,
+      input.requestId ?? null,
+      Math.max(0, Math.trunc(input.observedAt)),
+      input.lifecycleState ?? null,
+      input.conversationId,
+    )
+    return Number(result.changes)
+  }
+
+  conversationTurnToolWindow(conversationId: string, turnExchangeId: string): {
+    startAt: number
+    endAt: number
+    toolCallCount: number
+  } | null {
+    const row = this.db.prepare(`
+      SELECT min(create_time) AS minCreateTime,
+             max(create_time) AS maxCreateTime,
+             sum(CASE WHEN role='assistant' AND recipient <> 'all' THEN 1 ELSE 0 END) AS toolCallCount
+      FROM messages
+      WHERE conversation_id = ?
+        AND turn_exchange_id = ?
+        AND create_time IS NOT NULL
+    `).get(conversationId, turnExchangeId) as {
+      minCreateTime: number | null
+      maxCreateTime: number | null
+      toolCallCount: number | null
+    } | undefined
+    if (!row || !Number.isFinite(row.minCreateTime) || !Number.isFinite(row.maxCreateTime)) return null
+    return {
+      startAt: Number(row.minCreateTime) * 1000,
+      endAt: Number(row.maxCreateTime) * 1000,
+      toolCallCount: Number(row.toolCallCount || 0),
+    }
   }
 
   getMessages(conversationId: string): Array<Record<string, unknown>> {
