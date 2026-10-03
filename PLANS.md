@@ -1,10 +1,20 @@
+## 2026-10-03 Watchdog DevSpace 触发 / conversation transport repair ExecPlan
+
+- [in_progress] 把 WSS gap repair 从“所有 ChatGPT WSS 必须先归零”改成 conversation transport generation：只追踪实际承载 `conversations/alder-conversations` 的 socket；carrier 换代即安排一次 debounced gap repair，`app_notifications/resource-updates` 单独重连不触发 catalog fallback。
+- [pending] 将 watchdog 默认阈值从 30 分钟调整为 45 分钟，并保持 complete/final 提前收口；同一 conversation 在现有工程约束下按“同一时刻单 active turn”维护状态，不用 DevSpace 调用间隔硬切 turn。
+- [pending] 接入 DevSpace supplementary start：DevSpace 只记录每次 MCP 调用的聊天级 `openai/session` 与可安全审计的 request metadata 形状；Archive 负责 metadata -> canonical conversation UUID binding、provisional active/watchdog、后验 tool-node/turn_exchange_id 校正。
+- [pending] binding 采用轻量快速证据：优先直接 correlation/invocation metadata；若宿主未提供，再用 tool 名 + 规范化 args/result 指纹 + 时间/顺序做短序列匹配。首次可信匹配即可持久化，后续样本用于校验而非每次全历史重算。
+- [pending] 复核 Archive SQLite：持久保存 metadata binding、最近确认的 conversation/turn_exchange_id、binding evidence/confidence 与 lifecycle 时间；DevSpace 可保留原始 metadata 观测，但不承载 watchdog 状态机。
+- [pending] 核对所有主动 `conversation list/body` 请求继续经过同一个 global request gate；默认 body 6s、catalog 5s、统一 `lastActiveRequestAt` + 0~1.5s jitter，cooldown recovery 前 3 次请求 30s。除非测试证明仍有过密 429，否则本轮不再新增第二套限速器。
+- [pending] 全量 typecheck/test 后更新 PROGRESS，并在不覆盖 DevSpace 当前未解决 merge conflict 的前提下部署 Archive；DevSpace 源码若无法安全提交则只完成可独立提交的观测改造或明确保留现场。
+
 ## 2026-09-28 WSS 轮换 / gap-repair / cooldown / DevSpace start 取证 ExecPlan
 
-- [in_progress] 先补 WSS 逐 socket 可观测性：记录 `requestId`、创建/关闭时间、该 socket 实际发送/收到的 subscribe topic、`recovered`、消息 topic 与关闭时仍承载的 topic；只记录控制面，不记录正文、cookie、token 或认证头。
-- [pending] 用 Git 历史和现有 daemon 日志定位“过去约 30–40 分钟原生 WSS 轮换会触发 fallback，而 2026-09-27 夜间未触发”的行为变化；严格区分代码逻辑变化与 ChatGPT 前端从单 socket 演化为多 socket/重叠换线的上游变化。
-- [pending] 完整审计 gap-repair/cooldown：列出触发源、30 秒 debounce、10 分钟主动 REST 最小间隔、60 分钟 429 cooldown、passive cache 例外、Guardian native REST block、cooldown 到期 slow-start 与 periodic 6h 的相互作用；先解释和取证，不先放宽生产门控。
-- [pending] 复核 DevSpace `openai/session metadata` supplementary start 方案当前实现度：确认 metadata 是否已进入 watcher、如何识别首次工具调用、metadata -> canonical conversation UUID binding 需要什么证据、未绑定时如何避免误把旧 tenant/session 当新 turn。
-- [pending] 在新 socket 日志上线并自然经历至少一次 WSS 轮换后，用真实证据决定修复语义：优先按 `conversations/alder-conversations` transport generation 或 subscribe/recovered 状态触发 gap repair，而不是继续依赖“所有 ChatGPT WSS 数量归零”。
+- [done] 先补 WSS 逐 socket 可观测性：记录 `requestId`、创建/关闭时间、该 socket 实际发送/收到的 subscribe topic、`recovered`、消息 topic 与关闭时仍承载的 topic；只记录控制面，不记录正文、cookie、token 或认证头。
+- [done] 用 Git 历史和现有 daemon 日志定位“过去约 30–40 分钟原生 WSS 轮换会触发 fallback，而 2026-09-27 夜间未触发”的行为变化；确认 2026-09-13 `f062e1c` 已把 per-socket close 语义改成 global-zero gap，9/24 左右实际前端 socket 生命周期变化才暴露这个潜在假设。
+- [done] 完整审计 gap-repair/cooldown：已区分 30 秒 debounce、10 分钟主动 repair 最小间隔、60 分钟滑动 429 cooldown、passive cache、Guardian REST block、recovery probation 与 periodic 6h；现有主动 list/body 共用同一个 global request gate。
+- [done] 复核 DevSpace `openai/session metadata`：DevSpace 已写入 `tool_audit.metadata_id`，但 Archive 尚无 watcher/binding；该 metadata 是 conversation 级稳定键，不是 turn key。
+- [done] 逐 socket 观测已证明稳定存在 3 条物理 WSS：`conversations+alder-conversations`、`app_notifications`、`resource-updates`。修复语义已决定升级为 conversation transport generation，不再等待全局 socket 归零。
 
 ## 2026-09-27 WSS 语义、Zombie 时序、Phase 3/4 继续实现 ExecPlan
 
