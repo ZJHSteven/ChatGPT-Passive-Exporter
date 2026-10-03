@@ -163,12 +163,25 @@ function endpointKind(raw) {
   if (p === '/backend-api/f/conversation/resume') return 'conversation-resume'
   if (p === '/backend-api/f/steer_turn') return 'steer-turn'
   if (/^\/backend-api\/conversation\/[^/]+\/stream_status$/u.test(p)) return 'stream-status'
+  if (/^\/backend-api\/conversation\/[^/]+\/async-status$/u.test(p)) return 'async-status'
   if (/^\/backend-api\/conversations\/[^/]+(?:\/messages)?$/u.test(p)) return 'conversation-body'
   if (p === '/backend-api/conversations') return 'conversation-list'
   if (p === '/backend-api/conversation/init') return 'conversation-init'
   if (p === '/backend-api/celsius/ws/user') return 'wss-bootstrap'
   if (p === '/ces/statsc/flush') return 'telemetry-flush'
+  if (p.startsWith('/backend-api/')) return 'other-backend-api'
+  if (p.startsWith('/ces/')) return 'other-ces'
   return null
+}
+
+function safeWssUrl(raw) {
+  try {
+    const u = new URL(raw)
+    const parts = u.pathname.split('/').filter(Boolean)
+    const redacted = parts.map((part, index) => index > 0 && parts[index - 1] === 'user' ? '<redacted-user>' : part)
+    return `${u.protocol}//${u.host}/${redacted.join('/')}`
+  }
+  catch { return 'wss://<redacted>' }
 }
 
 function headerShape(headers) {
@@ -223,7 +236,18 @@ function findAllStrings(value, keys, depth = 0, out = null) {
 
 function summarizeJsonResponse(kind, body) {
   if (!body || typeof body !== 'object') return null
-  if (kind === 'stream-status') return { status: body.status ?? body.stream_status ?? null, keys: Object.keys(body).sort() }
+  if (kind === 'stream-status' || kind === 'async-status') {
+    const ids = findAllStrings(body, ['conversation_id', 'turn_exchange_id', 'working_turn_id', 'request_id', 'topic_id'])
+    return {
+      status: body.status ?? body.stream_status ?? body.async_status ?? null,
+      keys: Object.keys(body).sort(),
+      conversationIds: [...ids.conversation_id].slice(0, 24),
+      turnExchangeIds: [...ids.turn_exchange_id].slice(0, 24),
+      workingTurnIds: [...ids.working_turn_id].slice(0, 24),
+      requestIds: [...ids.request_id].slice(0, 24),
+      topicIds: [...ids.topic_id].slice(0, 24),
+    }
+  }
   if (kind === 'conversation-list') {
     const items = Array.isArray(body.items) ? body.items : []
     return {
@@ -262,7 +286,17 @@ function summarizeJsonResponse(kind, body) {
       })),
     }
   }
-  return { keys: Object.keys(body).sort() }
+  const ids = findAllStrings(body, ['conversation_id', 'turn_exchange_id', 'working_turn_id', 'request_id', 'topic_id', 'update_type', 'type'])
+  return {
+    keys: Object.keys(body).sort(),
+    conversationIds: [...ids.conversation_id].slice(0, 24),
+    turnExchangeIds: [...ids.turn_exchange_id].slice(0, 24),
+    workingTurnIds: [...ids.working_turn_id].slice(0, 24),
+    requestIds: [...ids.request_id].slice(0, 24),
+    topicIds: [...ids.topic_id].slice(0, 24),
+    updateTypes: [...ids.update_type].slice(0, 24),
+    types: [...ids.type].slice(0, 32),
+  }
 }
 
 function summarizeWssFrame(payloadData) {
@@ -305,6 +339,12 @@ function summarizeWssFrame(payloadData) {
         row.encodedBytes = typeof nested.encoded_item === 'string' ? Buffer.byteLength(nested.encoded_item, 'utf8') : 0
       }
     }
+    const ids = findAllStrings(frame, ['conversation_id', 'turn_exchange_id', 'working_turn_id', 'request_id', 'topic_id'])
+    row.conversationIds = [...ids.conversation_id].slice(0, 16)
+    row.turnExchangeIds = [...ids.turn_exchange_id].slice(0, 16)
+    row.workingTurnIds = [...ids.working_turn_id].slice(0, 16)
+    row.requestIds = [...ids.request_id].slice(0, 16)
+    row.topicIds = [...ids.topic_id].slice(0, 16)
     safe.frames.push(row)
   }
   return safe
@@ -548,7 +588,9 @@ async function main() {
       sseTrackers.delete(key)
     }
     if (!record) return
-    if (['stream-status', 'conversation-body', 'conversation-list', 'conversation-init'].includes(record.kind)) {
+    const bodyWorthInspecting = ['stream-status', 'async-status', 'conversation-body', 'conversation-list', 'conversation-init'].includes(record.kind)
+      || /(?:conversation|turn|stream|resume|history|message|async)/iu.test(record.url)
+    if (bodyWorthInspecting && String(record.mimeType || '').includes('json')) {
       void cdp.send('Network.getResponseBody', { requestId: params.requestId }, sessionId).then(result => {
         let text = String(result.body || '')
         if (result.base64Encoded) text = Buffer.from(text, 'base64').toString('utf8')
@@ -581,8 +623,9 @@ async function main() {
     if (!u.hostname.endsWith('chatgpt.com')) return
     const key = requestKey(sessionId, params.requestId)
     const meta = sessionMeta(sessionId)
-    sockets.set(key, { sessionId, targetId: meta.targetId, requestId: params.requestId, url: `${u.protocol}//${u.host}${u.pathname}` })
-    write({ kind: 'wss-created', at: Date.now(), sessionId, targetId: meta.targetId, requestId: params.requestId, url: `${u.protocol}//${u.host}${u.pathname}` })
+    const redactedUrl = safeWssUrl(params.url)
+    sockets.set(key, { sessionId, targetId: meta.targetId, requestId: params.requestId, url: redactedUrl })
+    write({ kind: 'wss-created', at: Date.now(), sessionId, targetId: meta.targetId, requestId: params.requestId, url: redactedUrl })
   })
   cdp.on('Network.webSocketClosed', (params, sessionId) => {
     const socket = sockets.get(requestKey(sessionId, params.requestId))
