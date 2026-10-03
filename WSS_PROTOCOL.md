@@ -263,3 +263,66 @@ $.chatgpt-conversation-resume-tokens-v1.[<user/account>, "6ab9c001-..."] .token
 
 下一步真正的 Remote Late-Attach 必须使用独立 storage context（独立 Chrome profile、Firefox 或手机）重新取证；如果独立客户端仍能 `/resume`，再寻找服务端账户级 credential reacquisition 路径。
 
+## 12. 2026-10-03 Tokenless Late-Attach：当前 Web 不会自动重新领取 resume credential
+
+为把“same-profile IndexedDB 共享”与“账户级服务端 reacquisition”彻底拆开，使用专用长 turn 做了受控实验。决定性样本 conversation 为 `6ac09cb3-...`：任务仍在运行时，A 页已经获得并持久化 resume capability；随后依次执行：
+
+1. 关闭 A 页，避免它继续把内存 capability 回写 profile storage；
+2. 只删除 `chatgpt-conversation-resume-tokens-v1` 中该测试 CID 的一项；
+3. 复查 IndexedDB，确认该 CID 条目稳定不存在；
+4. fresh B 页从 `about:blank` 开始挂 Network，再导航到同一个仍在运行的 conversation。
+
+B 页第一轮真实请求顺序：
+
+```text
+GET  /backend-api/conversation/init                         -> 200
+GET  /backend-api/conversation/<cid>/stream_status         -> 200 {"status":"IS_STREAMING"}
+POST /backend-api/f/conversation/resume                    -> 404 application/json
+GET  /backend-api/conversation/<cid>/stream_status         -> 200 {"status":"IS_STREAMING"}
+```
+
+同时再次读取 `codex-browser-host`：该 CID 的 resume token 条目仍不存在，没有出现“服务器重新下发 token 后回写 IndexedDB”的行为。
+
+页面进入用户可见状态：
+
+```text
+连接已中断，正在等待完整答复
+```
+
+之后 B 没有新的成功 `/resume`，而是约每 5～6 秒轮询一次 `stream_status`。本次完整状态序列为：
+
+```text
+IS_STREAMING
+IS_STREAMING
+IS_STREAMING
+IS_STREAMING
+IS_STREAMING
+IS_STREAMING
+IS_STREAMING
+IS_STREAMING
+COMPLETE
+```
+
+状态切到 `COMPLETE` 后，页面一次性显示完整 final，并出现“回答已完成”。
+
+因此当前 Web 的可证实 fallback 是：
+
+```text
+有 resume credential
+  -> /f/conversation/resume
+  -> replay + live SSE
+
+无 resume credential
+  -> stream_status
+  -> /resume 404
+  -> status polling
+  -> COMPLETE
+  -> 最终 canonical body/final
+```
+
+这直接解释过去的 UI 体感：另一个 tab/设备“能打开正在运行的 conversation、看到已经持久化的中间内容”，并不自动证明它已经加入 live stream。缺 credential 时，Web 可以展示已有快照，但会进入“等待完整答复”模式，而不是继续收到新的 token/delta。
+
+证据边界：本实验是在同一 Chrome profile 中人为删除该 CID 的 persisted capability，而不是物理 iPhone/Firefox；但它已经排除了“只凭 account + conversation_id，当前 Web 会自动从服务端重新领取 resume token”这一简单模型。真正跨设备若存在更强 capability 同步，必须来自另一个客户端实现/同步层，不能从当前 Web 行为直接推出。
+
+Phase 3 架构含义：Remote Late-Attach 不应再把 `/resume` 当作 universal 跨设备入口。对没有 resume credential 的 turn，若要获得实时 delta，下一条值得验证的主路线是动态 `conversation-turn-*` WSS 的 catchup/live；否则只能接受 `stream_status + final body` 的非实时降级路径。
+
