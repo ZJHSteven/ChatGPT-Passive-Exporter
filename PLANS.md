@@ -1,3 +1,11 @@
+## 2026-10-03 iPhone -> PC 跨设备续流一次性全量取证 ExecPlan
+
+- [in_progress] 新增一次性 browser-level CDP flight recorder，自动附着当前及后续新建的 ChatGPT page/worker/service-worker target；被动记录账户 WSS 控制面、`conversation-created / conversation-turn-complete / conversation-update`、`conversation-turn-*` subscribe/ACK/catchup/live、`/f/conversation` / `/resume` / `stream_status` / conversation body/list/init 等第一方请求与响应摘要。
+- [pending] Recorder 同时每数秒采样同 profile `codex-browser-host` resume-token persisted atom，但只保存 conversation key、token 长度和 SHA-256，绝不落 raw token/Cookie/Authorization；目标是判断“手机新 turn 在 PC 尚未打开前，PC 本地 store 是否已经收到 capability”。
+- [pending] 用户在 iPhone 手动新建一个长 DevSpace 工具 turn；PC 在此期间不主动打开该 conversation，先观察账户 WSS / sidebar/catalog / IndexedDB 是否出现 CID、turn identity 或 resume capability。
+- [pending] 随后用户在 PC 手动打开同一 conversation，Recorder 捕获该页从首次导航开始的 `stream_status / body / /resume / turn-WSS` 全部结构；据此区分 HTTP resume、turn-WSS catchup/live、status-polling 或第三条路径。
+- [pending] 实验结束后把 timeline、turn_exchange_id 来源、是否真正 live continuation、是否存在跨设备 capability reacquisition 写入 `WSS_PROTOCOL.md / PROGRESS.md`；关闭临时页面/recorder，避免长期放大官方请求。
+
 ## 2026-10-03 Watchdog DevSpace 触发 / conversation transport repair ExecPlan
 
 - [in_progress] 把 WSS gap repair 从“所有 ChatGPT WSS 必须先归零”改成 conversation transport generation：只追踪实际承载 `conversations/alder-conversations` 的 socket；carrier 换代即安排一次 debounced gap repair，`app_notifications/resource-updates` 单独重连不触发 catalog fallback。
