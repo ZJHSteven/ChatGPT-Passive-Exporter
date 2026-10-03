@@ -2894,6 +2894,22 @@ export class ChatArchiveDb {
     return row ?? null
   }
 
+  getDevSpaceMetadataBindingsForConversation(conversationId: string): DevSpaceMetadataBindingRow[] {
+    return this.db.prepare(`
+      SELECT metadata_id AS metadataId, conversation_id AS conversationId,
+             first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
+             bound_at AS boundAt, last_verified_at AS lastVerifiedAt,
+             evidence, confidence,
+             last_turn_exchange_id AS lastTurnExchangeId,
+             last_request_id AS lastRequestId,
+             last_audit_id AS lastAuditId, last_audit_at AS lastAuditAt,
+             lifecycle_state AS lifecycleState
+      FROM devspace_metadata_bindings
+      WHERE conversation_id = ?
+      ORDER BY bound_at ASC, metadata_id ASC
+    `).all(conversationId) as unknown as DevSpaceMetadataBindingRow[]
+  }
+
   listDevSpaceMetadataBindings(input: {
     onlyUnbound?: boolean
     sinceAt?: number

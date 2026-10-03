@@ -59,7 +59,7 @@ Usage:
   chatgpt-archive protocol install-daily [--time HH:mm]
   chatgpt-archive protocol daily-status
   chatgpt-archive protocol uninstall-daily
-  chatgpt-archive daemon start [--cdp URL] [--reconcile-hours N] [--db <path>] [--allow-active-image-resolver]
+  chatgpt-archive daemon start [--cdp URL] [--reconcile-hours N] [--db <path>] [--devspace-db <path>] [--allow-active-image-resolver]
   chatgpt-archive daemon status [--state <path>]
   chatgpt-archive daemon stop [--state <path>]
   chatgpt-archive daemon install-startup
@@ -251,6 +251,7 @@ async function daemonCommand(positionals, flags) {
       'recovery-probe-gap-ms',
       'recovery-probe-successes',
       'watchdog-minutes',
+      'devspace-db',
       'chrome-shortcut',
       'chrome-start-timeout-ms',
      'notification-config',

@@ -172,7 +172,17 @@ export class DevSpaceAuditBridge {
    * 老 DevSpace 进程尚未跑新 migration 时表可能不存在，此时返回 false，稍后再镜像即可。
    */
   mirrorBinding(binding: DevSpaceConversationBindingMirror): boolean {
-    if (!this.open() || !this.db || !this.hasBindingTable) return false
+    if (!this.open() || !this.db) return false
+    if (!this.hasBindingTable) {
+      // DevSpace 可能在 Archive 已经常驻以后才完成热重载/migration；需要镜像时重新探测，
+      // 避免因为启动瞬间缺表就一直等到 Archive 自己重启。
+      this.hasBindingTable = Boolean(this.db.prepare(`
+        SELECT 1 AS ok FROM sqlite_master
+        WHERE type='table' AND name='chatgpt_conversation_bindings'
+        LIMIT 1
+      `).get())
+    }
+    if (!this.hasBindingTable) return false
     const observedAt = new Date(binding.observedAt).toISOString()
     this.db.prepare(`
       INSERT INTO chatgpt_conversation_bindings (
