@@ -2,14 +2,14 @@
 
 > 并行约束：另一个 Agent 正在处理 Phase 3 / Phase 4 / Phase 5。本文任务只修改 DevSpace audit/env 热路径、Archive 历史 binding/backfill、429 cooldown 通知与相关文档/测试；不改 LiveTurn/Actor 主体实现。若发现目标文件被并行 Agent 修改，先停下对该文件的编辑并重新对比，不做覆盖式提交。
 
-- [in_progress] 解释历史 audit 边界：确认 9/14 以前是否存在 metadata/tool-result 的其它持久记录，区分“没有采集”与“没有导入新 tool_audit”。
-- [pending] 将 117 个 metadata 全量分桶：可唯一 exact binding、已有 binding、缺 Archive body/tool node、歧义、多 conversation、真实 exact mismatch；验证 97/86 数字差额。
-- [pending] 正式补齐历史 seed/backfill：把 DevSpace 历史 metadata 导入 Archive binding 表，再用 exact tool+args 回填；不靠时间决定身份。
-- [pending] 还原 2026-10-06 16:xx 北京时间 429：找到第一条 cooldown arm/extend、route、native vs Archive active request、前序请求节奏，判断是否由本轮代码/主动请求风暴触发。
-- [pending] 新增独立 429 cooldown 通知：只在“未处于 cooldown -> 进入 cooldown”时发一次，内容包含原因、开始时间、预计解除时间；滑动延长记录日志但不重复轰炸手机。
-- [pending] DevSpace exec_command 增加 refreshEnvironment=true：显式失效 Windows persisted environment cache 后再执行当前命令；在 tool schema/help 与简短 Agent 使用说明中暴露。
-- [pending] 重新分解生产 ~120ms warm exec 延迟，明确相比裸 cmd 多出的成本来自 process-host / DevSpace session / MCP Host 哪一层。
-- [pending] 全量测试、生产部署、healthz/Archive status 验证，并更新 PROGRESS。
+- [done] 解释历史 audit 边界：7/31 起已有 ChatGPT conversation-scope metadata（初版 hash，8/4 起直接存原始 scope id）；9/14 起才有逐工具 metadata/tool/args/result 的 tool_audit，9/27 才有 current/recover CLI。
+- [done] 117 个 metadata 已全量分桶：97 可唯一 exact binding；其中当时 11 已绑定，所以新增 86。其余 20 均可解释为 body/时间证据缺失、弱共享 fingerprint 或被更强 metadata 压过，未发现强证据齐全却 matcher 随机失败。
+- [done] 历史 seed/backfill 已实现：启动时先 GROUP BY seed 全部 DevSpace metadata first/last seen，再 exact backfill；历史 seed 不进入 live watchdog。并修复同一 CID 新 metadata 被旧 binding 提前 return/timeout probe 跳过的问题。
+- [done] 2026-10-06 16:02:52+08 429 已复原：Archive 的 wss:conversation-turn-complete 主动 body 请求首次返回 429；此前约 6m14s 无主动请求，不像瞬时风暴。
+- [done] 独立 429 cooldown 通知已实现：首次进入发一次，滑动延长只日志；通知包含 reason/route/Retry-After/解除时间，不进入 incidents。
+- [done] DevSpace exec_command 已增加 refreshEnvironment=true；tool schema 与 MCP Codex instructions 均可见，默认仍走 30s cache。
+- [done] warm exec 延迟已拆分：生产 MCP 8 次 126~143ms/平均 135ms；同机直接 ProcessSession 第一条 420ms、缓存热后约 71~103ms，说明默认环境刷新已消失，剩余主要是 Windows process-host/session 与约数十毫秒 MCP/调度成本。
+- [in_progress] Archive 21 files / 131 tests、DevSpace 全量 test/build 已通过；正在把隔离 worktree 提交安全 cherry-pick 回并行主分支并做生产部署/healthz/status/backfill 结果验证。
 
 ## 2026-10-06 Phase 3/4/5 收尾实现 ExecPlan
 
