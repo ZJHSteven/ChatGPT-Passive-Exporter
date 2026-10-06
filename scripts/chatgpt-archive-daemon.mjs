@@ -699,6 +699,11 @@ export function shouldNotifyIncidentTransition(before, after) {
     || before.terminalEvidence !== after.terminalEvidence
 }
 
+/** startup 只补历史事实，不把首次扫描到的旧 incident 当成实时手机告警。 */
+export function shouldNotifyHistoricalIncidentForTrigger(trigger) {
+  return String(trigger || '') !== 'reconcile:startup'
+}
+
 export function extractConversationEvents(payloadData) {
   if (typeof payloadData !== 'string' || payloadData.length > 1_000_000) return []
   let parsed
@@ -1733,6 +1738,17 @@ async function main() {
     LIMIT 1
   `).get(conversationId) || null
 
+  const incidentSnapshots = (conversationId) => archive.db.prepare(`
+    SELECT i.id, i.incident_kind AS incidentKind, i.lifecycle_class AS lifecycleClass,
+           i.reason, i.terminal_evidence AS terminalEvidence, i.tail_shape AS tailShape,
+           i.detected_at AS detectedAt, i.status,
+           c.title
+    FROM incidents i
+    JOIN conversations c ON c.id = i.conversation_id
+    WHERE i.conversation_id = ?
+    ORDER BY i.detected_at ASC, i.id ASC
+  `).all(conversationId)
+
   const notifyIncident = async (conversationId, incident) => {
     if (!notificationConfig || !incident) return
     notificationLastAttemptAt = Date.now()
@@ -2320,6 +2336,7 @@ async function main() {
     const confirmedTerminal = isConfirmedTerminalTrigger(trigger)
     const requestedIncidentKind = incidentKindForTrigger(trigger)
     let newIncident = null
+    const incidentIdsBefore = new Set(incidentSnapshots(conversationId).map(incident => incident.id))
     const basePath = `/backend-api/conversations/${encodeURIComponent(conversationId)}`
     const passiveFirst = reusablePassiveBodyPage(conversationId, null, syncReadyAt)
     const first = passiveFirst?.payload ?? await fetchChecked({
@@ -2478,6 +2495,10 @@ async function main() {
           updateTime: first.update_time ?? null,
           diagnostic: latestDiagnostic ?? merged.diagnostic,
           newIncident,
+          newHistoricalIncidents: shouldNotifyHistoricalIncidentForTrigger(trigger)
+            ? incidentSnapshots(conversationId)
+                .filter(incident => !incidentIdsBefore.has(incident.id) && incident.id !== newIncident?.id)
+            : [],
           imageGenerationEvent,
           exactMapping,
           passivePagesUsed,
@@ -2792,7 +2813,16 @@ async function main() {
           })
         })
         // SQLite/trace 到这里已经完成；通知只从已落库事实分叉出去，不参与 syncInFlight。
-        if (result.newIncident) dispatchIncidentNotification(conversationId, result.newIncident)
+        const incidentsToNotify = [
+          result.newIncident,
+          ...(result.newHistoricalIncidents || []),
+        ].filter(Boolean)
+        const notifiedIncidentIds = new Set()
+        for (const incident of incidentsToNotify) {
+          if (notifiedIncidentIds.has(incident.id)) continue
+          notifiedIncidentIds.add(incident.id)
+          dispatchIncidentNotification(conversationId, incident)
+        }
         if (result.imageGenerationEvent && !result.imageGenerationEvent.notificationSentAt) {
           // startup 只是认识已有历史，不能在重启后把旧图片节点重新推到手机。
           if (trigger === 'reconcile:startup') {

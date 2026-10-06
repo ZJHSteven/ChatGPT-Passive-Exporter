@@ -210,3 +210,6 @@ export function shouldNotifyIncidentTransition(
   },
 ): boolean
 
+/** startup 只补历史事实，不发送历史 incident 手机通知；其它实时/恢复触发允许。 */
+export function shouldNotifyHistoricalIncidentForTrigger(trigger: unknown): boolean
+
