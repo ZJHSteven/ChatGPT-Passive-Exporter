@@ -26,10 +26,10 @@
 ## 2026-10-06 Phase 3 收口 / Phase 4 Guardian-Actor 合并复核 ExecPlan
 
 - [done] Phase 3 跨设备 late-open 研究告一段落：真实 iPhone -> PC 样本已确认存在 `stream_status + conversation body` checkpoint polling 路径；HTTP `/resume`、turn-WSS、checkpoint refresh、final-only fallback 已明确分层，证据与边界写入 `WSS_PROTOCOL.md / PROGRESS.md`。
-- [done] “Guardian 必须与 Actor 分 tab”已被真机反证。正式 Guardian target 直接跑当前 Actor 代码，新建 conversation 和已完成 conversation continuation 均成功；Guardian targetId/health 保持稳定，账户 WSS 仍能收到两轮 complete。`SAMETABB928` 只证明同 renderer **并发 active generation** 会共享 UI generation state，并不限制串行发送。
+- [done] “Guardian 必须与 Actor 分 tab”已被真机反证。正式 Guardian target 直接跑当前 Actor 代码，新建 conversation 和已完成 conversation continuation 均成功；Guardian targetId/health 保持稳定，账户 WSS 仍能收到两轮 complete。后续 `SAMETABB1006` 又进一步证明同 tab 可以在 A 仍 active 时 SPA 切 B 并启动新的 `/f/conversation`；旧 `SAMETABB928` 的“看不到 send button”只能视为 DOM/时序误判，不能再推出并发 UI 锁。
 - [done] 已定位当前合并的真实工程副作用：Actor 无条件 `Page.navigate()` 会让 Guardian 每次发送重建一整套账户 WSS（3->6->9 overlap）并触发 conversation transport rotation；URL marker 会丢失；Guardian target 又被 LiveTurn passive observer 排除，导致自己发出的 SSE 不落 Phase 3；cooldown 的 Guardian REST block 也可能误伤 continuation 页面加载。
-- [in_progress] 实现 Guardian-aware actor mode，而不是继续永久维护第二个常驻 Actor tab：①若当前页面已可发送，避免 full `Page.navigate`；②需要切 conversation 时优先使用第一方 SPA route/已有 DOM 导航并验证不会重建账户 WSS；③Guardian 自身 `/f/conversation`/`/resume` 复用 LiveTurn observer；④Guardian identity 由 targetId/state 持久恢复，不再单押 URL marker；⑤显式 actor 操作与 cooldown REST block 建立可预测门控。
-- [pending] 完成合并后做三组 E2E：new chat、已完成 conversation continuation、上一 turn 仍 active 时第二次发送应明确拒绝/转入备用 Actor pool；比较合并前后 WSS carrier generation、LiveTurn trace、429/gap-repair 与内存占用。
+- [in_progress] 实现 Guardian-aware actor mode，而不是继续永久维护第二个常驻 Actor tab：①若当前页面已可发送，避免 full `Page.navigate`；②需要切 conversation 时优先使用第一方 SPA route/已有 DOM 导航并验证不会重建账户 WSS；③Guardian 自身 `/f/conversation`/`/resume` 复用 LiveTurn observer；④Guardian identity 由 targetId/state 持久恢复，不再单押 URL marker；⑤显式 actor 操作与 cooldown REST block 建立可预测门控。当前默认 target 已切为 Guardian，passive observer 也已覆盖 Guardian；闭环 Actor CLI 已实现 new/continue/steer 的主要状态门控。
+- [pending] 完成合并后做四组 E2E：new chat、已完成 conversation continuation、active conversation follow-up `/f/steer_turn`、A 仍 active 时同 tab SPA 切 B 并启动新 `/f/conversation`；比较合并前后 WSS carrier generation、LiveTurn trace、429/gap-repair 与内存占用。**不再**把“同 tab 多 active conversation”视为需要备用 Actor pool 的限制。
 - [pending] Phase 4 后续动作按第一方 UI 逐项取证：steer、project 内新建、move project、archive、delete；发送与管理动作均优先走网页自身 React/网络栈，不自行重写 Sentinel/PoW/challenge。
 
 ### 2026-10-06 active-turn 同 tab 发送语义复核
