@@ -15,21 +15,21 @@
 
 ## 2026-10-06 DevSpace→Archive 事件唤醒 / binding 简化 / watchdog 语义修正 ExecPlan
 
-- [in_progress] 先还原生产事实：统计 bound/unbound metadata、定位当前长聊天为何仍 unbound，逐条对照 Archive body tool-call 与 DevSpace tool_audit，而不是继续靠时间窗口猜测。
-- [pending] 将 DevSpace→Archive 从固定 5s SQLite polling 改成“SQLite 仍是 durable source of truth + 本机事件只负责 wake-up”的事件驱动路径；优先使用极轻量 localhost IPC，Archive 启动/丢事件时仍可从 SQLite 补账，避免事件通道承担可靠存储职责。
-- [pending] 删除剩余 fast-path/时间猜 binding；binding 优先做两边已有 hookup 的内容/工具序列直接匹配，body 尚未出现时只保留 metadata firstSeenAt，不强行猜 CID；body 一到即可完成后验 binding。
-- [pending] 修正 watchdog 语义：45min timeout 只负责触发诊断（status/body/catalog repair）；先拉到服务器状态/body并落盘、完成 binding/terminal classification，再按诊断结果决定是否发 Bark。撤销“未绑定 timeout 本身直接通知”的错误语义。
-- [pending] 实测 DevSpace overhead：比较 MCP exec_command 的 wall time、裸 cmd/PowerShell spawn、audit SQLite 写入与 Secret resolver 无占位符路径；同时采样 Archive daemon CPU/RSS，确保常驻监控与事件唤醒足够轻量。
-- [pending] 使用现有受控 restart helper/Task Scheduler 重载 DevSpace raw metadata build，不直接杀唯一入口；重启后立即检查 7676 /healthz、真实新 tool_audit 原始 _meta，以及 Archive 事件接收。
-- [pending] 全量 typecheck/test/build 后更新 PROGRESS，并确认两个仓库 clean。
+- [done] 生产事实已还原：旧算法确实因“时间窗内必须只有一个 metadata”在并发聊天时放弃可确定 binding。改成 exact tool+args 后，历史 backfill 把现存 9 个 metadata 全部绑定，当前 unbound=0；当前长聊天已通过 body:exact-tool-args-backfill 高置信绑定到 canonical CID。
+- [done] DevSpace→Archive 已改为事件驱动：tool_audit 先写 SQLite，再 fire-and-forget UDP localhost 门铃；Archive 收到后立即读 SQLite。固定 5s polling 已移出实时路径，只保留 60s durable catch-up。生产已收到 200+ 门铃且 invalid=0。
+- [done] 删除 fast-path/时间猜 binding；body 中 api_tool.call_tool 的 tool+完整 args 与 DevSpace tool_audit 做 canonical JSON exact match。时间只用于缩小查询范围，不参与身份胜负判定；至少两个 exact fingerprints，或一个只属于单 metadata 的唯一 fingerprint 才绑定。
+- [done] Watchdog 语义已修正：45min timeout 只触发本地 exact backfill、catalog repair/body probe；CID 解出后才进入 watchdog:devspace-timeout conversation body 诊断，再由 terminal/active-zombie/incident 分类决定是否 Bark。未绑定 timeout 本身不再直接通知。
+- [done] 性能实测：裸 cmd 约 33~36ms；process-host 约 78ms；旧 DevSpace 空 exec 约 500~530ms。Secret 无占位符约 0.18微秒/次；audit+SQLite+UDP 约 0.188ms/次；Archive 10s 空闲窗口 CPU 0s、RSS 约 34~50MB。主要瓶颈定位为每条命令同步 PowerShell 刷新 Windows 环境。
+- [done] DevSpace Windows persisted environment 已加默认 30s 缓存；隔离 dev 第一条约 472ms，后续热路径平均约 75ms。生产受控 helper/Task Scheduler 已重启到新 PID 28568，healthz=200；MCP 重新连通，生产实测首条 311ms、随后约 123~166ms。
+- [done] raw metadata 已生产验证：新 tool_audit.request_meta_json 原样包含 openai/session/subject/organization/userAgent/locale/timezone/userLocation 等。DevSpace typecheck/test/build 与 Archive 21 files / 129 tests 均通过。
 
 ## 2026-10-06 DevSpace raw metadata / binding / watchdog 收口 ExecPlan
 
-- [in_progress] 取消 DevSpace request metadata 脱敏摘要：源码、测试与隔离 `dev` build 已改为完整保存 MCP metadata / args / result；验证过的 `request-meta.js/tool-audit.js` 已精确复制到生产 `source/dist`。当前生产 DevSpace 进程仍是重启前已加载模块，受工具安全门控限制暂未重启，因此“新行已原样写入”仍待 live 验证。历史哈希化旧行无法逆推。
+- [done] 取消 DevSpace request metadata 脱敏摘要：源码、测试、隔离 build 与生产进程均已切换为完整保存 MCP metadata / args / result；真实新 audit 行已原样落库。历史哈希化旧行无法逆推。
 - [done] 复核 DevSpace migration 事故：问题确实是旧生产库已经登记 v7 后，修改 v7 实现不会重跑。现已由独立 v8=`tool-audit-request-metadata`、v9=`chatgpt-conversation-bindings` 修复；生产库 1~9 均已登记，实体列/表存在，并有 legacy-v7 升级回归。Archive 自身使用每次 open 的 `CREATE TABLE IF NOT EXISTS + ensureColumn`，不存在同类版本号复用。
 - [done] 把 binding/watchdog 收拢成一条状态机：`openai/session` 是 conversation 级；已有 binding 时 first DevSpace call 直接启动 45min watchdog；未知 binding 时 firstSeenAt 立即持久化并独立计时，body/turn 到手后再做一次后验 binding。删除 `conversation-created ±45s` 时间窗口绑定，它不是启动/绑定的必要条件。
-- [done] 修复 unbound provisional watchdog 缺口：未绑定 metadata 到 45min 即持久化 timeout、独立发送“待绑定”通知并触发 catalog repair；是否成功绑定 CID 不再决定是否告警。通知成功时间持久化，daemon 重启可从 Archive DB 恢复近期 provisional startedAt，避免计时归零/重复告警。
-- [in_progress] Archive 已通过 node syntax、typecheck、定向 49/49 与全量 20 files / 127 tests。下一步部署新 Archive daemon，并在 DevSpace 允许受控重启后用真实新 audit 行确认 raw metadata 写入。
+- [done] 修复 unbound provisional watchdog 缺口并纠正语义：firstSeenAt/timeout 仍持久化并可跨 daemon 重启恢复，但 timeout 只触发诊断和 binding probe，不再直接发“待绑定”事故通知；body/status 诊断完成后才按真实 lifecycle 决定通知。
+- [done] Archive 当前已通过 node syntax、typecheck 与全量 21 files / 129 tests；DevSpace raw metadata、事件门铃、exact binding 与生产重启均已实测。
 
 ## 2026-10-03 iPhone -> PC 跨设备续流一次性全量取证 ExecPlan
 
