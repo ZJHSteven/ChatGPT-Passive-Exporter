@@ -30,6 +30,18 @@ export interface DevSpaceMetadataActivity {
   audits: DevSpaceAuditEvent[]
 }
 
+export interface DevSpaceBodyToolCall {
+  tool: string
+  argsJson: string
+  startedAtMs: number
+}
+
+export interface DevSpaceBindingMatch {
+  activity: DevSpaceMetadataActivity
+  exactMatches: number
+  uniqueMatches: number
+}
+
 export interface DevSpaceConversationBindingMirror {
   metadataId: string
   conversationId: string
@@ -70,30 +82,119 @@ export function groupDevSpaceActivity(events: DevSpaceAuditEvent[]): DevSpaceMet
 }
 
 /**
- * 当前 turn 已由 body 确认后，挑选唯一的未绑定 metadata 候选。
+ * 从 ChatGPT body 的 api_tool.call_tool 节点解析 DevSpace 调用。
  *
- * 这里故意只做“唯一候选”而不是打分猜测：tool_audit 时间必须落在 turn 窗口内，
- * 且该 turn 必须真实出现过工具调用。若同时有两个 metadata 活跃，则返回 null，
- * 等后续更强 correlation metadata 或其它证据再解，不制造错误永久绑定。
+ * binding 不再依赖“某个时间窗里只有一个 metadata”这种脆弱条件，而是直接比较
+ * 两边都已经存在的 tool + args。时间只用来缩小 SQLite 查询范围，不参与胜负判定。
  */
-export function uniqueDevSpaceCandidateForTurn(input: {
+export function parseDevSpaceBodyToolCall(text: string, startedAtMs: number): DevSpaceBodyToolCall | null {
+  try {
+    const payload = JSON.parse(text) as { path?: unknown, args?: unknown }
+    const toolPath = typeof payload.path === 'string' ? payload.path : ''
+    if (!toolPath.toLowerCase().includes('/devspace/')) return null
+    const segments = toolPath.split('/').filter(Boolean)
+    const tool = segments.at(-1)
+    if (!tool) return null
+    return {
+      tool,
+      argsJson: JSON.stringify(payload.args ?? {}),
+      startedAtMs,
+    }
+  }
+  catch {
+    return null
+  }
+}
+
+/**
+ * 对 JSON 递归按 key 排序；ChatGPT body 与 DevSpace audit 可能只是对象 key 顺序不同，
+ * 语义相同的参数必须得到同一 fingerprint。
+ */
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson)
+  if (!value || typeof value !== 'object') return value
+  const record = value as Record<string, unknown>
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .map(key => [key, canonicalJson(record[key])]),
+  )
+}
+
+function toolArgsFingerprint(tool: string, argsJson: string): string | null {
+  try {
+    return tool + '\n' + JSON.stringify(canonicalJson(JSON.parse(argsJson)))
+  }
+  catch {
+    return null
+  }
+}
+
+/**
+ * 用真实 tool + args 做 exact matching。
+ *
+ * 接受规则故意简单：
+ * - 至少两个不同 exact fingerprints；或
+ * - 只有一个 exact fingerprint，但它只出现在一个 metadata 中。
+ * 同分候选一律不绑定。这样并发 3~4 个聊天也不需要靠时间猜测。
+ */
+export function matchDevSpaceCandidateForTurn(input: {
   activities: DevSpaceMetadataActivity[]
-  turnStartAt: number
-  turnEndAt: number
-  toolCallCount: number
+  bodyCalls: DevSpaceBodyToolCall[]
   alreadyBoundMetadataIds?: Iterable<string>
-  beforeSlackMs?: number
-  afterSlackMs?: number
-}): DevSpaceMetadataActivity | null {
-  if (input.toolCallCount <= 0) return null
+}): DevSpaceBindingMatch | null {
+  if (input.bodyCalls.length === 0) return null
   const bound = new Set(input.alreadyBoundMetadataIds ?? [])
-  const start = input.turnStartAt - (input.beforeSlackMs ?? 10_000)
-  const end = input.turnEndAt + (input.afterSlackMs ?? 60_000)
-  const candidates = input.activities.filter((activity) => {
-    if (bound.has(activity.metadataId)) return false
-    return activity.audits.some(audit => audit.startedAtMs >= start && audit.startedAtMs <= end)
-  })
-  return candidates.length === 1 ? candidates[0]! : null
+  const bodyFingerprints = new Set(
+    input.bodyCalls
+      .map(call => toolArgsFingerprint(call.tool, call.argsJson))
+      .filter((value): value is string => Boolean(value)),
+  )
+  if (bodyFingerprints.size === 0) return null
+
+  const fingerprintOwners = new Map<string, Set<string>>()
+  for (const activity of input.activities) {
+    if (bound.has(activity.metadataId)) continue
+    for (const audit of activity.audits) {
+      const fingerprint = toolArgsFingerprint(audit.tool, audit.argsJson)
+      if (!fingerprint || !bodyFingerprints.has(fingerprint)) continue
+      const owners = fingerprintOwners.get(fingerprint) ?? new Set<string>()
+      owners.add(activity.metadataId)
+      fingerprintOwners.set(fingerprint, owners)
+    }
+  }
+
+  const scored: DevSpaceBindingMatch[] = []
+  for (const activity of input.activities) {
+    if (bound.has(activity.metadataId)) continue
+    const exact = new Set<string>()
+    for (const audit of activity.audits) {
+      const fingerprint = toolArgsFingerprint(audit.tool, audit.argsJson)
+      if (fingerprint && bodyFingerprints.has(fingerprint)) exact.add(fingerprint)
+    }
+    if (exact.size === 0) continue
+    const uniqueMatches = [...exact].filter(
+      fingerprint => fingerprintOwners.get(fingerprint)?.size === 1,
+    ).length
+    scored.push({
+      activity,
+      exactMatches: exact.size,
+      uniqueMatches,
+    })
+  }
+
+  scored.sort((a, b) =>
+    b.uniqueMatches - a.uniqueMatches
+    || b.exactMatches - a.exactMatches
+    || a.activity.metadataId.localeCompare(b.activity.metadataId))
+  const best = scored[0]
+  if (!best) return null
+  const second = scored[1]
+  if (second
+    && second.uniqueMatches === best.uniqueMatches
+    && second.exactMatches === best.exactMatches) return null
+  if (best.uniqueMatches < 1 && best.exactMatches < 2) return null
+  return best
 }
 
 export class DevSpaceAuditBridge {
