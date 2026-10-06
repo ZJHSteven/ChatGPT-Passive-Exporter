@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 02:42 Phase 3 cooldown 恢复 canary 已通过：01:42 的第二轮 429 熔断在 02:42:07 自然到期，未人工绕过。随后 Watchdog 对 `6aa63b4d-9fe4-83e9-adab-a47f2da291f2` 做一次 canonical body 复核，仍判定 `tail=reasoning-open`，Bark incident 通知返回 200；checkpoint watcher 只发 1 次 `stream_status` probe 即得到 `complete` 并停止（`probes=1 / bodyRefreshes=0 / errors=0`）。这验证了 generation-bounded binding 修复和统一 cooldown 后，恢复路径不会再次形成 body probe 风暴。当前完整回归为 TypeScript typecheck PASS、23 test files / 143 tests PASS。
 - 2026-10-07 `protocol status/report --notify` 已统一纳入 DOM drift；通知会把 `[HTTP]` 与 `[DOM]` 变化合并到同一条漂移报告。新增 `protocol approve-dom <signature>` 和 `protocol lock-dom`，只有人工确认后新 DOM 才会提升为可信基线。提交 `b23630d`。
 - 2026-10-07 `actor send/batch` 现已默认把 DOM 结构观察写入 `data/dom-fingerprints.json`，也支持 `--dom-ledger <path>` 覆盖；因此单条发送和批处理都会在真正输入/点击前执行同一套 DOM drift 门控。提交 `c71e11f`。
 - 2026-10-07 CLI 已声明独立 DOM drift ledger 默认路径 `data/dom-fingerprints.json`，后续与现有 protocol status/report/notify 合并展示。提交 `b08c92e`。
