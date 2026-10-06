@@ -367,9 +367,11 @@ async function readActorPageSnapshot(client: ActorCdpClient): Promise<ActorPageS
       return true
     }
 
-    const input = document.querySelector('#prompt-textarea')
-      || document.querySelector('[contenteditable="true"][role="textbox"]')
-      || document.querySelector('textarea')
+    const input = [
+      ...document.querySelectorAll('#prompt-textarea'),
+      ...document.querySelectorAll('[contenteditable="true"][role="textbox"]'),
+      ...document.querySelectorAll('textarea'),
+    ].find(usable) || null
     const form = input?.closest('form') || null
     const buttons = form ? [...form.querySelectorAll('button')].filter(usable) : []
     const buttonIdentity = (button) => [
@@ -452,9 +454,11 @@ export function buildActorDomObservationExpression(): string {
           ? 'project'
           : 'other'
 
-    const input = document.querySelector('#prompt-textarea')
-      || document.querySelector('[contenteditable="true"][role="textbox"]')
-      || document.querySelector('textarea')
+    const input = [
+      ...document.querySelectorAll('#prompt-textarea'),
+      ...document.querySelectorAll('[contenteditable="true"][role="textbox"]'),
+      ...document.querySelectorAll('textarea'),
+    ].find(usable) || null
     const form = input?.closest('form') || null
     const identity = (element) => [
       element.getAttribute('data-testid') || '',
@@ -741,10 +745,27 @@ async function ensureActorRoute(
 
 async function clearAndTypePrompt(client: ActorCdpClient, prompt: string): Promise<void> {
   const focused = await evaluateValue(client, `(() => {
-    const input = document.querySelector('textarea[aria-label="与 ChatGPT 聊天"]')
-      || document.querySelector('textarea')
-      || document.querySelector('#prompt-textarea')
-      || document.querySelector('[contenteditable="true"][role="textbox"]')
+    const usable = (element) => {
+      if (!element || !element.isConnected) return false
+      const rect = element.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return false
+      for (let node = element; node; node = node.parentElement) {
+        if (!(node instanceof HTMLElement)) continue
+        if (node.hidden || node.hasAttribute('inert')) return false
+        const style = window.getComputedStyle(node)
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false
+        if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
+        if (style.pointerEvents === 'none') return false
+        if (node === document.documentElement) break
+      }
+      return true
+    }
+    const input = [
+      ...document.querySelectorAll('textarea[aria-label="与 ChatGPT 聊天"]'),
+      ...document.querySelectorAll('#prompt-textarea'),
+      ...document.querySelectorAll('[contenteditable="true"][role="textbox"]'),
+      ...document.querySelectorAll('textarea'),
+    ].find(usable) || null
     if (!input) return false
     input.focus()
     return true
@@ -783,9 +804,11 @@ async function clickSendHandler(client: ActorCdpClient): Promise<void> {
       }
       return true
     }
-    const input = document.querySelector('#prompt-textarea')
-      || document.querySelector('[contenteditable="true"][role="textbox"]')
-      || document.querySelector('textarea')
+    const input = [
+      ...document.querySelectorAll('#prompt-textarea'),
+      ...document.querySelectorAll('[contenteditable="true"][role="textbox"]'),
+      ...document.querySelectorAll('textarea'),
+    ].find(usable) || null
     const form = input?.closest('form') || null
     if (!form || !form.hasAttribute('data-chatgpt-composer')) return false
     const identity = (button) => [
