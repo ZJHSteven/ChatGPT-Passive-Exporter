@@ -731,8 +731,13 @@ async function ensureActorRoute(
     ? before.conversationId === conversationId
     : before.conversationId === null && new URL(before.href).pathname === '/'
 
-  if (alreadyThere && before.composerHydrated) {
-    return { snapshot: before, navigationMode: 'already-there' }
+  if (alreadyThere) {
+    // 路由已经正确时绝不能因为 composer 尚未 hydration 就再次 Page.navigate 同一个 URL。
+    // ChatGPT 在 SPA 切换/后台 tab 恢复时会短暂出现“URL 已到、DOM 还是空壳”的窗口；
+    // 此时 reload 只会重建 Guardian transport，并把本来快完成的 hydration 重新打断。
+    if (before.composerHydrated) return { snapshot: before, navigationMode: 'already-there' }
+    const snapshot = await waitForRoute(client, conversationId, timeoutMs)
+    return { snapshot, navigationMode: 'already-there' }
   }
 
   const clicked = conversationId
