@@ -75,6 +75,7 @@ describe('DevSpace audit bridge', () => {
         metadata_id TEXT,
         request_meta_json TEXT,
         tool TEXT NOT NULL,
+        args_json TEXT NOT NULL,
         started_at TEXT NOT NULL,
         finished_at TEXT
       );
@@ -90,9 +91,17 @@ describe('DevSpace audit bridge', () => {
     `)
     db.prepare(`
       INSERT INTO tool_audit
-        (id, metadata_id, request_meta_json, tool, started_at, finished_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run('audit-1', 'meta-1', '{"keys":[]}', 'exec_command', '2026-10-03T06:00:00.000Z', null)
+        (id, metadata_id, request_meta_json, tool, args_json, started_at, finished_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'audit-1',
+      'meta-1',
+      '{"keys":[]}',
+      'exec_command',
+      '{"cmd":"echo ok"}',
+      '2026-10-03T06:00:00.000Z',
+      null,
+    )
     db.close()
 
     const bridge = new DevSpaceAuditBridge(dbPath)
@@ -102,6 +111,7 @@ describe('DevSpace audit bridge', () => {
       expect(events[0]).toMatchObject({
         id: 'audit-1',
         metadataId: 'meta-1',
+        argsJson: '{"cmd":"echo ok"}',
         requestMetaJson: '{"keys":[]}',
       })
       expect(bridge.mirrorBinding({
