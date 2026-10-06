@@ -2565,29 +2565,73 @@ async function main() {
 
   /**
    * 旧版本因为“并发时必须只有一个 metadata”过于保守，留下了一批本可确定的 unbound。
-   * 启动时只对这些少量 unbound 做一次本地回填：在它真实活动时间附近找已有 body turn，
-   * 用同一个 exact tool+args matcher 复核。只有所有命中都指向同一个 conversation 才落 binding。
+   * 启动时做一次批量本地回填：
+   * - DevSpace SQLite 只读一次时间段；
+   * - Archive messages 只读一次时间段；
+   * - 之后全部在内存里按 turn 做 exact tool+args matching。
+   *
+   * 这样复杂度来自“本次少量 tool call 的纯内存比较”，不会再出现逐 turn 重复查两个 SQLite
+   * 导致启动 CPU 飙高的问题。只有同一 metadata 的所有可信命中都落在同一个 conversation，
+   * 才持久化 binding。
    */
   const backfillStoredDevSpaceBindings = () => {
-    let created = 0
-    for (const binding of archive.listDevSpaceMetadataBindings({ onlyUnbound: true, limit: 1000 })) {
-      const startSeconds = Math.max(0, Number(binding.firstSeenAt) - 5 * 60_000) / 1000
-      const endSeconds = (Number(binding.lastSeenAt) + 5 * 60_000) / 1000
-      const turns = archive.db.prepare(
-        "SELECT conversation_id AS conversationId, turn_exchange_id AS turnExchangeId, max(create_time) AS lastAt FROM messages WHERE recipient='api_tool.call_tool' AND text LIKE '%/devspace/%' AND create_time BETWEEN ? AND ? AND turn_exchange_id IS NOT NULL GROUP BY conversation_id, turn_exchange_id ORDER BY lastAt DESC LIMIT 250",
-      ).all(startSeconds, endSeconds)
+    const unbound = archive.listDevSpaceMetadataBindings({ onlyUnbound: true, limit: 1000 })
+    if (unbound.length === 0) return 0
 
-      const matches = []
-      for (const turn of turns) {
-        const candidate = matchDevSpaceBindingFromStoredTurn(turn.conversationId, turn.turnExchangeId)
-        if (candidate?.metadataId !== binding.metadataId) continue
-        matches.push({
-          ...candidate,
-          conversationId: turn.conversationId,
-          turnExchangeId: turn.turnExchangeId,
-          lastAt: Number(turn.lastAt || 0),
-        })
+    const globalStartAt = Math.max(
+      0,
+      Math.min(...unbound.map(binding => Number(binding.firstSeenAt))) - 5 * 60_000,
+    )
+    const globalEndAt = Math.max(
+      ...unbound.map(binding => Number(binding.lastSeenAt)),
+    ) + 5 * 60_000
+    const activities = devSpaceAuditBridge.activityBetween(globalStartAt, globalEndAt, 20_000)
+    if (activities.length === 0) return 0
+
+    const rows = archive.db.prepare(
+      "SELECT conversation_id AS conversationId, turn_exchange_id AS turnExchangeId, create_time AS createTime, text FROM messages WHERE recipient='api_tool.call_tool' AND text LIKE '%/devspace/%' AND create_time BETWEEN ? AND ? AND turn_exchange_id IS NOT NULL AND text<>'' ORDER BY create_time ASC",
+    ).all(globalStartAt / 1000, globalEndAt / 1000)
+    const callsByTurn = new Map()
+    for (const row of rows) {
+      const call = parseDevSpaceBodyToolCall(String(row.text || ''), Number(row.createTime) * 1000)
+      if (!call) continue
+      const key = `${row.conversationId}\n${row.turnExchangeId}`
+      const existing = callsByTurn.get(key) ?? {
+        conversationId: row.conversationId,
+        turnExchangeId: row.turnExchangeId,
+        calls: [],
+        lastAt: 0,
       }
+      existing.calls.push(call)
+      existing.lastAt = Math.max(existing.lastAt, call.startedAtMs)
+      callsByTurn.set(key, existing)
+    }
+
+    const boundIds = archive.listDevSpaceMetadataBindings({ limit: 1000 })
+      .filter(binding => Boolean(binding.conversationId))
+      .map(binding => binding.metadataId)
+    const matchesByMetadata = new Map()
+    for (const turn of callsByTurn.values()) {
+      const match = matchDevSpaceCandidateForTurn({
+        activities,
+        bodyCalls: turn.calls,
+        alreadyBoundMetadataIds: boundIds,
+      })
+      if (!match) continue
+      const matches = matchesByMetadata.get(match.activity.metadataId) ?? []
+      matches.push({
+        conversationId: turn.conversationId,
+        turnExchangeId: turn.turnExchangeId,
+        lastAt: turn.lastAt,
+        exactMatches: match.exactMatches,
+        uniqueMatches: match.uniqueMatches,
+      })
+      matchesByMetadata.set(match.activity.metadataId, matches)
+    }
+
+    let created = 0
+    for (const binding of unbound) {
+      const matches = matchesByMetadata.get(binding.metadataId) ?? []
       const conversationIds = [...new Set(matches.map(match => match.conversationId))]
       if (conversationIds.length !== 1 || matches.length === 0) continue
       const best = matches.sort((a, b) =>
