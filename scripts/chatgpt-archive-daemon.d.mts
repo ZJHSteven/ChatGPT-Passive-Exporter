@@ -54,6 +54,16 @@ export function shouldStartCatalogWatchdog(input?: {
   archivedTerminalState?: unknown
 }): boolean
 
+/**
+ * 判断一个 ChatGPT page target 是否应该挂纯被动 Network observer。
+ * Guardian 与普通页都应返回 true；service worker / 非 ChatGPT / 无 debugger URL 返回 false。
+ */
+export function shouldAttachPassivePageObserver(target: {
+  type?: unknown
+  url?: unknown
+  webSocketDebuggerUrl?: unknown
+} | null | undefined): boolean
+
 /** 根据 active 的 startType 选择普通 watchdog 或 catalog active-zombie watchdog。 */
 export function watchdogTriggerForStartType(startType: unknown): 'watchdog:catalog-active-timeout' | 'watchdog:active-timeout'
 
@@ -166,6 +176,16 @@ export function classifyConversationBackendUrl(input: unknown, base?: string): C
 
 /** cooldown 期间只屏蔽 Guardian 的 conversation REST，WSS 不受影响。 */
 export function shouldBlockGuardianConversationRest(input: unknown): boolean
+
+/**
+ * 判断一个 CDP target 是否应该挂普通页面被动 observer。
+ * Guardian 兼任 Actor 后也必须返回 true，这样它自己发出的 SSE 仍能进入 Phase 3 LiveTurn。
+ */
+export function shouldAttachPassivePageObserver(target: {
+  type?: unknown
+  url?: unknown
+  webSocketDebuggerUrl?: unknown
+} | null | undefined): boolean
 
 /** 判断某个 passive response 是否足够新，可以替代本次 ready 后的主动 replay。 */
 export function passiveObservationMatchesReady(capturedAt: unknown, readyAt: unknown, toleranceMs?: number): boolean
