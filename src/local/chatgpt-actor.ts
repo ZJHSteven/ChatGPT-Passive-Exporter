@@ -284,7 +284,13 @@ async function evaluateValue(client: ActorCdpClient, expression: string): Promis
     awaitPromise: true,
     returnByValue: true,
   })
-  if (result?.exceptionDetails) throw new Error(result.exceptionDetails.text || 'Runtime.evaluate exception')
+  if (result?.exceptionDetails) {
+    // `exceptionDetails.text` 在浏览器语法异常时经常只有 "Uncaught"；真正的
+    // SyntaxError / TypeError 通常位于 exception.description。优先保留后者，
+    // 让生产 E2E 的错误可以直接定位，而不必再手工复现一次 CDP 调用。
+    const description = result.exceptionDetails.exception?.description
+    throw new Error(description || result.exceptionDetails.text || 'Runtime.evaluate exception')
+  }
   return result?.result?.value
 }
 
