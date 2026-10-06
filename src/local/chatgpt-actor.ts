@@ -399,6 +399,136 @@ async function readActorPageSnapshot(client: ActorCdpClient): Promise<ActorPageS
 }
 
 /**
+ * 把真实页面 DOM 收缩成“可自动化骨架”。浏览器侧可以读取 aria/title 来判断语义，
+ * 但返回给 Node 的对象只保留 semantic 类别和结构属性，不把按钮文字或聊天正文写进 ledger。
+ */
+async function readActorDomObservation(client: ActorCdpClient): Promise<ActorDomObservation> {
+  const value = await evaluateValue(client, `(() => {
+    const usable = (element) => {
+      if (!element || !element.isConnected) return false
+      const rect = element.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return false
+      for (let node = element; node; node = node.parentElement) {
+        if (!(node instanceof HTMLElement)) continue
+        if (node.hidden || node.hasAttribute('inert')) return false
+        const style = window.getComputedStyle(node)
+        if (style.display === 'none') return false
+        if (style.visibility === 'hidden' || style.visibility === 'collapse') return false
+        if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
+        if (style.pointerEvents === 'none') return false
+        if (node === document.documentElement) break
+      }
+      return true
+    }
+
+    const pathname = String(location.pathname || '/')
+    const routeKind = /^\/c\/[0-9a-f-]{20,}(?:\/|$)/iu.test(pathname)
+      ? 'conversation'
+      : pathname === '/'
+        ? 'home'
+        : /^\/(?:g\/g-p-|projects?(?:\/|$))/iu.test(pathname)
+          ? 'project'
+          : 'other'
+
+    const input = document.querySelector('#prompt-textarea')
+      || document.querySelector('[contenteditable="true"][role="textbox"]')
+      || document.querySelector('textarea')
+    const form = input?.closest('form') || null
+    const identity = (element) => [
+      element.getAttribute('data-testid') || '',
+      element.getAttribute('aria-label') || '',
+      element.getAttribute('title') || '',
+      (element.innerText || '').trim(),
+    ].join(' ')
+    const semanticFor = (button) => {
+      const text = identity(button)
+      const testId = button.getAttribute('data-testid') || ''
+      if (/stop|停止/iu.test(text)) return 'stop'
+      if (/send-button|(^|\s)(send|发送)(\s|$)/iu.test(text)
+        || (button.getAttribute('type') === 'submit' && !button.disabled)) return 'send'
+      if (/attach|attachment|file-upload|composer-plus|附件|添加文件|上传/iu.test(testId + ' ' + text)) return 'attachment'
+      if (/voice|dictat|microphone|mic-button|语音|麦克风/iu.test(testId + ' ' + text)) return 'voice'
+      return null
+    }
+    const controls = form
+      ? [...form.querySelectorAll('button')]
+        .filter(usable)
+        .map((button) => ({ button, semantic: semanticFor(button) }))
+        .filter(item => item.semantic)
+        .map(({ button, semantic }) => ({
+          semantic,
+          tag: button.tagName || null,
+          type: button.getAttribute('type'),
+          testId: button.getAttribute('data-testid'),
+          ariaPresent: button.hasAttribute('aria-label'),
+          titlePresent: button.hasAttribute('title'),
+        }))
+      : []
+
+    const newChatCandidates = [
+      ...document.querySelectorAll('[data-testid="create-new-chat-button"]'),
+      ...document.querySelectorAll('a,button'),
+    ]
+    const newChat = newChatCandidates.find((element) => {
+      if (!usable(element)) return false
+      if (element.getAttribute('data-testid') === 'create-new-chat-button') return true
+      return /新聊天|new chat/iu.test(identity(element))
+    }) || null
+
+    const anchors = [...document.querySelectorAll('a[href]')].filter(usable)
+    const canonicalConversationLink = anchors.some((anchor) => {
+      try { return /^\/c\/[0-9a-f-]{20,}(?:\/|$)/iu.test(new URL(anchor.href, location.href).pathname) }
+      catch { return false }
+    })
+    const projectLink = anchors.some((anchor) => {
+      try { return /^\/(?:g\/g-p-|projects?(?:\/|$))/iu.test(new URL(anchor.href, location.href).pathname) }
+      catch { return false }
+    })
+    const accountButton = [...document.querySelectorAll('[data-testid="accounts-profile-button"]')].some(usable)
+
+    return {
+      routeKind,
+      composer: input ? {
+        tag: input.tagName || null,
+        id: input.id || null,
+        role: input.getAttribute('role'),
+        contentEditable: input.getAttribute('contenteditable'),
+        formMarker: Boolean(form?.hasAttribute('data-chatgpt-composer')),
+      } : null,
+      newChat: newChat ? {
+        tag: newChat.tagName || null,
+        testId: newChat.getAttribute('data-testid'),
+      } : null,
+      sidebar: {
+        canonicalConversationLink,
+        projectLink,
+        accountButton,
+      },
+      controls,
+    }
+  })()`)
+  return value as ActorDomObservation
+}
+
+async function observeActorDomShape(
+  client: ActorCdpClient,
+  ledger: ActorDomDriftLedger | null,
+  phase: string,
+): Promise<string | null> {
+  if (!ledger) return null
+  const observation = await readActorDomObservation(client)
+  const result = ledger.observe(observation)
+  await ledger.flush()
+  if (result.pending) {
+    throw new Error(
+      `ChatGPT actor DOM drift detected before ${phase}: ${result.signature} route=${result.shape.routeKind}; `
+      + 'review/approve the DOM fingerprint before retrying',
+    )
+  }
+  return result.signature
+}
+
+/**
  * 只做“语义选择”，不负责导航。
  *
  * `steer` 是最危险的一条：必须确认当前页就是目标 CID、页面没有进入“等待完整答复”降级状态，
