@@ -3103,6 +3103,18 @@ async function main() {
       sourceTargetId: targetId,
       requestUrl,
     })
+
+    // native conversation list 是跨设备 active CID 的第一方 discovery 入口之一。
+    // 只在明确 async active 时建立 watcher；complete 则立即撤销，避免后台继续无意义 polling。
+    for (const item of payload.items) {
+      const id = typeof item?.id === 'string'
+        ? item.id
+        : typeof item?.conversation_id === 'string' ? item.conversation_id : null
+      if (!id) continue
+      const asyncState = classifyCatalogAsyncStatus(item.async_status)
+      if (asyncState === 'active') armCheckpointWatch(id, `passive-catalog:${targetId || 'unknown'}`, capturedAt)
+      else if (asyncState === 'complete') stopCheckpointWatch(id, 'passive-catalog-complete', capturedAt)
+    }
   }
 
   const attachPassivePageObserver = async (target) => {
