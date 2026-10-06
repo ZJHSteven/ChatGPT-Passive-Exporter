@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Actor 发送主循环已改为真正闭环：Network listener 在 SPA 导航前挂载；旧会话需等待 route/composer/message DOM 与本次 conversation-body 2xx（若触发）就绪，发现“连接已中断/等待完整答复”直接拒绝发送；`steer` 等 `/f/steer_turn`，new/continue 等 `/f/conversation`；正式请求必须收到 2xx，MIME 若明确不是 `text/event-stream` 则视为协议漂移。返回结果新增 navigationMode、contextReadyAt/body 状态、firstDataAt 与 runningConfirmed。提交 `41f9ccf`。
 - 2026-10-07 Actor composer 控件识别已改为闭环快照：不再只依赖单一 `send-button` selector，而是在当前官方 `form[data-chatgpt-composer]` 内对可见/可交互按钮做语义识别，并复用祖先链 hidden/inert/display/opacity/pointer-events 检查；`waitForComposer` 与 `isSendButtonReady` 统一使用同一页面状态快照。提交 `971f885`。
 - 2026-10-07 Phase 4 Actor 已加入闭环前半段：新增页面状态快照（composer hydration、send/stop、waiting-for-final、message nodes）、`auto/new/continue/steer` 语义解析、可见性祖先链检查，并优先通过第一方 sidebar/new-chat DOM 做 SPA 导航；目标 conversation 不在当前 sidebar 时才允许 `Page.navigate` fallback。Guardian URL marker 会在 SPA 路由后用 `history.replaceState` 无刷新保留。提交 `c90162a`。
 - 2026-10-07 Phase 4 闭环 Actor 重构开始：`chatgpt-actor.ts` 已先把发送语义显式拆成 `new / continue / steer / auto`，不再把所有发送都视作 `/f/conversation`。`steer` 对应 2026-10-06 真机已确认的 active follow-up `/f/steer_turn`；`auto` 后续只在页面上下文完整、live 状态可确认时自动选择，不允许把 resume 失败/“等待完整答复”误判成可安全 follow-up。提交 `c8f7b13`。
