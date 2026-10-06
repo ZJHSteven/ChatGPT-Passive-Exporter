@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 当前收口状态更新：Phase 3 watcher 已能从 bound DevSpace first-tool 自动 arm，但 cooldown 刚解除后一次受控 binding body probe 仍得到 429，随后系统正确重新进入 1h 熔断；checkpoint 本身尚未发出 probe，因此不能把该 429 归因于 Phase 3 watcher。Phase 4 的 new/continue/steer/batch、SPA 优先导航、context/network 闭环、Guardian 默认复用和统一 cooldown 已落代码；生产 E2E 受当前 cooldown 阻断。DOM drift 目前仍只有失败，没有独立 fingerprint/告警，已明确列为下一步。
 - 2026-10-07 Phase 3 start 证据补齐：已绑定到 canonical CID 的 DevSpace first-tool 现在会同时 arm checkpoint watcher，而不再只启动 watchdog。若本机已有原始 SSE，现有 live-transport suppression 会让 checkpoint 只延期不发 REST；远端/手机工具型长 turn 则可直接进入 `stream_status + body` fallback，不必再等偶然的 catalog refresh。提交 `1a0cb06`。
 - 2026-10-07 Actor 成功发送后现在会把 `mode / targetMode / navigationMode / contextReadyAt / firstDataAt / runningConfirmed` 真正写入 `actor-submit` JSONL，而不是只在 CLI 返回值里短暂存在；runningConfirmed 也只计算一次，trace 与 CLI 结果一致。提交 `72292ef`。
 - 2026-10-07 Actor forensic trace 已扩展可选闭环字段：发送模式、target 模式、导航方式、上下文 ready、首个 SSE data、runningConfirmed。后续可直接区分 SPA/full fallback、new/continue/steer 与“HTTP 已接收但流未起”等漂移。提交 `ea305c9`。
