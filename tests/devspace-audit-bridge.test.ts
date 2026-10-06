@@ -6,14 +6,21 @@ import { describe, expect, test } from 'vitest'
 import {
   DevSpaceAuditBridge,
   groupDevSpaceActivity,
-  uniqueDevSpaceCandidateForTurn,
+  matchDevSpaceCandidateForTurn,
+  parseDevSpaceBodyToolCall,
   type DevSpaceAuditEvent,
 } from '../src/local/devspace-audit-bridge.ts'
 
-const audit = (id: string, metadataId: string, startedAtMs: number): DevSpaceAuditEvent => ({
+const audit = (
+  id: string,
+  metadataId: string,
+  startedAtMs: number,
+  args: Record<string, unknown> = { cmd: 'echo ok' },
+): DevSpaceAuditEvent => ({
   id,
   metadataId,
   tool: 'exec_command',
+  argsJson: JSON.stringify(args),
   startedAt: new Date(startedAtMs).toISOString(),
   startedAtMs,
   finishedAt: null,
@@ -21,29 +28,40 @@ const audit = (id: string, metadataId: string, startedAtMs: number): DevSpaceAud
 })
 
 describe('DevSpace audit bridge', () => {
-  test('turn binding 只接受时间窗中的唯一 metadata', () => {
+  test('并发 metadata 通过 exact tool+args 区分，不再依赖时间唯一性', () => {
     const activities = groupDevSpaceActivity([
-      audit('a1', 'meta-a', 10_000),
-      audit('a2', 'meta-a', 20_000),
-      audit('b1', 'meta-b', 200_000),
+      audit('a1', 'meta-a', 10_000, { cwd: 'A', cmd: 'git status --short' }),
+      audit('a2', 'meta-a', 20_000, { cwd: 'A', cmd: 'chatgpt-archive daemon status' }),
+      audit('b1', 'meta-b', 11_000, { cwd: 'B', cmd: 'git status --short' }),
     ])
-    expect(uniqueDevSpaceCandidateForTurn({
-      activities,
-      turnStartAt: 5_000,
-      turnEndAt: 30_000,
-      toolCallCount: 2,
-      beforeSlackMs: 0,
-      afterSlackMs: 0,
-    })?.metadataId).toBe('meta-a')
+    const bodyCalls = [
+      parseDevSpaceBodyToolCall(JSON.stringify({
+        path: '/devspace/link_x/exec_command',
+        args: { cmd: 'git status --short', cwd: 'A' },
+      }), 10_100),
+      parseDevSpaceBodyToolCall(JSON.stringify({
+        path: '/devspace/link_x/exec_command',
+        args: { cmd: 'chatgpt-archive daemon status', cwd: 'A' },
+      }), 20_100),
+    ].filter((value): value is NonNullable<typeof value> => Boolean(value))
 
-    expect(uniqueDevSpaceCandidateForTurn({
+    expect(matchDevSpaceCandidateForTurn({
+      activities,
+      bodyCalls,
+    })?.activity.metadataId).toBe('meta-a')
+
+    // 两边 args 完全相同且各只有一条时保持 fail-closed，不做时间猜测。
+    expect(matchDevSpaceCandidateForTurn({
       activities: groupDevSpaceActivity([
-        audit('a1', 'meta-a', 10_000),
-        audit('b1', 'meta-b', 11_000),
+        audit('a1', 'meta-a', 10_000, { cmd: 'echo same' }),
+        audit('b1', 'meta-b', 11_000, { cmd: 'echo same' }),
       ]),
-      turnStartAt: 5_000,
-      turnEndAt: 30_000,
-      toolCallCount: 2,
+      bodyCalls: [
+        parseDevSpaceBodyToolCall(JSON.stringify({
+          path: '/devspace/link_x/exec_command',
+          args: { cmd: 'echo same' },
+        }), 10_500)!,
+      ],
     })).toBeNull()
   })
 
