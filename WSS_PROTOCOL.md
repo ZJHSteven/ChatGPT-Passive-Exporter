@@ -372,3 +372,151 @@ stream-item.encoded_item = <SSE-framed text>
 
 另一个 2026-10-03 新鲜变化：Guardian fresh reload 同时观察到新的账户 topic `calpico-chatgpt-messaging`，与 `resource-updates` 共用一条 socket；`conversations / alder-conversations / app_notifications / resource-updates` 仍存在。它目前只记为新订阅面，不赋予未验证的 conversation lifecycle 语义。
 
+## 14. 2026-10-06 两个真实 iPhone -> PC late-open：所谓“续流”可以只是 checkpoint polling
+
+2026-10-06 不再使用人工构造测试，而是直接抓两个正在运行、由 iPhone 发起的真实长 turn：
+
+- `6aa63b4d-...`，标题“分析异常终止原因”；
+- `6ab9aad3-...`，标题“分析 Watchdog 延迟”。
+
+PC 在这两个 conversation 的当前 turn 已经运行后，才 fresh-open 新 ChatGPT tab。两次第一方 Web 行为高度一致。
+
+### 14.1 late-open 的 transport 序列
+
+核心序列：
+
+```text
+POST /backend-api/conversation/init
+GET  /backend-api/conversation/<cid>/stream_status
+  -> {"status":"IS_STREAMING"}
+POST /backend-api/f/conversation/resume
+  -> 无 x-conduit-token
+  -> 404
+GET  /backend-api/conversations/<cid>?num_turns=10&include_has_versions=true
+```
+
+页面初始会出现：
+
+```text
+连接已中断，正在等待完整答复
+```
+
+之后没有观察到成功 resume SSE，也没有任何 `conversation-turn-*` subscribe/ACK/catchup/live。新 tab 只订阅普通账户 topics：
+
+```text
+conversations
+alder-conversations
+resource-updates
+calpico-chatgpt-messaging
+app_notifications
+```
+
+### 14.2 `/resume` 失败后不是完全静止，而是持续拉 canonical checkpoint
+
+两个 tab 都进入大致 7~10 秒一次的循环：
+
+```text
+GET stream_status
+GET conversation body
+```
+
+状态长期保持 `IS_STREAMING / async_status=3`，但 conversation body 的 canonical tail 会间歇推进。
+
+当前会话样本：
+
+```text
+current_node 863b...  update_time=1791264756.912
+        -> 1772...    update_time=1791264823.646
+        -> a021...    update_time=1791264846.313
+```
+
+对应当前 turn identity 始终保持：
+
+```text
+turn_exchange_id = d7e693fc-...
+request_id       = ba988fb4-...
+```
+
+Watchdog 会话样本：
+
+```text
+current_node 1531...  update_time=1791264868.881
+        -> 36a5...    update_time=1791264933.695
+        -> 4ab6...    update_time=1791264998.464
+```
+
+对应 turn identity 始终保持：
+
+```text
+turn_exchange_id = b231f002-...
+request_id       = e131191b-...
+```
+
+因此需要把过去口语里统称的“跨设备续流”至少拆成三类：
+
+```text
+1. live transport
+   SSE / resume SSE / conversation-turn-* WSS
+   -> token/delta 级实时数据
+
+2. canonical checkpoint refresh
+   stream_status + repeated conversation body
+   -> 节点/工具结果/持久化快照按数秒~数十秒粒度更新
+
+3. final-only fallback
+   只等 COMPLETE 后一次性拿 final body
+```
+
+2026-10-06 这两个真实 iPhone -> PC 样本属于第 2 类，而不是第 1 类。对长工具 turn，第 2 类在视觉上可能很像“电脑后来加入后还在继续长”，因为 reasoning/tool/message 节点会随着服务器 checkpoint 被周期 body 请求带回来；但它不是原始 token stream。
+
+### 14.3 PC 从哪里得到 turn_exchange_id
+
+两个样本的 `conversation/init` 响应均只有：
+
+```text
+atlas_mode_enabled
+banner_info
+blocked_features
+default_model_slug
+intended_default_model_slug
+limits_progress
+model_limits
+type
+```
+
+没有 `turn_exchange_id / working_turn_id / request_id / topic_id`。Flight recorder 捕获到的其它非 conversation-body JSON 响应也没有 turn 级 identity。
+
+PC 第一次明确拿到当前 turn identity 的地方，是 conversation body 本身。由此目前可证实的 late-open identity 链是：
+
+```text
+conversation_id
+  -> GET conversation body
+  -> metadata.turn_exchange_id / working_turn_id / request_id
+```
+
+这说明 turn ID 很有价值，但当前样本里它不是账户级 WSS 的早期 start 通知；它是在 body checkpoint 路径中被发现的。
+
+### 14.4 对 start detector 的意义与证据边界
+
+当前常驻 daemon 在 2026-10-06 当前 turn 开始前后，没有记录到携带该 CID 的 WSS start event；active-turn trace 也没有在 PC late-open 之前形成该 conversation 的可靠 WSS start。与此同时，fresh helper 的第一方 native conversation list 能看到：
+
+```text
+conversation id = 6aa63b4d-...
+async_status = 3
+update_time = 2026-10-06T05:31:20.509299Z
+```
+
+因此目前工程上最现实的 fallback 仍然是：
+
+```text
+passive/native catalog 发现 active CID
+  -> body 获取 turn identity
+  -> watchdog / Phase 3 关联
+```
+
+但必须保留限制：本次专用 flight recorder 是 turn 已开始约 1 分钟后才启动，虽然长期 daemon 当时在线，也不能仅凭“没有抓到”绝对证明服务端在 turn 最初几百毫秒内从不存在某个 transient start event。结论应写成“现有账户 WSS 没有提供我们可依赖的稳定 start/turn identity”，而不是“协议层绝无 start 事件”。
+
+### 14.5 仍未推翻 handoff 分支
+
+本实验进一步证明“跨设备看到进度”不需要 turn-WSS；但它也没有证明 `stream_handoff -> conversation-turn-*` 分支不存在。项目的自然 handoff first-party 计数仍为 0，纯被动 recorder 继续保留。今后若某个 turn 真出现 handoff，应单独归入第 1 类 live transport，而不能与这里的 checkpoint polling 混为一谈。
+

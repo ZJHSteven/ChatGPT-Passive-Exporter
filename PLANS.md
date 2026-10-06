@@ -8,11 +8,11 @@
 
 ## 2026-10-03 iPhone -> PC 跨设备续流一次性全量取证 ExecPlan
 
-- [in_progress] 新增一次性 browser-level CDP flight recorder，自动附着当前及后续新建的 ChatGPT page/worker/service-worker target；被动记录账户 WSS 控制面、`conversation-created / conversation-turn-complete / conversation-update`、`conversation-turn-*` subscribe/ACK/catchup/live、`/f/conversation` / `/resume` / `stream_status` / conversation body/list/init 等第一方请求与响应摘要。
-- [pending] Recorder 同时每数秒采样同 profile `codex-browser-host` resume-token persisted atom，但只保存 conversation key、token 长度和 SHA-256，绝不落 raw token/Cookie/Authorization；目标是判断“手机新 turn 在 PC 尚未打开前，PC 本地 store 是否已经收到 capability”。
-- [pending] 用户在 iPhone 手动新建一个长 DevSpace 工具 turn；PC 在此期间不主动打开该 conversation，先观察账户 WSS / sidebar/catalog / IndexedDB 是否出现 CID、turn identity 或 resume capability。
-- [pending] 随后用户在 PC 手动打开同一 conversation，Recorder 捕获该页从首次导航开始的 `stream_status / body / /resume / turn-WSS` 全部结构；据此区分 HTTP resume、turn-WSS catchup/live、status-polling 或第三条路径。
-- [pending] 实验结束后把 timeline、turn_exchange_id 来源、是否真正 live continuation、是否存在跨设备 capability reacquisition 写入 `WSS_PROTOCOL.md / PROGRESS.md`；关闭临时页面/recorder，避免长期放大官方请求。
+- [done] 一次性 browser-level CDP flight recorder 已实现并经过三轮 smoke：自动附着当前/后续 ChatGPT page/worker/service-worker，专用 helper 从 about:blank 开始保证账户 WSS 不漏；被动记录全部 `backend-api/*` 请求摘要、WSS/SSE 控制面与 resume-store hash/长度，不保存正文或原始凭据。
+- [done] 无需另造 iPhone 测试：2026-10-06 直接使用两个正在运行的真实手机发起 turn 作为天然样本，PC fresh tab late-open 全程由 `cross-device-current-1006.jsonl` 记录。
+- [done] 两个样本均确认：PC 本地 resume-store 无可用 credential，`stream_status=IS_STREAMING` 后 `/f/conversation/resume=404`；没有 `conversation-turn-*` WSS；前端转为约 7~10 秒一次的 `stream_status + conversation body` polling。body 中 turn id 固定而 current_node/update_time 间歇推进，解释了“跨设备还能继续看到进度”并不必然等于真正 live transport。
+- [done] turn 身份来源已在当前样本收口到 conversation body：`conversation/init` 与其它已观测非-body JSON 响应均未携带 turn/request/topic identity；late-open body 直接给出当前 `turn_exchange_id/working_turn_id/request_id`。现有账户 WSS 没拿到可靠 start/turn identity。
+- [in_progress] 下一步把 Phase 3 语义正式拆成三层并考虑生产化：`live transport(SSE/resume/turn-WSS)`、`checkpoint refresh(stream_status+body polling)`、`final-only COMPLETE body`。Archive 的 start detector 需要另行评估“passive native catalog 发现 async_status=3 -> bounded/native body 获取 turn identity”是否比依赖不存在的 WSS start 更可维护；仍保持纯被动 turn-WSS recorder，等待真正自然 handoff 样本。
 
 ## 2026-10-03 Watchdog DevSpace 触发 / conversation transport repair ExecPlan
 
