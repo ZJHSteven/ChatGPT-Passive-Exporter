@@ -2876,7 +2876,9 @@ async function main() {
     const globalEndAt = Math.max(
       ...unbound.map(binding => Number(binding.lastSeenAt)),
     ) + 5 * 60_000
-    const activities = devSpaceAuditBridge.activityBetween(globalStartAt, globalEndAt, 20_000)
+    // 9/14 起真实 tool_audit 已超过两万行；历史 backfill 必须覆盖完整时间段，
+    // 不能因为默认 limit 截断后半段而制造“随机只有一部分 metadata 能匹配”的假象。
+    const activities = devSpaceAuditBridge.activityBetween(globalStartAt, globalEndAt, 100_000)
     if (activities.length === 0) return 0
 
     const rows = archive.db.prepare(
@@ -4344,7 +4346,27 @@ async function main() {
   process.on('SIGINT', () => { stopping = true })
   process.on('SIGTERM', () => { stopping = true })
 
-  // 先修复旧版留下的“明明能 exact-match 但因为并发而 unbound”的历史行；
+  // 先把 DevSpace SQLite 里所有历史 metadata 的首末时间 seed 进 Archive。
+  // 这只是补齐“曾经存在过”的事实，不把历史行放进 unboundDevSpaceTurns，
+  // 所以不会把几周前的聊天误当成当前 active watchdog。
+  let devSpaceHistoricalSeeded = 0
+  const devSpaceMetadataHistory = devSpaceAuditBridge.metadataSummaries(10_000)
+  for (const summary of devSpaceMetadataHistory) {
+    const seeded = archive.seedDevSpaceMetadataHistory({
+      metadataId: summary.metadataId,
+      firstSeenAt: summary.firstAt,
+      lastSeenAt: summary.lastAt,
+    })
+    if (seeded.created) devSpaceHistoricalSeeded += 1
+  }
+  if (devSpaceMetadataHistory.length > 0) {
+    await log('DevSpace historical metadata seed complete', {
+      discovered: devSpaceMetadataHistory.length,
+      created: devSpaceHistoricalSeeded,
+    })
+  }
+
+  // 再修复旧版留下的“明明能 exact-match 但因为并发而 unbound”的历史行；
   // 随后做一次 durable catch-up。这样当前新 audit 一进来时即可直接命中已知 CID。
   const devSpaceBackfilledBindings = backfillStoredDevSpaceBindings()
   if (devSpaceBackfilledBindings > 0) {
