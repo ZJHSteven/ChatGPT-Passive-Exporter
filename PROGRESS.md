@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Actor target 层开始正式合并 Guardian：新增 `guardian|dedicated` target 语义；Guardian 模式从 daemon state 读取权威 targetId，并把 Actor state 标为 borrowed `source=guardian`，后续 reset 不应关闭该页面。账号级 429 cooldown 也加入 Actor 前置门控，独立 tab 不能绕过 daemon cooldown。提交 `05ac78c`。
 - 2026-10-07 Actor CLI 已正式暴露 `--mode auto|new|continue|steer`，并补回归锁死 auto/new/continue/steer 选择与 waiting-for-final / 非当前页 steer 拒绝语义；CLI 不再把所有发送都隐式当普通 `/f/conversation`。提交 `2ac3883`。
 - 2026-10-07 修正 Actor 新闭环代码的异步 CDP response 状态类型：response status/MIME 改为显式 holder，避免 TypeScript 把跨回调赋值错误收窄成 `never`，与既有 submitState 语义一致。提交 `fa0f0aa`。
 - 2026-10-07 Actor 发送主循环已改为真正闭环：Network listener 在 SPA 导航前挂载；旧会话需等待 route/composer/message DOM 与本次 conversation-body 2xx（若触发）就绪，发现“连接已中断/等待完整答复”直接拒绝发送；`steer` 等 `/f/steer_turn`，new/continue 等 `/f/conversation`；正式请求必须收到 2xx，MIME 若明确不是 `text/event-stream` 则视为协议漂移。返回结果新增 navigationMode、contextReadyAt/body 状态、firstDataAt 与 runningConfirmed。提交 `41f9ccf`。
