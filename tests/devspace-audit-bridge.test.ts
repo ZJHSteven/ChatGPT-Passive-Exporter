@@ -136,12 +136,18 @@ describe('DevSpace audit bridge', () => {
     const bridge = new DevSpaceAuditBridge(dbPath)
     try {
       const events = bridge.pollSince(Date.parse('2026-10-03T05:59:00.000Z'))
-      expect(events).toHaveLength(1)
+      expect(events).toHaveLength(2)
       expect(events[0]).toMatchObject({
         id: 'audit-1',
         metadataId: 'meta-1',
         argsJson: '{"cmd":"echo ok"}',
         requestMetaJson: '{"keys":[]}',
+      })
+      expect(events[1]).toMatchObject({
+        id: 'audit-2',
+        metadataId: 'meta-1',
+        tool: 'read',
+        argsJson: '{"path":"note.txt"}',
       })
       expect(bridge.metadataSummaries()).toEqual([{
         metadataId: 'meta-1',
