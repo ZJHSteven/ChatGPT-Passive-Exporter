@@ -1,5 +1,7 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 新增 Actor 回归：显式 `continue` 在同 CID 仍 live 或处于 waiting-for-final 时必须拒绝，避免把 active follow-up 错当普通 continuation。提交 `8c0c1bd`。
+- 2026-10-07 `c6bf176` 已部署到生产 daemon：仅重启 Archive daemon，不动 Chrome。Guardian target 仍为 `880194...`，既有 429 cooldown 截止时间原样继承；新 daemon state 的 passive observedPages 从 2 增到 3，日志明确记录 Guardian 自身 `passive ChatGPT page observer attached`。因此 Guardian 作为 Actor 时的原始 SSE 已进入 Phase 3 被动捕获面。
 - 2026-10-07 Phase 4 状态机继续收紧：显式 `--mode continue` 若目标 conversation 当前仍显示 live stop 控件，立即拒绝并要求 `steer/auto`；若目标处于“等待完整答复”降级态也立即拒绝。避免网页真实 `/f/steer_turn` 与 Actor 预期 `/f/conversation` 不一致后才超时。提交 `567fbee`。
 - 2026-10-07 并行合并时 `chatgpt-archive-daemon.d.mts` 一度同时出现两份 `shouldAttachPassivePageObserver` 声明；已保留与 passive observer 区域相邻的一份并删除重复块，提交 `1346c6e`，避免类型声明长期漂移。
 - 2026-10-07 并行合并后 typecheck 暴露声明漂移：`chatgpt-archive-daemon.mjs` 已有并导出 `shouldAttachPassivePageObserver()`，但旁路 `chatgpt-archive-daemon.d.mts` 漏声明，导致测试侧 TS2305。已补齐声明，Guardian 兼任 Actor 时仍被 passive observer 覆盖的测试契约恢复。提交 `39b747d`。
