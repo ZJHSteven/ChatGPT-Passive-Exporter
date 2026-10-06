@@ -3532,9 +3532,9 @@ async function main() {
     if (activeWindowAvailable) lastGapRepairAttemptAt = now
     try {
       await reconcileCatalog('gap-repair')
-      // provisional metadata 已经等满 watchdog 后，repair 给出了 catalog active 集合；
-      // 仍然只在一对一唯一解时绑定，不把 fallback 本身当成猜测许可。
-      tryBindTimedOutDevSpaceFromCatalog()
+      // unbound watchdog 只把 catalog 当作“候选 CID discovery”；真正 binding 仍由
+      // 后续 body 中的 exact tool+args 决定，不再用“唯一 active conversation”时间猜测。
+      queueTimedOutDevSpaceBindingProbes()
       pendingGapRepair = null
       lastGapRepairGate = null
       lastGapRepairGateSignature = null
