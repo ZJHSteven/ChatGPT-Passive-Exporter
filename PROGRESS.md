@@ -1,5 +1,7 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-06 浏览器内存预算已完成并写入架构决策（commit `d62503c`）：当前 Guardian V8 used heap 约 201MB，空白 ChatGPT 首页约 158~175MB，普通长聊天约 214MB；受控新增 idle tab 的 Chrome 进程树边际 WS 常见约 +250~440MB，缓存热后的第二张仍约 +140~220MB；长回答渲染可让单页 heap 再涨约 50MB。因此 Phase 1/3 Listener + Phase 4 Actor 不再按职责常驻多 tab，目标改为一个 Guardian page target + Node 状态机多路复用。
+- 2026-10-06 Phase 3 当前全量回归为 22 test files / 133 tests PASS，`node --check` 与 TypeScript typecheck PASS。正式 daemon 现场恰处于既有 1h HTTP 429 cooldown（`guardianConversationRestBlocked=true`）；生产 canary 不通过重启/手工请求绕过 cooldown，只验证 watcher discovery/state，主动 status/body 等 cooldown 自然过期后再跑。
 - 2026-10-06 Phase 3 checkpoint fallback 开始正式代码化：新增 `src/local/checkpoint-refresh.ts`（commit `bacab89`），把跨设备 late-open 已实测的 `IS_STREAMING / COMPLETE`、7~10 秒 cadence、canonical body head/turn identity、错误退避抽成纯状态机；模块本身不发 HTTP、不读 Cookie/Token，网络仍复用 daemon 既有 request gate/cooldown，便于测试和后续 protocol drift 维护。
 - 2026-10-06 checkpoint 状态机已补 Vitest 回归（commit `3d9ad3e`）：覆盖 status 归一化、7~10 秒 cadence 边界、首次 probe 不伪造 turn start、status/body/error 的独立状态推进；下一步接入 daemon 的 active catalog/native discovery 与 request gate。
 - 2026-10-06 daemon 已接入 checkpoint watcher 的配置/运行态容器（commit `7a06487`）：默认 cadence 7~10 秒、首次 probe 1 秒、错误退避 30 秒/最多 3 次；运行态与 `activeLiveTransports` 分离，为下一步“有 live transport 则暂停 checkpoint、无 live 则跟第一方 polling”做准备。
