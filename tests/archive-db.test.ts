@@ -116,6 +116,50 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('历史 metadata seed 只补首末时间，不覆盖既有 CID 绑定', () => {
+    const db = tempDb()
+    try {
+      const seeded = db.seedDevSpaceMetadataHistory({
+        metadataId: 'meta-history',
+        firstSeenAt: 1000,
+        lastSeenAt: 5000,
+      })
+      expect(seeded.created).toBe(true)
+      expect(seeded.row).toMatchObject({
+        metadataId: 'meta-history',
+        conversationId: null,
+        firstSeenAt: 1000,
+        lastSeenAt: 5000,
+        lifecycleState: 'unbound',
+      })
+
+      db.bindDevSpaceMetadata({
+        metadataId: 'meta-history',
+        conversationId: 'conversation-history',
+        evidence: 'body:exact-tool-args-backfill',
+        confidence: 'high',
+        observedAt: 6000,
+        lifecycleState: 'closed',
+      })
+      const reseeded = db.seedDevSpaceMetadataHistory({
+        metadataId: 'meta-history',
+        firstSeenAt: 500,
+        lastSeenAt: 7000,
+      })
+      expect(reseeded.created).toBe(false)
+      expect(reseeded.row).toMatchObject({
+        conversationId: 'conversation-history',
+        firstSeenAt: 500,
+        lastSeenAt: 7000,
+        evidence: 'body:exact-tool-args-backfill',
+        lifecycleState: 'closed',
+      })
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('导入 canonical conversation 并避免重复累计', () => {
     const db = tempDb()
     try {
