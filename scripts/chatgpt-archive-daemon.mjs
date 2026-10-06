@@ -3113,7 +3113,20 @@ async function main() {
         : typeof item?.conversation_id === 'string' ? item.conversation_id : null
       if (!id) continue
       const asyncState = classifyCatalogAsyncStatus(item.async_status)
-      if (asyncState === 'active') armCheckpointWatch(id, `passive-catalog:${targetId || 'unknown'}`, capturedAt)
+      if (asyncState === 'active') {
+        const archived = archive.db.prepare(`
+          SELECT update_time AS updateTime, terminal_state AS terminalState
+          FROM conversations WHERE id = ?
+        `).get(id)
+        if (shouldStartCatalogWatchdog({
+          alreadyActive: checkpointWatches.has(id),
+          catalogUpdateTime: item.update_time ?? null,
+          archivedUpdateTime: archived?.updateTime ?? null,
+          archivedTerminalState: archived?.terminalState ?? null,
+        })) {
+          armCheckpointWatch(id, `passive-catalog:${targetId || 'unknown'}`, capturedAt)
+        }
+      }
       else if (asyncState === 'complete') stopCheckpointWatch(id, 'passive-catalog-complete', capturedAt)
     }
   }
@@ -3674,13 +3687,20 @@ async function main() {
               asyncStatus: item.async_status,
               updateTime: nextUpdateTime,
             })
-            armCheckpointWatch(id, `reconcile:${reason}:async-active`, now)
             // 没有可靠 turn-start 时，把“第一次看到 active”作为保守 late-start 下界。
             // 真实 POST 一定发生得更早，所以 watchdog 只会更晚报警，不会提前误报。
             const archived = archive.db.prepare(`
               SELECT update_time AS updateTime, terminal_state AS terminalState
               FROM conversations WHERE id = ?
             `).get(id)
+            if (shouldStartCatalogWatchdog({
+              alreadyActive: checkpointWatches.has(id),
+              catalogUpdateTime: item.update_time ?? null,
+              archivedUpdateTime: archived?.updateTime ?? null,
+              archivedTerminalState: archived?.terminalState ?? null,
+            })) {
+              armCheckpointWatch(id, `reconcile:${reason}:async-active`, now)
+            }
             if (shouldStartCatalogWatchdog({
               alreadyActive: activeTurns.has(id),
               catalogUpdateTime: item.update_time ?? null,
