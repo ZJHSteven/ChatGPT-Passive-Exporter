@@ -684,15 +684,22 @@ async function waitForRoute(
   timeoutMs: number,
 ): Promise<ActorPageSnapshot> {
   const deadline = Date.now() + timeoutMs
+  let lastSnapshot: ActorPageSnapshot | null = null
   while (Date.now() < deadline) {
     const snapshot = await readActorPageSnapshot(client)
+    lastSnapshot = snapshot
     const routeMatches = conversationId
       ? snapshot.conversationId === conversationId
       : snapshot.conversationId === null && new URL(snapshot.href).pathname === '/'
     if (routeMatches && snapshot.composerHydrated) return snapshot
     await new Promise(resolve => setTimeout(resolve, 100))
   }
-  throw new Error(`ChatGPT actor route did not become ready before timeout: ${conversationId ?? 'new-chat'}`)
+  // snapshot 不含正文，只保留 route/composer/状态布尔值；把它带进错误可以直接区分
+  // “路由没到”“CID 识别错”“可见 composer 未 hydration”，避免生产 E2E 只能靠二次 CDP 猜测。
+  throw new Error(
+    `ChatGPT actor route did not become ready before timeout: ${conversationId ?? 'new-chat'}; `
+    + `lastSnapshot=${JSON.stringify(lastSnapshot)}`,
+  )
 }
 
 async function preserveGuardianMarker(client: ActorCdpClient, hadGuardianMarker: boolean): Promise<void> {
