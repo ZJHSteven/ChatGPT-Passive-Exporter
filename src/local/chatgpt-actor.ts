@@ -381,13 +381,17 @@ async function readActorPageSnapshot(client: ActorCdpClient): Promise<ActorPageS
     const sendButton = buttons.find((button) => {
       const identity = buttonIdentity(button)
       if (/stop|停止/iu.test(identity)) return false
-      return /send-button|(^|\s)(send|发送)(\s|$)/iu.test(identity)
+      return /send-button|(^|\\s)(send|发送)(\\s|$)/iu.test(identity)
         || (button.getAttribute('type') === 'submit' && !button.disabled)
     }) || null
     const stopButton = buttons.find((button) => /stop|停止/iu.test(buttonIdentity(button))) || null
     const bodyText = document.body?.innerText || ''
     const href = String(location.href || '')
-    const match = /^https:\/\/chatgpt\.com\/c\/([0-9a-f-]{36})(?:[/?#]|$)/iu.exec(href)
+    const pathname = (() => {
+      try { return new URL(href).pathname }
+      catch { return '' }
+    })()
+    const match = new RegExp('^/c/([0-9a-f-]{36})(?:/|$)', 'iu').exec(pathname)
 
     return {
       href,
