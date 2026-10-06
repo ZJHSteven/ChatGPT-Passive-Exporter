@@ -1251,6 +1251,7 @@ async function main() {
   const seenDevSpaceAuditIds = new Map()
   let devSpacePollSinceAt = Date.now() - DEVSPACE_INITIAL_LOOKBACK_MS
   let devSpaceLastPollAt = null
+  let devSpaceLastFallbackPollAt = 0
   let devSpaceLastAuditAt = null
   let devSpaceLastError = null
   let devSpaceAuditsObserved = 0
