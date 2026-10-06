@@ -2063,6 +2063,55 @@ async function main() {
     return response.body
   }
 
+  /** 当前 conversation 是否已经被本机真正的 SSE / turn-WSS 覆盖。 */
+  const hasLiveTransportForConversation = (conversationId) => [...activeLiveTransports.values()]
+    .some(stream => String(stream?.conversationId || '') === String(conversationId || ''))
+
+  /**
+   * 给一个明确 active 的 conversation 建 checkpoint fallback。
+   *
+   * 这里的 startedAt 只是“Archive 开始追踪”的时间；绝不能冒充真实 turn start。
+   * 同一个 CID 重复被 catalog/native list 看见时只刷新 observation，不重置计时和 identity。
+   */
+  const armCheckpointWatch = (conversationId, source, now = Date.now()) => {
+    if (!conversationId) return null
+    const existing = checkpointWatches.get(conversationId)
+    if (existing) {
+      existing.lastObservedAt = Math.max(Number(existing.lastObservedAt || 0), now)
+      return existing
+    }
+    const watch = createCheckpointWatch({
+      conversationId,
+      source: String(source || 'unknown'),
+      now,
+      firstProbeDelayMs: checkpointFirstProbeMs,
+    })
+    checkpointWatches.set(conversationId, watch)
+    void log('checkpoint refresh armed', {
+      conversationId,
+      source: watch.source,
+      firstProbeAt: watch.nextProbeAt,
+    }).catch(() => {})
+    return watch
+  }
+
+  /** 停止 watcher 只删除 polling 状态，不修改 canonical conversation/incident。 */
+  const stopCheckpointWatch = (conversationId, reason, now = Date.now()) => {
+    const watch = checkpointWatches.get(conversationId)
+    if (!watch) return null
+    checkpointWatches.delete(conversationId)
+    void log('checkpoint refresh stopped', {
+      conversationId,
+      reason,
+      ageMs: Math.max(0, now - Number(watch.startedAt || now)),
+      probes: watch.probes,
+      bodyRefreshes: watch.bodyRefreshes,
+      lastStatus: watch.lastStatus,
+      turnExchangeId: watch.turnExchangeId,
+    }).catch(() => {})
+    return watch
+  }
+
   const passiveBodyKey = (conversationId, cursor = null) => `${conversationId}|${cursor ? `cursor:${cursor}` : 'latest'}`
 
   const prunePassiveCaches = (now = Date.now()) => {
@@ -2287,6 +2336,197 @@ async function main() {
         passivePagesUsed += 1
       }
       if (!Array.isArray(pagePayload.messages)) throw new Error(`conversation ${conversationId} cursor page has no messages[]`)
+    }
+  }
+
+  /**
+   * Phase 3 checkpoint fallback：只处理一条 due conversation，然后立刻把控制权还给主循环。
+   *
+   * 真机已验证的第一方顺序是：
+   *   stream_status -> (仍 streaming) canonical body -> 7~10 秒后再来一轮
+   *   stream_status -> COMPLETE -> final body
+   *
+   * 本实现额外做两层节省：若已有真实 live transport，则完全不 poll；若页面自己已经拿到了
+   * fresh native body，则直接消费 passive cache，不重复打 backend。
+   */
+  const drainCheckpointWatches = async () => {
+    if (checkpointInFlight || syncInFlight || reconcileInFlight || stopping) return
+    if (maxSyncConversations > 0 && syncedConversations >= maxSyncConversations) return
+
+    const now = Date.now()
+    const due = [...checkpointWatches.entries()]
+      .find(([, watch]) => Number(watch.nextProbeAt || 0) <= now)
+    if (!due) return
+
+    const [conversationId, current] = due
+
+    // 本机原始 SSE / resume SSE / turn-WSS 比 checkpoint 更完整；有 live transport 时不制造重复请求。
+    if (hasLiveTransportForConversation(conversationId)) {
+      current.nextProbeAt = now + checkpointProbeDelayMs(checkpointPollMinMs, checkpointPollMaxMs)
+      current.lastError = null
+      checkpointWatches.set(conversationId, current)
+      return
+    }
+
+    // cooldown/auth/Guardian 不可用不是协议错误，只延期；不要把正常熔断累加成“3 次失败后停监控”。
+    if (!authHeaders || !guardian?.page || guardian.page.closed || !activeApiAllowed(cooldownUntil, now)) {
+      const retryAt = Math.max(
+        now + checkpointErrorRetryMs,
+        Number(cooldownUntil || 0) > now ? Number(cooldownUntil) + 1000 : 0,
+      )
+      current.nextProbeAt = retryAt
+      checkpointWatches.set(conversationId, current)
+      return
+    }
+
+    checkpointInFlight = true
+    try {
+      const statusPath = `/backend-api/conversation/${encodeURIComponent(conversationId)}/stream_status`
+      const statusPayload = await fetchChecked({
+        url: statusPath,
+        targetPath: statusPath,
+        targetRoute: '/backend-api/conversation/{conversation_id}/stream_status',
+        kind: 'body',
+      })
+      checkpointProbes += 1
+
+      const rawStatus = statusPayload?.status ?? statusPayload?.stream_status ?? null
+      const nextDelayMs = checkpointProbeDelayMs(checkpointPollMinMs, checkpointPollMaxMs)
+      let next = recordCheckpointStatus({
+        state: current,
+        rawStatus,
+        now: Date.now(),
+        nextDelayMs,
+      })
+      checkpointWatches.set(conversationId, next)
+
+      if (next.lastStatus === 'unknown') {
+        checkpointErrors += 1
+        next = recordCheckpointError({
+          state: next,
+          now: Date.now(),
+          error: `unexpected stream_status=${JSON.stringify(rawStatus)}`,
+          retryDelayMs: checkpointErrorRetryMs,
+        })
+        checkpointWatches.set(conversationId, next)
+        await log('checkpoint stream_status shape drift', {
+          conversationId,
+          rawStatus: rawStatus == null ? null : String(rawStatus),
+          consecutiveErrors: next.consecutiveErrors,
+        })
+        if (next.consecutiveErrors >= checkpointMaxErrors) {
+          stopCheckpointWatch(conversationId, 'stream-status-shape-drift')
+        }
+        return
+      }
+
+      if (next.lastStatus === 'complete') {
+        checkpointCompleted += 1
+        stopCheckpointWatch(conversationId, 'stream-status-complete')
+        // COMPLETE 是 lifecycle 证据，但 final body 仍可能落后一拍；统一交给现有 complete settle 逻辑。
+        markSyncReady(conversationId, 'reconcile:checkpoint:async-complete', 0)
+        return
+      }
+
+      // 页面本身若正在做第一方 polling，优先消费刚刚自然拿到的 latest body；不重复 GET。
+      prunePassiveCaches()
+      const passive = passiveBodyPages.get(passiveBodyKey(conversationId, null))
+      const passiveFresh = passive
+        && Date.now() - Number(passive.capturedAt || 0) <= checkpointPollMaxMs
+      if (passiveFresh) {
+        const payload = passive.payload
+        const diagnostic = diagnoseLatestRun({
+          ...payload,
+          conversation_id: payload?.conversation_id || conversationId,
+        })
+        next = recordCheckpointBody({
+          state: next,
+          now: Date.now(),
+          currentNode: payload?.current_node,
+          updateTime: payload?.update_time,
+          turnExchangeId: diagnostic.turnExchangeId,
+          requestId: diagnostic.requestId,
+        })
+        checkpointWatches.set(conversationId, next)
+        checkpointBodyRefreshes += 1
+        if (diagnostic.terminalEvidence !== 'none') {
+          stopCheckpointWatch(conversationId, 'passive-body-terminal')
+          markSyncReady(conversationId, 'checkpoint:passive-body-terminal', 0)
+        }
+        return
+      }
+
+      // status 已占用本轮全局 request slot；latest body 紧接着复用该 slot，模拟第一方配对请求。
+      syncInFlight = true
+      let result
+      try {
+        result = await syncConversation(conversationId, 'checkpoint:streaming', {
+          skipFirstRequestSlot: true,
+        })
+        syncedConversations += 1
+      }
+      finally {
+        syncInFlight = false
+      }
+
+      reconcileDevSpaceBindingFromBody(conversationId, result.diagnostic)
+      checkpointBodyRefreshes += 1
+      next = recordCheckpointBody({
+        state: next,
+        now: Date.now(),
+        currentNode: result.currentNode,
+        updateTime: result.updateTime,
+        turnExchangeId: result.diagnostic.turnExchangeId,
+        requestId: result.diagnostic.requestId,
+      })
+      checkpointWatches.set(conversationId, next)
+
+      await log('checkpoint body refreshed', {
+        conversationId,
+        newMessages: result.newMessages,
+        currentNode: result.currentNode,
+        updateTime: result.updateTime,
+        turnExchangeId: result.diagnostic.turnExchangeId ?? null,
+        requestId: result.diagnostic.requestId ?? null,
+        tail: result.diagnostic.tailShape,
+      })
+
+      // status 仍 streaming 但 canonical body 已出现明确终态时，优先相信更具体的 body 证据。
+      if (result.diagnostic.terminalEvidence !== 'none') {
+        stopCheckpointWatch(conversationId, 'body-terminal-while-status-streaming')
+        markSyncReady(conversationId, 'checkpoint:body-terminal', 0)
+      }
+    }
+    catch (error) {
+      checkpointErrors += 1
+      const message = error instanceof Error ? error.message : String(error)
+      const latest = checkpointWatches.get(conversationId)
+      if (latest) {
+        const cooldownError = message.includes('HTTP 429') || message.startsWith('active API cooldown until ')
+        const authError = message.includes('auth context expired') || message.includes('no captured first-party auth context')
+        const retryDelayMs = cooldownError && cooldownUntil > Date.now()
+          ? Math.max(checkpointErrorRetryMs, cooldownUntil - Date.now() + 1000)
+          : checkpointErrorRetryMs
+        const next = recordCheckpointError({
+          state: latest,
+          now: Date.now(),
+          error: message,
+          retryDelayMs,
+        })
+        checkpointWatches.set(conversationId, next)
+        // 429/cooldown/auth 恢复属于环境状态，不因为累计次数丢掉 watcher；其它连续错误才有限止损。
+        if (!cooldownError && !authError && next.consecutiveErrors >= checkpointMaxErrors) {
+          stopCheckpointWatch(conversationId, 'checkpoint-error-limit')
+        }
+      }
+      await log('checkpoint refresh failed', {
+        conversationId,
+        error: message,
+        cooldownUntil: cooldownUntil || null,
+      })
+    }
+    finally {
+      checkpointInFlight = false
     }
   }
 
