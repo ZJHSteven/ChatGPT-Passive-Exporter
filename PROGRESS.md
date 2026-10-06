@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 并行合并后 typecheck 暴露声明漂移：`chatgpt-archive-daemon.mjs` 已有并导出 `shouldAttachPassivePageObserver()`，但旁路 `chatgpt-archive-daemon.d.mts` 漏声明，导致测试侧 TS2305。已补齐声明，Guardian 兼任 Actor 时仍被 passive observer 覆盖的测试契约恢复。提交 `39b747d`。
 - 2026-10-07 binding/incident 语义进一步澄清：`devspace:binding-probe` 与 Phase 3 checkpoint 是两套机制。binding-probe 只在 metadata 45min 仍未绑定时，对少量候选 active CID 各做一次 canonical body probe 以获取 tool-call 并完成 M→CID；Phase 3 才是已知 active CID 的 7~10s stream_status/body bounded fallback。旧 5s 主循环重复 requeue binding-probe 无任何业务意义，已由 generation-bounded probe 修复。
 - 2026-10-07 unbound timeout 复盘：Archive 当前历史 unbound metadata=21，但真正写过 unbound_watchdog_at 的只有 2 个（10/6 18:23 首见→19:09 timeout；10/7 00:29 首见→01:14 timeout）。23:31/00:40 的请求风暴并不是几十个新 conversation timeout，而是同一个 timed-out metadata 被旧循环反复 probe。一个旧 canonical conversation 也可能出现新的 openai/session metadata，因此“unbound metadata”不等于“新 conversation”。
 - 2026-10-07 exact matcher 性能语义确认：实时路径先从 Archive body 得到当前 turn DevSpace tool-call 的 min/max create_time，只读取 DevSpace SQLite 前后各 2min 的 audit，再做 canonical tool+args exact match；真实 tool_audit 已有 started_at / (metadata_id,started_at) / (tool,started_at) 索引，EXPLAIN 使用 tool_audit_started_idx 范围查。2万+ audit 全量扫描只属于一次性历史 backfill，且已从实时 5s timeout 路径移除。
