@@ -2026,9 +2026,15 @@ async function main() {
     lastActiveRequestAt = Date.now()
   }
 
- const fetchChecked = async (request) => {
+ const fetchChecked = async (request, options = {}) => {
    requireRequestWindow()
-   await waitForRequestSlot(request.kind === 'catalog' ? 'catalog' : 'body')
+   // checkpoint fallback 的第一方行为是“先 stream_status，再几乎立即拉 latest body”。
+   // 为了复刻这个**配对请求**而不是把两次请求都强行隔开 6 秒，调用方可以在已经
+   // 占用过一次全局 request slot 后，仅对紧接着的 latest body 跳过第二次 wait。
+   // 其它分页/cursor/mapping 仍会重新经过全局 gate，因此不会把这个选项变成绕过节流的后门。
+   if (options.skipRequestSlot !== true) {
+     await waitForRequestSlot(request.kind === 'catalog' ? 'catalog' : 'body')
+   }
     activeReplayRequestUrl = relativeBackendUrl(request.url)
     let response
     try {
@@ -2094,7 +2100,7 @@ async function main() {
     return Number(entry.capturedAt || 0) >= Number(minCapturedAt || 0) ? entry : null
   }
 
-  const syncConversation = async (conversationId, trigger) => {
+  const syncConversation = async (conversationId, trigger, options = {}) => {
     const syncReadyAt = Number(readySince.get(conversationId) || Date.now())
     const classifyTerminal = shouldClassifyTerminalForTrigger(trigger)
     const confirmedTerminal = isConfirmedTerminalTrigger(trigger)
@@ -2107,6 +2113,8 @@ async function main() {
       targetPath: basePath,
       targetRoute: '/backend-api/conversations/{conversation_id}',
       kind: 'body',
+    }, {
+      skipRequestSlot: options.skipFirstRequestSlot === true,
     })
     if (passiveFirst) passiveBodyPagesReused += 1
     if (!Array.isArray(first.messages)) throw new Error(`conversation ${conversationId} latest body has no messages[]`)
@@ -2251,6 +2259,8 @@ async function main() {
           conversationId,
           pages,
           newMessages,
+          currentNode: first.current_node ?? null,
+          updateTime: first.update_time ?? null,
           diagnostic: latestDiagnostic ?? merged.diagnostic,
           newIncident,
           imageGenerationEvent,
