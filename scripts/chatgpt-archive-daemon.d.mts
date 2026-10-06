@@ -54,16 +54,6 @@ export function shouldStartCatalogWatchdog(input?: {
   archivedTerminalState?: unknown
 }): boolean
 
-/**
- * 判断一个 ChatGPT page target 是否应该挂纯被动 Network observer。
- * Guardian 与普通页都应返回 true；service worker / 非 ChatGPT / 无 debugger URL 返回 false。
- */
-export function shouldAttachPassivePageObserver(target: {
-  type?: unknown
-  url?: unknown
-  webSocketDebuggerUrl?: unknown
-} | null | undefined): boolean
-
 /** 根据 active 的 startType 选择普通 watchdog 或 catalog active-zombie watchdog。 */
 export function watchdogTriggerForStartType(startType: unknown): 'watchdog:catalog-active-timeout' | 'watchdog:active-timeout'
 
