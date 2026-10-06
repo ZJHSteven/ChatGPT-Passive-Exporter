@@ -2950,6 +2950,10 @@ async function main() {
     const requestId = typeof diagnostic?.requestId === 'string' ? diagnostic.requestId : null
     const existing = archive.getDevSpaceMetadataBindingsForConversation(conversationId)
     if (existing.length > 0) {
+      // 一个 canonical conversation 可以先后出现多个 openai/session metadata。
+      // 旧 binding 只说明“这些 metadata 仍属于这个 CID”，不能证明当前 turn 没有新 metadata。
+      // 因此先更新旧 binding 的最近 turn/request，但绝不能在这里 return；
+      // 下面仍要尝试从当前 body exact-match 一个尚未绑定的新 metadata。
       archive.updateDevSpaceBindingTurn({
         conversationId,
         turnExchangeId,
@@ -2958,7 +2962,6 @@ async function main() {
         lifecycleState: activeTurns.has(conversationId) ? 'active' : 'closed',
       })
       for (const row of archive.getDevSpaceMetadataBindingsForConversation(conversationId)) mirrorDevSpaceBinding(row)
-      return
     }
     if (!turnExchangeId) return
     const candidate = matchDevSpaceBindingFromStoredTurn(conversationId, turnExchangeId)
@@ -3000,7 +3003,8 @@ async function main() {
     ])
     let queued = 0
     for (const conversationId of candidateConversationIds) {
-      if (archive.getDevSpaceMetadataBindingsForConversation(conversationId).length > 0) continue
+      // 不能因为 CID 已有旧 metadata binding 就跳过：同一 CID 可能刚刚出现新的
+      // openai/session，而当前 timed-out provisional 正是在等这次 body 来完成 M2 -> C。
       markSyncReady(conversationId, 'devspace:binding-probe', 0)
       queued += 1
     }
