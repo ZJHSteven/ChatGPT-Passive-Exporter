@@ -1155,6 +1155,7 @@ async function main() {
   }
   const archive = new ChatArchiveDb(dbPath)
   const devSpaceAuditBridge = new DevSpaceAuditBridge(devSpaceDbPath)
+  const devSpaceAuditWakeListener = new DevSpaceAuditWakeListener()
   let guardian = null
   // `guardian === null` 同时出现在“进程第一次启动”和“运行中自愈 catch 已清空旧 Guardian”两种
   // 场景；不能再仅凭 null 决定 reason。否则运行中 WSS/renderer 故障会被误标成 startup，
