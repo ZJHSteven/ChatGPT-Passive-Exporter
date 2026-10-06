@@ -464,6 +464,30 @@ export function activeApiAllowed(cooldownUntil, now = Date.now()) {
 }
 
 /**
+ * 429 cooldown 是 Archive 自己的运行状态通知，不属于 conversation incident taxonomy。
+ *
+ * 这里只负责生成稳定文案，便于单测；真正发送仍走现有 Bark provider。
+ */
+export function buildCooldownNotificationPayload({
+  reason,
+  cooldownUntil,
+  route = null,
+  retryAfter = null,
+}) {
+  const lines = [
+    `原因：${String(reason || 'HTTP 429')}`,
+    route ? `请求：${route}` : null,
+    retryAfter ? `Retry-After：${retryAfter}` : null,
+    `主动 API 冷却至：${new Date(Number(cooldownUntil || 0)).toISOString()}`,
+    'WSS/CDP 被动监听继续运行；滑动延长只记日志，不重复通知。',
+  ].filter(Boolean)
+  return {
+    title: 'ChatGPT API 429 冷却',
+    body: lines.join('\n'),
+  }
+}
+
+/**
  * Guardian 的一次 Runtime 探活超时不等价于 renderer 已经死亡。
  *
  * Chrome 在后台/隐藏窗口、CPU 突发繁忙、多个 CDP client 同时工作时都可能出现短暂抖动。
