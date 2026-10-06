@@ -1459,6 +1459,8 @@ async function main() {
     },
     devspace: {
       dbPath: devSpaceDbPath,
+      wake: devSpaceAuditWakeListener.stats(),
+      fallbackPollMs: DEVSPACE_FALLBACK_POLL_MS,
       lastPollAt: devSpaceLastPollAt,
       lastAuditAt: devSpaceLastAuditAt,
       lastError: devSpaceLastError,
