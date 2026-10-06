@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-06 项目正式进入 Phase 3/4/5 收尾实现期。Phase 3 从“研究 transport”切到 production checkpoint fallback；Phase 4 从“能发”切到稳健闭环 Actor CLI；Phase 5 计划复用 Family-AI 产品壳，后端改接 Archive/Actor/LiveTurn。本轮详细执行顺序已写入 `PLANS.md`（commit `c5b88f2`）。
 - 2026-10-06 最终生产状态：DevSpace 由既有 restart-devspace-task.ps1 + Task Scheduler 从 PID 5004 安全切到 PID 28568，7676 /healthz=200；raw MCP metadata 已持续原样落库。Archive 也已交回既有 ChatGPT Archive Daemon 计划任务托管，当前 PID 61384 / alive=true；DevSpace wake listener listening=true，最近一次真实 wake latency=23ms，invalid=0，60s durable fallback 保留。Archive 新进程 10 秒 CPU 采样约 0.03125 CPU-s（约单核 0.31%），Working Set 约 82.7MB，10 秒变化约 +0.1MB。
 - 2026-10-06 DevSpace→Archive 绑定/Watchdog 最新收口（覆盖下方较早描述）：实时发现不再每 5 秒轮询 DevSpace SQLite。DevSpace 在 tool_audit durable INSERT 后 fire-and-forget 发送 localhost UDP 门铃，Archive 收到即读取 SQLite；60 秒才做一次 durable catch-up。生产 Archive 已收到 200+ 门铃且 invalid=0，最近一次 audit startedAt 与 wake receive 相差约毫秒级。
 - binding 已从“时间窗唯一 metadata”改成 body 与 tool_audit 的 exact tool+args 匹配：ChatGPT body 的 api_tool.call_tool 保存 DevSpace path + 完整 args；两端先 canonical JSON 排序，再按 tool+args fingerprint 直接匹配。时间只缩小 SQLite 查询范围，不参与身份判断。启动 backfill 已把旧算法留下的历史 unbound 全部补齐；当前 Archive 共 9 个 metadata，bound=9 / unbound=0。当前长聊天 metadata v1/2U1hh... 已高置信绑定到 CID 6ab9aad3-19bc-83e9-934b-0dde671f74de，evidence=body:exact-tool-args-backfill。
