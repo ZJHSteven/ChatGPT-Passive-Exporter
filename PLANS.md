@@ -9,9 +9,9 @@
 
 ### 2026-10-06 active-turn 同 tab 发送语义复核
 
-- [in_progress] 推翻前先复现实验：A 正在生成时，在同一 A 页面输入 follow-up，记录 stop/send 两类控件的真实 DOM 与第一方请求，验证是否走 `/f/steer_turn` 或其它 steering 路径。
-- [pending] A 仍生成时，只通过网页自身“新聊天/sidebar”做 SPA 路由到 B，在同一个 tab 发送 B；同时记录 A 原始 SSE 是否继续、B 是否成功创建新的 `/f/conversation` SSE，验证同 tab 是否确实支持多个并发 generation。
-- [pending] 若成功，删除/修正文档中 `SAMETABB928` 推导出的“active generation 会阻止第二 conversation send”结论，并修 Actor：不要再把 `send-button` 缺失等同于不可发送；增加 active-turn follow-up/steer 与 SPA new-chat 的真实控件识别。
+- [done] A 正在生成时的 follow-up 已真机复现：原始 A SSE `61856.1055` 尚未 DONE，第一方 Web 直接发出 `/f/steer_turn` request `61856.1092`；A 原 SSE 继续运行。active-turn follow-up 是正式支持路径，不是异常状态。
+- [done] 同 tab 跨 conversation 并发已真机复现：A SSE 未结束时点“新聊天”SPA route 到 `/`，同 target 成功发出 B 的 `/f/conversation` `61856.1126`，B 完成后 A 仍继续收 SSE 超过 50 秒。旧 `SAMETABB928` 不能作为“一 tab 一 active generation”证据。
+- [in_progress] 修正文档与 Actor 发送状态机：删除“active generation 会阻止第二 conversation send / 必须 Actor pool”的前提；区分 new/continue `/f/conversation` 与 active follow-up `/f/steer_turn`；对动态 composer 的 `停止/发送` 切换和 `/prepare -> submit` 两阶段做可靠状态判断，禁止再用单一 DOM selector 的瞬时缺失判发送不可用。
 
 ## 2026-10-06 DevSpace→Archive 事件唤醒 / binding 简化 / watchdog 语义修正 ExecPlan
 

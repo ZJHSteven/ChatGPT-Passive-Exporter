@@ -196,7 +196,7 @@ Tab A 在 conversation `6ab9ab7e-...` 运行长工具 turn，原始 SSE `33772.1
 
 因此**不同 renderer 的 page-local SSE 天然隔离**：B 导航/发送不会取消 A。无需为了同一账户 WSS 的不同 topic 开多个 tab；但不同 tab 对“并发发送/各自 page-local SSE”确实提供真实故障与 UI 状态隔离。
 
-### 同一个 tab：SPA 导航不杀旧 SSE，但 UI active-generation 状态跨路由
+### 同一个 tab：SPA 导航不杀旧 SSE；2026-10-06 已确认还能并发启动新 conversation
 
 第二轮 Tab A2 原始 SSE `33772.2242` 活跃时，在同一个 ChatGPT tab 中真实点击 sidebar 跳到另一 conversation：
 
@@ -206,9 +206,29 @@ Tab A 在 conversation `6ab9ab7e-...` 运行长工具 turn，原始 SSE `33772.1
 
 因此当前 ChatGPT SPA route change **不会自动 Abort 已经在跑的 `/f/conversation`**。
 
-但同 renderer 的 UI 状态不是按 conversation 完全隔离：切到 B 后，B 的 ProseMirror 可以输入 `SAMETABB928`，但 A2 仍运行时页面不渲染 send button；A2 完成后，其长答案还出现在当时 href 已经是 B 的 DOM 尾部。canonical archive 仍按真正 CID/turn 分离，这属于 renderer/UI active-generation 状态跨路由。
+2026-09-28 当时还观察到：切到 B 后 ProseMirror 可输入 `SAMETABB928`，某一瞬间自动化没有看到 send button，于是保守推断“UI active-generation 状态跨路由，可能阻止第二 conversation send”。**2026-10-06 重新做真机实验后，这个推断被否定。**旧样本只能说明当时 DOM/控件观察没有跟上真实状态，不能再作为并发限制证据。
 
-2026-09-28 当时据此保守采用了“Guardian 与 Actor 分 tab”。2026-10-06 进一步真机实验表明，需要把该结论收窄：**物理分 tab 不是协议要求，只是当时实现上的隔离策略。**
+新的受控实验：长 turn A 原始 `/f/conversation` request 为 `61856.1055`。A 尚未出现 `[DONE]` 时：
+
+1. 在 A 自己的 composer 输入 follow-up，当前 Web 发出 `POST /backend-api/f/steer_turn` request `61856.1092`；A 原始 SSE 继续运行。
+2. 随后点击页面自己的“新聊天”按钮，SPA route 到 `/`；A 原 SSE 仍继续 heartbeat/data。
+3. 在同一个 tab 发出新 conversation B：`POST /backend-api/f/conversation` request `61856.1126`，页面绑定 B CID `6ac4cb9b-...`。
+4. B 于 10:21:29 收到 `[DONE]`；A 在 10:22:27 仍持续收到 SSE data/heartbeat。
+
+因此当前真实语义是：
+
+```text
+同一个 ChatGPT tab/page target
+  A conversation /f/conversation SSE 仍 active
+      ├─ 同 A follow-up -> /f/steer_turn
+      └─ SPA 切新聊天 B -> 新 /f/conversation SSE
+
+A 与 B transport 可以同时存在
+```
+
+这与用户日常网页行为一致：A 正在生成时，输入新文字后 composer 会切出可提交形态；也可以离开 A、新建 B 并发送，A 在服务器/原 SSE 上继续运行。当前前端的 composer 按钮是动态状态机，`停止` 与 `发送` 可随输入、prepare、handler 重挂载切换；一次 Enter 还可能只触发 `/f/conversation/prepare`，随后再进入正式 submit。**因此“某一瞬间没有 `send-button` DOM”不等于不能发送。**
+
+2026-09-28 据旧样本采用的“Guardian/Actor 分 tab 以规避 active-generation UI 锁”理由随之撤销。物理分 tab 不是协议要求，也不是并发 conversation 的要求。
 
 ### 2026-10-06 Guardian 直接兼任 Actor：new + continue 均成功
 
@@ -240,12 +260,12 @@ idle/finished Guardian
   -> new chat send       可行
   -> finished convo send 可行
 
-same renderer already has another active generation
-  -> route 到第二 convo 再发
-  -> UI generation state 可能阻止 send
+same tab already has another active generation
+  -> follow-up same conversation 可走 /f/steer_turn
+  -> SPA route 到新 conversation 后仍可再发 /f/conversation
 ```
 
-后一条才是 `SAMETABB928` 的真实边界；它是**并发 active turn 限制**，不是普通路由/发送限制。
+因此 `SAMETABB928` 不再定义任何“并发 active turn 限制”。
 
 ### 当前实现为什么仍不应立刻删掉独立 Actor
 
@@ -272,8 +292,8 @@ conversation carrier:
 
 因此当前更准确的架构含义是：
 
-- **Guardian + Actor 可以合并为一个串行 renderer**；没有协议层必须分 tab 的证据。
-- **同一 renderer 同一时刻只应有一个 UI active generation**。需要并发发多个 turn 时，再临时启用小型 Actor pool，而不是长期常驻第二个 Actor。
+- **Guardian + Actor 可以合并为一个 page target**；没有协议层必须分 tab 的证据。
+- **同一个 page target 也可以并发承载多个 conversation 的 active SSE**；不再因为“并发 active generation”自动引入 Actor pool。若未来保留多个 Actor，只能基于吞吐、故障隔离或资源策略，而不能再基于已被推翻的 UI 锁假设。
 - **合并前必须先做 Guardian-aware actor**：避免不必要 full navigation、把 Guardian SSE 接入 LiveTurn、稳定 Guardian target identity，并处理 cooldown REST block。
 - **账户 WSS topic 本来就应由一个 Guardian 多路复用**；不需要按 topic 或按 conversation 拆 tab。
 
