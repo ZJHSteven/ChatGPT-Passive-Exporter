@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Phase 4 闭环 Actor 重构开始：`chatgpt-actor.ts` 已先把发送语义显式拆成 `new / continue / steer / auto`，不再把所有发送都视作 `/f/conversation`。`steer` 对应 2026-10-06 真机已确认的 active follow-up `/f/steer_turn`；`auto` 后续只在页面上下文完整、live 状态可确认时自动选择，不允许把 resume 失败/“等待完整答复”误判成可安全 follow-up。提交 `c8f7b13`。
 - 2026-10-07 429 cooldown 全量复盘：历史日志自 9/16 起共有 12 个独立 cooldown episode（9/28 的 48 条只是同一 native catalog 风暴内的滑动延长）。2026-10-06/07 当天共有 4 次独立进入：16:02:52、18:29:23、23:31:22、00:40:45（北京时间）。其中 23:31/00:40 已明确由旧 `devspace:binding-probe` 自激轮询造成：429 前 1h 近似私有请求分别约 125/50 次，其中 binding-probe 112/36 次；现 generation-bounded probe + 移除 5s 全历史 backfill 后，01:02:44 新生产进程启动至今未再出现任何 binding-probe body 请求。16:02 前 1h 约 31 次私有请求、且触发前约 6min 无主动请求，更像长窗口配额；18:29 是 daemon startup 深 reconciliation 连扫 4 页 catalog 后第一条 body 429。
 - 2026-10-07 restart 风控收口：startup/guardian-recover 的 catalog stable overlap 从 deepThreshold(默认56) 降为一整页(28)，只保留 6h periodic 深扫。这样仍能在重启/Guardian 恢复后立即发现 updated-desc 顶部的近期 active/dirty conversation，但避免每次部署都制造连续多页 catalog burst。提交 `89a929f`；当前 PID 38544 不为此单独重启，下次正常重启自动生效。
 - 2026-10-07 daemon 重启取证：00:52、00:59、01:02 三次均由本聊天显式执行 `chatgpt-archive daemon stop -> Start-ScheduledTask 'ChatGPT Archive Daemon'` 的部署重启，不是 daemon crash；分别用于 historical incident 通知、binding-probe 限流、移除重复历史 backfill。最后生产 PID=38544。
