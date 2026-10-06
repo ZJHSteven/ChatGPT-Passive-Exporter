@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   activeApiAllowed,
+  buildCooldownNotificationPayload,
   catalogStableOverlapTarget,
   classifyConversationBackendUrl,
   classifyCatalogAsyncStatus,
@@ -34,6 +35,24 @@ import {
 } from '../scripts/chatgpt-archive-daemon.mjs'
 
 describe('ChatGPT Archive daemon WSS parser', () => {
+  test('429 cooldown 通知文案包含原因、路由与预计解除时间', () => {
+    expect(buildCooldownNotificationPayload({
+      reason: 'active body HTTP 429',
+      cooldownUntil: Date.parse('2026-10-06T09:02:52.322Z'),
+      route: '/backend-api/conversation/example',
+      retryAfter: '120',
+    })).toEqual({
+      title: 'ChatGPT API 429 冷却',
+      body: [
+        '原因：active body HTTP 429',
+        '请求：/backend-api/conversation/example',
+        'Retry-After：120',
+        '主动 API 冷却至：2026-10-06T09:02:52.322Z',
+        'WSS/CDP 被动监听继续运行；滑动延长只记日志，不重复通知。',
+      ].join('\n'),
+    })
+  })
+
   test('conversation transport repair 只跟随 conversation carrier 换代', () => {
     expect(isConversationTransportTopic('conversations')).toBe(true)
     expect(isConversationTransportTopic('alder-conversations')).toBe(true)
