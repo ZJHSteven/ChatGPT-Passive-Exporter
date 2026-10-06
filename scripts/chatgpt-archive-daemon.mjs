@@ -2978,6 +2978,12 @@ async function main() {
         metadataId: binding.metadataId,
       })
     }
+    // DevSpace first-tool 已经是当前项目认可的“可靠 active”补充信号；既然 CID 已通过
+    // metadata binding 解出，就不应再等待一次偶然的 native catalog refresh 才启动 Phase 3。
+    // checkpoint watcher 自身会在本机已有原始 SSE / resume transport 时自动 suppression，
+    // 因此这里可以幂等 arm：远端/手机发起的工具型长 turn 获得 checkpoint fallback，
+    // 本机 Actor turn 则继续优先使用完整 live transport，不制造重复 REST 轮询。
+    armCheckpointWatch(conversationId, 'devspace:first-tool', auditAt)
     archive.updateDevSpaceBindingTurn({
       conversationId,
       observedAt: auditAt,
