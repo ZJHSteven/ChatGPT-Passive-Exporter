@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'vitest'
 import { buildActorSubmitTrace } from '../src/local/active-turn-recorder.ts'
-import { actorConversationUrl, conversationIdFromUrl, resolveActorSendMode } from '../src/local/chatgpt-actor.ts'
+import {
+  actorConversationUrl,
+  buildActorDomObservationExpression,
+  conversationIdFromUrl,
+  resolveActorSendMode,
+} from '../src/local/chatgpt-actor.ts'
 
 describe('ChatGPT single actor helpers', () => {
   test('只把真实 /c/<uuid> 视为 conversation 绑定完成', () => {
@@ -68,6 +73,16 @@ describe('ChatGPT single actor helpers', () => {
       currentConversationId: cid,
       waitingForFinal: true,
     })).toThrow(/current context is incomplete/u)
+  })
+
+  test('DOM 观察表达式经过 template literal 后仍是合法 JavaScript', () => {
+    const expression = buildActorDomObservationExpression()
+
+    // 这里只编译、不执行。document / location 等浏览器全局只有运行时才会解析，
+    // 因此可以精准覆盖“外层 template literal 吃掉正则转义导致 SyntaxError”这一类回归。
+    expect(() => new Function(`return ${expression}`)).not.toThrow()
+    expect(expression).toContain("new RegExp('^/c/[0-9a-f-]{20,}(?:/|$)', 'iu')")
+    expect(expression).toContain('(^|\\s)(send|发送)(\\s|$)')
   })
 
   test('actor-submit 使用 requestWillBeSent 时刻作为可靠本地 start', () => {
