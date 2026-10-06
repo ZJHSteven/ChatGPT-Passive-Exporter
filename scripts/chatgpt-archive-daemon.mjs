@@ -381,6 +381,34 @@ export function devSpaceFirstToolWatchdogState(auditAt) {
 }
 
 /**
+ * unbound metadata 的 body probe 必须是 bounded discovery，不能退化成固定轮询。
+ * generation 由 timed-out metadata + 首次 repairQueuedAt 决定；同一 generation 下
+ * 每个 candidate CID 至多主动 probe 一次。出现新的 timed-out metadata 时 generation
+ * 才变化，从而允许对候选集合重新做一轮有限 probe。
+ */
+export function planDevSpaceBindingProbes({
+  generation = '',
+  previousGeneration = '',
+  probedConversationIds = [],
+  candidateConversationIds = [],
+} = {}) {
+  const changed = String(generation) !== String(previousGeneration)
+  const seen = new Set(changed ? [] : probedConversationIds)
+  const targets = []
+  for (const conversationId of candidateConversationIds) {
+    const id = String(conversationId || '')
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    targets.push(id)
+  }
+  return {
+    generation: String(generation),
+    probedConversationIds: [...seen],
+    targets,
+  }
+}
+
+/**
  * watchdog 只负责“超时后调查一次”，不能退化成固定周期 body 轮询器。
  *
  * 第一次超过阈值时允许调查；调查完成以后，如果再也没有新的运行进展，就保持沉默。
@@ -1363,6 +1391,8 @@ async function main() {
   // metadata 尚未解出 canonical conversation 时，也先保存 first-tool 的真实时间。
   // binding 晚到以后仍以这个时间作为 watchdog.startedAt，不让发现延迟污染超时起点。
   const unboundDevSpaceTurns = new Map()
+  let devSpaceBindingProbeGeneration = ''
+  let devSpaceBindingProbedConversationIds = []
   const recentConversationComplete = new Map()
   const seenDevSpaceAuditIds = new Map()
   let devSpacePollSinceAt = Date.now() - DEVSPACE_INITIAL_LOOKBACK_MS
@@ -3196,21 +3226,32 @@ async function main() {
    * 随后再由真正的 conversation watchdog 路径分类 terminal/active-zombie 并决定是否 Bark。
    */
   const queueTimedOutDevSpaceBindingProbes = () => {
-    const hasTimedOutUnbound = [...unboundDevSpaceTurns.values()]
-      .some(candidate => Boolean(candidate.repairQueuedAt))
-    if (!hasTimedOutUnbound) return 0
+    const timedOutEntries = [...unboundDevSpaceTurns.entries()]
+      .filter(([, candidate]) => Boolean(candidate.repairQueuedAt))
+      .sort(([a], [b]) => a.localeCompare(b))
+    if (timedOutEntries.length === 0) return 0
+    const generation = timedOutEntries
+      .map(([metadataId, candidate]) => `${metadataId}:${Number(candidate.repairQueuedAt)}`)
+      .join('|')
     const candidateConversationIds = new Set([
       ...activeTurns.keys(),
       ...catalogActive.keys(),
     ])
-    let queued = 0
-    for (const conversationId of candidateConversationIds) {
+    const plan = planDevSpaceBindingProbes({
+      generation,
+      previousGeneration: devSpaceBindingProbeGeneration,
+      probedConversationIds: devSpaceBindingProbedConversationIds,
+      candidateConversationIds,
+    })
+    devSpaceBindingProbeGeneration = plan.generation
+    devSpaceBindingProbedConversationIds = plan.probedConversationIds
+    for (const conversationId of plan.targets) {
       // 不能因为 CID 已有旧 metadata binding 就跳过：同一 CID 可能刚刚出现新的
       // openai/session，而当前 timed-out provisional 正是在等这次 body 来完成 M2 -> C。
+      // 但同一 timeout generation 下只能主动 probe 一次，避免 5 秒主循环退化成 body 轮询器。
       markSyncReady(conversationId, 'devspace:binding-probe', 0)
-      queued += 1
     }
-    return queued
+    return plan.targets.length
   }
 
   const checkUnboundDevSpaceTimeouts = () => {
