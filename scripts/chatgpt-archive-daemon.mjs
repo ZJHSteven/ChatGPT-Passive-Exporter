@@ -2569,6 +2569,7 @@ async function main() {
         if (result.diagnostic.terminalEvidence !== 'none') {
           activeTurns.delete(conversationId)
           catalogActive.delete(conversationId)
+          stopCheckpointWatch(conversationId, 'body-terminal', Date.now())
           archive.updateDevSpaceBindingTurn({
             conversationId,
             turnExchangeId: result.diagnostic.turnExchangeId ?? null,
@@ -3570,6 +3571,7 @@ async function main() {
       recentConversationComplete.set(event.conversationId, now)
       activeTurns.delete(event.conversationId)
       catalogActive.delete(event.conversationId)
+      stopCheckpointWatch(event.conversationId, `wss:${event.type}`, now)
       archive.updateDevSpaceBindingTurn({
         conversationId: event.conversationId,
         observedAt: now,
@@ -3672,6 +3674,7 @@ async function main() {
               asyncStatus: item.async_status,
               updateTime: nextUpdateTime,
             })
+            armCheckpointWatch(id, `reconcile:${reason}:async-active`, now)
             // 没有可靠 turn-start 时，把“第一次看到 active”作为保守 late-start 下界。
             // 真实 POST 一定发生得更早，所以 watchdog 只会更晚报警，不会提前误报。
             const archived = archive.db.prepare(`
@@ -3721,6 +3724,7 @@ async function main() {
             // 低频 list 看到了 active→complete，而 WSS complete 没到：这是典型 gap repair。
             catalogActive.delete(id)
             activeTurns.delete(id)
+            stopCheckpointWatch(id, `reconcile:${reason}:async-complete`, now)
             await turnRecorder.append(buildCatalogObservationTrace({
               at: now,
               conversationId: id,
@@ -4424,6 +4428,7 @@ async function main() {
       }
      queueWatchdogDiagnostics()
      await drainDirty()
+     await drainCheckpointWatches()
      await maybeRunGapRepair()
      await hydratePendingGeneratedImageAssets()
       if (protocolLedger?.refreshBaselineLock()) scheduleProtocolLedgerFlush()
