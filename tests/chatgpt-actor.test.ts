@@ -56,6 +56,18 @@ describe('ChatGPT single actor helpers', () => {
       currentConversationId: cid,
       stopVisible: false,
     })).toThrow(/live-attached/u)
+    expect(() => resolveActorSendMode({
+      requestedMode: 'continue',
+      requestedConversationId: cid,
+      currentConversationId: cid,
+      stopVisible: true,
+    })).toThrow(/still live/u)
+    expect(() => resolveActorSendMode({
+      requestedMode: 'continue',
+      requestedConversationId: cid,
+      currentConversationId: cid,
+      waitingForFinal: true,
+    })).toThrow(/current context is incomplete/u)
   })
 
   test('actor-submit 使用 requestWillBeSent 时刻作为可靠本地 start', () => {
