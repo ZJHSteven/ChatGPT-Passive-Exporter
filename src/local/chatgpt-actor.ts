@@ -664,9 +664,17 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
   const timeoutMs = options.timeoutMs ?? 20_000
   if (!options.prompt.trim()) throw new Error('actor prompt is empty')
   const requestedMode = options.mode ?? 'auto'
+  const targetMode = options.targetMode ?? 'guardian'
   const expectedConversationId = options.conversationId ? String(options.conversationId).trim() : null
   if (expectedConversationId) actorConversationUrl(expectedConversationId)
-  const target = await acquireActorTarget(options.cdpHttp, options.statePath, timeoutMs)
+  await assertActorCooldownClear(options.daemonStatePath)
+  const target = await acquireActorTarget(
+    options.cdpHttp,
+    options.statePath,
+    timeoutMs,
+    targetMode,
+    options.daemonStatePath,
+  )
   const targetId = String(target.id ?? target.targetId)
   if (!target.webSocketDebuggerUrl) throw new Error('actor target has no webSocketDebuggerUrl')
 
@@ -829,6 +837,7 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
             targetId,
             createdAt: prior?.createdAt ?? Date.now(),
             updatedAt: Date.now(),
+            source: prior?.source ?? targetMode,
           })
           return {
             targetId,
@@ -854,6 +863,7 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
               || responseState.mimeType?.includes('event-stream')
               || (await readActorPageSnapshot(client)).stopVisible,
             ),
+            targetMode,
           }
         }
 
@@ -913,7 +923,8 @@ export async function actorStatus(cdpHttp: string, statePath: string): Promise<R
 export async function resetActor(cdpHttp: string, statePath: string): Promise<Record<string, unknown>> {
   const state = await readActorState(statePath)
   let closed = false
-  if (state?.targetId) {
+  const borrowedGuardian = state?.source === 'guardian'
+  if (state?.targetId && !borrowedGuardian) {
     try {
       const response = await fetch(`${normalizeCdpHttp(cdpHttp)}/json/close/${encodeURIComponent(state.targetId)}`)
       closed = response.ok
@@ -923,6 +934,12 @@ export async function resetActor(cdpHttp: string, statePath: string): Promise<Re
     }
   }
   await fs.rm(statePath, { force: true })
-  return { reset: true, closed, targetId: state?.targetId ?? null, statePath }
+  return {
+    reset: true,
+    closed,
+    borrowedGuardian,
+    targetId: state?.targetId ?? null,
+    statePath,
+  }
 }
 
