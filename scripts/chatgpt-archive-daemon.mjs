@@ -2487,6 +2487,9 @@ async function main() {
       lastEventAt: Math.max(Number(current?.lastEventAt || 0), event.startedAtMs),
       lastAuditId: event.id,
       repairQueuedAt: current?.repairQueuedAt ?? null,
+      notificationAttemptAt: current?.notificationAttemptAt ?? null,
+      notificationSentAt: current?.notificationSentAt ?? binding.unboundNotificationSentAt ?? null,
+      notificationInFlight: current?.notificationInFlight ?? false,
     })
   }
 
@@ -2558,17 +2561,65 @@ async function main() {
     })
   }
 
+  const notifyUnboundDevSpaceTimeout = async (metadataId, candidate) => {
+    if (!notificationConfig || candidate.notificationSentAt || candidate.notificationInFlight) return
+    const now = Date.now()
+    if (candidate.notificationAttemptAt && now - Number(candidate.notificationAttemptAt) < 5 * 60_000) return
+    candidate.notificationAttemptAt = now
+    candidate.notificationInFlight = true
+    notificationLastAttemptAt = now
+    try {
+      const result = await sendIncidentNotification(notificationConfig, {
+        title: 'ChatGPT DevSpace 运行超时（待绑定）',
+        body: [
+          `metadata: ${metadataId}`,
+          `first tool: ${new Date(Number(candidate.startedAt)).toISOString()}`,
+          `active: ${Math.round((now - Number(candidate.startedAt)) / 60_000)} min`,
+          '尚未可靠绑定到 canonical conversation；已保留原始计时并触发 catalog 修复，后续可继续回填 CID/turn。',
+        ].join('\n'),
+      })
+      if (result.ok) {
+        const sentAt = Date.now()
+        candidate.notificationSentAt = sentAt
+        archive.markDevSpaceUnboundNotificationSent(metadataId, sentAt)
+        notificationLastSuccessAt = sentAt
+        notificationLastError = null
+        await log('unbound DevSpace watchdog notification sent', {
+          metadataId,
+          startedAt: candidate.startedAt,
+          provider: notificationConfig.provider,
+          status: result.status,
+        })
+      }
+      else if (result.attempted) {
+        notificationLastError = result.error || 'notification failed'
+        await log('unbound DevSpace watchdog notification failed', {
+          metadataId,
+          provider: notificationConfig.provider,
+          status: result.status,
+          error: notificationLastError,
+        })
+      }
+    }
+    finally {
+      candidate.notificationInFlight = false
+    }
+  }
+
   const checkUnboundDevSpaceTimeouts = () => {
     const now = Date.now()
     for (const [metadataId, candidate] of unboundDevSpaceTurns) {
       if (now - Number(candidate.startedAt) < watchdogMs) continue
-      if (candidate.repairQueuedAt) continue
-      candidate.repairQueuedAt = now
-      void log('unbound DevSpace watchdog exceeded threshold; queued catalog repair', {
-        metadataId,
-        activeForMs: now - Number(candidate.startedAt),
-      })
-      void scheduleGapRepair('devspace-unbound-timeout')
+      archive.markDevSpaceUnboundWatchdog(metadataId, now)
+      if (!candidate.repairQueuedAt) {
+        candidate.repairQueuedAt = now
+        void log('unbound DevSpace watchdog exceeded threshold; queued catalog repair', {
+          metadataId,
+          activeForMs: now - Number(candidate.startedAt),
+        })
+        void scheduleGapRepair('devspace-unbound-timeout')
+      }
+      void notifyUnboundDevSpaceTimeout(metadataId, candidate)
     }
   }
 
