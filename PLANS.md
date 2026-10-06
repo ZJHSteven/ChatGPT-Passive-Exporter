@@ -1,3 +1,16 @@
+## 2026-10-06 并行协调：Watchdog / binding / cooldown / DevSpace env ExecPlan
+
+> 并行约束：另一个 Agent 正在处理 Phase 3 / Phase 4 / Phase 5。本文任务只修改 DevSpace audit/env 热路径、Archive 历史 binding/backfill、429 cooldown 通知与相关文档/测试；不改 LiveTurn/Actor 主体实现。若发现目标文件被并行 Agent 修改，先停下对该文件的编辑并重新对比，不做覆盖式提交。
+
+- [in_progress] 解释历史 audit 边界：确认 9/14 以前是否存在 metadata/tool-result 的其它持久记录，区分“没有采集”与“没有导入新 tool_audit”。
+- [pending] 将 117 个 metadata 全量分桶：可唯一 exact binding、已有 binding、缺 Archive body/tool node、歧义、多 conversation、真实 exact mismatch；验证 97/86 数字差额。
+- [pending] 正式补齐历史 seed/backfill：把 DevSpace 历史 metadata 导入 Archive binding 表，再用 exact tool+args 回填；不靠时间决定身份。
+- [pending] 还原 2026-10-06 16:xx 北京时间 429：找到第一条 cooldown arm/extend、route、native vs Archive active request、前序请求节奏，判断是否由本轮代码/主动请求风暴触发。
+- [pending] 新增独立 429 cooldown 通知：只在“未处于 cooldown -> 进入 cooldown”时发一次，内容包含原因、开始时间、预计解除时间；滑动延长记录日志但不重复轰炸手机。
+- [pending] DevSpace exec_command 增加 refreshEnvironment=true：显式失效 Windows persisted environment cache 后再执行当前命令；在 tool schema/help 与简短 Agent 使用说明中暴露。
+- [pending] 重新分解生产 ~120ms warm exec 延迟，明确相比裸 cmd 多出的成本来自 process-host / DevSpace session / MCP Host 哪一层。
+- [pending] 全量测试、生产部署、healthz/Archive status 验证，并更新 PROGRESS。
+
 ## 2026-10-06 Phase 3/4/5 收尾实现 ExecPlan
 
 - [in_progress] 先做真实资源预算：以当前 Chrome remote-debugging browser 为单位，测量现有 Guardian 的长期占用，并做“+1 idle ChatGPT tab”“+1 active sending/listening tab”的稳态/峰值 A/B；同时记录页面 JS heap/DOM 指标，避免只看刚打开的瞬时值。根据实测成本决定 Phase 1 Listener、Phase 3 Listener、Phase 4 Actor 是否值得物理合一。
