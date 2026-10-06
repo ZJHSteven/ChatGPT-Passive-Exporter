@@ -588,7 +588,10 @@ export function shouldRunDeferredGapRepair({
  * - 原生 WSS reconnect 的盲区通常只有几秒；此时从最新端向旧端扫描，只要在最后一个差异
  *   之后连续看到**一整页**稳定旧记录，就已经跨过本次 gap 的变化边界。第一页完全稳定时
  *   因此只请求一页；第一页有变化才自然翻第二页。
- * - startup / periodic / Guardian 重建可能跨越更久，继续沿用 deepThreshold（默认 56）。
+ * - startup / Guardian 重建的首要目标是尽快找回“最近仍 active / 刚变化”的 conversation。
+ *   这类记录天然位于 updated-desc 列表前部；深扫会在每次部署/重启额外制造连续 catalog burst，
+ *   2026-10-06 已真实观察到 startup 4 页后紧接 body 命中 429。因此它们也只要求一整页稳定 overlap。
+ * - periodic 是唯一保留的深层兜底，用 deepThreshold（默认 56）追更久以前的遗漏。
  *
  * 这里不是“看到一个熟 ID 就停”：一个偶然旧 ID 不足以证明 offset pagination 已重新进入
  * 稳定区域，完整一页才是短 gap 的安全缓冲。
@@ -596,7 +599,9 @@ export function shouldRunDeferredGapRepair({
 export function catalogStableOverlapTarget(reason, { pageSize = 28, deepThreshold = 56 } = {}) {
   const safePageSize = Math.max(1, Math.trunc(pageSize))
   const safeDeepThreshold = Math.max(safePageSize, Math.trunc(deepThreshold))
-  return reason === 'wss-reconnect' || reason === 'gap-repair' ? safePageSize : safeDeepThreshold
+  return ['wss-reconnect', 'gap-repair', 'startup', 'guardian-recover'].includes(reason)
+    ? safePageSize
+    : safeDeepThreshold
 }
 
 /**
