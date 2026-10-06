@@ -1,3 +1,15 @@
+## 2026-10-06 Phase 3/4/5 收尾实现 ExecPlan
+
+- [in_progress] 先做真实资源预算：以当前 Chrome remote-debugging browser 为单位，测量现有 Guardian 的长期占用，并做“+1 idle ChatGPT tab”“+1 active sending/listening tab”的稳态/峰值 A/B；同时记录页面 JS heap/DOM 指标，避免只看刚打开的瞬时值。根据实测成本决定 Phase 1 Listener、Phase 3 Listener、Phase 4 Actor 是否值得物理合一。
+- [pending] Phase 3 productionize 第一方跨设备 fallback：复刻当前 Web 的 `stream_status=IS_STREAMING -> /resume 尝试 -> 失败后约 7~10s stream_status + conversation body checkpoint refresh -> COMPLETE final body` 状态机；必须事件/状态闭环，不得固定盲轮询。仅对已确认 active 的 CID 启动 bounded watcher，并在 terminal/idle/timeout 时自动停止。
+- [pending] Phase 3 drift/安全：被动记录第一方轮询 cadence、endpoint shape、body identity 字段和 terminal transition；协议/DOM 指纹变化时进入 drift 告警与人工复核，不自动学习后直接 replay；429/403/404/shape drift 立即熔断，不制造请求风暴。
+- [pending] Phase 4 把 Actor CLI 重构为闭环页面控制器：支持 `new`、`continue <cid>`、active conversation `follow-up/steer`、多任务顺序调度。每一步都必须“导航/点击 -> 状态确认 -> composer ready -> 上下文/body 已加载 -> prepare/submit/steer 已观察 -> conversation/turn identity 已确认”后才进入下一步，禁止固定 sleep 驱动。
+- [pending] Phase 4 导航策略：优先第一方 SPA/真实 DOM 操作，不再默认 `Page.navigate()`；DOM locator 使用语义属性/角色/表单状态的多候选适配器，并把 composer/send/stop/new-chat/sidebar/project 的 DOM shape 纳入 drift fingerprint。发送节奏加入人类级 rate limiting（任务间最小间隔、并发上限、随机小抖动），但可靠性仍由状态闭环而非等待秒数保证。
+- [pending] Phase 4 管理动作逐项取证并 CLI 化：archive/delete、project 内新建、move conversation A->B project、project create/rename/edit；每一项先抓第一方 native 行为，再决定 DOM 还是稳定 backend API，发送/Sentinel 仍坚持页面自身网络栈。
+- [pending] Phase 4 语音/附件：取证 Web 语音输入的实际音频上传/转录流程，以及图片/文件 attachment 的第一方 upload/asset 绑定路径；优先复用原生 UI/协议，不自行仿造未验证 upload token。
+- [pending] Phase 5 复用 Family-AI 产品壳：保留移动端/侧边栏的 conversation/project 列表、新建、切换、文本/语音/图片/文件输入和流式消息 UI；后端从原有第三方模型 API 改为 `ChatGPT Archive + Guardian/Actor CLI + LiveTurn/checkpoint stream`。iPhone 客户端只连自家后端，不直接持有 ChatGPT 会话凭据。
+- [pending] Phase 5 数据面：本地 SQLite/Archive 作为 canonical history；本机 Actor 发出的 turn 直接持有 original SSE，checkpoint watcher 仅负责远端/历史 fallback；前端按 turn identity 增量刷新，断线后从本地 durable event log/canonical body 追平，避免反复 late-attach ChatGPT SSE。
+
 ## 2026-10-06 Phase 3 收口 / Phase 4 Guardian-Actor 合并复核 ExecPlan
 
 - [done] Phase 3 跨设备 late-open 研究告一段落：真实 iPhone -> PC 样本已确认存在 `stream_status + conversation body` checkpoint polling 路径；HTTP `/resume`、turn-WSS、checkpoint refresh、final-only fallback 已明确分层，证据与边界写入 `WSS_PROTOCOL.md / PROGRESS.md`。
