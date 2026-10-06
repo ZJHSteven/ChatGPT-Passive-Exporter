@@ -2558,6 +2558,52 @@ async function main() {
     }
   }
 
+  /**
+   * 旧版本因为“并发时必须只有一个 metadata”过于保守，留下了一批本可确定的 unbound。
+   * 启动时只对这些少量 unbound 做一次本地回填：在它真实活动时间附近找已有 body turn，
+   * 用同一个 exact tool+args matcher 复核。只有所有命中都指向同一个 conversation 才落 binding。
+   */
+  const backfillStoredDevSpaceBindings = () => {
+    let created = 0
+    for (const binding of archive.listDevSpaceMetadataBindings({ onlyUnbound: true, limit: 1000 })) {
+      const startSeconds = Math.max(0, Number(binding.firstSeenAt) - 5 * 60_000) / 1000
+      const endSeconds = (Number(binding.lastSeenAt) + 5 * 60_000) / 1000
+      const turns = archive.db.prepare(
+        "SELECT conversation_id AS conversationId, turn_exchange_id AS turnExchangeId, max(create_time) AS lastAt FROM messages WHERE recipient='api_tool.call_tool' AND text LIKE '%/devspace/%' AND create_time BETWEEN ? AND ? AND turn_exchange_id IS NOT NULL GROUP BY conversation_id, turn_exchange_id ORDER BY lastAt DESC LIMIT 250",
+      ).all(startSeconds, endSeconds)
+
+      const matches = []
+      for (const turn of turns) {
+        const candidate = matchDevSpaceBindingFromStoredTurn(turn.conversationId, turn.turnExchangeId)
+        if (candidate?.metadataId !== binding.metadataId) continue
+        matches.push({
+          ...candidate,
+          conversationId: turn.conversationId,
+          turnExchangeId: turn.turnExchangeId,
+          lastAt: Number(turn.lastAt || 0),
+        })
+      }
+      const conversationIds = [...new Set(matches.map(match => match.conversationId))]
+      if (conversationIds.length !== 1 || matches.length === 0) continue
+      const best = matches.sort((a, b) =>
+        b.uniqueMatches - a.uniqueMatches
+        || b.exactMatches - a.exactMatches
+        || b.lastAt - a.lastAt)[0]
+      bindDevSpaceMetadataToConversation({
+        metadataId: binding.metadataId,
+        conversationId: best.conversationId,
+        startAt: binding.firstSeenAt,
+        observedAt: Date.now(),
+        turnExchangeId: best.turnExchangeId,
+        evidence: 'body:exact-tool-args-backfill',
+        confidence: 'high',
+        lifecycleState: 'closed',
+      })
+      created += 1
+    }
+    return created
+  }
+
   const reconcileDevSpaceBindingFromBody = (conversationId, diagnostic) => {
     const now = Date.now()
     const turnExchangeId = typeof diagnostic?.turnExchangeId === 'string' ? diagnostic.turnExchangeId : null
