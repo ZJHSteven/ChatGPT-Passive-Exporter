@@ -1,10 +1,11 @@
 ## 2026-10-06 Phase 3 收口 / Phase 4 Guardian-Actor 合并复核 ExecPlan
 
 - [done] Phase 3 跨设备 late-open 研究告一段落：真实 iPhone -> PC 样本已确认存在 `stream_status + conversation body` checkpoint polling 路径；HTTP `/resume`、turn-WSS、checkpoint refresh、final-only fallback 已明确分层，证据与边界写入 `WSS_PROTOCOL.md / PROGRESS.md`。
-- [in_progress] 重新审计“Guardian 必须与 Actor 分 tab”这一旧架构结论。严格区分三件事：①同 renderer 已有 active generation 时切到另一 conversation 的 composer/UI 冲突；②普通 idle/finished Guardian 是否可正常发送；③Guardian 的固定 target/URL、WSS、Fetch 拦截与健康检测是否因 Actor 导航/发送受到工程性破坏。
-- [pending] 用当前源码和历史实验先证明/排除工程限制，再做最小真机 A/B：idle Guardian 发送一个短测试 turn，观察账户 WSS requestId/topic 是否连续、Guardian target 是否仍被 daemon 认领、Actor submit 是否成功、原有 passive observers/Fetch gates 是否影响第一方发送。
-- [pending] 若合并可行，设计单 `Guardian+Actor` renderer 的状态机：idle 时守护账户 WSS；发送时临时导航/提交；完成或提交成功后无需等待生成结束即可安全回到 neutral/guardian route；明确同一 renderer 只允许一个 active UI generation，真正并发发送再扩 Actor pool。
-- [pending] 若合并不可行，必须给出可复现的具体故障证据（WSS 被拆、target 身份丢失、Fetch 拦截误伤、UI active-generation 锁、恢复失败等），不再以“隔离更稳妥”作为充分理由。
+- [done] “Guardian 必须与 Actor 分 tab”已被真机反证。正式 Guardian target 直接跑当前 Actor 代码，新建 conversation 和已完成 conversation continuation 均成功；Guardian targetId/health 保持稳定，账户 WSS 仍能收到两轮 complete。`SAMETABB928` 只证明同 renderer **并发 active generation** 会共享 UI generation state，并不限制串行发送。
+- [done] 已定位当前合并的真实工程副作用：Actor 无条件 `Page.navigate()` 会让 Guardian 每次发送重建一整套账户 WSS（3->6->9 overlap）并触发 conversation transport rotation；URL marker 会丢失；Guardian target 又被 LiveTurn passive observer 排除，导致自己发出的 SSE 不落 Phase 3；cooldown 的 Guardian REST block 也可能误伤 continuation 页面加载。
+- [in_progress] 实现 Guardian-aware actor mode，而不是继续永久维护第二个常驻 Actor tab：①若当前页面已可发送，避免 full `Page.navigate`；②需要切 conversation 时优先使用第一方 SPA route/已有 DOM 导航并验证不会重建账户 WSS；③Guardian 自身 `/f/conversation`/`/resume` 复用 LiveTurn observer；④Guardian identity 由 targetId/state 持久恢复，不再单押 URL marker；⑤显式 actor 操作与 cooldown REST block 建立可预测门控。
+- [pending] 完成合并后做三组 E2E：new chat、已完成 conversation continuation、上一 turn 仍 active 时第二次发送应明确拒绝/转入备用 Actor pool；比较合并前后 WSS carrier generation、LiveTurn trace、429/gap-repair 与内存占用。
+- [pending] Phase 4 后续动作按第一方 UI 逐项取证：steer、project 内新建、move project、archive、delete；发送与管理动作均优先走网页自身 React/网络栈，不自行重写 Sentinel/PoW/challenge。
 
 ## 2026-10-06 DevSpace→Archive 事件唤醒 / binding 简化 / watchdog 语义修正 ExecPlan
 
