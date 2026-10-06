@@ -357,6 +357,27 @@ export function shouldStartCatalogWatchdog({
   return true
 }
 
+/**
+ * 判断一个 CDP target 是否应该挂“普通页面被动 observer”。
+ *
+ * 早期实现为了避免 Guardian 与普通页职责混在一起，显式排除了 guardian targetId。
+ * 但 Phase 4 已真机证明 Guardian 可以直接承担 Actor；此时它自己发出的 `/f/conversation`
+ * SSE 正是 Phase 3 最完整的 LiveTurn 数据源。如果仍排除 Guardian，物理合并虽然省了一个 tab，
+ * 却会把最有价值的原始 SSE 丢掉。
+ *
+ * 一个 page target 可以同时被多个 CDP session 观察：Guardian 主 session 继续负责 WSS、健康检查、
+ * cooldown `Network.setBlockedURLs` 等控制面；被动 observer session 只 `Network.enable` 并读取页面已经
+ * 自然产生的 response/stream，不创建请求、不改路由。因此这里不再按 Guardian 身份排除。
+ */
+export function shouldAttachPassivePageObserver(target) {
+  return Boolean(
+    target?.type === 'page'
+    && typeof target?.webSocketDebuggerUrl === 'string'
+    && target.webSocketDebuggerUrl
+    && String(target?.url || '').startsWith('https://chatgpt.com/')
+  )
+}
+
 /** catalog late-start 超时与可靠 start 超时必须保留不同 lifecycle 语义。 */
 export function watchdogTriggerForStartType(startType) {
   return String(startType || '').startsWith('catalog:')
@@ -3767,10 +3788,10 @@ async function main() {
   }
 
   const refreshPassivePageObservers = async (targets) => {
-    const eligible = targets.filter(target => target?.type === 'page'
-      && target.id !== guardian?.targetId
-      && typeof target.webSocketDebuggerUrl === 'string'
-      && String(target.url || '').startsWith('https://chatgpt.com/'))
+    // Guardian 现在也是 Phase 4 默认 Actor，因此必须和普通 ChatGPT page 一样挂被动 observer。
+    // 这里的 observer 只读 Network，不会替代/重置 Guardian 自己的控制 session；
+    // cooldown 的 blocked URLs 仍由 Guardian 主 session 维护。
+    const eligible = targets.filter(shouldAttachPassivePageObserver)
     const liveIds = new Set(eligible.map(target => target.id))
 
     for (const [targetId, observer] of passivePageObservers) {

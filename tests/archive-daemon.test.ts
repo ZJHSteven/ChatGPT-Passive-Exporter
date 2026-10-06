@@ -26,6 +26,7 @@ import {
   shouldRunDeferredGapRepair,
   shouldQueueWatchdogDiagnostic,
   shouldRepairConversationTransport,
+  shouldAttachPassivePageObserver,
   watchdogDiagnosticTurnKey,
   reconcileWatchdogDiagnosticTurn,
   shouldStartCatalogWatchdog,
@@ -38,6 +39,28 @@ import {
 } from '../scripts/chatgpt-archive-daemon.mjs'
 
 describe('ChatGPT Archive daemon WSS parser', () => {
+  test('Guardian 也属于被动页面 observer：物理合并后仍能抓 Actor SSE', () => {
+    const guardian = {
+      id: 'guardian-target',
+      type: 'page',
+      url: 'https://chatgpt.com/c/example?chatgpt-archive-guardian=1',
+      webSocketDebuggerUrl: 'ws://127.0.0.1/devtools/page/guardian-target',
+    }
+    expect(shouldAttachPassivePageObserver(guardian)).toBe(true)
+    expect(shouldAttachPassivePageObserver({
+      ...guardian,
+      type: 'service_worker',
+    })).toBe(false)
+    expect(shouldAttachPassivePageObserver({
+      ...guardian,
+      url: 'https://example.com/',
+    })).toBe(false)
+    expect(shouldAttachPassivePageObserver({
+      ...guardian,
+      webSocketDebuggerUrl: '',
+    })).toBe(false)
+  })
+
   test('429 cooldown 通知文案包含原因、路由与预计解除时间', () => {
     expect(buildCooldownNotificationPayload({
       reason: 'active body HTTP 429',
