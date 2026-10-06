@@ -208,12 +208,74 @@ Tab A 在 conversation `6ab9ab7e-...` 运行长工具 turn，原始 SSE `33772.1
 
 但同 renderer 的 UI 状态不是按 conversation 完全隔离：切到 B 后，B 的 ProseMirror 可以输入 `SAMETABB928`，但 A2 仍运行时页面不渲染 send button；A2 完成后，其长答案还出现在当时 href 已经是 B 的 DOM 尾部。canonical archive 仍按真正 CID/turn 分离，这属于 renderer/UI active-generation 状态跨路由。
 
-架构含义：
+2026-09-28 当时据此保守采用了“Guardian 与 Actor 分 tab”。2026-10-06 进一步真机实验表明，需要把该结论收窄：**物理分 tab 不是协议要求，只是当时实现上的隔离策略。**
 
-- **Guardian**：继续独立 tab；一个 Guardian 页可同时订阅多个账户 topic，不需要“一个 topic 一个 tab”。
-- **Actor**：单 tab 适合顺序发送；真正并发发送需要小型 Actor pool（例如 2～3 个 renderer），不能靠同 tab sidebar 轮转安全地产生多个并发 turn。
-- **Live observer**：同一 renderer 的旧 SSE 可以跨 SPA route 继续被 CDP 观察，因此“监听”本身不要求一 turn 一 tab；但若需要同时启动新 turn，UI 的全局 active-generation 状态成为限制。
-- **未来 StreamHub**：动态 `conversation-turn-*` WSS 若验证可 late-attach，仍应由一个账户级 Hub 多路复用，不应退化成一 turn 一个 tab。
+### 2026-10-06 Guardian 直接兼任 Actor：new + continue 均成功
+
+实验把现有 `archive-actor-state.json` 临时指向正式 Guardian target `880194...`，不修改 Actor 源码。Guardian 当时 `healthFailures=0 / rebuilds=0 / cooldown=null`，账户 WSS 为 3 条。
+
+第一轮 new chat：
+
+```text
+targetId        = 880194...
+conversationId  = 6ac4a8e4-...
+/f/conversation = 200 text/event-stream
+bindDelay       ~= 3.7s
+send attempts   = 1
+```
+
+随后 Guardian 的 `conversations` topic 收到该轮 `conversation-turn-complete` 与 `conversation-created`。第二轮直接对 `6ac4a8e4-...` continuation：
+
+```text
+targetId        = 同一个 880194...
+/f/conversation = 已发出
+mode            = continue
+bindDelay       ~= 49ms（URL 本来已经绑定该 CID）
+```
+
+几秒后同一 Guardian 再次收到 `conversation-turn-complete`。整个实验 Guardian targetId 未变化，daemon health 仍为 0 failure / 0 rebuild。因此：
+
+```text
+idle/finished Guardian
+  -> new chat send       可行
+  -> finished convo send 可行
+
+same renderer already has another active generation
+  -> route 到第二 convo 再发
+  -> UI generation state 可能阻止 send
+```
+
+后一条才是 `SAMETABB928` 的真实边界；它是**并发 active turn 限制**，不是普通路由/发送限制。
+
+### 当前实现为什么仍不应立刻删掉独立 Actor
+
+现 `sendActorPrompt()` 无条件先 `Page.navigate(targetUrl)`。在 Guardian 上跑两轮后，账户 WSS 发生：
+
+```text
+初始：3 sockets
+new send 后：6 sockets overlap
+continue 后：9 sockets overlap
+
+conversation carrier:
+59412.1672
+  -> 59412.1990
+  -> 59412.2303
+```
+
+每次 carrier 换代都会被 Archive 正确识别为 `conversation-transport-rotation` 并排队 gap-repair。也就是说“能发”已经证明，但当前 Actor 的整页导航会对 Guardian 的守护职责制造不必要 transport churn。
+
+还有三个纯工程缺口：
+
+1. **Guardian identity**：`ensureGuardian()` 当前重启时主要靠 URL query `chatgpt-archive-guardian=1` 找回 target；Actor 导航到 `/c/<id>` 会把 marker 丢掉。本次实验后用 `history.replaceState` 无刷新补回 marker，证明身份恢复不需要重新导航，但生产方案应持久化 target identity，而不是依赖临时手工修补。
+2. **LiveTurn**：`refreshPassivePageObservers()` 明确排除 `guardian.targetId`；因此 Guardian 自己发出的 `/f/conversation` SSE 虽然成功，当前 Phase 3 tracker 不会记录它。本次两轮 daemon `liveTransport.active=0` 正好暴露这个缺口。
+3. **429 cooldown**：Guardian cooldown 会通过 `Network.setBlockedURLs` 屏蔽 `/backend-api/conversations*` 与 `/backend-api/conversation/*`。新 chat submit 本身是 `/f/conversation` 不受影响，但 continuation 导航若需要 conversation body，合并模式下可能被本地 block 误伤，必须为显式 actor 操作定义门控。
+
+因此当前更准确的架构含义是：
+
+- **Guardian + Actor 可以合并为一个串行 renderer**；没有协议层必须分 tab 的证据。
+- **同一 renderer 同一时刻只应有一个 UI active generation**。需要并发发多个 turn 时，再临时启用小型 Actor pool，而不是长期常驻第二个 Actor。
+- **合并前必须先做 Guardian-aware actor**：避免不必要 full navigation、把 Guardian SSE 接入 LiveTurn、稳定 Guardian target identity，并处理 cooldown REST block。
+- **账户 WSS topic 本来就应由一个 Guardian 多路复用**；不需要按 topic 或按 conversation 拆 tab。
 
 ## 11. 2026-09-28 same-profile resume credential 来源：IndexedDB persisted atom
 
