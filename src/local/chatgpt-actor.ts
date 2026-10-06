@@ -824,12 +824,20 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
             throw new Error(`ChatGPT actor ${mode} response drifted from event-stream: ${responseState.mimeType}`)
           }
           boundAt = Date.now()
+          const runningConfirmed = Boolean(
+            firstDataAt
+            || responseState.mimeType?.includes('event-stream')
+            || (await readActorPageSnapshot(client)).stopVisible,
+          )
           const recorder = new ActiveTurnRecorder(options.tracePath)
           await recorder.append(buildActorSubmitTrace({
             submittedAt: submitEvent.at,
             boundAt,
             conversationId,
             actorTargetId: targetId,
+            mode,
+            targetMode,
+            navigationMode: route.navigationMode,
             prepareRequestId: prepareState.requestId,
             prepareStatus: prepareState.status,
             sendHandlerAttempts,
@@ -837,6 +845,9 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
             responseStatus: responseState.status,
             responseMimeType: responseState.mimeType,
             pageUrlBefore,
+            contextReadyAt,
+            firstDataAt,
+            runningConfirmed,
           }))
           const prior = await readActorState(options.statePath)
           await writeActorState(options.statePath, {
@@ -864,11 +875,7 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
             contextBodyResponseAt,
             contextBodyStatus,
             firstDataAt,
-            runningConfirmed: Boolean(
-              firstDataAt
-              || responseState.mimeType?.includes('event-stream')
-              || (await readActorPageSnapshot(client)).stopVisible,
-            ),
+            runningConfirmed,
             targetMode,
           }
         }
