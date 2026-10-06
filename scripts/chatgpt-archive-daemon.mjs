@@ -36,6 +36,14 @@ import { ProtocolDriftLedger } from '../src/local/protocol-drift.ts'
 import { diagnoseLatestRun } from '../src/core/run-diagnostics.ts'
 import { LiveTurnTransportTracker } from '../src/local/live-turn-transport.ts'
 import {
+  checkpointProbeDelayMs,
+  createCheckpointWatch,
+  normalizeCheckpointStreamStatus,
+  recordCheckpointBody,
+  recordCheckpointError,
+  recordCheckpointStatus,
+} from '../src/local/checkpoint-refresh.ts'
+import {
   DevSpaceAuditBridge,
   defaultDevSpaceDbPath,
   matchDevSpaceCandidateForTurn,
@@ -1141,6 +1149,14 @@ async function main() {
   const completeSettleMs = intFlag(flags, 'complete-settle-ms', 15_000, 1000)
   const recoveryProbeGapMs = intFlag(flags, 'recovery-probe-gap-ms', 30_000, 1000)
   const recoveryProbeSuccesses = intFlag(flags, 'recovery-probe-successes', 3, 1)
+  // 2026-10-06 两个真实 iPhone -> PC late-open 样本都显示：resume 不可用以后，
+  // 第一方 Web 大约每 7~10 秒读取一次 stream_status + conversation body。
+  // 这里复刻的是这个量级和状态机，不做固定 7 秒机械轮询；随机抖动也能避免形成强周期指纹。
+  const checkpointPollMinMs = intFlag(flags, 'checkpoint-poll-min-ms', 7_000, 1000)
+  const checkpointPollMaxMs = intFlag(flags, 'checkpoint-poll-max-ms', 10_000, checkpointPollMinMs)
+  const checkpointFirstProbeMs = intFlag(flags, 'checkpoint-first-probe-ms', 1_000, 0)
+  const checkpointErrorRetryMs = intFlag(flags, 'checkpoint-error-retry-ms', 30_000, 1000)
+  const checkpointMaxErrors = intFlag(flags, 'checkpoint-max-errors', 3, 1)
   const watchdogMinutes = Number(flags.get('watchdog-minutes') ?? 45)
   if (!Number.isFinite(watchdogMinutes) || watchdogMinutes <= 0) throw new Error('--watchdog-minutes must be > 0')
   const watchdogMs = watchdogMinutes * 60_000
@@ -1223,6 +1239,15 @@ async function main() {
  const passivePageObservers = new Map()
   // Phase 3 只在内存/state 暴露当前 in-flight transport 的生命体征；不保存正文或 token。
   const activeLiveTransports = new Map()
+  // Remote/跨设备 turn 没有本机原始 SSE 时，使用第一方 Web 已验证的
+  // `stream_status + canonical body` checkpoint fallback。它只在明确 active CID 上建立，
+  // 并和 LiveTurn transport 分开：一旦本机已经有真正 live transport，就暂停主动 checkpoint。
+  const checkpointWatches = new Map()
+  let checkpointInFlight = false
+  let checkpointProbes = 0
+  let checkpointBodyRefreshes = 0
+  let checkpointErrors = 0
+  let checkpointCompleted = 0
   const passiveObserverRetryAfter = new Map()
   const imageHydrationTargetRetryAfter = new Map()
   // body observation 可能恰好发生在一小时 cooldown 开始后。若缓存只有 10 分钟，
