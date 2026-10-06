@@ -408,8 +408,15 @@ async function readActorPageSnapshot(client: ActorCdpClient): Promise<ActorPageS
  * 把真实页面 DOM 收缩成“可自动化骨架”。浏览器侧可以读取 aria/title 来判断语义，
  * 但返回给 Node 的对象只保留 semantic 类别和结构属性，不把按钮文字或聊天正文写进 ledger。
  */
-async function readActorDomObservation(client: ActorCdpClient): Promise<ActorDomObservation> {
-  const value = await evaluateValue(client, `(() => {
+/**
+ * 生成交给浏览器 `Runtime.evaluate` 的 DOM 观察表达式。
+ *
+ * 单独暴露 builder 的原因不是为了让业务层拼脚本，而是为了让单元测试能在“不启动 Chrome”
+ * 的情况下至少做一次 JavaScript 语法编译。这个保护专门防止外层 template literal 把内层
+ * 正则转义吃掉——这类错误 TypeScript 无法发现，只有真正送进浏览器后才会变成 SyntaxError。
+ */
+export function buildActorDomObservationExpression(): string {
+  return `(() => {
     const usable = (element) => {
       if (!element || !element.isConnected) return false
       const rect = element.getBoundingClientRect()
@@ -519,7 +526,11 @@ async function readActorDomObservation(client: ActorCdpClient): Promise<ActorDom
       },
       controls,
     }
-  })()`)
+  })()`
+}
+
+async function readActorDomObservation(client: ActorCdpClient): Promise<ActorDomObservation> {
+  const value = await evaluateValue(client, buildActorDomObservationExpression())
   return value as ActorDomObservation
 }
 
