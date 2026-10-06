@@ -50,7 +50,7 @@ Usage:
   chatgpt-archive reindex [--all] [--db <path>]
   chatgpt-archive incidents [--status open|resolved] [--limit N] [--db <path>]
   chatgpt-archive turn-trace [--limit N] [--trace <path>] [--cluster-ms N]
-  chatgpt-archive actor send --prompt-file <path> [--conversation <UUID>] [--cdp URL] [--trace <path>] [--state <path>]
+  chatgpt-archive actor send --prompt-file <path> [--mode auto|new|continue|steer] [--conversation <UUID>] [--cdp URL] [--trace <path>] [--state <path>]
   chatgpt-archive actor status [--cdp URL] [--state <path>]
  chatgpt-archive actor reset [--cdp URL] [--state <path>]
   chatgpt-archive protocol status [--ledger <path>]
@@ -592,6 +592,10 @@ async function main() {
       const promptFile = flags.get('prompt-file')
       if (typeof promptFile !== 'string' || !promptFile) throw new Error('actor send requires --prompt-file <path>')
       const prompt = await fs.readFile(path.resolve(promptFile), 'utf8')
+      const actorMode = String(flags.get('mode') ?? 'auto')
+      if (!['auto', 'new', 'continue', 'steer'].includes(actorMode)) {
+        throw new Error('--mode must be one of auto|new|continue|steer')
+      }
       const tracePath = flags.has('trace')
         ? path.resolve(String(flags.get('trace')))
         : DEFAULT_TURN_TRACE_PATH
@@ -603,6 +607,7 @@ async function main() {
         tracePath,
         prompt,
         conversationId: typeof flags.get('conversation') === 'string' ? String(flags.get('conversation')) : null,
+        mode: actorMode,
         timeoutMs,
       }), null, 2))
       return

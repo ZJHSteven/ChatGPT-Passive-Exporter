@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { buildActorSubmitTrace } from '../src/local/active-turn-recorder.ts'
-import { actorConversationUrl, conversationIdFromUrl } from '../src/local/chatgpt-actor.ts'
+import { actorConversationUrl, conversationIdFromUrl, resolveActorSendMode } from '../src/local/chatgpt-actor.ts'
 
 describe('ChatGPT single actor helpers', () => {
   test('只把真实 /c/<uuid> 视为 conversation 绑定完成', () => {
@@ -18,6 +18,44 @@ describe('ChatGPT single actor helpers', () => {
       'https://chatgpt.com/c/6aae3805-792c-83ea-8ad7-ebe9d0c083b1',
     )
     expect(() => actorConversationUrl('WEB:temporary-id')).toThrow(/invalid ChatGPT conversation UUID/u)
+  })
+
+  test('Actor auto 会按当前 live 状态选择 new / continue / steer', () => {
+    const cid = '6aae3805-792c-83ea-8ad7-ebe9d0c083b1'
+    expect(resolveActorSendMode({ requestedMode: 'auto' })).toBe('new')
+    expect(resolveActorSendMode({
+      requestedMode: 'auto',
+      requestedConversationId: cid,
+      currentConversationId: null,
+    })).toBe('continue')
+    expect(resolveActorSendMode({
+      requestedMode: 'auto',
+      requestedConversationId: cid,
+      currentConversationId: cid,
+      stopVisible: true,
+    })).toBe('steer')
+  })
+
+  test('Actor 不允许在 waiting-for-final / 非当前页上冒充 steer', () => {
+    const cid = '6aae3805-792c-83ea-8ad7-ebe9d0c083b1'
+    expect(() => resolveActorSendMode({
+      requestedMode: 'auto',
+      requestedConversationId: cid,
+      currentConversationId: cid,
+      waitingForFinal: true,
+    })).toThrow(/waiting for full answer/u)
+    expect(() => resolveActorSendMode({
+      requestedMode: 'steer',
+      requestedConversationId: cid,
+      currentConversationId: '6aae3805-792c-83ea-8ad7-ebe9d0c083b2',
+      stopVisible: true,
+    })).toThrow(/current page/u)
+    expect(() => resolveActorSendMode({
+      requestedMode: 'steer',
+      requestedConversationId: cid,
+      currentConversationId: cid,
+      stopVisible: false,
+    })).toThrow(/live-attached/u)
   })
 
   test('actor-submit 使用 requestWillBeSent 时刻作为可靠本地 start', () => {
