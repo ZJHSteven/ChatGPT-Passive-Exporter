@@ -148,7 +148,6 @@ export interface DevSpaceMetadataBindingRow {
   lastAuditId: string | null
   lastAuditAt: number | null
   unboundWatchdogAt: number | null
-  unboundNotificationSentAt: number | null
   lifecycleState: 'unbound' | 'active' | 'closed'
 }
 
@@ -568,7 +567,6 @@ export class ChatArchiveDb {
         last_audit_id TEXT,
         last_audit_at INTEGER,
         unbound_watchdog_at INTEGER,
-        unbound_notification_sent_at INTEGER,
         lifecycle_state TEXT NOT NULL DEFAULT 'unbound'
       );
 
@@ -636,7 +634,6 @@ export class ChatArchiveDb {
     this.ensureColumn('incidents', 'head_rollback', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('incidents', 'off_head_same_turn_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('devspace_metadata_bindings', 'unbound_watchdog_at', 'INTEGER')
-    this.ensureColumn('devspace_metadata_bindings', 'unbound_notification_sent_at', 'INTEGER')
 
     // Incident 的稳定身份必须属于某一个 turn，而不是“这个 conversation 当前有一张红牌”。
     // 旧库已有少量 incident：优先沿用 turn_exchange_id；极少数没有 turn id 的历史行退化用自身 id，
@@ -2893,7 +2890,6 @@ export class ChatArchiveDb {
              last_request_id AS lastRequestId,
              last_audit_id AS lastAuditId, last_audit_at AS lastAuditAt,
              unbound_watchdog_at AS unboundWatchdogAt,
-             unbound_notification_sent_at AS unboundNotificationSentAt,
              lifecycle_state AS lifecycleState
       FROM devspace_metadata_bindings
       WHERE metadata_id = ?
@@ -2912,7 +2908,6 @@ export class ChatArchiveDb {
              last_request_id AS lastRequestId,
              last_audit_id AS lastAuditId, last_audit_at AS lastAuditAt,
              unbound_watchdog_at AS unboundWatchdogAt,
-             unbound_notification_sent_at AS unboundNotificationSentAt,
              lifecycle_state AS lifecycleState
       FROM devspace_metadata_bindings
       WHERE conversation_id = ?
@@ -2943,7 +2938,6 @@ export class ChatArchiveDb {
              last_request_id AS lastRequestId,
              last_audit_id AS lastAuditId, last_audit_at AS lastAuditAt,
              unbound_watchdog_at AS unboundWatchdogAt,
-             unbound_notification_sent_at AS unboundNotificationSentAt,
              lifecycle_state AS lifecycleState
       FROM devspace_metadata_bindings
       ${where}
@@ -3023,8 +3017,8 @@ export class ChatArchiveDb {
 
   /**
    * 未绑定 metadata 自己也有真实 watchdog 生命周期。
-   * 这里分别持久化“已超时”和“超时通知已送达”，使 binding 失败或 daemon 重启
-   * 都不会抹掉 first-tool timeout 事实。
+   * 这里只持久化“已经跨过 watchdog 阈值”这个事实；timeout 本身不是 incident，
+   * 不直接发送通知。真正的通知仍由后续 body/status 诊断结果决定。
    */
   markDevSpaceUnboundWatchdog(metadataId: string, detectedAt: number): DevSpaceMetadataBindingRow | null {
     this.db.prepare(`
@@ -3033,41 +3027,6 @@ export class ChatArchiveDb {
       WHERE metadata_id = ? AND conversation_id IS NULL
     `).run(Math.max(0, Math.trunc(detectedAt)), metadataId)
     return this.getDevSpaceMetadataBinding(metadataId)
-  }
-
-  markDevSpaceUnboundNotificationSent(metadataId: string, sentAt: number): DevSpaceMetadataBindingRow | null {
-    this.db.prepare(`
-      UPDATE devspace_metadata_bindings
-      SET unbound_notification_sent_at=COALESCE(unbound_notification_sent_at, ?)
-      WHERE metadata_id = ?
-    `).run(Math.max(0, Math.trunc(sentAt)), metadataId)
-    return this.getDevSpaceMetadataBinding(metadataId)
-  }
-
-  conversationTurnToolWindow(conversationId: string, turnExchangeId: string): {
-    startAt: number
-    endAt: number
-    toolCallCount: number
-  } | null {
-    const row = this.db.prepare(`
-      SELECT min(create_time) AS minCreateTime,
-             max(create_time) AS maxCreateTime,
-             sum(CASE WHEN role='assistant' AND recipient <> 'all' THEN 1 ELSE 0 END) AS toolCallCount
-      FROM messages
-      WHERE conversation_id = ?
-        AND turn_exchange_id = ?
-        AND create_time IS NOT NULL
-    `).get(conversationId, turnExchangeId) as {
-      minCreateTime: number | null
-      maxCreateTime: number | null
-      toolCallCount: number | null
-    } | undefined
-    if (!row || !Number.isFinite(row.minCreateTime) || !Number.isFinite(row.maxCreateTime)) return null
-    return {
-      startAt: Number(row.minCreateTime) * 1000,
-      endAt: Number(row.maxCreateTime) * 1000,
-      toolCallCount: Number(row.toolCallCount || 0),
-    }
   }
 
   getMessages(conversationId: string): Array<Record<string, unknown>> {

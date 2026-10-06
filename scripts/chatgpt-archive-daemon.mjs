@@ -1476,7 +1476,6 @@ async function main() {
         confidence: binding.confidence,
         lastTurnExchangeId: binding.lastTurnExchangeId,
         unboundWatchdogAt: binding.unboundWatchdogAt,
-        unboundNotificationSentAt: binding.unboundNotificationSentAt,
         lifecycleState: binding.lifecycleState,
       })),
     },

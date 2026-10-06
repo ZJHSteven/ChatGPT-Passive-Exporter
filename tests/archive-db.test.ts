@@ -73,7 +73,6 @@ describe('ChatArchiveDb', () => {
         firstSeenAt: 1000,
         lifecycleState: 'unbound',
         unboundWatchdogAt: null,
-        unboundNotificationSentAt: null,
       })
       db.observeDevSpaceMetadata({
         metadataId: 'meta-chat-1',
@@ -83,13 +82,10 @@ describe('ChatArchiveDb', () => {
       expect(db.markDevSpaceUnboundWatchdog('meta-chat-1', 2200)).toMatchObject({
         unboundWatchdogAt: 2200,
       })
-      expect(db.markDevSpaceUnboundNotificationSent('meta-chat-1', 2300)).toMatchObject({
-        unboundNotificationSentAt: 2300,
-      })
       const bound = db.bindDevSpaceMetadata({
         metadataId: 'meta-chat-1',
         conversationId: 'conversation-1',
-        evidence: 'wss:conversation-created+devspace:first-tool',
+        evidence: 'body:exact-tool-args',
         confidence: 'high',
         observedAt: 2500,
         lifecycleState: 'active',
@@ -101,7 +97,6 @@ describe('ChatArchiveDb', () => {
         boundAt: 2500,
         lifecycleState: 'active',
         unboundWatchdogAt: 2200,
-        unboundNotificationSentAt: 2300,
       })
       expect(db.updateDevSpaceBindingTurn({
         conversationId: 'conversation-1',
