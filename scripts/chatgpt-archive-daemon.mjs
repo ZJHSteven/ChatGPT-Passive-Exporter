@@ -3256,10 +3256,6 @@ async function main() {
 
   const checkUnboundDevSpaceTimeouts = () => {
     const now = Date.now()
-    const hasTimedOut = [...unboundDevSpaceTurns.values()]
-      .some(candidate => now - Number(candidate.startedAt) >= watchdogMs)
-    // 网络前先用本地已有 body 再试一次 exact-match；很多历史 unbound 可在这里零请求修复。
-    if (hasTimedOut) backfillStoredDevSpaceBindings()
     for (const [metadataId, candidate] of unboundDevSpaceTurns) {
       if (now - Number(candidate.startedAt) < watchdogMs) continue
       archive.markDevSpaceUnboundWatchdog(metadataId, now)
@@ -4645,7 +4641,13 @@ async function main() {
 
   // 再修复旧版留下的“明明能 exact-match 但因为并发而 unbound”的历史行；
   // 随后做一次 durable catch-up。这样当前新 audit 一进来时即可直接命中已知 CID。
-  const devSpaceBackfilledBindings = backfillStoredDevSpaceBindings()
+  // 历史全量 backfill 是迁移任务，不是 daemon 每次重启都要做的稳态工作。
+  // 首次把旧 DevSpace metadata seed 进 Archive 时跑一遍即可；之后 live body sync 自己会
+  // 对当前 turn 做 exact-match。否则少量永久无法匹配的旧 metadata 会让每次启动都重扫
+  // 2 万+ audit / 数百 turn，甚至把 Watchdog 主循环堵住一分多钟。
+  const devSpaceBackfilledBindings = devSpaceHistoricalSeeded > 0
+    ? backfillStoredDevSpaceBindings()
+    : 0
   if (devSpaceBackfilledBindings > 0) {
     await log('DevSpace exact-match binding backfill complete', {
       created: devSpaceBackfilledBindings,
