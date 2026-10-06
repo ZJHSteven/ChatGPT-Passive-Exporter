@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Actor 成功发送后现在会把 `mode / targetMode / navigationMode / contextReadyAt / firstDataAt / runningConfirmed` 真正写入 `actor-submit` JSONL，而不是只在 CLI 返回值里短暂存在；runningConfirmed 也只计算一次，trace 与 CLI 结果一致。提交 `72292ef`。
 - 2026-10-07 Actor forensic trace 已扩展可选闭环字段：发送模式、target 模式、导航方式、上下文 ready、首个 SSE data、runningConfirmed。后续可直接区分 SPA/full fallback、new/continue/steer 与“HTTP 已接收但流未起”等漂移。提交 `ea305c9`。
 - 2026-10-07 补齐 Actor CLI 兜底错误文案，使 `send|batch|status|reset` 与真实子命令一致；提交 `7e54544`。
 - 2026-10-07 清理 Phase 4 计划中的旧并发前提：`SAMETABB928` 不再作为“同 tab 一次只能一个 active generation”的证据；E2E 改为 new / finished continue / active steer / A active 时同 tab 新开 B 四组。提交 `03ebc9b`。
