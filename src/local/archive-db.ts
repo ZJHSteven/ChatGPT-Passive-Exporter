@@ -147,6 +147,8 @@ export interface DevSpaceMetadataBindingRow {
   lastRequestId: string | null
   lastAuditId: string | null
   lastAuditAt: number | null
+  unboundWatchdogAt: number | null
+  unboundNotificationSentAt: number | null
   lifecycleState: 'unbound' | 'active' | 'closed'
 }
 
@@ -565,6 +567,8 @@ export class ChatArchiveDb {
         last_request_id TEXT,
         last_audit_id TEXT,
         last_audit_at INTEGER,
+        unbound_watchdog_at INTEGER,
+        unbound_notification_sent_at INTEGER,
         lifecycle_state TEXT NOT NULL DEFAULT 'unbound'
       );
 
@@ -631,6 +635,8 @@ export class ChatArchiveDb {
     this.ensureColumn('incidents', 'head_state', 'TEXT')
     this.ensureColumn('incidents', 'head_rollback', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('incidents', 'off_head_same_turn_count', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('devspace_metadata_bindings', 'unbound_watchdog_at', 'INTEGER')
+    this.ensureColumn('devspace_metadata_bindings', 'unbound_notification_sent_at', 'INTEGER')
 
     // Incident 的稳定身份必须属于某一个 turn，而不是“这个 conversation 当前有一张红牌”。
     // 旧库已有少量 incident：优先沿用 turn_exchange_id；极少数没有 turn id 的历史行退化用自身 id，
