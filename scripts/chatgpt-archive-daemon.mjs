@@ -3926,6 +3926,19 @@ async function main() {
   process.on('SIGINT', () => { stopping = true })
   process.on('SIGTERM', () => { stopping = true })
 
+  // 启动时先做一次 durable catch-up；之后以 DevSpace UDP 门铃为主，
+  // 每 60 秒才做一次极低频兜底扫描，防止 daemon 重启窗口/UDP 丢包留下最后一条 audit。
+  pollDevSpaceAudits()
+  devSpaceLastFallbackPollAt = Date.now()
+  const devSpaceWakeListening = await devSpaceAuditWakeListener.start(() => {
+    pollDevSpaceAudits()
+  })
+  await log('DevSpace audit wake listener ready', {
+    listening: devSpaceWakeListening,
+    ...devSpaceAuditWakeListener.stats(),
+    fallbackPollMs: DEVSPACE_FALLBACK_POLL_MS,
+  })
+
   await log('daemon starting', { pid: process.pid, dbPath, cdpHttp })
   while (!stopping) {
     try {
@@ -3939,9 +3952,12 @@ async function main() {
         continue
       }
       await refreshPassivePageObservers(targets)
-      // DevSpace SQLite 是本地 append-only 数据源；跟随 5 秒主循环轮询即可把 first-tool
-      // 发现延迟压到秒级，同时完全不消耗 ChatGPT backend 请求预算。
-      pollDevSpaceAudits()
+      // 稳态由 DevSpace 事件立即唤醒；这里只保留一分钟一次的 durable catch-up，
+      // 它不是实时发现路径，成本也从“每 5 秒一次”降到“每 60 秒一次”。
+      if (Date.now() - devSpaceLastFallbackPollAt >= DEVSPACE_FALLBACK_POLL_MS) {
+        pollDevSpaceAudits()
+        devSpaceLastFallbackPollAt = Date.now()
+      }
       checkUnboundDevSpaceTimeouts()
 
       // 只做健康观测，不主动激活窗口。短暂的 renderer/CDP 抖动先累计失败次数；
@@ -4046,6 +4062,7 @@ async function main() {
   guardian?.page?.close()
   guardian?.browser?.close()
   await writeState()
+  devSpaceAuditWakeListener.close()
   devSpaceAuditBridge.close()
   archive.close()
 }
