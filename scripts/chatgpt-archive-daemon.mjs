@@ -1000,7 +1000,16 @@ async function pageFetchJson(page, { url, targetPath, targetRoute, headers }) {
         'X-OpenAI-Target-Route': targetRoute,
       },
     })
-    return { status: response.status, text: await response.text() }
+    const responseHeaders = {}
+    for (const name of ['retry-after', 'x-request-id', 'cf-ray']) {
+      const value = response.headers.get(name)
+      if (value) responseHeaders[name] = value
+    }
+    return {
+      status: response.status,
+      text: await response.text(),
+      headers: responseHeaders,
+    }
   }.toString()})(${JSON.stringify(url)}, ${JSON.stringify(targetPath)}, ${JSON.stringify(targetRoute)}, ${JSON.stringify(headers)})`
   const result = await page.send('Runtime.evaluate', {
     expression,
@@ -1012,7 +1021,12 @@ async function pageFetchJson(page, { url, targetPath, targetRoute, headers }) {
   let body = null
   try { body = value.text ? JSON.parse(value.text) : null }
   catch { /* preserve status even when an error body is not JSON */ }
-  return { status: value.status, body, text: String(value.text || '') }
+  return {
+    status: value.status,
+    body,
+    text: String(value.text || ''),
+    headers: value.headers && typeof value.headers === 'object' ? value.headers : {},
+  }
 }
 
 function listPath(offset, limit) {
