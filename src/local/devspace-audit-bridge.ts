@@ -30,6 +30,14 @@ export interface DevSpaceMetadataActivity {
   audits: DevSpaceAuditEvent[]
 }
 
+/** 用于一次性历史 seed；这里只需要 metadata 的首末时间和调用数量。 */
+export interface DevSpaceMetadataSummary {
+  metadataId: string
+  firstAt: number
+  lastAt: number
+  auditCount: number
+}
+
 export interface DevSpaceBodyToolCall {
   tool: string
   argsJson: string
@@ -154,7 +162,9 @@ export function matchDevSpaceCandidateForTurn(input: {
 
   const fingerprintOwners = new Map<string, Set<string>>()
   for (const activity of input.activities) {
-    if (bound.has(activity.metadataId)) continue
+    // 已经绑定过的 metadata 仍然必须参与“这个 fingerprint 是否唯一”的所有者统计。
+    // 否则一个 fingerprint 同时属于 meta-old(已绑定) 与 meta-new(未绑定) 时，
+    // 跳过 meta-old 会把它错误地伪装成 meta-new 的唯一证据，造成误绑。
     for (const audit of activity.audits) {
       const fingerprint = toolArgsFingerprint(audit.tool, audit.argsJson)
       if (!fingerprint || !bodyFingerprints.has(fingerprint)) continue
@@ -268,6 +278,44 @@ export class DevSpaceAuditBridge {
     return groupDevSpaceActivity(
       this.pollSince(startAtMs, limit).filter(event => event.startedAtMs <= endAtMs),
     )
+  }
+
+  /**
+   * 返回 DevSpace 历史上出现过的所有 conversation metadata 摘要。
+   *
+   * 这一步只做 GROUP BY，不读取 args/result 大字段；用于 Archive 启动时把历史 metadata
+   * 先 seed 进自己的 binding 表。真正身份判断仍由后续 exact tool+args matcher 完成。
+   */
+  metadataSummaries(limit = 10_000): DevSpaceMetadataSummary[] {
+    if (!this.open() || !this.db) return []
+    const rows = this.db.prepare(`
+      SELECT metadata_id AS metadataId,
+             MIN(started_at) AS firstAt,
+             MAX(started_at) AS lastAt,
+             COUNT(*) AS auditCount
+      FROM tool_audit
+      WHERE metadata_id IS NOT NULL
+        AND metadata_id <> ''
+      GROUP BY metadata_id
+      ORDER BY MIN(started_at) ASC, metadata_id ASC
+      LIMIT ?
+    `).all(Math.max(1, Math.trunc(limit))) as Array<{
+      metadataId: string
+      firstAt: string
+      lastAt: string
+      auditCount: number
+    }>
+    return rows.flatMap(row => {
+      const firstAt = Date.parse(row.firstAt)
+      const lastAt = Date.parse(row.lastAt)
+      if (!Number.isFinite(firstAt) || !Number.isFinite(lastAt)) return []
+      return [{
+        metadataId: row.metadataId,
+        firstAt,
+        lastAt,
+        auditCount: Number(row.auditCount || 0),
+      }]
+    })
   }
 
   /**
