@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Actor 现已能从真实页面采集无正文 DOM 结构观察：route 类别、composer/form marker、新聊天入口、sidebar conversation/project/account 模式及 send/stop/attachment/voice 语义控件结构；aria/title 仅用于浏览器内分类，原文不返回 Node、不落盘。提交 `cc94a74`。
 - 2026-10-07 Actor 已接入 DOM drift ledger 依赖与配置入口（`domLedgerPath`），为发送前结构校验与统一 drift 通知做准备。提交 `93b7a7a`。
 - 2026-10-07 DOM drift 已补纯回归：控件 DOM 顺序变化不改变 signature；学习期新结构进入 baseline；锁定后真正结构变化进入 pending；人工 approve 后可持久化为可信基线。提交 `a43db7f`。
 - 2026-10-07 新增独立 Actor DOM drift ledger：只持久化 route 类别、composer/form 结构、新聊天入口、sidebar conversation/project 模式和 send/stop/attachment/voice 语义控件结构，不保存正文或 aria/title 具体文字；默认 6h 学习窗口，锁定后新 signature 进入 pending，支持人工 approve，不自动学习后继续点击。提交 `75f7bc7`。
