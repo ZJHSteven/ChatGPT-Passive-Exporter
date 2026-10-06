@@ -2637,53 +2637,36 @@ async function main() {
     })
   }
 
-  const notifyUnboundDevSpaceTimeout = async (metadataId, candidate) => {
-    if (!notificationConfig || candidate.notificationSentAt || candidate.notificationInFlight) return
-    const now = Date.now()
-    if (candidate.notificationAttemptAt && now - Number(candidate.notificationAttemptAt) < 5 * 60_000) return
-    candidate.notificationAttemptAt = now
-    candidate.notificationInFlight = true
-    notificationLastAttemptAt = now
-    try {
-      const result = await sendIncidentNotification(notificationConfig, {
-        title: 'ChatGPT DevSpace 运行超时（待绑定）',
-        body: [
-          `metadata: ${metadataId}`,
-          `first tool: ${new Date(Number(candidate.startedAt)).toISOString()}`,
-          `active: ${Math.round((now - Number(candidate.startedAt)) / 60_000)} min`,
-          '尚未可靠绑定到 canonical conversation；已保留原始计时并触发 catalog 修复，后续可继续回填 CID/turn。',
-        ].join('\n'),
-      })
-      if (result.ok) {
-        const sentAt = Date.now()
-        candidate.notificationSentAt = sentAt
-        archive.markDevSpaceUnboundNotificationSent(metadataId, sentAt)
-        notificationLastSuccessAt = sentAt
-        notificationLastError = null
-        await log('unbound DevSpace watchdog notification sent', {
-          metadataId,
-          startedAt: candidate.startedAt,
-          provider: notificationConfig.provider,
-          status: result.status,
-        })
-      }
-      else if (result.attempted) {
-        notificationLastError = result.error || 'notification failed'
-        await log('unbound DevSpace watchdog notification failed', {
-          metadataId,
-          provider: notificationConfig.provider,
-          status: result.status,
-          error: notificationLastError,
-        })
-      }
+  /**
+   * 未绑定 watchdog 到点后，先诊断、后通知。
+   *
+   * 这里不知道 metadata 属于哪个 CID，所以不能直接把 timeout 当 incident。
+   * 先对当前已知 active conversation 做 body probe；body 一到就用 exact tool+args 完成 binding，
+   * 随后再由真正的 conversation watchdog 路径分类 terminal/active-zombie 并决定是否 Bark。
+   */
+  const queueTimedOutDevSpaceBindingProbes = () => {
+    const hasTimedOutUnbound = [...unboundDevSpaceTurns.values()]
+      .some(candidate => Boolean(candidate.repairQueuedAt))
+    if (!hasTimedOutUnbound) return 0
+    const candidateConversationIds = new Set([
+      ...activeTurns.keys(),
+      ...catalogActive.keys(),
+    ])
+    let queued = 0
+    for (const conversationId of candidateConversationIds) {
+      if (archive.getDevSpaceMetadataBindingsForConversation(conversationId).length > 0) continue
+      markSyncReady(conversationId, 'devspace:binding-probe', 0)
+      queued += 1
     }
-    finally {
-      candidate.notificationInFlight = false
-    }
+    return queued
   }
 
   const checkUnboundDevSpaceTimeouts = () => {
     const now = Date.now()
+    const hasTimedOut = [...unboundDevSpaceTurns.values()]
+      .some(candidate => now - Number(candidate.startedAt) >= watchdogMs)
+    // 网络前先用本地已有 body 再试一次 exact-match；很多历史 unbound 可在这里零请求修复。
+    if (hasTimedOut) backfillStoredDevSpaceBindings()
     for (const [metadataId, candidate] of unboundDevSpaceTurns) {
       if (now - Number(candidate.startedAt) < watchdogMs) continue
       archive.markDevSpaceUnboundWatchdog(metadataId, now)
@@ -2695,27 +2678,8 @@ async function main() {
         })
         void scheduleGapRepair('devspace-unbound-timeout')
       }
-      void notifyUnboundDevSpaceTimeout(metadataId, candidate)
+      queueTimedOutDevSpaceBindingProbes()
     }
-  }
-
-  const tryBindTimedOutDevSpaceFromCatalog = () => {
-    const now = Date.now()
-    const candidates = [...unboundDevSpaceTurns.entries()]
-      .filter(([, candidate]) => candidate.repairQueuedAt && now - Number(candidate.startedAt) >= watchdogMs)
-    if (candidates.length !== 1) return
-    const availableConversations = [...catalogActive.keys()]
-      .filter(conversationId => archive.getDevSpaceMetadataBindingsForConversation(conversationId).length === 0)
-    if (availableConversations.length !== 1) return
-    const [metadataId, candidate] = candidates[0]
-    bindDevSpaceMetadataToConversation({
-      metadataId,
-      conversationId: availableConversations[0],
-      startAt: candidate.startedAt,
-      observedAt: now,
-      evidence: 'catalog:unique-active-after-devspace-timeout',
-      confidence: 'medium',
-    })
   }
 
   const decodeCdpJsonResponseBody = async (client, requestId) => {
