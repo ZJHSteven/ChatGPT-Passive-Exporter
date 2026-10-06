@@ -51,6 +51,7 @@ Usage:
   chatgpt-archive incidents [--status open|resolved] [--limit N] [--db <path>]
   chatgpt-archive turn-trace [--limit N] [--trace <path>] [--cluster-ms N]
   chatgpt-archive actor send --prompt-file <path> [--mode auto|new|continue|steer] [--target guardian|dedicated] [--conversation <UUID>] [--cdp URL] [--trace <path>] [--state <path>]
+  chatgpt-archive actor batch --jobs-file <json> [--target guardian|dedicated] [--min-gap-ms N] [--cdp URL] [--trace <path>] [--state <path>]
   chatgpt-archive actor status [--cdp URL] [--state <path>]
  chatgpt-archive actor reset [--cdp URL] [--state <path>]
   chatgpt-archive protocol status [--ledger <path>]
@@ -616,6 +617,84 @@ async function main() {
         targetMode: actorTarget,
         timeoutMs,
       }), null, 2))
+      return
+    }
+    if (action === 'batch') {
+      const jobsFile = flags.get('jobs-file')
+      if (typeof jobsFile !== 'string' || !jobsFile) throw new Error('actor batch requires --jobs-file <json>')
+      const actorTarget = String(flags.get('target') ?? 'guardian')
+      if (!['guardian', 'dedicated'].includes(actorTarget)) {
+        throw new Error('--target must be one of guardian|dedicated')
+      }
+      const minGapMs = Number(flags.get('min-gap-ms') ?? 5_000)
+      if (!Number.isFinite(minGapMs) || minGapMs < 0 || minGapMs > 10 * 60_000) {
+        throw new Error('--min-gap-ms must be between 0 and 600000')
+      }
+      const timeoutMs = Number(flags.get('timeout-ms') ?? 20_000)
+      if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) throw new Error('--timeout-ms must be >= 1000')
+      const tracePath = flags.has('trace')
+        ? path.resolve(String(flags.get('trace')))
+        : DEFAULT_TURN_TRACE_PATH
+      const parsed = JSON.parse(await fs.readFile(path.resolve(jobsFile), 'utf8'))
+      if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('actor batch jobs file must be a non-empty JSON array')
+      if (parsed.length > 100) throw new Error('actor batch jobs file exceeds the 100-job safety limit')
+
+      const results = []
+      let previousFinishedAt = 0
+      for (let index = 0; index < parsed.length; index += 1) {
+        const raw = parsed[index]
+        if (!raw || typeof raw !== 'object') throw new Error(`actor batch job ${index} must be an object`)
+        const mode = String(raw.mode ?? 'auto')
+        if (!['auto', 'new', 'continue', 'steer'].includes(mode)) {
+          throw new Error(`actor batch job ${index} has invalid mode=${mode}`)
+        }
+        const conversationId = typeof raw.conversation === 'string' && raw.conversation.trim()
+          ? raw.conversation.trim()
+          : typeof raw.conversationId === 'string' && raw.conversationId.trim()
+            ? raw.conversationId.trim()
+            : null
+        const promptFile = typeof raw.promptFile === 'string' && raw.promptFile.trim()
+          ? path.resolve(path.dirname(path.resolve(jobsFile)), raw.promptFile.trim())
+          : null
+        const prompt = typeof raw.prompt === 'string'
+          ? raw.prompt
+          : promptFile ? await fs.readFile(promptFile, 'utf8') : ''
+        if (!prompt.trim()) throw new Error(`actor batch job ${index} has no prompt or promptFile content`)
+
+        // 这是稳定性限速，不是固定开环调度：真正进入下一条之前，上一条必须已经通过
+        // sendActorPrompt 的 route/context/network 2xx 闭环。minGap 只提供额外请求预算保护。
+        const earliestAt = previousFinishedAt + minGapMs
+        const delayMs = Math.max(0, earliestAt - Date.now())
+        if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs))
+
+        const startedAt = Date.now()
+        const result = await sendActorPrompt({
+          cdpHttp,
+          statePath: actorStatePath,
+          daemonStatePath: DEFAULT_DAEMON_STATE_PATH,
+          tracePath,
+          prompt,
+          conversationId,
+          mode,
+          targetMode: actorTarget,
+          timeoutMs,
+        })
+        previousFinishedAt = Date.now()
+        results.push({
+          index,
+          startedAt,
+          finishedAt: previousFinishedAt,
+          mode,
+          conversationId,
+          result,
+        })
+      }
+      console.log(JSON.stringify({
+        completed: results.length,
+        minGapMs,
+        target: actorTarget,
+        results,
+      }, null, 2))
       return
     }
     throw new Error('actor requires send|status|reset')
