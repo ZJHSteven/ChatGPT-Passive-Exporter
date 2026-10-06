@@ -22,12 +22,41 @@ interface ActorState {
   updatedAt: number
 }
 
+/**
+ * Phase 4 的发送语义必须显式区分三类第一方行为：
+ *
+ * - `new`：从新聊天页创建 conversation，正式请求是 `/f/conversation`；
+ * - `continue`：进入一个已经存在、当前不处于 live generation 的 conversation 后继续发送，
+ *   正式请求同样是 `/f/conversation`；
+ * - `steer`：当前 conversation 仍在生成且本页已经 live attached 时发送 follow-up，
+ *   第一方 Web 实测会走 `/f/steer_turn`。
+ *
+ * `auto` 只负责在这些已验证语义之间选择，绝不能把“页面还没加载完 / resume 失败”
+ * 猜成 steer。上下文不完整时应明确失败，避免把裁剪过的 UI 上下文发回模型。
+ */
+export type ActorSendMode = 'auto' | 'new' | 'continue' | 'steer'
+
+type ActorResolvedMode = Exclude<ActorSendMode, 'auto'>
+
+interface ActorPageSnapshot {
+  href: string
+  conversationId: string | null
+  composerPresent: boolean
+  composerHydrated: boolean
+  composerHasText: boolean
+  sendReady: boolean
+  stopVisible: boolean
+  waitingForFinal: boolean
+  messageNodes: number
+}
+
 interface ActorSendOptions {
   cdpHttp: string
   statePath: string
   tracePath: string
   prompt: string
   conversationId?: string | null
+  mode?: ActorSendMode
   timeoutMs?: number
 }
 
