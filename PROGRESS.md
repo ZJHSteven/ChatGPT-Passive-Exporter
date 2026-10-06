@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Actor forensic trace 已扩展可选闭环字段：发送模式、target 模式、导航方式、上下文 ready、首个 SSE data、runningConfirmed。后续可直接区分 SPA/full fallback、new/continue/steer 与“HTTP 已接收但流未起”等漂移。提交 `ea305c9`。
 - 2026-10-07 补齐 Actor CLI 兜底错误文案，使 `send|batch|status|reset` 与真实子命令一致；提交 `7e54544`。
 - 2026-10-07 清理 Phase 4 计划中的旧并发前提：`SAMETABB928` 不再作为“同 tab 一次只能一个 active generation”的证据；E2E 改为 new / finished continue / active steer / A active 时同 tab 新开 B 四组。提交 `03ebc9b`。
 - 2026-10-07 Actor 新增 `batch --jobs-file <json>` 闭环顺序调度：每个 job 显式声明 mode/conversation/promptFile（或 prompt），一次只执行一条；上一条必须先通过 route/context/network 2xx 闭环，默认再额外保留 5s 请求预算间隔；任意 cooldown/429、DOM drift、上下文未就绪或正式请求失败都会立即终止整批，不继续开环发送。单批最多 100 job，提交 `dd6f977`。
