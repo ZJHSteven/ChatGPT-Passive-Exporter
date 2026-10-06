@@ -15,6 +15,7 @@ export interface DevSpaceAuditEvent {
   id: string
   metadataId: string
   tool: string
+  argsJson: string
   startedAt: string
   startedAtMs: number
   finishedAt: string | null
