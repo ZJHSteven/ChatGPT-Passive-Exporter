@@ -435,7 +435,7 @@ export function buildActorDomObservationExpression(): string {
     }
 
     // 这段源码还要经过外层 template literal 再交给浏览器执行。直接在这里写
-    // `/\\/c\\//` 一类正则会经历两次源码解析，很容易把斜杠转义吃掉。
+    // 斜杠转义类正则会经历两次源码解析，很容易把转义吃掉。
     // 改用 RegExp(string)，让浏览器实际接收到的表达式没有双重转义歧义。
     const canonicalConversationPath = new RegExp('^/c/[0-9a-f-]{20,}(?:/|$)', 'iu')
     const projectPath = new RegExp('^/(?:g/g-p-|projects?(?:/|$))', 'iu')
@@ -462,8 +462,8 @@ export function buildActorDomObservationExpression(): string {
       const text = identity(button)
       const testId = button.getAttribute('data-testid') || ''
       if (/stop|停止/iu.test(text)) return 'stop'
-      // 外层 template literal 会先解析一次反斜杠，因此这里必须写成 `\\s`，
-      // 浏览器最终收到的正则才仍是空白字符类 `\s`，而不是普通字母 `s`。
+      // 外层 template literal 会先解析一次反斜杠，因此这里必须双写反斜杠，
+      // 浏览器最终收到的正则才仍是空白字符类，而不是普通字母 s。
       if (/send-button|(^|\\s)(send|发送)(\\s|$)/iu.test(text)
         || (button.getAttribute('type') === 'submit' && !button.disabled)) return 'send'
       if (/attach|attachment|file-upload|composer-plus|附件|添加文件|上传/iu.test(testId + ' ' + text)) return 'attachment'
