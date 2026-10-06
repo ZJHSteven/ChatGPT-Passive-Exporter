@@ -1,3 +1,11 @@
+## 2026-10-06 DevSpace raw metadata / binding / watchdog 收口 ExecPlan
+
+- [in_progress] 取消 DevSpace request metadata 脱敏摘要：`tool_audit.request_meta_json` 从新调用起保存 ChatGPT Host 传入的完整原始 `_meta` JSON；保留现有 `metadata_id=openai/session` 索引，不改表结构、不新增 migration 版本。历史已经哈希化的旧行无法逆推，只保证新行完整保存。
+- [pending] 复核 DevSpace migration 事故：确认旧 v7 已执行后新增列/表不会重跑 v7；验证当前 v8=request_meta_json、v9=chatgpt_conversation_bindings 已在生产库登记且实体 schema 完整，并跑旧库升级测试。Archive 自身使用 `CREATE TABLE IF NOT EXISTS + ensureColumn`，单独确认不存在同类版本号复用问题。
+- [pending] 把 binding/watchdog 重新整理成一条状态机并对照现有代码：`openai/session` 是 conversation 级；已知 binding 时 first DevSpace call 直接启动 45min watchdog；未知 binding 时保留 firstSeenAt，并通过已有 body/turn tool-window 后验绑定。明确 `conversation-created` 仅是可选新会话快路径，绝不是完整流程依赖。
+- [pending] 修复 unbound provisional watchdog 的最后缺口：45min 超时不能只在“catalog 只有唯一 active conversation”时才有结果；设计并实现不会误绑但仍可独立形成可通知的 unbound incident / 后续回填机制，binding 与通知解耦。
+- [pending] 全量测试 DevSpace + Archive；确认生产 DevSpace 已加载 raw metadata 写入逻辑，确认 Archive daemon 继续运行 conversation-transport gap repair，并用真实新 audit 行验证原始 metadata 已落库。
+
 ## 2026-10-03 iPhone -> PC 跨设备续流一次性全量取证 ExecPlan
 
 - [in_progress] 新增一次性 browser-level CDP flight recorder，自动附着当前及后续新建的 ChatGPT page/worker/service-worker target；被动记录账户 WSS 控制面、`conversation-created / conversation-turn-complete / conversation-update`、`conversation-turn-*` subscribe/ACK/catchup/live、`/f/conversation` / `/resume` / `stream_status` / conversation body/list/init 等第一方请求与响应摘要。
