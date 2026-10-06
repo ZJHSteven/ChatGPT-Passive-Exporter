@@ -17,6 +17,8 @@ export interface DevSpaceAuditWakeStats {
   received: number
   invalid: number
   lastReceivedAt: number | null
+  lastSignalStartedAt: number | null
+  lastLatencyMs: number | null
   lastError: string | null
 }
 
@@ -34,6 +36,8 @@ export class DevSpaceAuditWakeListener {
   private received = 0
   private invalid = 0
   private lastReceivedAt: number | null = null
+  private lastSignalStartedAt: number | null = null
+  private lastLatencyMs: number | null = null
   private lastError: string | null = null
 
   constructor(options: { port?: number, host?: string } = {}) {
@@ -58,7 +62,11 @@ export class DevSpaceAuditWakeListener {
         return
       }
       this.received += 1
-      this.lastReceivedAt = Date.now()
+      const receivedAt = Date.now()
+      const startedAt = Date.parse(signal.startedAt)
+      this.lastReceivedAt = receivedAt
+      this.lastSignalStartedAt = startedAt
+      this.lastLatencyMs = Math.max(0, receivedAt - startedAt)
       onWake(signal)
     })
     socket.on('error', error => {
@@ -101,6 +109,8 @@ export class DevSpaceAuditWakeListener {
       received: this.received,
       invalid: this.invalid,
       lastReceivedAt: this.lastReceivedAt,
+      lastSignalStartedAt: this.lastSignalStartedAt,
+      lastLatencyMs: this.lastLatencyMs,
       lastError: this.lastError,
     }
   }
