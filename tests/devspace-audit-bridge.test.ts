@@ -63,6 +63,22 @@ describe('DevSpace audit bridge', () => {
         }), 10_500)!,
       ],
     })).toBeNull()
+
+    // 已绑定 metadata 不能被排除出 fingerprint owner 统计。
+    // meta-old 虽然不再是候选，但它仍然证明 echo shared 并非 meta-new 独有证据。
+    expect(matchDevSpaceCandidateForTurn({
+      activities: groupDevSpaceActivity([
+        audit('old-1', 'meta-old', 10_000, { cmd: 'echo shared' }),
+        audit('new-1', 'meta-new', 10_100, { cmd: 'echo shared' }),
+      ]),
+      bodyCalls: [
+        parseDevSpaceBodyToolCall(JSON.stringify({
+          path: '/devspace/link_x/exec_command',
+          args: { cmd: 'echo shared' },
+        }), 10_200)!,
+      ],
+      alreadyBoundMetadataIds: ['meta-old'],
+    })).toBeNull()
   })
 
   test('本地 SQLite 可增量读取 audit，并在新 schema 存在时镜像 binding', () => {
@@ -102,6 +118,19 @@ describe('DevSpace audit bridge', () => {
       '2026-10-03T06:00:00.000Z',
       null,
     )
+    db.prepare(`
+      INSERT INTO tool_audit
+        (id, metadata_id, request_meta_json, tool, args_json, started_at, finished_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'audit-2',
+      'meta-1',
+      '{"keys":[]}',
+      'read',
+      '{"path":"note.txt"}',
+      '2026-10-03T06:02:00.000Z',
+      '2026-10-03T06:02:01.000Z',
+    )
     db.close()
 
     const bridge = new DevSpaceAuditBridge(dbPath)
@@ -114,6 +143,12 @@ describe('DevSpace audit bridge', () => {
         argsJson: '{"cmd":"echo ok"}',
         requestMetaJson: '{"keys":[]}',
       })
+      expect(bridge.metadataSummaries()).toEqual([{
+        metadataId: 'meta-1',
+        firstAt: Date.parse('2026-10-03T06:00:00.000Z'),
+        lastAt: Date.parse('2026-10-03T06:02:00.000Z'),
+        auditCount: 2,
+      }])
       expect(bridge.mirrorBinding({
         metadataId: 'meta-1',
         conversationId: 'conversation-1',
