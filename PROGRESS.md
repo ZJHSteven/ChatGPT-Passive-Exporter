@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Actor CLI 默认 target 已从独立页切为 `guardian`；只有显式 `--target dedicated` 才创建自有页面。发送前统一检查 daemon cooldown；borrowed Guardian state 的 `actor reset` 只清 Actor 状态、不关闭 Guardian。发送结果同时返回 targetMode。提交 `2ab0ef3`。
 - 2026-10-07 Actor target 层开始正式合并 Guardian：新增 `guardian|dedicated` target 语义；Guardian 模式从 daemon state 读取权威 targetId，并把 Actor state 标为 borrowed `source=guardian`，后续 reset 不应关闭该页面。账号级 429 cooldown 也加入 Actor 前置门控，独立 tab 不能绕过 daemon cooldown。提交 `05ac78c`。
 - 2026-10-07 Actor CLI 已正式暴露 `--mode auto|new|continue|steer`，并补回归锁死 auto/new/continue/steer 选择与 waiting-for-final / 非当前页 steer 拒绝语义；CLI 不再把所有发送都隐式当普通 `/f/conversation`。提交 `2ac3883`。
 - 2026-10-07 修正 Actor 新闭环代码的异步 CDP response 状态类型：response status/MIME 改为显式 holder，避免 TypeScript 把跨回调赋值错误收窄成 `never`，与既有 submitState 语义一致。提交 `fa0f0aa`。
