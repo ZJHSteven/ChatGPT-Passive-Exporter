@@ -1269,9 +1269,6 @@ async function main() {
       lastEventAt: binding.lastSeenAt,
       lastAuditId: binding.lastAuditId,
       repairQueuedAt: null,
-      notificationAttemptAt: null,
-      notificationSentAt: binding.unboundNotificationSentAt,
-      notificationInFlight: false,
     })
   }
   // activeTurns 现在承载“所有已纳入 watchdog 的 active”：既可能来自可靠 WSS/actor start，
@@ -2494,9 +2491,6 @@ async function main() {
       lastEventAt: Math.max(Number(current?.lastEventAt || 0), event.startedAtMs),
       lastAuditId: event.id,
       repairQueuedAt: current?.repairQueuedAt ?? null,
-      notificationAttemptAt: current?.notificationAttemptAt ?? null,
-      notificationSentAt: current?.notificationSentAt ?? binding.unboundNotificationSentAt ?? null,
-      notificationInFlight: current?.notificationInFlight ?? false,
     })
   }
 
