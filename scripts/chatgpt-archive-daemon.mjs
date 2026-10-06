@@ -4001,6 +4001,15 @@ async function main() {
   process.on('SIGINT', () => { stopping = true })
   process.on('SIGTERM', () => { stopping = true })
 
+  // 先修复旧版留下的“明明能 exact-match 但因为并发而 unbound”的历史行；
+  // 随后做一次 durable catch-up。这样当前新 audit 一进来时即可直接命中已知 CID。
+  const devSpaceBackfilledBindings = backfillStoredDevSpaceBindings()
+  if (devSpaceBackfilledBindings > 0) {
+    await log('DevSpace exact-match binding backfill complete', {
+      created: devSpaceBackfilledBindings,
+    })
+  }
+
   // 启动时先做一次 durable catch-up；之后以 DevSpace UDP 门铃为主，
   // 每 60 秒才做一次极低频兜底扫描，防止 daemon 重启窗口/UDP 丢包留下最后一条 audit。
   pollDevSpaceAudits()
