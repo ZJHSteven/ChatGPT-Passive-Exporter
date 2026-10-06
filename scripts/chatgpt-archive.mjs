@@ -52,8 +52,8 @@ Usage:
   chatgpt-archive reindex [--all] [--db <path>]
   chatgpt-archive incidents [--status open|resolved] [--limit N] [--db <path>]
   chatgpt-archive turn-trace [--limit N] [--trace <path>] [--cluster-ms N]
-  chatgpt-archive actor send --prompt-file <path> [--mode auto|new|continue|steer] [--target guardian|dedicated] [--conversation <UUID>] [--cdp URL] [--trace <path>] [--state <path>]
-  chatgpt-archive actor batch --jobs-file <json> [--target guardian|dedicated] [--min-gap-ms N] [--cdp URL] [--trace <path>] [--state <path>]
+  chatgpt-archive actor send --prompt-file <path> [--mode auto|new|continue|steer] [--target guardian|dedicated] [--conversation <UUID>] [--cdp URL] [--trace <path>] [--state <path>] [--dom-ledger <path>]
+  chatgpt-archive actor batch --jobs-file <json> [--target guardian|dedicated] [--min-gap-ms N] [--cdp URL] [--trace <path>] [--state <path>] [--dom-ledger <path>]
   chatgpt-archive actor status [--cdp URL] [--state <path>]
  chatgpt-archive actor reset [--cdp URL] [--state <path>]
   chatgpt-archive protocol status [--ledger <path>]
@@ -606,12 +606,16 @@ async function main() {
       const tracePath = flags.has('trace')
         ? path.resolve(String(flags.get('trace')))
         : DEFAULT_TURN_TRACE_PATH
+      const domLedgerPath = flags.has('dom-ledger')
+        ? path.resolve(String(flags.get('dom-ledger')))
+        : DEFAULT_DOM_LEDGER_PATH
       const timeoutMs = Number(flags.get('timeout-ms') ?? 20_000)
       if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) throw new Error('--timeout-ms must be >= 1000')
       console.log(JSON.stringify(await sendActorPrompt({
         cdpHttp,
         statePath: actorStatePath,
         daemonStatePath: DEFAULT_DAEMON_STATE_PATH,
+        domLedgerPath,
         tracePath,
         prompt,
         conversationId: typeof flags.get('conversation') === 'string' ? String(flags.get('conversation')) : null,
@@ -637,6 +641,9 @@ async function main() {
       const tracePath = flags.has('trace')
         ? path.resolve(String(flags.get('trace')))
         : DEFAULT_TURN_TRACE_PATH
+      const domLedgerPath = flags.has('dom-ledger')
+        ? path.resolve(String(flags.get('dom-ledger')))
+        : DEFAULT_DOM_LEDGER_PATH
       const parsed = JSON.parse(await fs.readFile(path.resolve(jobsFile), 'utf8'))
       if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('actor batch jobs file must be a non-empty JSON array')
       if (parsed.length > 100) throw new Error('actor batch jobs file exceeds the 100-job safety limit')
@@ -674,6 +681,7 @@ async function main() {
           cdpHttp,
           statePath: actorStatePath,
           daemonStatePath: DEFAULT_DAEMON_STATE_PATH,
+          domLedgerPath,
           tracePath,
           prompt,
           conversationId,
