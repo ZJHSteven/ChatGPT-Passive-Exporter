@@ -2520,10 +2520,44 @@ async function main() {
   }
 
   /**
-   * Body 是 turn_exchange_id 的最终校验面，但 binding 不需要做昂贵历史匹配：
-   * 只取当前 turn 的 min/max 时间和 tool-call 数，再看这几分钟内 DevSpace 有几个
-   * 未绑定 metadata。唯一才接受；多个候选保持 unbound。
+   * 对一个已经落盘的 ChatGPT turn 做 DevSpace binding。
+   *
+   * 关键点：不再用“时间窗里只有一个 metadata”判断身份。body 里的 api_tool.call_tool
+   * 本来就保存了 DevSpace tool 名和完整 args；tool_audit 也保存同一份 args，因此直接
+   * canonical exact-match 即可。时间只负责限制 SQLite 查询范围，避免扫整库。
    */
+  const matchDevSpaceBindingFromStoredTurn = (conversationId, turnExchangeId) => {
+    const rows = archive.db.prepare(
+      "SELECT create_time AS createTime, text FROM messages WHERE conversation_id=? AND turn_exchange_id=? AND recipient='api_tool.call_tool' AND create_time IS NOT NULL AND text<>'' ORDER BY create_time ASC",
+    ).all(conversationId, turnExchangeId)
+    const bodyCalls = rows
+      .map(row => parseDevSpaceBodyToolCall(String(row.text || ''), Number(row.createTime) * 1000))
+      .filter(Boolean)
+    if (bodyCalls.length === 0) return null
+
+    const startAt = Math.min(...bodyCalls.map(call => call.startedAtMs))
+    const endAt = Math.max(...bodyCalls.map(call => call.startedAtMs))
+    // 两分钟 slack 只为覆盖 Host/SQLite 时间戳落点差异；身份判定本身完全由 tool+args 决定。
+    const activities = devSpaceAuditBridge.activityBetween(startAt - 120_000, endAt + 120_000, 5000)
+    const boundIds = archive.listDevSpaceMetadataBindings({ limit: 1000 })
+      .filter(row => Boolean(row.conversationId))
+      .map(row => row.metadataId)
+    const match = matchDevSpaceCandidateForTurn({
+      activities,
+      bodyCalls,
+      alreadyBoundMetadataIds: boundIds,
+    })
+    if (!match) return null
+
+    const provisional = unboundDevSpaceTurns.get(match.activity.metadataId)
+    return {
+      metadataId: match.activity.metadataId,
+      startAt: provisional?.startedAt ?? match.activity.firstAt,
+      exactMatches: match.exactMatches,
+      uniqueMatches: match.uniqueMatches,
+    }
+  }
+
   const reconcileDevSpaceBindingFromBody = (conversationId, diagnostic) => {
     const now = Date.now()
     const turnExchangeId = typeof diagnostic?.turnExchangeId === 'string' ? diagnostic.turnExchangeId : null
@@ -2541,30 +2575,25 @@ async function main() {
       return
     }
     if (!turnExchangeId) return
-    const window = archive.conversationTurnToolWindow(conversationId, turnExchangeId)
-    if (!window || window.toolCallCount <= 0) return
-    const activities = devSpaceAuditBridge.activityBetween(window.startAt - 10_000, window.endAt + 60_000)
-    const boundIds = archive.listDevSpaceMetadataBindings({ limit: 1000 })
-      .filter(row => Boolean(row.conversationId))
-      .map(row => row.metadataId)
-    const candidate = uniqueDevSpaceCandidateForTurn({
-      activities,
-      turnStartAt: window.startAt,
-      turnEndAt: window.endAt,
-      toolCallCount: window.toolCallCount,
-      alreadyBoundMetadataIds: boundIds,
-    })
+    const candidate = matchDevSpaceBindingFromStoredTurn(conversationId, turnExchangeId)
     if (!candidate) return
     bindDevSpaceMetadataToConversation({
       metadataId: candidate.metadataId,
       conversationId,
-      startAt: candidate.firstAt,
+      startAt: candidate.startAt,
       observedAt: now,
       turnExchangeId,
       requestId,
-      evidence: 'body:unique-turn-tool-window',
+      evidence: 'body:exact-tool-args',
       confidence: 'high',
       lifecycleState: activeTurns.has(conversationId) ? 'active' : 'closed',
+    })
+    void log('DevSpace metadata exact-match binding confirmed', {
+      metadataId: candidate.metadataId,
+      conversationId,
+      turnExchangeId,
+      exactMatches: candidate.exactMatches,
+      uniqueMatches: candidate.uniqueMatches,
     })
   }
 
