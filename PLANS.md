@@ -13,8 +13,8 @@
 
 ## 2026-10-06 Phase 3/4/5 收尾实现 ExecPlan
 
-- [in_progress] 先做真实资源预算：以当前 Chrome remote-debugging browser 为单位，测量现有 Guardian 的长期占用，并做“+1 idle ChatGPT tab”“+1 active sending/listening tab”的稳态/峰值 A/B；同时记录页面 JS heap/DOM 指标，避免只看刚打开的瞬时值。根据实测成本决定 Phase 1 Listener、Phase 3 Listener、Phase 4 Actor 是否值得物理合一。
-- [pending] Phase 3 productionize 第一方跨设备 fallback：复刻当前 Web 的 `stream_status=IS_STREAMING -> /resume 尝试 -> 失败后约 7~10s stream_status + conversation body checkpoint refresh -> COMPLETE final body` 状态机；必须事件/状态闭环，不得固定盲轮询。仅对已确认 active 的 CID 启动 bounded watcher，并在 terminal/idle/timeout 时自动停止。
+- [done] 真实资源预算已完成：当前 Guardian V8 used heap 约 201MB，空白 ChatGPT 首页约 158~175MB，普通长聊天约 214MB；受控新增一张 idle ChatGPT 页的浏览器进程树边际 Working Set 常见约 +250~440MB，第二张缓存热后仍约 +140~220MB；一次较长渲染可让单页 JS heap 再增加约 50MB。结论：常驻多养 Listener/Actor tab 是数百 MB 级成本，值得合并为一个 Guardian page target；职责隔离放在 Node 状态机层。
+- [in_progress] Phase 3 productionize 第一方跨设备 fallback：checkpoint 状态机、7~10s cadence、status->body 配对、native catalog discovery、live-transport suppression、terminal stop、429/auth/error 门控已落代码并通过 133/133 全量测试；正式 daemon 当前恰处于既有 429 cooldown，因此生产 canary 只先验证 discovery/state，主动 backend probe 不绕过 cooldown。下一步热部署并观察 watcher 自然 arm/延期，cooldown 后自然完成首轮 status/body。
 - [pending] Phase 3 drift/安全：被动记录第一方轮询 cadence、endpoint shape、body identity 字段和 terminal transition；协议/DOM 指纹变化时进入 drift 告警与人工复核，不自动学习后直接 replay；429/403/404/shape drift 立即熔断，不制造请求风暴。
 - [pending] Phase 4 把 Actor CLI 重构为闭环页面控制器：支持 `new`、`continue <cid>`、active conversation `follow-up/steer`、多任务顺序调度。每一步都必须“导航/点击 -> 状态确认 -> composer ready -> 上下文/body 已加载 -> prepare/submit/steer 已观察 -> conversation/turn identity 已确认”后才进入下一步，禁止固定 sleep 驱动。
 - [pending] Phase 4 导航策略：优先第一方 SPA/真实 DOM 操作，不再默认 `Page.navigate()`；DOM locator 使用语义属性/角色/表单状态的多候选适配器，并把 composer/send/stop/new-chat/sidebar/project 的 DOM shape 纳入 drift fingerprint。发送节奏加入人类级 rate limiting（任务间最小间隔、并发上限、随机小抖动），但可靠性仍由状态闭环而非等待秒数保证。
