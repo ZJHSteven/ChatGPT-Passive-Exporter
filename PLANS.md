@@ -1,3 +1,13 @@
+## 2026-10-06 DevSpace→Archive 事件唤醒 / binding 简化 / watchdog 语义修正 ExecPlan
+
+- [in_progress] 先还原生产事实：统计 bound/unbound metadata、定位当前长聊天为何仍 unbound，逐条对照 Archive body tool-call 与 DevSpace tool_audit，而不是继续靠时间窗口猜测。
+- [pending] 将 DevSpace→Archive 从固定 5s SQLite polling 改成“SQLite 仍是 durable source of truth + 本机事件只负责 wake-up”的事件驱动路径；优先使用极轻量 localhost IPC，Archive 启动/丢事件时仍可从 SQLite 补账，避免事件通道承担可靠存储职责。
+- [pending] 删除剩余 fast-path/时间猜 binding；binding 优先做两边已有 hookup 的内容/工具序列直接匹配，body 尚未出现时只保留 metadata firstSeenAt，不强行猜 CID；body 一到即可完成后验 binding。
+- [pending] 修正 watchdog 语义：45min timeout 只负责触发诊断（status/body/catalog repair）；先拉到服务器状态/body并落盘、完成 binding/terminal classification，再按诊断结果决定是否发 Bark。撤销“未绑定 timeout 本身直接通知”的错误语义。
+- [pending] 实测 DevSpace overhead：比较 MCP exec_command 的 wall time、裸 cmd/PowerShell spawn、audit SQLite 写入与 Secret resolver 无占位符路径；同时采样 Archive daemon CPU/RSS，确保常驻监控与事件唤醒足够轻量。
+- [pending] 使用现有受控 restart helper/Task Scheduler 重载 DevSpace raw metadata build，不直接杀唯一入口；重启后立即检查 7676 /healthz、真实新 tool_audit 原始 _meta，以及 Archive 事件接收。
+- [pending] 全量 typecheck/test/build 后更新 PROGRESS，并确认两个仓库 clean。
+
 ## 2026-10-06 DevSpace raw metadata / binding / watchdog 收口 ExecPlan
 
 - [in_progress] 取消 DevSpace request metadata 脱敏摘要：源码、测试与隔离 `dev` build 已改为完整保存 MCP metadata / args / result；验证过的 `request-meta.js/tool-audit.js` 已精确复制到生产 `source/dist`。当前生产 DevSpace 进程仍是重启前已加载模块，受工具安全门控限制暂未重启，因此“新行已原样写入”仍待 live 验证。历史哈希化旧行无法逆推。
