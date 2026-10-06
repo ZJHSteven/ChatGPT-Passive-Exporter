@@ -270,6 +270,268 @@ export function actorConversationUrl(conversationId?: string | null): string {
   return url
 }
 
+/**
+ * 当前 actor 若复用 Guardian tab，URL 上可能带 `chatgpt-archive-guardian=1` 这个恢复标记。
+ * SPA 点击通常不会依赖该 query，但 full-navigation fallback 不能把标记丢掉，否则 daemon 重启后
+ * `ensureGuardian()` 可能把同一张 tab 误认为普通页面并重新创建 Guardian。
+ */
+function actorNavigationUrl(conversationId: string | null | undefined, currentHref: string): string {
+  const base = new URL(actorConversationUrl(conversationId))
+  try {
+    const current = new URL(currentHref)
+    if (current.searchParams.get('chatgpt-archive-guardian') === '1') {
+      base.searchParams.set('chatgpt-archive-guardian', '1')
+    }
+  }
+  catch {
+    // 当前 URL 若不是合法绝对 URL，只是不继承 marker；真正导航仍使用 canonical chatgpt.com URL。
+  }
+  return base.toString()
+}
+
+/**
+ * 读取发送相关的最小页面状态。
+ *
+ * 这里故意不把“某一个 selector 存在”当成业务真值：ChatGPT 2026 Web 会同时保留展开/折叠
+ * sidebar 的隐藏副本，composer 也会在 prepare / streaming / follow-up 时反复重挂载按钮。
+ * 因此：
+ * 1. 元素必须沿祖先链可见且可交互；
+ * 2. `sendReady / stopVisible` 从多个语义候选综合判断；
+ * 3. `waitingForFinal` 单独标记 tokenless late-attach 的危险状态，禁止在上下文不完整时 steer。
+ */
+async function readActorPageSnapshot(client: ActorCdpClient): Promise<ActorPageSnapshot> {
+  const value = await evaluateValue(client, `(() => {
+    const usable = (element) => {
+      if (!element || !element.isConnected) return false
+      const rect = element.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return false
+      for (let node = element; node; node = node.parentElement) {
+        if (!(node instanceof HTMLElement)) continue
+        if (node.hidden || node.hasAttribute('inert')) return false
+        const style = window.getComputedStyle(node)
+        if (style.display === 'none') return false
+        if (style.visibility === 'hidden' || style.visibility === 'collapse') return false
+        if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
+        if (style.pointerEvents === 'none') return false
+        if (node === document.documentElement) break
+      }
+      return true
+    }
+
+    const input = document.querySelector('#prompt-textarea')
+      || document.querySelector('[contenteditable="true"][role="textbox"]')
+      || document.querySelector('textarea')
+    const form = input?.closest('form') || null
+    const buttons = form ? [...form.querySelectorAll('button')].filter(usable) : []
+    const buttonIdentity = (button) => [
+      button.getAttribute('data-testid') || '',
+      button.getAttribute('aria-label') || '',
+      button.getAttribute('title') || '',
+      (button.innerText || '').trim(),
+    ].join(' ')
+    const sendButton = buttons.find((button) => {
+      const identity = buttonIdentity(button)
+      if (/stop|停止/iu.test(identity)) return false
+      return /send-button|(^|\s)(send|发送)(\s|$)/iu.test(identity)
+        || (button.getAttribute('type') === 'submit' && !button.disabled)
+    }) || null
+    const stopButton = buttons.find((button) => /stop|停止/iu.test(buttonIdentity(button))) || null
+    const bodyText = document.body?.innerText || ''
+    const href = String(location.href || '')
+    const match = /^https:\/\/chatgpt\.com\/c\/([0-9a-f-]{36})(?:[/?#]|$)/iu.exec(href)
+
+    return {
+      href,
+      conversationId: match?.[1] || null,
+      composerPresent: Boolean(input && usable(input)),
+      composerHydrated: Boolean(input && usable(input) && (!form || form.hasAttribute('data-chatgpt-composer'))),
+      composerHasText: Boolean(input && String(input.innerText ?? input.value ?? '').trim()),
+      sendReady: Boolean(sendButton && !sendButton.disabled),
+      stopVisible: Boolean(stopButton && !stopButton.disabled),
+      waitingForFinal: /连接已中断|等待完整答复|connection interrupted|waiting for (?:the )?full (?:answer|response)/iu.test(bodyText),
+      messageNodes: document.querySelectorAll('[data-message-author-role]').length,
+    }
+  })()`)
+  return value as ActorPageSnapshot
+}
+
+/**
+ * 只做“语义选择”，不负责导航。
+ *
+ * `steer` 是最危险的一条：必须确认当前页就是目标 CID、页面没有进入“等待完整答复”降级状态，
+ * 且第一方 UI 仍暴露 stop 控件，才认为本页已经 live attached。否则宁可失败，也不在缺上下文时
+ * 把 follow-up 发出去。
+ */
+export function resolveActorSendMode(args: {
+  requestedMode?: ActorSendMode
+  requestedConversationId?: string | null
+  currentConversationId?: string | null
+  stopVisible?: boolean
+  waitingForFinal?: boolean
+}): ActorResolvedMode {
+  const requestedMode = args.requestedMode ?? 'auto'
+  const requestedConversationId = args.requestedConversationId ? String(args.requestedConversationId).trim() : null
+  const currentConversationId = args.currentConversationId ? String(args.currentConversationId).trim() : null
+  const stopVisible = Boolean(args.stopVisible)
+  const waitingForFinal = Boolean(args.waitingForFinal)
+
+  if (requestedMode === 'new') {
+    if (requestedConversationId) throw new Error('actor mode=new cannot be combined with --conversation')
+    return 'new'
+  }
+  if (requestedMode === 'continue') {
+    if (!requestedConversationId) throw new Error('actor mode=continue requires --conversation <UUID>')
+    return 'continue'
+  }
+  if (requestedMode === 'steer') {
+    if (!requestedConversationId) throw new Error('actor mode=steer requires --conversation <UUID>')
+    if (currentConversationId !== requestedConversationId) {
+      throw new Error('actor steer requires the target conversation to be the current page')
+    }
+    if (waitingForFinal || !stopVisible) {
+      throw new Error('actor steer refused: target conversation is not live-attached with complete current context')
+    }
+    return 'steer'
+  }
+
+  if (!requestedConversationId) return 'new'
+  if (currentConversationId === requestedConversationId && waitingForFinal) {
+    throw new Error('actor auto refused: target conversation is waiting for full answer and is not safe to follow up')
+  }
+  if (currentConversationId === requestedConversationId && stopVisible) return 'steer'
+  return 'continue'
+}
+
+/** 找当前可见的新聊天入口；优先官方稳定的 data-testid，再退回中英文 aria/text。 */
+async function clickNewChatSpa(client: ActorCdpClient): Promise<boolean> {
+  return await evaluateValue(client, `(() => {
+    const usable = (element) => {
+      if (!element || !element.isConnected) return false
+      const rect = element.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return false
+      for (let node = element; node; node = node.parentElement) {
+        if (!(node instanceof HTMLElement)) continue
+        if (node.hidden || node.hasAttribute('inert')) return false
+        const style = window.getComputedStyle(node)
+        if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false
+        if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
+        if (node === document.documentElement) break
+      }
+      return true
+    }
+    const candidates = [
+      ...document.querySelectorAll('[data-testid="create-new-chat-button"]'),
+      ...document.querySelectorAll('a,button'),
+    ]
+    const target = candidates.find((element) => {
+      if (!usable(element)) return false
+      if (element.getAttribute('data-testid') === 'create-new-chat-button') return true
+      const identity = [element.getAttribute('aria-label') || '', element.innerText || ''].join(' ')
+      return /新聊天|new chat/iu.test(identity)
+    })
+    if (!target) return false
+    target.click()
+    return true
+  })()`) === true
+}
+
+/**
+ * 优先点击 sidebar 中已经存在的 canonical conversation 链接，让 ChatGPT 自己的 React Router
+ * 完成 same-document/SPA 切换；只有目标不在当前 sidebar DOM 时才允许 full-navigation fallback。
+ */
+async function clickConversationSpa(client: ActorCdpClient, conversationId: string): Promise<boolean> {
+  return await evaluateValue(client, `(() => {
+    const wanted = ${JSON.stringify(`/c/${conversationId}`)}
+    const usable = (element) => {
+      if (!element || !element.isConnected) return false
+      const rect = element.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return false
+      for (let node = element; node; node = node.parentElement) {
+        if (!(node instanceof HTMLElement)) continue
+        if (node.hidden || node.hasAttribute('inert')) return false
+        const style = window.getComputedStyle(node)
+        if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false
+        if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
+        if (node === document.documentElement) break
+      }
+      return true
+    }
+    const target = [...document.querySelectorAll('a[href]')].find((anchor) => {
+      if (!usable(anchor)) return false
+      try { return new URL(anchor.href, location.href).pathname === wanted }
+      catch { return false }
+    })
+    if (!target) return false
+    target.click()
+    return true
+  })()`) === true
+}
+
+async function waitForRoute(
+  client: ActorCdpClient,
+  conversationId: string | null,
+  timeoutMs: number,
+): Promise<ActorPageSnapshot> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const snapshot = await readActorPageSnapshot(client)
+    const routeMatches = conversationId
+      ? snapshot.conversationId === conversationId
+      : snapshot.conversationId === null && new URL(snapshot.href).pathname === '/'
+    if (routeMatches && snapshot.composerHydrated) return snapshot
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  throw new Error(`ChatGPT actor route did not become ready before timeout: ${conversationId ?? 'new-chat'}`)
+}
+
+async function preserveGuardianMarker(client: ActorCdpClient, hadGuardianMarker: boolean): Promise<void> {
+  if (!hadGuardianMarker) return
+  await evaluateValue(client, `(() => {
+    const url = new URL(location.href)
+    if (url.searchParams.get('chatgpt-archive-guardian') === '1') return true
+    url.searchParams.set('chatgpt-archive-guardian', '1')
+    history.replaceState(history.state, '', url.pathname + url.search + url.hash)
+    return true
+  })()`)
+}
+
+/**
+ * 返回实际导航方式，供 trace/drift 诊断使用。
+ * `spa-*` 是首选；`full-fallback` 只在 sidebar 没有目标链接时使用，后续可继续用 sidebar 搜索补齐。
+ */
+async function ensureActorRoute(
+  client: ActorCdpClient,
+  conversationId: string | null,
+  timeoutMs: number,
+): Promise<{ snapshot: ActorPageSnapshot; navigationMode: 'already-there' | 'spa-new' | 'spa-conversation' | 'full-fallback' }> {
+  const before = await readActorPageSnapshot(client)
+  const hadGuardianMarker = (() => {
+    try { return new URL(before.href).searchParams.get('chatgpt-archive-guardian') === '1' }
+    catch { return false }
+  })()
+  const alreadyThere = conversationId
+    ? before.conversationId === conversationId
+    : before.conversationId === null && new URL(before.href).pathname === '/'
+
+  if (alreadyThere && before.composerHydrated) {
+    return { snapshot: before, navigationMode: 'already-there' }
+  }
+
+  const clicked = conversationId
+    ? await clickConversationSpa(client, conversationId)
+    : await clickNewChatSpa(client)
+  if (clicked) {
+    const snapshot = await waitForRoute(client, conversationId, timeoutMs)
+    await preserveGuardianMarker(client, hadGuardianMarker)
+    return { snapshot, navigationMode: conversationId ? 'spa-conversation' : 'spa-new' }
+  }
+
+  const targetUrl = actorNavigationUrl(conversationId, before.href)
+  await client.send('Page.navigate', { url: targetUrl })
+  const snapshot = await waitForRoute(client, conversationId, timeoutMs)
+  return { snapshot, navigationMode: 'full-fallback' }
+}
+
 async function clearAndTypePrompt(client: ActorCdpClient, prompt: string): Promise<void> {
   const focused = await evaluateValue(client, `(() => {
     const input = document.querySelector('textarea[aria-label="与 ChatGPT 聊天"]')
