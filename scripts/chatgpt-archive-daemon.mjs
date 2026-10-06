@@ -732,9 +732,15 @@ export function shouldNotifyIncidentTransition(before, after) {
     || before.terminalEvidence !== after.terminalEvidence
 }
 
-/** startup 只补历史事实，不把首次扫描到的旧 incident 当成实时手机告警。 */
+/**
+ * historical-turn 的定义本身就是“后面已经出现了更新的 user turn”。
+ * 对当前使用方式，这通常意味着用户已经人工发现上一轮异常并继续了；此时再补发 Bark
+ * 会让人误以为“刚发的新一轮又异常”。因此 historical incident 永远只落库/统计，不做
+ * 实时手机告警。真正需要 Bark 的是当前尚未被后续 user turn 越过的 incident。
+ */
 export function shouldNotifyHistoricalIncidentForTrigger(trigger) {
-  return String(trigger || '') !== 'reconcile:startup'
+  void trigger
+  return false
 }
 
 export function extractConversationEvents(payloadData) {

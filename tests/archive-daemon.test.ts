@@ -278,8 +278,8 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(isConfirmedTerminalTrigger('watchdog:active-timeout')).toBe(false)
     expect(isConfirmedTerminalTrigger('reconcile:wss-reconnect')).toBe(false)
     expect(shouldNotifyHistoricalIncidentForTrigger('reconcile:startup')).toBe(false)
-    expect(shouldNotifyHistoricalIncidentForTrigger('watchdog:active-timeout')).toBe(true)
-    expect(shouldNotifyHistoricalIncidentForTrigger('reconcile:gap-repair')).toBe(true)
+    expect(shouldNotifyHistoricalIncidentForTrigger('watchdog:active-timeout')).toBe(false)
+    expect(shouldNotifyHistoricalIncidentForTrigger('reconcile:gap-repair')).toBe(false)
   })
 
   test('complete 首次 body 未收敛时只延迟立案一次，settle 复核不再循环', () => {
