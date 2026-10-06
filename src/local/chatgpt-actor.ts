@@ -20,7 +20,11 @@ interface ActorState {
   targetId: string
   createdAt: number
   updatedAt: number
+  /** `guardian` 表示借用 daemon 的常驻页；`dedicated` 才是 Actor 自己创建、可由 reset 关闭的页。 */
+  source?: 'guardian' | 'dedicated'
 }
+
+export type ActorTargetMode = 'guardian' | 'dedicated'
 
 /**
  * Phase 4 的发送语义必须显式区分三类第一方行为：
@@ -53,10 +57,12 @@ interface ActorPageSnapshot {
 interface ActorSendOptions {
   cdpHttp: string
   statePath: string
+  daemonStatePath?: string | null
   tracePath: string
   prompt: string
   conversationId?: string | null
   mode?: ActorSendMode
+  targetMode?: ActorTargetMode
   timeoutMs?: number
 }
 
@@ -158,6 +164,12 @@ async function readActorState(statePath: string): Promise<ActorState | null> {
   }
 }
 
+async function readJsonFile(filePath: string | null | undefined): Promise<any | null> {
+  if (!filePath) return null
+  try { return JSON.parse(await fs.readFile(filePath, 'utf8')) }
+  catch { return null }
+}
+
 async function writeActorState(statePath: string, state: ActorState): Promise<void> {
   await fs.mkdir(path.dirname(statePath), { recursive: true })
   await fs.writeFile(statePath, JSON.stringify(state, null, 2))
@@ -197,9 +209,39 @@ async function createActorTarget(cdpHttp: string, timeoutMs: number): Promise<Cd
   }
 }
 
-async function acquireActorTarget(cdpHttp: string, statePath: string, timeoutMs: number): Promise<CdpTarget> {
+async function acquireActorTarget(
+  cdpHttp: string,
+  statePath: string,
+  timeoutMs: number,
+  targetMode: ActorTargetMode,
+  daemonStatePath?: string | null,
+): Promise<CdpTarget> {
+  if (targetMode === 'guardian') {
+    const daemonState = await readJsonFile(daemonStatePath)
+    const guardianTargetId = typeof daemonState?.guardian?.targetId === 'string'
+      ? daemonState.guardian.targetId
+      : null
+    if (!guardianTargetId) throw new Error('ChatGPT Guardian target is unavailable; start the archive daemon or use --target dedicated')
+    const target = (await listTargets(cdpHttp)).find(item => (
+      (item.id ?? item.targetId) === guardianTargetId
+      && item.type === 'page'
+      && typeof item.url === 'string'
+      && item.url.startsWith('https://chatgpt.com/')
+      && item.webSocketDebuggerUrl
+    ))
+    if (!target) throw new Error('ChatGPT Guardian target is not reachable through CDP')
+    const prior = await readActorState(statePath)
+    await writeActorState(statePath, {
+      targetId: guardianTargetId,
+      createdAt: prior?.targetId === guardianTargetId ? prior.createdAt : Date.now(),
+      updatedAt: Date.now(),
+      source: 'guardian',
+    })
+    return target
+  }
+
   const state = await readActorState(statePath)
-  if (state) {
+  if (state && state.source !== 'guardian') {
     const existing = (await listTargets(cdpHttp)).find(item => (
       (item.id ?? item.targetId) === state.targetId
       && item.type === 'page'
@@ -216,8 +258,22 @@ async function acquireActorTarget(cdpHttp: string, statePath: string, timeoutMs:
     targetId,
     createdAt: Date.now(),
     updatedAt: Date.now(),
+    source: 'dedicated',
   })
   return created
+}
+
+/**
+ * cooldown 是账号级主动请求预算，不是 Guardian 私有状态。
+ * Actor 无论借 Guardian 还是独立 tab 都必须尊重同一个 cooldown，避免用另一个页面绕过熔断。
+ */
+async function assertActorCooldownClear(daemonStatePath?: string | null): Promise<void> {
+  const daemonState = await readJsonFile(daemonStatePath)
+  const cooldownUntil = Number(daemonState?.cooldownUntil || 0)
+  if (Number.isFinite(cooldownUntil) && cooldownUntil > Date.now()) {
+    const until = new Date(cooldownUntil).toISOString()
+    throw new Error(`ChatGPT actor blocked by active API cooldown until ${until}`)
+  }
 }
 
 async function evaluateValue(client: ActorCdpClient, expression: string): Promise<any> {
