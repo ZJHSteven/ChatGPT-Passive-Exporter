@@ -634,8 +634,12 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
       status: number | null
       respondedAt: number | null
     } = { requestId: null, status: null, respondedAt: null }
-    let responseStatus: number | null = null
-    let responseMimeType: string | null = null
+    // 和 submitState 一样，用显式 holder 表达“CDP 回调稍后填值”。
+    // TypeScript 不会把跨回调赋值错误收窄成永远为 null/never，也更贴近运行时事实。
+    const responseState: { status: number | null; mimeType: string | null } = {
+      status: null,
+      mimeType: null,
+    }
     let firstDataAt: number | null = null
     const conversationRequestUrl = 'https://chatgpt.com/backend-api/f/conversation'
     const steerRequestUrl = 'https://chatgpt.com/backend-api/f/steer_turn'
@@ -675,8 +679,8 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
       }
       const submitEvent = submitState.event
       if (!submitEvent || String(event?.requestId) !== submitEvent.requestId) return
-      responseStatus = Number(event?.response?.status ?? 0) || null
-      responseMimeType = typeof event?.response?.mimeType === 'string' ? event.response.mimeType : null
+      responseState.status = Number(event?.response?.status ?? 0) || null
+      responseState.mimeType = typeof event?.response?.mimeType === 'string' ? event.response.mimeType : null
     })
     const offData = client.on('Network.dataReceived', (event) => {
       const submitEvent = submitState.event
@@ -742,12 +746,12 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
         const href = String(await evaluateValue(client, 'location.href') || '')
         conversationId = expectedConversationId || conversationIdFromUrl(href)
         const submitEvent = submitState.event
-        if (submitEvent && responseStatus !== null && responseStatus >= 400) {
-          throw new Error(`ChatGPT actor ${mode} request failed with HTTP ${responseStatus}`)
+        if (submitEvent && responseState.status !== null && responseState.status >= 400) {
+          throw new Error(`ChatGPT actor ${mode} request failed with HTTP ${responseState.status}`)
         }
-        if (submitEvent && conversationId && responseStatus !== null && responseStatus >= 200 && responseStatus < 300) {
-          if (responseMimeType && !responseMimeType.includes('event-stream')) {
-            throw new Error(`ChatGPT actor ${mode} response drifted from event-stream: ${responseMimeType}`)
+        if (submitEvent && conversationId && responseState.status !== null && responseState.status >= 200 && responseState.status < 300) {
+          if (responseState.mimeType && !responseState.mimeType.includes('event-stream')) {
+            throw new Error(`ChatGPT actor ${mode} response drifted from event-stream: ${responseState.mimeType}`)
           }
           boundAt = Date.now()
           const recorder = new ActiveTurnRecorder(options.tracePath)
@@ -760,8 +764,8 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
             prepareStatus: prepareState.status,
             sendHandlerAttempts,
             cdpRequestId: submitEvent.requestId,
-            responseStatus,
-            responseMimeType,
+            responseStatus: responseState.status,
+            responseMimeType: responseState.mimeType,
             pageUrlBefore,
           }))
           const prior = await readActorState(options.statePath)
@@ -780,8 +784,8 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
             prepareRequestId: prepareState.requestId,
             prepareStatus: prepareState.status,
             sendHandlerAttempts,
-            responseStatus,
-            responseMimeType,
+            responseStatus: responseState.status,
+            responseMimeType: responseState.mimeType,
             pageUrlBefore,
             mode,
             navigationMode: route.navigationMode,
@@ -791,7 +795,7 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
             firstDataAt,
             runningConfirmed: Boolean(
               firstDataAt
-              || responseMimeType?.includes('event-stream')
+              || responseState.mimeType?.includes('event-stream')
               || (await readActorPageSnapshot(client)).stopVisible,
             ),
           }
@@ -820,7 +824,7 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
         await new Promise(resolve => setTimeout(resolve, 100))
       }
       if (!submitState.event) throw new Error(`ChatGPT actor did not emit POST ${formalRequestUrl}`)
-      if (responseStatus === null) throw new Error(`ChatGPT actor ${requestedMode} request started but no HTTP response arrived before timeout`)
+      if (responseState.status === null) throw new Error(`ChatGPT actor ${requestedMode} request started but no HTTP response arrived before timeout`)
       throw new Error('ChatGPT actor request was accepted but conversation UUID was not bound before timeout')
     }
     finally {
