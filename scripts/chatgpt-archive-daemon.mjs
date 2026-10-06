@@ -3483,7 +3483,11 @@ async function main() {
       if (!route) return
       if (status === 429) {
         passive429Responses += 1
-        void tripCooldown(`observed native ${route.kind} HTTP 429`).catch(() => {})
+        void tripCooldown(`observed native ${route.kind} HTTP 429`, {
+          route: relativeBackendUrl(requestUrl),
+          retryAfter: response?.headers?.['retry-after'] ?? response?.headers?.['Retry-After'] ?? null,
+          requestId: response?.headers?.['x-request-id'] ?? response?.headers?.['X-Request-Id'] ?? null,
+        }).catch(() => {})
         return
       }
       if (status < 200 || status >= 300) return
@@ -4197,7 +4201,11 @@ async function main() {
      // active replay 的 global list/body 429 已由 fetchChecked 处理，避免在这里重复续杯 cooldown。
       if (route?.kind === 'catalog' && !route.globalCatalog && status === 429) {
        passive429Responses += 1
-       void tripCooldown('Guardian native catalog HTTP 429').catch(() => {})
+       void tripCooldown('Guardian native catalog HTTP 429', {
+         route: relativeBackendUrl(response?.url),
+         retryAfter: response?.headers?.['retry-after'] ?? response?.headers?.['Retry-After'] ?? null,
+         requestId: response?.headers?.['x-request-id'] ?? response?.headers?.['X-Request-Id'] ?? null,
+       }).catch(() => {})
      }
    })
     page.on('Network.loadingFinished', ({ requestId }) => {
