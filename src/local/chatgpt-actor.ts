@@ -3,6 +3,7 @@ import path from 'node:path'
 // Node 24 直接执行本项目 `.ts` 源文件时不会像 Vite/Vitest 一样自动补扩展名；
 // 这是运行时 import（不是 type-only），因此必须显式写 `.ts`。
 import { ActiveTurnRecorder, buildActorSubmitTrace } from './active-turn-recorder.ts'
+import { ActorDomDriftLedger, type ActorDomObservation } from './dom-drift.ts'
 
 const DEFAULT_CDP_TIMEOUT_MS = 10_000
 const CHATGPT_HOME = 'https://chatgpt.com/'
@@ -58,6 +59,7 @@ interface ActorSendOptions {
   cdpHttp: string
   statePath: string
   daemonStatePath?: string | null
+  domLedgerPath?: string | null
   tracePath: string
   prompt: string
   conversationId?: string | null
