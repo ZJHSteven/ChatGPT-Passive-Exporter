@@ -1,10 +1,10 @@
 ## 2026-10-06 DevSpace raw metadata / binding / watchdog 收口 ExecPlan
 
-- [in_progress] 取消 DevSpace request metadata 脱敏摘要：`tool_audit.request_meta_json` 从新调用起保存 ChatGPT Host 传入的完整原始 `_meta` JSON；保留现有 `metadata_id=openai/session` 索引，不改表结构、不新增 migration 版本。历史已经哈希化的旧行无法逆推，只保证新行完整保存。
-- [pending] 复核 DevSpace migration 事故：确认旧 v7 已执行后新增列/表不会重跑 v7；验证当前 v8=request_meta_json、v9=chatgpt_conversation_bindings 已在生产库登记且实体 schema 完整，并跑旧库升级测试。Archive 自身使用 `CREATE TABLE IF NOT EXISTS + ensureColumn`，单独确认不存在同类版本号复用问题。
-- [pending] 把 binding/watchdog 重新整理成一条状态机并对照现有代码：`openai/session` 是 conversation 级；已知 binding 时 first DevSpace call 直接启动 45min watchdog；未知 binding 时保留 firstSeenAt，并通过已有 body/turn tool-window 后验绑定。明确 `conversation-created` 仅是可选新会话快路径，绝不是完整流程依赖。
-- [pending] 修复 unbound provisional watchdog 的最后缺口：45min 超时不能只在“catalog 只有唯一 active conversation”时才有结果；设计并实现不会误绑但仍可独立形成可通知的 unbound incident / 后续回填机制，binding 与通知解耦。
-- [pending] 全量测试 DevSpace + Archive；确认生产 DevSpace 已加载 raw metadata 写入逻辑，确认 Archive daemon 继续运行 conversation-transport gap repair，并用真实新 audit 行验证原始 metadata 已落库。
+- [in_progress] 取消 DevSpace request metadata 脱敏摘要：源码、测试与隔离 `dev` build 已改为完整保存 MCP metadata / args / result；验证过的 `request-meta.js/tool-audit.js` 已精确复制到生产 `source/dist`。当前生产 DevSpace 进程仍是重启前已加载模块，受工具安全门控限制暂未重启，因此“新行已原样写入”仍待 live 验证。历史哈希化旧行无法逆推。
+- [done] 复核 DevSpace migration 事故：问题确实是旧生产库已经登记 v7 后，修改 v7 实现不会重跑。现已由独立 v8=`tool-audit-request-metadata`、v9=`chatgpt-conversation-bindings` 修复；生产库 1~9 均已登记，实体列/表存在，并有 legacy-v7 升级回归。Archive 自身使用每次 open 的 `CREATE TABLE IF NOT EXISTS + ensureColumn`，不存在同类版本号复用。
+- [done] 把 binding/watchdog 收拢成一条状态机：`openai/session` 是 conversation 级；已有 binding 时 first DevSpace call 直接启动 45min watchdog；未知 binding 时 firstSeenAt 立即持久化并独立计时，body/turn 到手后再做一次后验 binding。删除 `conversation-created ±45s` 时间窗口绑定，它不是启动/绑定的必要条件。
+- [done] 修复 unbound provisional watchdog 缺口：未绑定 metadata 到 45min 即持久化 timeout、独立发送“待绑定”通知并触发 catalog repair；是否成功绑定 CID 不再决定是否告警。通知成功时间持久化，daemon 重启可从 Archive DB 恢复近期 provisional startedAt，避免计时归零/重复告警。
+- [in_progress] Archive 已通过 node syntax、typecheck、定向 49/49 与全量 20 files / 127 tests。下一步部署新 Archive daemon，并在 DevSpace 允许受控重启后用真实新 audit 行确认 raw metadata 写入。
 
 ## 2026-10-03 iPhone -> PC 跨设备续流一次性全量取证 ExecPlan
 
