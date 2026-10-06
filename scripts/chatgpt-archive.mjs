@@ -56,9 +56,11 @@ Usage:
   chatgpt-archive actor batch --jobs-file <json> [--target guardian|dedicated] [--min-gap-ms N] [--cdp URL] [--trace <path>] [--state <path>] [--dom-ledger <path>]
   chatgpt-archive actor status [--cdp URL] [--state <path>]
  chatgpt-archive actor reset [--cdp URL] [--state <path>]
-  chatgpt-archive protocol status [--ledger <path>]
-  chatgpt-archive protocol report [--notify] [--ledger <path>]
+  chatgpt-archive protocol status [--ledger <path>] [--dom-ledger <path>]
+  chatgpt-archive protocol report [--notify] [--ledger <path>] [--dom-ledger <path>]
   chatgpt-archive protocol approve <request-signature> [--ledger <path>]
+  chatgpt-archive protocol approve-dom <dom-signature> [--dom-ledger <path>]
+  chatgpt-archive protocol lock-dom [--dom-ledger <path>]
   chatgpt-archive protocol install-daily [--time HH:mm]
   chatgpt-archive protocol daily-status
   chatgpt-archive protocol uninstall-daily
@@ -343,6 +345,10 @@ async function protocolCommand(positionals, flags) {
     ? path.resolve(String(flags.get('ledger')))
     : DEFAULT_PROTOCOL_LEDGER_PATH
   const ledger = await ProtocolDriftLedger.open(ledgerPath)
+  const domLedgerPath = flags.has('dom-ledger')
+    ? path.resolve(String(flags.get('dom-ledger')))
+    : DEFAULT_DOM_LEDGER_PATH
+  const domLedger = await ActorDomDriftLedger.open(domLedgerPath)
   const reportStatePath = flags.has('report-state')
     ? path.resolve(String(flags.get('report-state')))
     : DEFAULT_PROTOCOL_REPORT_STATE_PATH
@@ -356,11 +362,31 @@ async function protocolCommand(positionals, flags) {
     console.log(JSON.stringify({
       summary: ledger.summary(),
       pending: ledger.pendingChanges({ unreportedOnly: false }),
+      dom: {
+        summary: domLedger.summary(),
+        pending: domLedger.pendingChanges({ unreportedOnly: false }),
+      },
       reportStatePath,
       notifiedCount: Object.keys(reportState.notified || {}).length,
       approvalsPath,
       approvals: approvals.approvals || {},
     }, null, 2))
+    return
+  }
+
+  if (action === 'approve-dom') {
+    const signature = positionals[1]
+    if (!signature) throw new Error('protocol approve-dom requires a DOM signature')
+    if (!domLedger.approve(signature)) throw new Error('DOM signature is missing: ' + signature)
+    await domLedger.flush()
+    console.log(JSON.stringify({ domLedgerPath, signature, approved: true }, null, 2))
+    return
+  }
+
+  if (action === 'lock-dom') {
+    domLedger.lockBaseline()
+    await domLedger.flush()
+    console.log(JSON.stringify({ domLedgerPath, locked: true, summary: domLedger.summary() }, null, 2))
     return
   }
 
@@ -389,41 +415,56 @@ async function protocolCommand(positionals, flags) {
   if (action === 'report') {
     const summary = ledger.summary()
     const allPending = ledger.pendingChanges({ unreportedOnly: false })
+    const domSummary = domLedger.summary()
+    const allDomPending = domLedger.pendingChanges({ unreportedOnly: false })
     const reportState = await readJsonOr(reportStatePath, { version: 1, notified: {} })
     reportState.version = 1
     reportState.notified = reportState.notified || {}
-    const changeKey = change => change.kind + ':' + change.requestSignature + ':' + (change.responseSignature || '')
+    const changeKey = change => 'protocol:' + change.kind + ':' + change.requestSignature + ':' + (change.responseSignature || '')
+    const domChangeKey = change => 'dom:' + change.signature
     const pending = allPending.filter(change => !reportState.notified[changeKey(change)])
+    const domPending = allDomPending.filter(change => !reportState.notified[domChangeKey(change)])
+    const pendingTotal = pending.length + domPending.length
     let notification = null
-    if (flags.has('notify') && pending.length > 0 && summary.baselineMode === 'locked') {
+    if (flags.has('notify') && pendingTotal > 0) {
       const notificationPath = flags.has('notification-config')
         ? path.resolve(String(flags.get('notification-config')))
         : DEFAULT_NOTIFICATION_CONFIG_PATH
       const config = await loadIncidentNotificationConfig(notificationPath)
-      const lines = pending.slice(0, 8).map((change) => {
+      const protocolLines = pending.map((change) => {
         const suffix = change.kind === 'response'
           ? ' response=' + change.responseSignature
           : ''
         const query = Object.keys(change.query).length > 0
           ? ' ' + JSON.stringify(change.query)
           : ''
-        return change.kind + ' ' + change.method + ' ' + change.route + query + ' [' + change.requestSignature + suffix + ']'
+        return '[HTTP] ' + change.kind + ' ' + change.method + ' ' + change.route + query + ' [' + change.requestSignature + suffix + ']'
       })
-      if (pending.length > lines.length) lines.push('…另有 ' + (pending.length - lines.length) + ' 项')
+      const domLines = domPending.map(change => (
+        '[DOM] route=' + change.routeKind + ' signature=' + change.signature
+      ))
+      const allLines = [...protocolLines, ...domLines]
+      const lines = allLines.slice(0, 8)
+      if (allLines.length > lines.length) lines.push('…另有 ' + (allLines.length - lines.length) + ' 项')
       const result = await sendIncidentNotification(config, {
-        title: 'ChatGPT 协议漂移 ' + pending.length + ' 项',
+        title: 'ChatGPT 协议/DOM 漂移 ' + pendingTotal + ' 项',
         body: lines.join('\n'),
       })
       notification = result
       if (result.ok) {
         const now = Date.now()
         for (const change of pending) reportState.notified[changeKey(change)] = now
+        for (const change of domPending) reportState.notified[domChangeKey(change)] = now
         await writeJsonAtomic(reportStatePath, reportState)
       }
     }
     console.log(JSON.stringify({
       summary,
       pending,
+      dom: {
+        summary: domSummary,
+        pending: domPending,
+      },
       notification,
       reportStatePath,
     }, null, 2))
