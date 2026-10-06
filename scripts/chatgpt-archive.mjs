@@ -697,7 +697,7 @@ async function main() {
       }, null, 2))
       return
     }
-    throw new Error('actor requires send|status|reset')
+    throw new Error('actor requires send|batch|status|reset')
   }
 
   if (command === 'protocol') {
