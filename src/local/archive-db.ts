@@ -151,6 +151,17 @@ export interface DevSpaceMetadataBindingRow {
   lifecycleState: 'unbound' | 'active' | 'closed'
 }
 
+/** daemon 重启后需要原样恢复的 conversation watchdog 计时状态。 */
+export interface ActiveWatchdogStateRow {
+  conversationId: string
+  startedAt: number
+  lastEventAt: number
+  lastWatchdogAt: number | null
+  startType: string
+  lastDiagnosticTurnKey: string | null
+  updatedAt: number
+}
+
 /**
  * 在线 conversation body 中发现的图片资产映射。
  *
@@ -575,6 +586,19 @@ export class ChatArchiveDb {
 
       CREATE INDEX IF NOT EXISTS devspace_metadata_bindings_unbound
         ON devspace_metadata_bindings(lifecycle_state, last_seen_at DESC);
+
+      -- Watchdog 属于 conversation/turn 生命周期，不属于某一个 metadata。
+      -- 同一 conversation 可能先后出现多个 openai/session，因此把 active timer 独立持久化。
+      -- daemon 重启后必须恢复原 started_at；绝不能用“最近一条 tool audit”重新起表。
+      CREATE TABLE IF NOT EXISTS active_watchdogs (
+        conversation_id TEXT PRIMARY KEY,
+        started_at INTEGER NOT NULL,
+        last_event_at INTEGER NOT NULL,
+        last_watchdog_at INTEGER,
+        start_type TEXT NOT NULL,
+        last_diagnostic_turn_key TEXT,
+        updated_at INTEGER NOT NULL
+      );
     `)
 
     // 旧 prototype 数据库已经存在于用户机器上，因此采用“增量加列”而不是粗暴 DROP/重建。
@@ -3058,6 +3082,50 @@ export class ChatArchiveDb {
       WHERE metadata_id = ? AND conversation_id IS NULL
     `).run(Math.max(0, Math.trunc(detectedAt)), metadataId)
     return this.getDevSpaceMetadataBinding(metadataId)
+  }
+
+  upsertActiveWatchdog(input: Omit<ActiveWatchdogStateRow, 'updatedAt'> & { updatedAt?: number }): void {
+    const updatedAt = Math.max(0, Math.trunc(input.updatedAt ?? Date.now()))
+    this.db.prepare(`
+      INSERT INTO active_watchdogs (
+        conversation_id, started_at, last_event_at, last_watchdog_at,
+        start_type, last_diagnostic_turn_key, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(conversation_id) DO UPDATE SET
+        started_at=excluded.started_at,
+        last_event_at=excluded.last_event_at,
+        last_watchdog_at=excluded.last_watchdog_at,
+        start_type=excluded.start_type,
+        last_diagnostic_turn_key=excluded.last_diagnostic_turn_key,
+        updated_at=excluded.updated_at
+    `).run(
+      input.conversationId,
+      Math.max(0, Math.trunc(input.startedAt)),
+      Math.max(0, Math.trunc(input.lastEventAt)),
+      input.lastWatchdogAt === null ? null : Math.max(0, Math.trunc(input.lastWatchdogAt)),
+      input.startType,
+      input.lastDiagnosticTurnKey ?? null,
+      updatedAt,
+    )
+  }
+
+  deleteActiveWatchdog(conversationId: string): void {
+    this.db.prepare('DELETE FROM active_watchdogs WHERE conversation_id = ?').run(conversationId)
+  }
+
+  listActiveWatchdogs(limit = 1000): ActiveWatchdogStateRow[] {
+    return this.db.prepare(`
+      SELECT conversation_id AS conversationId,
+             started_at AS startedAt,
+             last_event_at AS lastEventAt,
+             last_watchdog_at AS lastWatchdogAt,
+             start_type AS startType,
+             last_diagnostic_turn_key AS lastDiagnosticTurnKey,
+             updated_at AS updatedAt
+      FROM active_watchdogs
+      ORDER BY started_at ASC
+      LIMIT ?
+    `).all(Math.max(1, Math.trunc(limit))) as unknown as ActiveWatchdogStateRow[]
   }
 
   getMessages(conversationId: string): Array<Record<string, unknown>> {

@@ -160,6 +160,52 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('active watchdog 可跨 daemon 重启原样恢复并在 complete 时删除', () => {
+    const db = tempDb()
+    try {
+      db.upsertActiveWatchdog({
+        conversationId: 'conversation-watchdog',
+        startedAt: 1000,
+        lastEventAt: 1800,
+        lastWatchdogAt: null,
+        startType: 'devspace:first-tool',
+        lastDiagnosticTurnKey: 'turn-a',
+        updatedAt: 2000,
+      })
+      expect(db.listActiveWatchdogs()).toEqual([{
+        conversationId: 'conversation-watchdog',
+        startedAt: 1000,
+        lastEventAt: 1800,
+        lastWatchdogAt: null,
+        startType: 'devspace:first-tool',
+        lastDiagnosticTurnKey: 'turn-a',
+        updatedAt: 2000,
+      }])
+
+      db.upsertActiveWatchdog({
+        conversationId: 'conversation-watchdog',
+        startedAt: 1000,
+        lastEventAt: 2500,
+        lastWatchdogAt: 2400,
+        startType: 'devspace:first-tool',
+        lastDiagnosticTurnKey: 'turn-b',
+        updatedAt: 2600,
+      })
+      expect(db.listActiveWatchdogs()[0]).toMatchObject({
+        startedAt: 1000,
+        lastEventAt: 2500,
+        lastWatchdogAt: 2400,
+        lastDiagnosticTurnKey: 'turn-b',
+      })
+
+      db.deleteActiveWatchdog('conversation-watchdog')
+      expect(db.listActiveWatchdogs()).toEqual([])
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('导入 canonical conversation 并避免重复累计', () => {
     const db = tempDb()
     try {

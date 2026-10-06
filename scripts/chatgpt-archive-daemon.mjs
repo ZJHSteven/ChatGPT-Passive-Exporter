@@ -1307,6 +1307,33 @@ async function main() {
   // 这个集合只用于 catalog 自己识别 active→complete 的 gap repair。
   const catalogActive = new Map()
   const activeTurns = new Map()
+  const persistActiveTurn = (conversationId, active) => {
+    archive.upsertActiveWatchdog({
+      conversationId,
+      startedAt: Number(active.startedAt || 0),
+      lastEventAt: Number(active.lastEventAt || active.startedAt || 0),
+      lastWatchdogAt: active.lastWatchdogAt === null || active.lastWatchdogAt === undefined
+        ? null
+        : Number(active.lastWatchdogAt),
+      startType: String(active.startType || 'unknown'),
+      lastDiagnosticTurnKey: active.lastDiagnosticTurnKey ?? null,
+    })
+  }
+  const clearActiveTurn = (conversationId) => {
+    activeTurns.delete(conversationId)
+    archive.deleteActiveWatchdog(conversationId)
+  }
+  // daemon 重启必须恢复“原计时器”，而不是由最近一次 DevSpace audit 重新开表。
+  // active_watchdogs 是 conversation 级状态，因此不受同一 CID 多 metadata 的影响。
+  for (const persisted of archive.listActiveWatchdogs()) {
+    activeTurns.set(persisted.conversationId, {
+      startedAt: persisted.startedAt,
+      lastEventAt: persisted.lastEventAt,
+      lastWatchdogAt: persisted.lastWatchdogAt,
+      startType: persisted.startType,
+      lastDiagnosticTurnKey: persisted.lastDiagnosticTurnKey,
+    })
+  }
   // metadata 尚未解出 canonical conversation 时，也先保存 first-tool 的真实时间。
   // binding 晚到以后仍以这个时间作为 watchdog.startedAt，不让发现延迟污染超时起点。
   const unboundDevSpaceTurns = new Map()
@@ -1565,6 +1592,14 @@ async function main() {
       oldestActiveMs: activeTurns.size > 0
         ? Math.max(...[...activeTurns.values()].map(item => Date.now() - item.startedAt))
         : 0,
+      activeTurns: [...activeTurns.entries()].map(([conversationId, active]) => ({
+        conversationId,
+        startedAt: active.startedAt,
+        lastEventAt: active.lastEventAt,
+        lastWatchdogAt: active.lastWatchdogAt ?? null,
+        startType: active.startType,
+        lastDiagnosticTurnKey: active.lastDiagnosticTurnKey ?? null,
+      })).sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0)),
       syncInFlight,
       reconcileInFlight,
     },
@@ -2290,6 +2325,7 @@ async function main() {
         const reconciled = reconcileWatchdogDiagnosticTurn(currentActive, preliminaryDiagnostic, Date.now())
         watchdogTurnChanged = reconciled.changed
         activeTurns.set(conversationId, reconciled.nextActive)
+        persistActiveTurn(conversationId, reconciled.nextActive)
         if (watchdogTurnChanged) {
           void log('watchdog body belongs to a newer turn; reset late-start timer', {
             conversationId,
@@ -2675,7 +2711,7 @@ async function main() {
         readySince.delete(conversationId)
         readyNotBefore.delete(conversationId)
         if (result.diagnostic.terminalEvidence !== 'none') {
-          activeTurns.delete(conversationId)
+          clearActiveTurn(conversationId)
           catalogActive.delete(conversationId)
           stopCheckpointWatch(conversationId, 'body-terminal', Date.now())
           archive.updateDevSpaceBindingTurn({
@@ -2809,15 +2845,18 @@ async function main() {
     const current = activeTurns.get(conversationId)
     if (current) {
       current.lastEventAt = Math.max(Number(current.lastEventAt || 0), auditAt)
+      persistActiveTurn(conversationId, current)
     }
     else {
-      activeTurns.set(conversationId, {
+      const nextActive = {
         startedAt: auditAt,
         lastEventAt: auditAt,
         lastWatchdogAt: null,
         startType: 'devspace:first-tool',
         lastDiagnosticTurnKey: binding.lastTurnExchangeId || null,
-      })
+      }
+      activeTurns.set(conversationId, nextActive)
+      persistActiveTurn(conversationId, nextActive)
       void log('DevSpace first tool started watchdog', {
         conversationId,
         startedAt: auditAt,
@@ -3688,19 +3727,24 @@ async function main() {
     markDirty(event.conversationId, `wss:${event.type}`)
     if (behavior.startsTurn) {
       const current = activeTurns.get(event.conversationId)
-      activeTurns.set(event.conversationId, {
+      const nextActive = {
         startedAt: current?.startedAt ?? now,
         lastEventAt: now,
         lastWatchdogAt: current?.lastWatchdogAt ?? null,
         startType: current?.startType ?? (event.updateType ? `${event.type}:${event.updateType}` : event.type),
-      })
+        lastDiagnosticTurnKey: current?.lastDiagnosticTurnKey ?? null,
+      }
+      activeTurns.set(event.conversationId, nextActive)
+      persistActiveTurn(event.conversationId, nextActive)
     }
     else if (activeTurns.has(event.conversationId)) {
-      activeTurns.get(event.conversationId).lastEventAt = now
+      const current = activeTurns.get(event.conversationId)
+      current.lastEventAt = now
+      persistActiveTurn(event.conversationId, current)
     }
     if (behavior.completesTurn) {
       recentConversationComplete.set(event.conversationId, now)
-      activeTurns.delete(event.conversationId)
+      clearActiveTurn(event.conversationId)
       catalogActive.delete(event.conversationId)
       stopCheckpointWatch(event.conversationId, `wss:${event.type}`, now)
       archive.updateDevSpaceBindingTurn({
@@ -3738,6 +3782,7 @@ async function main() {
       if (!shouldQueueWatchdogDiagnostic(active, now, watchdogMs)) continue
       // 同一个仍活跃 turn 至多每个 watchdog 窗口做一次诊断抓取；没有 complete 时不轮询。
       active.lastWatchdogAt = now
+      persistActiveTurn(conversationId, active)
       const watchdogTrigger = watchdogTriggerForStartType(active.startType)
       markSyncReady(conversationId, watchdogTrigger, 0)
       void log('active turn exceeded watchdog; queued diagnostic body sync', {
@@ -3825,18 +3870,24 @@ async function main() {
               archivedUpdateTime: archived?.updateTime ?? null,
               archivedTerminalState: archived?.terminalState ?? null,
             })) {
-              activeTurns.set(id, {
+              const nextActive = {
                 startedAt: current?.firstSeenAt ?? now,
                 lastEventAt: now,
                 lastWatchdogAt: null,
                 startType: `catalog:async-active:${reason}`,
-              })
+                lastDiagnosticTurnKey: null,
+              }
+              activeTurns.set(id, nextActive)
+              persistActiveTurn(id, nextActive)
             }
             else if (catalogProgressed) {
               const active = activeTurns.get(id)
               // reconciliation 再次看见同一个 async_status=3 不是“新进展”。只有服务端
               // update_time 真正变化才推进 lastEventAt，从而重新武装下一次 watchdog。
-              if (active && String(active.startType || '').startsWith('catalog:')) active.lastEventAt = now
+              if (active && String(active.startType || '').startsWith('catalog:')) {
+                active.lastEventAt = now
+                persistActiveTurn(id, active)
+              }
             }
             // running 先标 stale；真正 body 诊断仍等 complete 或 watchdog 超时，避免正常长任务
             // 在每次 catalog reconciliation 时都主动抓半成品。
@@ -3861,7 +3912,7 @@ async function main() {
           else if (asyncState === 'complete' && wasCatalogActive) {
             // 低频 list 看到了 active→complete，而 WSS complete 没到：这是典型 gap repair。
             catalogActive.delete(id)
-            activeTurns.delete(id)
+            clearActiveTurn(id)
             stopCheckpointWatch(id, `reconcile:${reason}:async-complete`, now)
             await turnRecorder.append(buildCatalogObservationTrace({
               at: now,
