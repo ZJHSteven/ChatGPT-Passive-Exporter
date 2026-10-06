@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 `protocol status/report --notify` 已统一纳入 DOM drift；通知会把 `[HTTP]` 与 `[DOM]` 变化合并到同一条漂移报告。新增 `protocol approve-dom <signature>` 和 `protocol lock-dom`，只有人工确认后新 DOM 才会提升为可信基线。提交 `b23630d`。
 - 2026-10-07 `actor send/batch` 现已默认把 DOM 结构观察写入 `data/dom-fingerprints.json`，也支持 `--dom-ledger <path>` 覆盖；因此单条发送和批处理都会在真正输入/点击前执行同一套 DOM drift 门控。提交 `c71e11f`。
 - 2026-10-07 CLI 已声明独立 DOM drift ledger 默认路径 `data/dom-fingerprints.json`，后续与现有 protocol status/report/notify 合并展示。提交 `b08c92e`。
 - 2026-10-07 Actor 已把 DOM drift 变成真正的发送前安全门：CDP/Network 启用后、任何导航前先观察一次；目标 route/context ready 后、写入 prompt 前再观察一次。baseline 锁定后任一新 DOM signature 会在页面动作/输入之前直接拒绝，不会先点错再报警；CLI 成功结果会返回前后两个 DOM signature 供取证。提交 `f09de6b`。
