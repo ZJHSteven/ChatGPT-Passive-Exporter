@@ -422,6 +422,12 @@ export function resolveActorSendMode(args: {
   }
   if (requestedMode === 'continue') {
     if (!requestedConversationId) throw new Error('actor mode=continue requires --conversation <UUID>')
+    if (currentConversationId === requestedConversationId && waitingForFinal) {
+      throw new Error('actor continue refused: target conversation is waiting for full answer and current context is incomplete')
+    }
+    if (currentConversationId === requestedConversationId && stopVisible) {
+      throw new Error('actor continue refused: target conversation is still live; use --mode steer or --mode auto')
+    }
     return 'continue'
   }
   if (requestedMode === 'steer') {
