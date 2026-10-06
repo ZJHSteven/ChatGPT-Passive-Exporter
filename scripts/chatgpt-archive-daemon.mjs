@@ -53,7 +53,6 @@ const DEFAULT_PROTOCOL_LEDGER = path.join(PROJECT_ROOT, 'data', 'protocol-finger
 const DEFAULT_IMAGE_ASSET_DIR = path.join(PROJECT_ROOT, 'data', 'assets', 'chatgpt')
 const DEVSPACE_POLL_OVERLAP_MS = 10_000
 const DEVSPACE_INITIAL_LOOKBACK_MS = 2 * 60_000
-const DEVSPACE_CREATED_BIND_WINDOW_MS = 45_000
 const IMAGE_ASSET_HYDRATE_INTERVAL_MS = 30_000
 const SLEEPING_TARGET_RETRY_MS = 5 * 60_000
 const WINDOWS_HIDE_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-hide-window.ps1')
@@ -1244,7 +1243,6 @@ async function main() {
   // metadata 尚未解出 canonical conversation 时，也先保存 first-tool 的真实时间。
   // binding 晚到以后仍以这个时间作为 watchdog.startedAt，不让发现延迟污染超时起点。
   const unboundDevSpaceTurns = new Map()
-  const recentConversationCreated = new Map()
   const recentConversationComplete = new Map()
   const seenDevSpaceAuditIds = new Map()
   let devSpacePollSinceAt = Date.now() - DEVSPACE_INITIAL_LOOKBACK_MS
@@ -1254,6 +1252,23 @@ async function main() {
   let devSpaceAuditsObserved = 0
   let devSpaceBindingsCreated = 0
   let devSpaceBindingMirrors = 0
+  // daemon 重启不能把一个已经计时几十分钟的 provisional watchdog 重新从 0 开始。
+  // 从 Archive 自己的持久 binding 表恢复近期未绑定 metadata；firstSeenAt 仍是原始首个工具时间。
+  for (const binding of archive.listDevSpaceMetadataBindings({
+    onlyUnbound: true,
+    sinceAt: Date.now() - Math.max(watchdogMs * 2, 2 * 60_000),
+    limit: 1000,
+  })) {
+    unboundDevSpaceTurns.set(binding.metadataId, {
+      startedAt: binding.firstSeenAt,
+      lastEventAt: binding.lastSeenAt,
+      lastAuditId: binding.lastAuditId,
+      repairQueuedAt: null,
+      notificationAttemptAt: null,
+      notificationSentAt: binding.unboundNotificationSentAt,
+      notificationInFlight: false,
+    })
+  }
   // activeTurns 现在承载“所有已纳入 watchdog 的 active”：既可能来自可靠 WSS/actor start，
   // 也可能来自 catalog 首次观察到 active 的保守 late-start。两者不能在取证输出里混称 reliable。
   const isCatalogLateActive = (active) => String(active?.startType || '').startsWith('catalog:')
@@ -1448,7 +1463,7 @@ async function main() {
       bindingMirrors: devSpaceBindingMirrors,
       unboundActive: unboundDevSpaceTurns.size,
       bindings: archive.listDevSpaceMetadataBindings({ limit: 100 }).map(binding => ({
-        metadataIdHash: createHash('sha256').update(binding.metadataId).digest('hex').slice(0, 16),
+        metadataId: binding.metadataId,
         conversationId: binding.conversationId,
         firstSeenAt: binding.firstSeenAt,
         lastSeenAt: binding.lastSeenAt,
@@ -1456,6 +1471,8 @@ async function main() {
         evidence: binding.evidence,
         confidence: binding.confidence,
         lastTurnExchangeId: binding.lastTurnExchangeId,
+        unboundWatchdogAt: binding.unboundWatchdogAt,
+        unboundNotificationSentAt: binding.unboundNotificationSentAt,
         lifecycleState: binding.lifecycleState,
       })),
     },
@@ -2401,7 +2418,7 @@ async function main() {
       void log('DevSpace first tool started watchdog', {
         conversationId,
         startedAt: auditAt,
-        metadataIdHash: createHash('sha256').update(binding.metadataId).digest('hex').slice(0, 16),
+        metadataId: binding.metadataId,
       })
     }
     archive.updateDevSpaceBindingTurn({
@@ -2415,7 +2432,7 @@ async function main() {
     const existing = archive.getDevSpaceMetadataBinding(input.metadataId)
     if (existing?.conversationId && existing.conversationId !== input.conversationId) {
       void log('DevSpace metadata binding conflict left unchanged', {
-        metadataIdHash: createHash('sha256').update(input.metadataId).digest('hex').slice(0, 16),
+        metadataId: input.metadataId,
         existingConversationId: existing.conversationId,
         candidateConversationId: input.conversationId,
         evidence: input.evidence,
@@ -2439,7 +2456,7 @@ async function main() {
     if (!existing?.conversationId) devSpaceBindingsCreated += 1
     mirrorDevSpaceBinding(binding)
     void log('DevSpace metadata bound to conversation', {
-      metadataIdHash: createHash('sha256').update(input.metadataId).digest('hex').slice(0, 16),
+      metadataId: input.metadataId,
       conversationId: input.conversationId,
       evidence: input.evidence,
       confidence: input.confidence,
@@ -2448,37 +2465,6 @@ async function main() {
     })
     if (lifecycleState === 'active') activateBoundDevSpaceTurn(binding, input.startAt)
     return binding
-  }
-
-  /**
-   * 新 conversation 的 fast path：严格要求 45 秒窗口内“一条未绑定 metadata ↔ 一个
-   * conversation-created”一一对应。只要出现两个候选就不猜，后续 body 再做后验 binding。
-   */
-  const tryBindRecentCreatedConversations = () => {
-    const now = Date.now()
-    for (const [conversationId, createdAt] of [...recentConversationCreated]) {
-      if (now - createdAt > 5 * 60_000) {
-        recentConversationCreated.delete(conversationId)
-        continue
-      }
-      if (archive.getDevSpaceMetadataBindingsForConversation(conversationId).length > 0) continue
-      const candidates = [...unboundDevSpaceTurns.entries()].filter(([, candidate]) =>
-        Math.abs(Number(candidate.startedAt) - Number(createdAt)) <= DEVSPACE_CREATED_BIND_WINDOW_MS)
-      if (candidates.length !== 1) continue
-      const [metadataId, candidate] = candidates[0]
-      const matchingConversations = [...recentConversationCreated.entries()].filter(([candidateConversationId, candidateCreatedAt]) =>
-        archive.getDevSpaceMetadataBindingsForConversation(candidateConversationId).length === 0
-        && Math.abs(Number(candidate.startedAt) - Number(candidateCreatedAt)) <= DEVSPACE_CREATED_BIND_WINDOW_MS)
-      if (matchingConversations.length !== 1) continue
-      bindDevSpaceMetadataToConversation({
-        metadataId,
-        conversationId,
-        startAt: candidate.startedAt,
-        observedAt: now,
-        evidence: 'wss:conversation-created+devspace:first-tool',
-        confidence: 'high',
-      })
-    }
   }
 
   const handleDevSpaceAuditEvent = (event) => {
@@ -2502,7 +2488,6 @@ async function main() {
       lastAuditId: event.id,
       repairQueuedAt: current?.repairQueuedAt ?? null,
     })
-    tryBindRecentCreatedConversations()
   }
 
   const pollDevSpaceAudits = () => {
@@ -2580,7 +2565,7 @@ async function main() {
       if (candidate.repairQueuedAt) continue
       candidate.repairQueuedAt = now
       void log('unbound DevSpace watchdog exceeded threshold; queued catalog repair', {
-        metadataIdHash: createHash('sha256').update(metadataId).digest('hex').slice(0, 16),
+        metadataId,
         activeForMs: now - Number(candidate.startedAt),
       })
       void scheduleGapRepair('devspace-unbound-timeout')
@@ -3110,10 +3095,6 @@ async function main() {
   const observeConversationEvent = (event) => {
     const behavior = classifyConversationEvent(event.type, event.updateType)
     const now = Date.now()
-    if (event.type === 'conversation-created') {
-      recentConversationCreated.set(event.conversationId, now)
-      tryBindRecentCreatedConversations()
-    }
     const activeBeforeIds = [...activeTurns.keys()]
     // 只记录生命周期元数据，不记录消息正文。并发实验需要精确知道每个
     // conversation 的 created/complete 时刻，否则 eventCounts 只能给总数，
