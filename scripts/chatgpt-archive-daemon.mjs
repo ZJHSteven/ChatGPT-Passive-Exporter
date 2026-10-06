@@ -429,6 +429,7 @@ export function reconcileWatchdogDiagnosticTurn(active, diagnostic, now = Date.n
         startedAt: now,
         lastEventAt: now,
         lastWatchdogAt: null,
+        watchdogPendingAt: null,
         lastDiagnosticTurnKey: turnKey,
       },
     }
@@ -1315,6 +1316,9 @@ async function main() {
       lastWatchdogAt: active.lastWatchdogAt === null || active.lastWatchdogAt === undefined
         ? null
         : Number(active.lastWatchdogAt),
+      watchdogPendingAt: active.watchdogPendingAt === null || active.watchdogPendingAt === undefined
+        ? null
+        : Number(active.watchdogPendingAt),
       startType: String(active.startType || 'unknown'),
       lastDiagnosticTurnKey: active.lastDiagnosticTurnKey ?? null,
     })
@@ -1330,6 +1334,7 @@ async function main() {
       startedAt: persisted.startedAt,
       lastEventAt: persisted.lastEventAt,
       lastWatchdogAt: persisted.lastWatchdogAt,
+      watchdogPendingAt: persisted.watchdogPendingAt,
       startType: persisted.startType,
       lastDiagnosticTurnKey: persisted.lastDiagnosticTurnKey,
     })
@@ -1597,6 +1602,7 @@ async function main() {
         startedAt: active.startedAt,
         lastEventAt: active.lastEventAt,
         lastWatchdogAt: active.lastWatchdogAt ?? null,
+        watchdogPendingAt: active.watchdogPendingAt ?? null,
         startType: active.startType,
         lastDiagnosticTurnKey: active.lastDiagnosticTurnKey ?? null,
       })).sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0)),
@@ -2703,6 +2709,13 @@ async function main() {
       try {
         const result = await syncConversation(conversationId, trigger)
         syncedConversations += 1
+        if (String(trigger || '').startsWith('watchdog:')) {
+          const active = activeTurns.get(conversationId)
+          if (active) {
+            active.watchdogPendingAt = null
+            persistActiveTurn(conversationId, active)
+          }
+        }
         // body 一旦给出 turn_exchange_id，就可以把 earlier provisional metadata 做后验校验；
         // 该步骤只读局部时间窗，不扫描整库。
         reconcileDevSpaceBindingFromBody(conversationId, result.diagnostic)
@@ -2852,6 +2865,7 @@ async function main() {
         startedAt: auditAt,
         lastEventAt: auditAt,
         lastWatchdogAt: null,
+        watchdogPendingAt: null,
         startType: 'devspace:first-tool',
         lastDiagnosticTurnKey: binding.lastTurnExchangeId || null,
       }
@@ -3731,6 +3745,7 @@ async function main() {
         startedAt: current?.startedAt ?? now,
         lastEventAt: now,
         lastWatchdogAt: current?.lastWatchdogAt ?? null,
+        watchdogPendingAt: current?.watchdogPendingAt ?? null,
         startType: current?.startType ?? (event.updateType ? `${event.type}:${event.updateType}` : event.type),
         lastDiagnosticTurnKey: current?.lastDiagnosticTurnKey ?? null,
       }
@@ -3779,9 +3794,23 @@ async function main() {
   const queueWatchdogDiagnostics = () => {
     const now = Date.now()
     for (const [conversationId, active] of activeTurns) {
+      if (active.watchdogPendingAt) {
+        if (!ready.has(conversationId)) {
+          const watchdogTrigger = watchdogTriggerForStartType(active.startType)
+          markSyncReady(conversationId, watchdogTrigger, 0)
+          void log('restored pending watchdog diagnostic; re-queued body sync', {
+            conversationId,
+            pendingAt: active.watchdogPendingAt,
+            startType: active.startType,
+            trigger: watchdogTrigger,
+          })
+        }
+        continue
+      }
       if (!shouldQueueWatchdogDiagnostic(active, now, watchdogMs)) continue
       // 同一个仍活跃 turn 至多每个 watchdog 窗口做一次诊断抓取；没有 complete 时不轮询。
       active.lastWatchdogAt = now
+      active.watchdogPendingAt = now
       persistActiveTurn(conversationId, active)
       const watchdogTrigger = watchdogTriggerForStartType(active.startType)
       markSyncReady(conversationId, watchdogTrigger, 0)
@@ -3874,6 +3903,7 @@ async function main() {
                 startedAt: current?.firstSeenAt ?? now,
                 lastEventAt: now,
                 lastWatchdogAt: null,
+                watchdogPendingAt: null,
                 startType: `catalog:async-active:${reason}`,
                 lastDiagnosticTurnKey: null,
               }

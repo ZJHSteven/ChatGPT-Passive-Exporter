@@ -177,6 +177,7 @@ describe('ChatArchiveDb', () => {
         startedAt: 1000,
         lastEventAt: 1800,
         lastWatchdogAt: null,
+        watchdogPendingAt: null,
         startType: 'devspace:first-tool',
         lastDiagnosticTurnKey: 'turn-a',
         updatedAt: 2000,
@@ -187,6 +188,7 @@ describe('ChatArchiveDb', () => {
         startedAt: 1000,
         lastEventAt: 2500,
         lastWatchdogAt: 2400,
+        watchdogPendingAt: 2450,
         startType: 'devspace:first-tool',
         lastDiagnosticTurnKey: 'turn-b',
         updatedAt: 2600,
@@ -195,6 +197,7 @@ describe('ChatArchiveDb', () => {
         startedAt: 1000,
         lastEventAt: 2500,
         lastWatchdogAt: 2400,
+        watchdogPendingAt: 2450,
         lastDiagnosticTurnKey: 'turn-b',
       })
 

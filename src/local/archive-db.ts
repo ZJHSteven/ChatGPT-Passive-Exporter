@@ -157,6 +157,7 @@ export interface ActiveWatchdogStateRow {
   startedAt: number
   lastEventAt: number
   lastWatchdogAt: number | null
+  watchdogPendingAt: number | null
   startType: string
   lastDiagnosticTurnKey: string | null
   updatedAt: number
@@ -595,6 +596,7 @@ export class ChatArchiveDb {
         started_at INTEGER NOT NULL,
         last_event_at INTEGER NOT NULL,
         last_watchdog_at INTEGER,
+        watchdog_pending_at INTEGER,
         start_type TEXT NOT NULL,
         last_diagnostic_turn_key TEXT,
         updated_at INTEGER NOT NULL
@@ -658,6 +660,7 @@ export class ChatArchiveDb {
     this.ensureColumn('incidents', 'head_rollback', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('incidents', 'off_head_same_turn_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('devspace_metadata_bindings', 'unbound_watchdog_at', 'INTEGER')
+    this.ensureColumn('active_watchdogs', 'watchdog_pending_at', 'INTEGER')
 
     // Incident 的稳定身份必须属于某一个 turn，而不是“这个 conversation 当前有一张红牌”。
     // 旧库已有少量 incident：优先沿用 turn_exchange_id；极少数没有 turn id 的历史行退化用自身 id，
@@ -3084,17 +3087,21 @@ export class ChatArchiveDb {
     return this.getDevSpaceMetadataBinding(metadataId)
   }
 
-  upsertActiveWatchdog(input: Omit<ActiveWatchdogStateRow, 'updatedAt'> & { updatedAt?: number }): void {
+  upsertActiveWatchdog(input: Omit<ActiveWatchdogStateRow, 'updatedAt' | 'watchdogPendingAt'> & {
+    watchdogPendingAt?: number | null
+    updatedAt?: number
+  }): void {
     const updatedAt = Math.max(0, Math.trunc(input.updatedAt ?? Date.now()))
     this.db.prepare(`
       INSERT INTO active_watchdogs (
-        conversation_id, started_at, last_event_at, last_watchdog_at,
+        conversation_id, started_at, last_event_at, last_watchdog_at, watchdog_pending_at,
         start_type, last_diagnostic_turn_key, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(conversation_id) DO UPDATE SET
         started_at=excluded.started_at,
         last_event_at=excluded.last_event_at,
         last_watchdog_at=excluded.last_watchdog_at,
+        watchdog_pending_at=excluded.watchdog_pending_at,
         start_type=excluded.start_type,
         last_diagnostic_turn_key=excluded.last_diagnostic_turn_key,
         updated_at=excluded.updated_at
@@ -3103,6 +3110,9 @@ export class ChatArchiveDb {
       Math.max(0, Math.trunc(input.startedAt)),
       Math.max(0, Math.trunc(input.lastEventAt)),
       input.lastWatchdogAt === null ? null : Math.max(0, Math.trunc(input.lastWatchdogAt)),
+      input.watchdogPendingAt === null || input.watchdogPendingAt === undefined
+        ? null
+        : Math.max(0, Math.trunc(input.watchdogPendingAt)),
       input.startType,
       input.lastDiagnosticTurnKey ?? null,
       updatedAt,
@@ -3119,6 +3129,7 @@ export class ChatArchiveDb {
              started_at AS startedAt,
              last_event_at AS lastEventAt,
              last_watchdog_at AS lastWatchdogAt,
+             watchdog_pending_at AS watchdogPendingAt,
              start_type AS startType,
              last_diagnostic_turn_key AS lastDiagnosticTurnKey,
              updated_at AS updatedAt
