@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Guardian/Actor 物理合并补齐 Phase 3 SSE 缺口：`refreshPassivePageObservers()` 不再排除 Guardian target。Guardian 主 CDP session 继续负责账户 WSS、健康与 cooldown 控制；额外 passive observer session 只读 `Network`，因此 Guardian 自己作为 Actor 发出的 `/f/conversation` / `/resume` SSE 现在也会进入 LiveTurn。新增纯函数资格测试，提交 `c6bf176`。
 - 2026-10-07 修正 borrowed Guardian actor-state 初次建立时 `prior=null` 的 TypeScript 空值分支；仅类型/状态初始化修正，不改变运行语义。提交 `6d86dd7`。
 - 2026-10-07 Actor CLI 默认 target 已从独立页切为 `guardian`；只有显式 `--target dedicated` 才创建自有页面。发送前统一检查 daemon cooldown；borrowed Guardian state 的 `actor reset` 只清 Actor 状态、不关闭 Guardian。发送结果同时返回 targetMode。提交 `2ab0ef3`。
 - 2026-10-07 Actor target 层开始正式合并 Guardian：新增 `guardian|dedicated` target 语义；Guardian 模式从 daemon state 读取权威 targetId，并把 Actor state 标为 borrowed `source=guardian`，后续 reset 不应关闭该页面。账号级 429 cooldown 也加入 Actor 前置门控，独立 tab 不能绕过 daemon cooldown。提交 `05ac78c`。
