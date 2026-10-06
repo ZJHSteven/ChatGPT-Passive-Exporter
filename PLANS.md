@@ -7,6 +7,12 @@
 - [pending] 完成合并后做三组 E2E：new chat、已完成 conversation continuation、上一 turn 仍 active 时第二次发送应明确拒绝/转入备用 Actor pool；比较合并前后 WSS carrier generation、LiveTurn trace、429/gap-repair 与内存占用。
 - [pending] Phase 4 后续动作按第一方 UI 逐项取证：steer、project 内新建、move project、archive、delete；发送与管理动作均优先走网页自身 React/网络栈，不自行重写 Sentinel/PoW/challenge。
 
+### 2026-10-06 active-turn 同 tab 发送语义复核
+
+- [in_progress] 推翻前先复现实验：A 正在生成时，在同一 A 页面输入 follow-up，记录 stop/send 两类控件的真实 DOM 与第一方请求，验证是否走 `/f/steer_turn` 或其它 steering 路径。
+- [pending] A 仍生成时，只通过网页自身“新聊天/sidebar”做 SPA 路由到 B，在同一个 tab 发送 B；同时记录 A 原始 SSE 是否继续、B 是否成功创建新的 `/f/conversation` SSE，验证同 tab 是否确实支持多个并发 generation。
+- [pending] 若成功，删除/修正文档中 `SAMETABB928` 推导出的“active generation 会阻止第二 conversation send”结论，并修 Actor：不要再把 `send-button` 缺失等同于不可发送；增加 active-turn follow-up/steer 与 SPA new-chat 的真实控件识别。
+
 ## 2026-10-06 DevSpace→Archive 事件唤醒 / binding 简化 / watchdog 语义修正 ExecPlan
 
 - [in_progress] 先还原生产事实：统计 bound/unbound metadata、定位当前长聊天为何仍 unbound，逐条对照 Archive body tool-call 与 DevSpace tool_audit，而不是继续靠时间窗口猜测。
