@@ -237,7 +237,7 @@ export class DevSpaceAuditBridge {
     if (!this.open() || !this.db) return []
     const requestMetaExpr = this.hasRequestMetaJson ? 'request_meta_json' : 'NULL'
     const rows = this.db.prepare(`
-      SELECT id, metadata_id AS metadataId, tool, started_at AS startedAt,
+      SELECT id, metadata_id AS metadataId, tool, args_json AS argsJson, started_at AS startedAt,
              finished_at AS finishedAt, ${requestMetaExpr} AS requestMetaJson
       FROM tool_audit
       WHERE metadata_id IS NOT NULL
@@ -249,6 +249,7 @@ export class DevSpaceAuditBridge {
       id: string
       metadataId: string
       tool: string
+      argsJson: string
       startedAt: string
       finishedAt: string | null
       requestMetaJson: string | null
