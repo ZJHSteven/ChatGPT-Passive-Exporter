@@ -427,12 +427,17 @@ async function readActorDomObservation(client: ActorCdpClient): Promise<ActorDom
       return true
     }
 
+    // 这段源码还要经过外层 template literal 再交给浏览器执行。直接在这里写
+    // `/\\/c\\//` 一类正则会经历两次源码解析，很容易把斜杠转义吃掉。
+    // 改用 RegExp(string)，让浏览器实际接收到的表达式没有双重转义歧义。
+    const canonicalConversationPath = new RegExp('^/c/[0-9a-f-]{20,}(?:/|$)', 'iu')
+    const projectPath = new RegExp('^/(?:g/g-p-|projects?(?:/|$))', 'iu')
     const pathname = String(location.pathname || '/')
-    const routeKind = /^\/c\/[0-9a-f-]{20,}(?:\/|$)/iu.test(pathname)
+    const routeKind = canonicalConversationPath.test(pathname)
       ? 'conversation'
       : pathname === '/'
         ? 'home'
-        : /^\/(?:g\/g-p-|projects?(?:\/|$))/iu.test(pathname)
+        : projectPath.test(pathname)
           ? 'project'
           : 'other'
 
@@ -483,11 +488,11 @@ async function readActorDomObservation(client: ActorCdpClient): Promise<ActorDom
 
     const anchors = [...document.querySelectorAll('a[href]')].filter(usable)
     const canonicalConversationLink = anchors.some((anchor) => {
-      try { return /^\/c\/[0-9a-f-]{20,}(?:\/|$)/iu.test(new URL(anchor.href, location.href).pathname) }
+      try { return canonicalConversationPath.test(new URL(anchor.href, location.href).pathname) }
       catch { return false }
     })
     const projectLink = anchors.some((anchor) => {
-      try { return /^\/(?:g\/g-p-|projects?(?:\/|$))/iu.test(new URL(anchor.href, location.href).pathname) }
+      try { return projectPath.test(new URL(anchor.href, location.href).pathname) }
       catch { return false }
     })
     const accountButton = [...document.querySelectorAll('[data-testid="accounts-profile-button"]')].some(usable)
