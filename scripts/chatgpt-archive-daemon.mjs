@@ -2434,6 +2434,8 @@ async function main() {
 
   const bindDevSpaceMetadataToConversation = (input) => {
     const existing = archive.getDevSpaceMetadataBinding(input.metadataId)
+    const provisional = unboundDevSpaceTurns.get(input.metadataId)
+    const timedOutBeforeBinding = Boolean(existing?.unboundWatchdogAt || provisional?.repairQueuedAt)
     if (existing?.conversationId && existing.conversationId !== input.conversationId) {
       void log('DevSpace metadata binding conflict left unchanged', {
         metadataId: input.metadataId,
@@ -2468,6 +2470,15 @@ async function main() {
       startAt: input.startAt,
     })
     if (lifecycleState === 'active') activateBoundDevSpaceTurn(binding, input.startAt)
+    if (timedOutBeforeBinding) {
+      // timeout 只是“强制诊断”的触发器。现在 CID 已经通过 exact body match 解出，
+      // 才把真正 conversation 交给现有 watchdog 诊断/incident/Bark 流程。
+      markSyncReady(input.conversationId, 'watchdog:devspace-timeout', 0)
+      void log('timed-out DevSpace metadata bound; queued conversation watchdog diagnostic', {
+        metadataId: input.metadataId,
+        conversationId: input.conversationId,
+      })
+    }
     return binding
   }
 
