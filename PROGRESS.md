@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Phase 4 状态机继续收紧：显式 `--mode continue` 若目标 conversation 当前仍显示 live stop 控件，立即拒绝并要求 `steer/auto`；若目标处于“等待完整答复”降级态也立即拒绝。避免网页真实 `/f/steer_turn` 与 Actor 预期 `/f/conversation` 不一致后才超时。提交 `567fbee`。
 - 2026-10-07 并行合并时 `chatgpt-archive-daemon.d.mts` 一度同时出现两份 `shouldAttachPassivePageObserver` 声明；已保留与 passive observer 区域相邻的一份并删除重复块，提交 `1346c6e`，避免类型声明长期漂移。
 - 2026-10-07 并行合并后 typecheck 暴露声明漂移：`chatgpt-archive-daemon.mjs` 已有并导出 `shouldAttachPassivePageObserver()`，但旁路 `chatgpt-archive-daemon.d.mts` 漏声明，导致测试侧 TS2305。已补齐声明，Guardian 兼任 Actor 时仍被 passive observer 覆盖的测试契约恢复。提交 `39b747d`。
 - 2026-10-07 binding/incident 语义进一步澄清：`devspace:binding-probe` 与 Phase 3 checkpoint 是两套机制。binding-probe 只在 metadata 45min 仍未绑定时，对少量候选 active CID 各做一次 canonical body probe 以获取 tool-call 并完成 M→CID；Phase 3 才是已知 active CID 的 7~10s stream_status/body bounded fallback。旧 5s 主循环重复 requeue binding-probe 无任何业务意义，已由 generation-bounded probe 修复。
