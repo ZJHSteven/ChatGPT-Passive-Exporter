@@ -1480,6 +1480,17 @@ async function main() {
         .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))
         .slice(-32),
     },
+    checkpointRefresh: {
+      active: checkpointWatches.size,
+      inFlight: checkpointInFlight,
+      probes: checkpointProbes,
+      bodyRefreshes: checkpointBodyRefreshes,
+      errors: checkpointErrors,
+      completed: checkpointCompleted,
+      watches: [...checkpointWatches.values()]
+        .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))
+        .slice(-32),
+    },
     devspace: {
       dbPath: devSpaceDbPath,
       wake: devSpaceAuditWakeListener.stats(),
@@ -1558,6 +1569,11 @@ async function main() {
       passiveCatalogFreshnessMs,
       recoveryProbeGapMs,
       recoveryProbeSuccesses,
+      checkpointPollMinMs,
+      checkpointPollMaxMs,
+      checkpointFirstProbeMs,
+      checkpointErrorRetryMs,
+      checkpointMaxErrors,
     },
     cooldownUntil: cooldownUntil || null,
     cooldownRecoveryPending,
