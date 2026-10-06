@@ -233,23 +233,8 @@ async function evaluateValue(client: ActorCdpClient, expression: string): Promis
 async function waitForComposer(client: ActorCdpClient, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const ready = await evaluateValue(client, `(() => {
-      const input = document.querySelector('textarea[aria-label="与 ChatGPT 聊天"]')
-        || document.querySelector('textarea')
-        || document.querySelector('#prompt-textarea')
-        || document.querySelector('[contenteditable="true"][role="textbox"]')
-      if (document.readyState !== 'complete' || !input) return false
-
-      // 2026-09-19 真机验证：ChatGPT 的静态/早期 hydration shell 会把 composer 放在原生
-      // <form> 中；此时过早点 send 会触发浏览器 GET fallback，URL 会变成
-      // /?prompt-textarea=...，根本不会发 /f/conversation。React 完成接管后，稳定 composer
-      // 当时已脱离该原生 form。2026-09-28 当前 ProseMirror 又重新位于真正的 React
-      // <form data-chatgpt-composer> 内，所以不能再把“任何 form”都当成未 hydration。
-      // 无 form 或带官方 data-chatgpt-composer 标记的 form 都可发送；只有无标记原生 form 拒绝。
-      const form = input.closest('form')
-      return form === null || form.hasAttribute('data-chatgpt-composer')
-    })()`)
-    if (ready === true) return
+    const snapshot = await readActorPageSnapshot(client)
+    if (snapshot.composerPresent && snapshot.composerHydrated) return
     await new Promise(resolve => setTimeout(resolve, 100))
   }
   throw new Error('ChatGPT actor composer did not finish hydration before timeout')
@@ -562,9 +547,39 @@ async function clearAndTypePrompt(client: ActorCdpClient, prompt: string): Promi
 
 async function clickSendHandler(client: ActorCdpClient): Promise<void> {
   const result = await evaluateValue(client, `(() => {
-    const button = document.querySelector('button[data-testid="send-button"]')
-      || document.querySelector('button[aria-label="发送"]')
-      || document.querySelector('button[aria-label="Send"]')
+    const usable = (element) => {
+      if (!element || !element.isConnected) return false
+      const rect = element.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return false
+      for (let node = element; node; node = node.parentElement) {
+        if (!(node instanceof HTMLElement)) continue
+        if (node.hidden || node.hasAttribute('inert')) return false
+        const style = window.getComputedStyle(node)
+        if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false
+        if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
+        if (node === document.documentElement) break
+      }
+      return true
+    }
+    const input = document.querySelector('#prompt-textarea')
+      || document.querySelector('[contenteditable="true"][role="textbox"]')
+      || document.querySelector('textarea')
+    const form = input?.closest('form') || null
+    if (!form || !form.hasAttribute('data-chatgpt-composer')) return false
+    const identity = (button) => [
+      button.getAttribute('data-testid') || '',
+      button.getAttribute('aria-label') || '',
+      button.getAttribute('title') || '',
+      (button.innerText || '').trim(),
+    ].join(' ')
+    const button = [...form.querySelectorAll('button')]
+      .filter(usable)
+      .find((candidate) => {
+        const text = identity(candidate)
+        if (/stop|停止/iu.test(text)) return false
+        return /send-button|(^|\\s)(send|发送)(\\s|$)/iu.test(text)
+          || (candidate.getAttribute('type') === 'submit' && !candidate.disabled)
+      }) || null
     if (!button || button.disabled) return false
     button.click()
     return true
@@ -577,12 +592,7 @@ async function clickSendHandler(client: ActorCdpClient): Promise<void> {
  * 第二阶段 submit 必须等按钮重新可用；否则“prepare 已成功”会被误判成发送失败。
  */
 async function isSendButtonReady(client: ActorCdpClient): Promise<boolean> {
-  return await evaluateValue(client, `(() => {
-    const button = document.querySelector('button[data-testid="send-button"]')
-      || document.querySelector('button[aria-label="发送"]')
-      || document.querySelector('button[aria-label="Send"]')
-    return Boolean(button && !button.disabled)
-  })()`) === true
+  return (await readActorPageSnapshot(client)).sendReady
 }
 
 async function waitForSendButtonReady(client: ActorCdpClient, timeoutMs: number): Promise<void> {
