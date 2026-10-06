@@ -2880,6 +2880,37 @@ export class ChatArchiveDb {
     return this.getDevSpaceMetadataBinding(metadataId)!
   }
 
+  /**
+   * 把 DevSpace 过去已经存在的 metadata 先补进 Archive binding 表。
+   *
+   * 这一步只补“这个 metadata 曾经出现过、首末时间是什么”，绝不猜 conversation_id。
+   * 后续 exact tool+args backfill 会再决定能否可靠绑定。历史 seed 不进入内存 watchdog，
+   * 因而不会把几周前的 metadata 误当成“当前正在运行”的 turn。
+   */
+  seedDevSpaceMetadataHistory(input: {
+    metadataId: string
+    firstSeenAt: number
+    lastSeenAt: number
+  }): { row: DevSpaceMetadataBindingRow, created: boolean } {
+    const metadataId = input.metadataId.trim()
+    if (!metadataId) throw new Error('metadataId must not be empty')
+    const firstSeenAt = Math.max(0, Math.trunc(input.firstSeenAt))
+    const lastSeenAt = Math.max(firstSeenAt, Math.trunc(input.lastSeenAt))
+    const existing = this.getDevSpaceMetadataBinding(metadataId)
+    this.db.prepare(`
+      INSERT INTO devspace_metadata_bindings (
+        metadata_id, conversation_id, first_seen_at, last_seen_at, lifecycle_state
+      ) VALUES (?, NULL, ?, ?, 'unbound')
+      ON CONFLICT(metadata_id) DO UPDATE SET
+        first_seen_at=min(devspace_metadata_bindings.first_seen_at, excluded.first_seen_at),
+        last_seen_at=max(devspace_metadata_bindings.last_seen_at, excluded.last_seen_at)
+    `).run(metadataId, firstSeenAt, lastSeenAt)
+    return {
+      row: this.getDevSpaceMetadataBinding(metadataId)!,
+      created: !existing,
+    }
+  }
+
   getDevSpaceMetadataBinding(metadataId: string): DevSpaceMetadataBindingRow | null {
     const row = this.db.prepare(`
       SELECT metadata_id AS metadataId, conversation_id AS conversationId,
