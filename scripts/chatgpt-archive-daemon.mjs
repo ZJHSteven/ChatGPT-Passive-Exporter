@@ -38,8 +38,10 @@ import { LiveTurnTransportTracker } from '../src/local/live-turn-transport.ts'
 import {
   DevSpaceAuditBridge,
   defaultDevSpaceDbPath,
-  uniqueDevSpaceCandidateForTurn,
+  matchDevSpaceCandidateForTurn,
+  parseDevSpaceBodyToolCall,
 } from '../src/local/devspace-audit-bridge.ts'
+import { DevSpaceAuditWakeListener } from '../src/local/devspace-audit-signal.ts'
 
 const DEFAULT_CDP = 'http://127.0.0.1:9222'
 const GUARDIAN_MARKER = 'chatgpt-archive-guardian'
@@ -53,6 +55,7 @@ const DEFAULT_PROTOCOL_LEDGER = path.join(PROJECT_ROOT, 'data', 'protocol-finger
 const DEFAULT_IMAGE_ASSET_DIR = path.join(PROJECT_ROOT, 'data', 'assets', 'chatgpt')
 const DEVSPACE_POLL_OVERLAP_MS = 10_000
 const DEVSPACE_INITIAL_LOOKBACK_MS = 2 * 60_000
+const DEVSPACE_FALLBACK_POLL_MS = 60_000
 const IMAGE_ASSET_HYDRATE_INTERVAL_MS = 30_000
 const SLEEPING_TARGET_RETRY_MS = 5 * 60_000
 const WINDOWS_HIDE_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-hide-window.ps1')
