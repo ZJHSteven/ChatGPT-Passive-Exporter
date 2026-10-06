@@ -11,7 +11,6 @@ import {
   conversationIdFromTargetUrl,
   decodeCdpResponseBodyBytes,
   devSpaceFirstToolWatchdogState,
-  planDevSpaceBindingProbes,
   estuaryFileIdFromUrl,
   resolvedEstuaryUrlForFile,
   extractConversationEvents,
@@ -408,40 +407,6 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       startedAt: 1_000,
       lastDiagnosticTurnKey: 'turn-current',
     })
-  })
-
-  test('同一 unbound timeout generation 对每个 CID 只做一次 binding probe', () => {
-    const first = planDevSpaceBindingProbes({
-      generation: 'meta-a:1000',
-      previousGeneration: '',
-      probedConversationIds: [],
-      candidateConversationIds: ['c1', 'c2'],
-    })
-    expect(first.targets).toEqual(['c1', 'c2'])
-
-    const repeated = planDevSpaceBindingProbes({
-      generation: 'meta-a:1000',
-      previousGeneration: first.generation,
-      probedConversationIds: first.probedConversationIds,
-      candidateConversationIds: ['c1', 'c2'],
-    })
-    expect(repeated.targets).toEqual([])
-
-    const newCandidate = planDevSpaceBindingProbes({
-      generation: 'meta-a:1000',
-      previousGeneration: repeated.generation,
-      probedConversationIds: repeated.probedConversationIds,
-      candidateConversationIds: ['c1', 'c2', 'c3'],
-    })
-    expect(newCandidate.targets).toEqual(['c3'])
-
-    const nextGeneration = planDevSpaceBindingProbes({
-      generation: 'meta-a:1000|meta-b:2000',
-      previousGeneration: newCandidate.generation,
-      probedConversationIds: newCandidate.probedConversationIds,
-      candidateConversationIds: ['c1', 'c2'],
-    })
-    expect(nextGeneration.targets).toEqual(['c1', 'c2'])
   })
 
   test('catalog watchdog 不能把旧 turn 的计时跨到同 conversation 的新 turn', () => {

@@ -674,13 +674,29 @@ export class ChatArchiveDb {
             WHEN terminal_evidence IN ('client-stopped', 'interrupted') THEN 'explicit-interrupted'
             WHEN source LIKE '%conversation-turn-complete%'
               OR source LIKE '%async-complete%'
-              OR reason LIKE '历史 turn 后续已经出现更新的 user turn%'
             THEN 'complete-no-final'
             ELSE 'abnormal-terminal'
           END)
       WHERE turn_key IS NULL OR turn_key = ''
          OR last_observed_at IS NULL
          OR lifecycle_class IS NULL OR lifecycle_class = ''
+    `).run()
+
+    // historical-turn 只证明“后面已经出现新的 user turn，因此旧轮已经结束”；它并不能证明
+    // Archive 当时观察到了 conversation-turn-complete。过去把这类记录也归为 complete-no-final
+    // 会污染 lifecycle 统计。只有显式 interrupted/client_stopped 例外，其余历史无-final 统一
+    // 回收到 generic abnormal-terminal；source/reason/diagnostic 仍保留完整取证事实。
+    this.db.prepare(`
+      UPDATE incidents
+      SET lifecycle_class='abnormal-terminal',
+          reason=CASE
+            WHEN reason LIKE '历史 turn 后续已经出现更新的 user turn%'
+            THEN '历史 turn 后续已经出现更新的 user turn，可确认该轮已结束且没有 final；未观察到该 turn 的 conversation-turn-complete 证据。'
+            ELSE reason
+          END
+      WHERE source LIKE '%:historical-turn'
+        AND terminal_evidence='none'
+        AND lifecycle_class='complete-no-final'
     `).run()
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS incidents_conversation_turn
@@ -2391,12 +2407,14 @@ export class ChatArchiveDb {
           ? 'active-zombie'
         : effectiveKind === 'watchdog-timeout'
           ? 'watchdog-timeout'
-          : (allowIncompleteTailIncident || historicalEnded)
+          : historicalEnded
+            ? 'abnormal-terminal'
+          : allowIncompleteTailIncident
               ? 'complete-no-final'
               : 'abnormal-terminal'
       const incidentId = currentIncident?.id ?? sha256Text(`${conversationId}:${turnKey}`).slice(0, 24)
       const reason = historicalEnded && !explicitAbnormal
-        ? `历史 turn 后续已经出现更新的 user turn，可确认该轮已经结束；该轮属于 complete-no-final，持久化尾部为 ${diagnostic.tailShape}。`
+        ? `历史 turn 后续已经出现更新的 user turn，可确认该轮已结束且没有 final；未观察到该 turn 的 conversation-turn-complete 证据；持久化尾部为 ${diagnostic.tailShape}。`
         : effectiveKind === 'active-zombie'
           ? `conversation list 持续保持 active 超过 watchdog 阈值，且 body 仍未出现 final/明确终止；${diagnostic.summary}`
         : effectiveKind === 'watchdog-timeout'

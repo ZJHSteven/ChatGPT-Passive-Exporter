@@ -67,18 +67,6 @@ export function devSpaceFirstToolWatchdogState(auditAt: number): {
   lastDiagnosticTurnKey: null
 }
 
-/** 同一 unbound timeout generation 下，每个 candidate CID 最多主动 probe 一次。 */
-export function planDevSpaceBindingProbes(input?: {
-  generation?: unknown
-  previousGeneration?: unknown
-  probedConversationIds?: Iterable<unknown>
-  candidateConversationIds?: Iterable<unknown>
-}): {
-  generation: string
-  probedConversationIds: string[]
-  targets: string[]
-}
-
 /** watchdog 只在首次超时或“新进展后再次超时”时调查，不按固定间隔轮询 zombie。 */
 export function shouldQueueWatchdogDiagnostic(
   active: { startedAt?: unknown, lastEventAt?: unknown, lastWatchdogAt?: unknown, lastDiagnosticTurnKey?: unknown } | null | undefined,

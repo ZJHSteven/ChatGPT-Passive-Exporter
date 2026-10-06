@@ -1396,8 +1396,14 @@ describe('ChatArchiveDb', () => {
       expect(open).toHaveLength(1)
       expect(open[0]).toMatchObject({ turnKey: 'turn-new', incidentKind: 'watchdog-timeout' })
       expect(resolved).toHaveLength(1)
-      expect(resolved[0]).toMatchObject({ turnKey: 'turn-old', incidentKind: 'abnormal-terminal' })
+      expect(resolved[0]).toMatchObject({
+        turnKey: 'turn-old',
+        incidentKind: 'abnormal-terminal',
+        lifecycleClass: 'abnormal-terminal',
+        terminalEvidence: 'none',
+      })
       expect(resolved[0]?.reason).toContain('历史 turn 后续已经出现更新的 user turn')
+      expect(resolved[0]?.reason).toContain('未观察到该 turn 的 conversation-turn-complete 证据')
 
       const currentState = db.db.prepare(`
         SELECT current_node AS currentNode, terminal_state AS terminalState,
