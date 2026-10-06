@@ -822,6 +822,13 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
     await client.send('Page.enable')
     await client.send('Runtime.enable')
     await client.send('Network.enable')
+    const domLedger = options.domLedgerPath
+      ? await ActorDomDriftLedger.open(options.domLedgerPath)
+      : null
+
+    // 任何导航/输入/点击之前先采一份当前页骨架。baseline 锁定后若这里已经漂移，
+    // Actor 必须在真正改变页面之前停止，不能“先点了再告诉用户 DOM 变了”。
+    const domSignatureBefore = await observeActorDomShape(client, domLedger, 'navigation')
 
     // Network listener 必须在 SPA 导航之前挂好：旧 conversation 切换时第一方页面会自己读取
     // conversation body。这个响应是“上下文已经真正到达浏览器”的强闭环证据，不能导航完以后再补监听。
@@ -931,6 +938,10 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
       })
       formalRequestUrl = mode === 'steer' ? steerRequestUrl : conversationRequestUrl
 
+      // 目标 route/context 已经真正 ready 后再采第二份结构指纹。第一份保护“怎么导航”，
+      // 第二份保护“怎么发送”；两者都通过以后才允许把 prompt 写入页面。
+      const domSignatureReady = await observeActorDomShape(client, domLedger, 'prompt input')
+
       await clearAndTypePrompt(client, options.prompt)
       // hidden/background target 可能因为 React 后台调度延迟挂载 submit 控件；这里等“状态变成可提交”，
       // 但最终成功仍以 Network 正式 POST + 2xx 为准，而不是按钮本身。
@@ -1009,6 +1020,8 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
             firstDataAt,
             runningConfirmed,
             targetMode,
+            domSignatureBefore,
+            domSignatureReady,
           }
         }
 
