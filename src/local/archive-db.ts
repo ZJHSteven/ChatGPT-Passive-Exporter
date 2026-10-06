@@ -2892,6 +2892,8 @@ export class ChatArchiveDb {
              last_turn_exchange_id AS lastTurnExchangeId,
              last_request_id AS lastRequestId,
              last_audit_id AS lastAuditId, last_audit_at AS lastAuditAt,
+             unbound_watchdog_at AS unboundWatchdogAt,
+             unbound_notification_sent_at AS unboundNotificationSentAt,
              lifecycle_state AS lifecycleState
       FROM devspace_metadata_bindings
       WHERE metadata_id = ?
@@ -2909,6 +2911,8 @@ export class ChatArchiveDb {
              last_turn_exchange_id AS lastTurnExchangeId,
              last_request_id AS lastRequestId,
              last_audit_id AS lastAuditId, last_audit_at AS lastAuditAt,
+             unbound_watchdog_at AS unboundWatchdogAt,
+             unbound_notification_sent_at AS unboundNotificationSentAt,
              lifecycle_state AS lifecycleState
       FROM devspace_metadata_bindings
       WHERE conversation_id = ?
@@ -2938,6 +2942,8 @@ export class ChatArchiveDb {
              last_turn_exchange_id AS lastTurnExchangeId,
              last_request_id AS lastRequestId,
              last_audit_id AS lastAuditId, last_audit_at AS lastAuditAt,
+             unbound_watchdog_at AS unboundWatchdogAt,
+             unbound_notification_sent_at AS unboundNotificationSentAt,
              lifecycle_state AS lifecycleState
       FROM devspace_metadata_bindings
       ${where}
@@ -3013,6 +3019,29 @@ export class ChatArchiveDb {
       input.conversationId,
     )
     return Number(result.changes)
+  }
+
+  /**
+   * 未绑定 metadata 自己也有真实 watchdog 生命周期。
+   * 这里分别持久化“已超时”和“超时通知已送达”，使 binding 失败或 daemon 重启
+   * 都不会抹掉 first-tool timeout 事实。
+   */
+  markDevSpaceUnboundWatchdog(metadataId: string, detectedAt: number): DevSpaceMetadataBindingRow | null {
+    this.db.prepare(`
+      UPDATE devspace_metadata_bindings
+      SET unbound_watchdog_at=COALESCE(unbound_watchdog_at, ?)
+      WHERE metadata_id = ? AND conversation_id IS NULL
+    `).run(Math.max(0, Math.trunc(detectedAt)), metadataId)
+    return this.getDevSpaceMetadataBinding(metadataId)
+  }
+
+  markDevSpaceUnboundNotificationSent(metadataId: string, sentAt: number): DevSpaceMetadataBindingRow | null {
+    this.db.prepare(`
+      UPDATE devspace_metadata_bindings
+      SET unbound_notification_sent_at=COALESCE(unbound_notification_sent_at, ?)
+      WHERE metadata_id = ?
+    `).run(Math.max(0, Math.trunc(sentAt)), metadataId)
+    return this.getDevSpaceMetadataBinding(metadataId)
   }
 
   conversationTurnToolWindow(conversationId: string, turnExchangeId: string): {

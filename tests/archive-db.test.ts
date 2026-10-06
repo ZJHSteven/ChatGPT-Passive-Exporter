@@ -72,11 +72,19 @@ describe('ChatArchiveDb', () => {
         conversationId: null,
         firstSeenAt: 1000,
         lifecycleState: 'unbound',
+        unboundWatchdogAt: null,
+        unboundNotificationSentAt: null,
       })
       db.observeDevSpaceMetadata({
         metadataId: 'meta-chat-1',
         auditId: 'audit-2',
         auditAt: 2000,
+      })
+      expect(db.markDevSpaceUnboundWatchdog('meta-chat-1', 2200)).toMatchObject({
+        unboundWatchdogAt: 2200,
+      })
+      expect(db.markDevSpaceUnboundNotificationSent('meta-chat-1', 2300)).toMatchObject({
+        unboundNotificationSentAt: 2300,
       })
       const bound = db.bindDevSpaceMetadata({
         metadataId: 'meta-chat-1',
@@ -92,6 +100,8 @@ describe('ChatArchiveDb', () => {
         lastSeenAt: 2000,
         boundAt: 2500,
         lifecycleState: 'active',
+        unboundWatchdogAt: 2200,
+        unboundNotificationSentAt: 2300,
       })
       expect(db.updateDevSpaceBindingTurn({
         conversationId: 'conversation-1',
