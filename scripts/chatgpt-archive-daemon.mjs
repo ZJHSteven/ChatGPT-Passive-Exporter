@@ -365,6 +365,22 @@ export function watchdogTriggerForStartType(startType) {
 }
 
 /**
+ * DevSpace first-tool 开始的是“一个新的、尚未知道 turn_exchange_id 的 turn”。
+ * binding.lastTurnExchangeId 属于上一轮已确认 turn，绝不能拿来初始化本轮诊断身份。
+ */
+export function devSpaceFirstToolWatchdogState(auditAt) {
+  const startedAt = Number(auditAt)
+  return {
+    startedAt,
+    lastEventAt: startedAt,
+    lastWatchdogAt: null,
+    watchdogPendingAt: null,
+    startType: 'devspace:first-tool',
+    lastDiagnosticTurnKey: null,
+  }
+}
+
+/**
  * watchdog 只负责“超时后调查一次”，不能退化成固定周期 body 轮询器。
  *
  * 第一次超过阈值时允许调查；调查完成以后，如果再也没有新的运行进展，就保持沉默。
@@ -2861,14 +2877,7 @@ async function main() {
       persistActiveTurn(conversationId, current)
     }
     else {
-      const nextActive = {
-        startedAt: auditAt,
-        lastEventAt: auditAt,
-        lastWatchdogAt: null,
-        watchdogPendingAt: null,
-        startType: 'devspace:first-tool',
-        lastDiagnosticTurnKey: binding.lastTurnExchangeId || null,
-      }
+      const nextActive = devSpaceFirstToolWatchdogState(auditAt)
       activeTurns.set(conversationId, nextActive)
       persistActiveTurn(conversationId, nextActive)
       void log('DevSpace first tool started watchdog', {

@@ -57,6 +57,16 @@ export function shouldStartCatalogWatchdog(input?: {
 /** 根据 active 的 startType 选择普通 watchdog 或 catalog active-zombie watchdog。 */
 export function watchdogTriggerForStartType(startType: unknown): 'watchdog:catalog-active-timeout' | 'watchdog:active-timeout'
 
+/** DevSpace first-tool 启动新 turn watchdog；当前 turn key 在第一次 body 诊断前必须保持 unknown。 */
+export function devSpaceFirstToolWatchdogState(auditAt: number): {
+  startedAt: number
+  lastEventAt: number
+  lastWatchdogAt: null
+  watchdogPendingAt: null
+  startType: 'devspace:first-tool'
+  lastDiagnosticTurnKey: null
+}
+
 /** watchdog 只在首次超时或“新进展后再次超时”时调查，不按固定间隔轮询 zombie。 */
 export function shouldQueueWatchdogDiagnostic(
   active: { startedAt?: unknown, lastEventAt?: unknown, lastWatchdogAt?: unknown, lastDiagnosticTurnKey?: unknown } | null | undefined,

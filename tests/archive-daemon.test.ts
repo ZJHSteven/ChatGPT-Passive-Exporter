@@ -10,6 +10,7 @@ import {
   classifyConversationEvent,
   conversationIdFromTargetUrl,
   decodeCdpResponseBodyBytes,
+  devSpaceFirstToolWatchdogState,
   estuaryFileIdFromUrl,
   resolvedEstuaryUrlForFile,
   extractConversationEvents,
@@ -355,6 +356,30 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     const progressed = { ...diagnosed, lastEventAt: watchdogMs + 5_000 }
     expect(shouldQueueWatchdogDiagnostic(progressed, watchdogMs * 2, watchdogMs)).toBe(false)
     expect(shouldQueueWatchdogDiagnostic(progressed, watchdogMs * 2 + 5_000, watchdogMs)).toBe(true)
+  })
+
+  test('DevSpace first-tool 新 turn 不能继承上一轮 binding 的 turn key', () => {
+    const active = devSpaceFirstToolWatchdogState(1_000)
+    expect(active).toEqual({
+      startedAt: 1_000,
+      lastEventAt: 1_000,
+      lastWatchdogAt: null,
+      watchdogPendingAt: null,
+      startType: 'devspace:first-tool',
+      lastDiagnosticTurnKey: null,
+    })
+
+    // 第一次 45min body 才认识本轮 turn；这不是“换 turn”，因此 startedAt 不得重置。
+    const firstDiagnostic = reconcileWatchdogDiagnosticTurn(
+      { ...active, lastWatchdogAt: 46_000 },
+      { turnExchangeId: 'turn-current' },
+      50_000,
+    )
+    expect(firstDiagnostic.changed).toBe(false)
+    expect(firstDiagnostic.nextActive).toMatchObject({
+      startedAt: 1_000,
+      lastDiagnosticTurnKey: 'turn-current',
+    })
   })
 
   test('catalog watchdog 不能把旧 turn 的计时跨到同 conversation 的新 turn', () => {
