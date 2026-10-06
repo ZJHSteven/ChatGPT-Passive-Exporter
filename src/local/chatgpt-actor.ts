@@ -233,7 +233,7 @@ async function acquireActorTarget(
     const prior = await readActorState(statePath)
     await writeActorState(statePath, {
       targetId: guardianTargetId,
-      createdAt: prior?.targetId === guardianTargetId ? prior.createdAt : Date.now(),
+      createdAt: prior && prior.targetId === guardianTargetId ? prior.createdAt : Date.now(),
       updatedAt: Date.now(),
       source: 'guardian',
     })
