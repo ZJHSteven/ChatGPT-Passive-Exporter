@@ -37,6 +37,9 @@ export interface ActiveTurnTraceBase {
 export interface ActorSubmitTrace extends ActiveTurnTraceBase {
   kind: 'actor-submit'
   actorTargetId: string
+  mode?: 'new' | 'continue' | 'steer'
+  targetMode?: 'guardian' | 'dedicated'
+  navigationMode?: 'already-there' | 'spa-new' | 'spa-conversation' | 'full-fallback'
   prepareRequestId: string | null
   prepareStatus: number | null
   sendHandlerAttempts: number
@@ -46,6 +49,9 @@ export interface ActorSubmitTrace extends ActiveTurnTraceBase {
   boundAt: number
   bindDelayMs: number
   pageUrlBefore: string
+  contextReadyAt?: number | null
+  firstDataAt?: number | null
+  runningConfirmed?: boolean
 }
 
 export interface WssLifecycleTrace extends ActiveTurnTraceBase {
@@ -211,6 +217,9 @@ export function buildActorSubmitTrace(input: {
   boundAt: number
   conversationId: string
   actorTargetId: string
+  mode?: 'new' | 'continue' | 'steer'
+  targetMode?: 'guardian' | 'dedicated'
+  navigationMode?: 'already-there' | 'spa-new' | 'spa-conversation' | 'full-fallback'
   cdpRequestId: string
   prepareRequestId?: string | null
   prepareStatus?: number | null
@@ -218,6 +227,9 @@ export function buildActorSubmitTrace(input: {
   responseStatus?: number | null
   responseMimeType?: string | null
   pageUrlBefore: string
+  contextReadyAt?: number | null
+  firstDataAt?: number | null
+  runningConfirmed?: boolean
 }): ActorSubmitTrace {
   return {
     version: 1,
@@ -225,6 +237,9 @@ export function buildActorSubmitTrace(input: {
     kind: 'actor-submit',
     conversationId: input.conversationId,
     actorTargetId: input.actorTargetId,
+    ...(input.mode ? { mode: input.mode } : {}),
+    ...(input.targetMode ? { targetMode: input.targetMode } : {}),
+    ...(input.navigationMode ? { navigationMode: input.navigationMode } : {}),
     prepareRequestId: input.prepareRequestId ?? null,
     prepareStatus: input.prepareStatus ?? null,
     sendHandlerAttempts: input.sendHandlerAttempts ?? 1,
@@ -234,6 +249,9 @@ export function buildActorSubmitTrace(input: {
     boundAt: input.boundAt,
     bindDelayMs: Math.max(0, input.boundAt - input.submittedAt),
     pageUrlBefore: input.pageUrlBefore,
+    ...(input.contextReadyAt !== undefined ? { contextReadyAt: input.contextReadyAt } : {}),
+    ...(input.firstDataAt !== undefined ? { firstDataAt: input.firstDataAt } : {}),
+    ...(input.runningConfirmed !== undefined ? { runningConfirmed: input.runningConfirmed } : {}),
   }
 }
 
