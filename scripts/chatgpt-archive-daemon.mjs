@@ -1736,6 +1736,62 @@ async function main() {
     })
   }
 
+  /**
+   * 429 cooldown 是独立运行状态提醒，不写 incidents 表，也不改变 Watchdog taxonomy。
+   *
+   * 只在“未冷却 -> 进入冷却”的边沿调用；同一 cooldown 内后续 429 只延长窗口并写日志，
+   * 避免手机被重复轰炸。发送仍然 detached，Bark 自己不能阻塞 cooldown 状态切换。
+   */
+  const dispatchCooldownNotification = ({
+    reason,
+    cooldownUntil: notifiedCooldownUntil,
+    route = null,
+    retryAfter = null,
+  }) => {
+    if (!notificationConfig) return
+    const payload = buildCooldownNotificationPayload({
+      reason,
+      cooldownUntil: notifiedCooldownUntil,
+      route,
+      retryAfter,
+    })
+    void (async () => {
+      notificationLastAttemptAt = Date.now()
+      const result = await sendIncidentNotification(notificationConfig, payload)
+      if (result.ok) {
+        notificationLastSuccessAt = Date.now()
+        notificationLastError = null
+        await log('active API cooldown notification sent', {
+          provider: notificationConfig.provider,
+          status: result.status,
+          reason,
+          route,
+          cooldownUntil: notifiedCooldownUntil,
+        })
+      }
+      else if (result.attempted) {
+        notificationLastError = result.error || 'cooldown notification failed'
+        await log('active API cooldown notification failed', {
+          provider: notificationConfig.provider,
+          status: result.status,
+          error: notificationLastError,
+          reason,
+          route,
+          cooldownUntil: notifiedCooldownUntil,
+        })
+      }
+    })().catch(async (error) => {
+      notificationLastError = error instanceof Error ? error.message : String(error)
+      await log('active API cooldown notification branch failed', {
+        provider: notificationConfig.provider,
+        error: notificationLastError,
+        reason,
+        route,
+        cooldownUntil: notifiedCooldownUntil,
+      }).catch(() => {})
+    })
+  }
+
   /** ImageGen 是值得提醒的业务事件，但不是异常 incident。 */
   const notifyImageGeneration = async (conversationId, event) => {
     if (!notificationConfig || !event || event.notificationSentAt) return
