@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Actor 已把 DOM drift 变成真正的发送前安全门：CDP/Network 启用后、任何导航前先观察一次；目标 route/context ready 后、写入 prompt 前再观察一次。baseline 锁定后任一新 DOM signature 会在页面动作/输入之前直接拒绝，不会先点错再报警；CLI 成功结果会返回前后两个 DOM signature 供取证。提交 `f09de6b`。
 - 2026-10-07 Actor 现已能从真实页面采集无正文 DOM 结构观察：route 类别、composer/form marker、新聊天入口、sidebar conversation/project/account 模式及 send/stop/attachment/voice 语义控件结构；aria/title 仅用于浏览器内分类，原文不返回 Node、不落盘。提交 `cc94a74`。
 - 2026-10-07 Actor 已接入 DOM drift ledger 依赖与配置入口（`domLedgerPath`），为发送前结构校验与统一 drift 通知做准备。提交 `93b7a7a`。
 - 2026-10-07 DOM drift 已补纯回归：控件 DOM 顺序变化不改变 signature；学习期新结构进入 baseline；锁定后真正结构变化进入 pending；人工 approve 后可持久化为可信基线。提交 `a43db7f`。
