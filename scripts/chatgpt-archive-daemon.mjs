@@ -2079,7 +2079,7 @@ async function main() {
     }
   }
 
-  const tripCooldown = async (reason) => {
+  const tripCooldown = async (reason, details = {}) => {
     const now = Date.now()
     const previousCooldownUntil = Number(cooldownUntil || 0)
     const wasAlreadyCooling = previousCooldownUntil > now
@@ -2095,7 +2095,16 @@ async function main() {
       wasAlreadyCooling,
       previousCooldownUntil: previousCooldownUntil > 0 ? previousCooldownUntil : null,
       extensionMs: wasAlreadyCooling ? Math.max(0, cooldownUntil - previousCooldownUntil) : null,
+      ...details,
     })
+    if (!wasAlreadyCooling) {
+      dispatchCooldownNotification({
+        reason,
+        cooldownUntil,
+        route: details.route ?? null,
+        retryAfter: details.retryAfter ?? null,
+      })
+    }
     await setGuardianConversationRestBlocked(true).catch(async (error) => {
       await log('Guardian REST cooldown block failed', {
         error: error instanceof Error ? error.message : String(error),
@@ -2138,7 +2147,12 @@ async function main() {
       activeReplayRequestUrl = null
     }
    if (response.status === 429) {
-      await tripCooldown('HTTP 429')
+      await tripCooldown(`active ${request.kind || 'body'} HTTP 429`, {
+        route: relativeBackendUrl(request.url),
+        retryAfter: response.headers?.['retry-after'] ?? null,
+        requestId: response.headers?.['x-request-id'] ?? null,
+        cfRay: response.headers?.['cf-ray'] ?? null,
+      })
       throw new Error('ChatGPT backend returned HTTP 429')
     }
     if (response.status === 401 || response.status === 403) {
