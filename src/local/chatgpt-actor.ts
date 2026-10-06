@@ -607,6 +607,9 @@ async function waitForSendButtonReady(client: ActorCdpClient, timeoutMs: number)
 export async function sendActorPrompt(options: ActorSendOptions): Promise<Record<string, unknown>> {
   const timeoutMs = options.timeoutMs ?? 20_000
   if (!options.prompt.trim()) throw new Error('actor prompt is empty')
+  const requestedMode = options.mode ?? 'auto'
+  const expectedConversationId = options.conversationId ? String(options.conversationId).trim() : null
+  if (expectedConversationId) actorConversationUrl(expectedConversationId)
   const target = await acquireActorTarget(options.cdpHttp, options.statePath, timeoutMs)
   const targetId = String(target.id ?? target.targetId)
   if (!target.webSocketDebuggerUrl) throw new Error('actor target has no webSocketDebuggerUrl')
@@ -618,21 +621,13 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
     await client.send('Runtime.enable')
     await client.send('Network.enable')
 
-    // 默认从全新聊天开始；显式给 conversationId 时则导航到已有 canonical conversation。
-    // 两种模式都始终复用同一个 renderer/target，并让第一方页面自己的 React/网络栈完成发送。
-    const targetUrl = actorConversationUrl(options.conversationId)
-    await client.send('Page.navigate', { url: targetUrl })
-    await waitForComposer(client, timeoutMs)
-    await clearAndTypePrompt(client, options.prompt)
-    // hidden/background actor 会受到 Chrome/React 后台调度影响；当前 2026-09-27 UI 在
-    // ProseMirror 已有文字后仍可能数秒才挂载 submit button。发送延迟不是业务故障，直接复用
-    // 整轮 actor timeout，避免拿激进的 5s UI deadline 制造假失败。
-    await waitForSendButtonReady(client, timeoutMs)
-
-    const pageUrlBefore = String(await evaluateValue(client, 'location.href') || targetUrl)
-    const expectedConversationId = options.conversationId ? String(options.conversationId).trim() : null
-    // CDP event callback 与下面的轮询循环是异步交错的。使用显式 holder 可以让 TypeScript
-    // 正确表达“回调稍后会填值”，避免把主循环里的变量误判成永远为 null/never。
+    // Network listener 必须在 SPA 导航之前挂好：旧 conversation 切换时第一方页面会自己读取
+    // conversation body。这个响应是“上下文已经真正到达浏览器”的强闭环证据，不能导航完以后再补监听。
+    const contextBodyRequestIds = new Set<string>()
+    let contextBodyResponseAt: number | null = null
+    let contextBodyStatus: number | null = null
+    let sendArmedAt = 0
+    let formalRequestUrl: string | null = null
     const submitState: { event: { at: number; requestId: string } | null } = { event: null }
     const prepareState: {
       requestId: string | null
@@ -641,9 +636,22 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
     } = { requestId: null, status: null, respondedAt: null }
     let responseStatus: number | null = null
     let responseMimeType: string | null = null
-    const formalRequestUrl = 'https://chatgpt.com/backend-api/f/conversation'
-    const prepareRequestUrl = `${formalRequestUrl}/prepare`
+    let firstDataAt: number | null = null
+    const conversationRequestUrl = 'https://chatgpt.com/backend-api/f/conversation'
+    const steerRequestUrl = 'https://chatgpt.com/backend-api/f/steer_turn'
+    const prepareRequestUrl = `${conversationRequestUrl}/prepare`
+
     const offRequest = client.on('Network.requestWillBeSent', (event) => {
+      const requestUrl = String(event?.request?.url || '')
+      const requestMethod = String(event?.request?.method || '')
+      if (
+        expectedConversationId
+        && requestMethod === 'GET'
+        && requestUrl.startsWith(`https://chatgpt.com/backend-api/conversations/${expectedConversationId}`)
+      ) {
+        contextBodyRequestIds.add(String(event.requestId))
+      }
+      if (!sendArmedAt || Date.now() < sendArmedAt) return
       if (event?.request?.method === 'POST' && event?.request?.url === prepareRequestUrl) {
         // 同一次 actor send 最多关心第一条 prepare；后续若前端自己重试，不让它覆盖初始证据。
         if (!prepareState.requestId) prepareState.requestId = String(event.requestId)
@@ -654,6 +662,12 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
       submitState.event = { at: Date.now(), requestId: String(event.requestId) }
     })
     const offResponse = client.on('Network.responseReceived', (event) => {
+      if (contextBodyRequestIds.has(String(event?.requestId))) {
+        contextBodyStatus = Number(event?.response?.status ?? 0) || null
+        if (contextBodyStatus !== null && contextBodyStatus >= 200 && contextBodyStatus < 300) {
+          contextBodyResponseAt = Date.now()
+        }
+      }
       if (prepareState.requestId && String(event?.requestId) === prepareState.requestId) {
         prepareState.status = Number(event?.response?.status ?? 0) || null
         prepareState.respondedAt = Date.now()
@@ -664,22 +678,78 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
       responseStatus = Number(event?.response?.status ?? 0) || null
       responseMimeType = typeof event?.response?.mimeType === 'string' ? event.response.mimeType : null
     })
+    const offData = client.on('Network.dataReceived', (event) => {
+      const submitEvent = submitState.event
+      if (!submitEvent || String(event?.requestId) !== submitEvent.requestId || firstDataAt !== null) return
+      if (Number(event?.dataLength ?? event?.encodedDataLength ?? 0) > 0) firstDataAt = Date.now()
+    })
 
     try {
+      const route = await ensureActorRoute(client, expectedConversationId, timeoutMs)
+      await waitForComposer(client, timeoutMs)
+
+      // 旧 conversation 只有“路由已到位”还不够。至少要看到真实 message DOM；若本次切换产生了
+      // body GET，则同时等待它 2xx。active late-attach 若出现“等待完整答复”横幅，直接拒绝发送，
+      // 因为这正是用户实测最容易造成 follow-up 上下文裁剪的状态。
+      let routeSnapshot = route.snapshot
+      let contextReadyAt = Date.now()
+      if (expectedConversationId) {
+        const contextDeadline = Date.now() + timeoutMs
+        while (Date.now() < contextDeadline) {
+          routeSnapshot = await readActorPageSnapshot(client)
+          if (routeSnapshot.waitingForFinal) {
+            throw new Error('ChatGPT actor refused: conversation is waiting for full answer; current context is incomplete')
+          }
+          const bodyGateSatisfied = contextBodyRequestIds.size === 0
+            || (contextBodyResponseAt !== null && contextBodyStatus !== null && contextBodyStatus >= 200 && contextBodyStatus < 300)
+          if (routeSnapshot.composerHydrated && routeSnapshot.messageNodes > 0 && bodyGateSatisfied) {
+            contextReadyAt = Date.now()
+            break
+          }
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+        if (!routeSnapshot.composerHydrated || routeSnapshot.messageNodes === 0) {
+          throw new Error('ChatGPT actor conversation context did not finish rendering before timeout')
+        }
+        if (contextBodyRequestIds.size > 0 && contextBodyResponseAt === null) {
+          throw new Error(`ChatGPT actor conversation body did not load successfully (status=${contextBodyStatus ?? 'unknown'})`)
+        }
+      }
+
+      const mode = resolveActorSendMode({
+        requestedMode,
+        requestedConversationId: expectedConversationId,
+        currentConversationId: routeSnapshot.conversationId,
+        stopVisible: routeSnapshot.stopVisible,
+        waitingForFinal: routeSnapshot.waitingForFinal,
+      })
+      formalRequestUrl = mode === 'steer' ? steerRequestUrl : conversationRequestUrl
+
+      await clearAndTypePrompt(client, options.prompt)
+      // hidden/background target 可能因为 React 后台调度延迟挂载 submit 控件；这里等“状态变成可提交”，
+      // 但最终成功仍以 Network 正式 POST + 2xx 为准，而不是按钮本身。
+      await waitForSendButtonReady(client, timeoutMs)
+      const pageUrlBefore = String(await evaluateValue(client, 'location.href') || actorConversationUrl(expectedConversationId))
+
       let sendHandlerAttempts = 1
       let retriedAfterPrepare = false
+      sendArmedAt = Date.now()
       await clickSendHandler(client)
       const deadline = Date.now() + timeoutMs
       let conversationId: string | null = null
       let boundAt = 0
       while (Date.now() < deadline) {
         const href = String(await evaluateValue(client, 'location.href') || '')
-        conversationId = conversationIdFromUrl(href)
+        conversationId = expectedConversationId || conversationIdFromUrl(href)
         const submitEvent = submitState.event
-        if (submitEvent && conversationId && (!expectedConversationId || conversationId === expectedConversationId)) {
+        if (submitEvent && responseStatus !== null && responseStatus >= 400) {
+          throw new Error(`ChatGPT actor ${mode} request failed with HTTP ${responseStatus}`)
+        }
+        if (submitEvent && conversationId && responseStatus !== null && responseStatus >= 200 && responseStatus < 300) {
+          if (responseMimeType && !responseMimeType.includes('event-stream')) {
+            throw new Error(`ChatGPT actor ${mode} response drifted from event-stream: ${responseMimeType}`)
+          }
           boundAt = Date.now()
-          // response 通常早于 URL bind，但给它一个很短的观察窗口，不因缺 response 阻塞发送控制面。
-          if (responseStatus === null) await new Promise(resolve => setTimeout(resolve, 150))
           const recorder = new ActiveTurnRecorder(options.tracePath)
           await recorder.append(buildActorSubmitTrace({
             submittedAt: submitEvent.at,
@@ -713,7 +783,17 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
             responseStatus,
             responseMimeType,
             pageUrlBefore,
-            mode: expectedConversationId ? 'continue' : 'new',
+            mode,
+            navigationMode: route.navigationMode,
+            contextReadyAt,
+            contextBodyResponseAt,
+            contextBodyStatus,
+            firstDataAt,
+            runningConfirmed: Boolean(
+              firstDataAt
+              || responseMimeType?.includes('event-stream')
+              || (await readActorPageSnapshot(client)).stopVisible,
+            ),
           }
         }
 
@@ -739,12 +819,14 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
         }
         await new Promise(resolve => setTimeout(resolve, 100))
       }
-      if (!submitState.event) throw new Error('ChatGPT actor did not emit POST /backend-api/f/conversation')
-      throw new Error('ChatGPT actor request started but conversation UUID was not bound before timeout')
+      if (!submitState.event) throw new Error(`ChatGPT actor did not emit POST ${formalRequestUrl}`)
+      if (responseStatus === null) throw new Error(`ChatGPT actor ${requestedMode} request started but no HTTP response arrived before timeout`)
+      throw new Error('ChatGPT actor request was accepted but conversation UUID was not bound before timeout')
     }
     finally {
       offRequest()
       offResponse()
+      offData()
     }
   }
   finally {
