@@ -8,6 +8,7 @@ import { ChatArchiveDb } from '../src/local/archive-db.ts'
 import { importOfficialExportZips } from '../src/local/official-export.ts'
 import { clusterCompletionBursts, readTurnTraceTail } from '../src/local/turn-trace-reader.ts'
 import { actorStatus, resetActor, sendActorPrompt } from '../src/local/chatgpt-actor.ts'
+import { ActorDomDriftLedger } from '../src/local/dom-drift.ts'
 import { ProtocolDriftLedger } from '../src/local/protocol-drift.ts'
 import { loadIncidentNotificationConfig, sendIncidentNotification } from '../src/local/incident-notifier.ts'
 
@@ -25,6 +26,7 @@ const DEFAULT_DAEMON_LOG_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon.
 const DEFAULT_TURN_TRACE_PATH = path.join(PROJECT_ROOT, 'data', 'active-turn-trace.jsonl')
 const DEFAULT_ACTOR_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-actor-state.json')
 const DEFAULT_PROTOCOL_LEDGER_PATH = path.join(PROJECT_ROOT, 'data', 'protocol-fingerprints.json')
+const DEFAULT_DOM_LEDGER_PATH = path.join(PROJECT_ROOT, 'data', 'dom-fingerprints.json')
 const DEFAULT_NOTIFICATION_CONFIG_PATH = path.join(PROJECT_ROOT, 'data', 'archive-notification.local.json')
 const DEFAULT_PROTOCOL_REPORT_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'protocol-report-state.json')
 const DEFAULT_PROTOCOL_APPROVALS_PATH = path.join(PROJECT_ROOT, 'data', 'protocol-template-approvals.json')
