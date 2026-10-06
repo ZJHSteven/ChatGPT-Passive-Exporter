@@ -455,7 +455,9 @@ async function readActorDomObservation(client: ActorCdpClient): Promise<ActorDom
       const text = identity(button)
       const testId = button.getAttribute('data-testid') || ''
       if (/stop|停止/iu.test(text)) return 'stop'
-      if (/send-button|(^|\s)(send|发送)(\s|$)/iu.test(text)
+      // 外层 template literal 会先解析一次反斜杠，因此这里必须写成 `\\s`，
+      // 浏览器最终收到的正则才仍是空白字符类 `\s`，而不是普通字母 `s`。
+      if (/send-button|(^|\\s)(send|发送)(\\s|$)/iu.test(text)
         || (button.getAttribute('type') === 'submit' && !button.disabled)) return 'send'
       if (/attach|attachment|file-upload|composer-plus|附件|添加文件|上传/iu.test(testId + ' ' + text)) return 'attachment'
       if (/voice|dictat|microphone|mic-button|语音|麦克风/iu.test(testId + ' ' + text)) return 'voice'
