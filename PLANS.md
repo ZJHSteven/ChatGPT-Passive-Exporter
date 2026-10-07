@@ -1,12 +1,3 @@
-## 2026-10-07 metadata 跨 conversation 复用导致旧聊天复活通知 ExecPlan
-
-- [done] 现场确认《查找聊天结论》CID `6ac4cad3-...` canonical 已 final，却在 19:34:41 北京时间被 metadata `v1/33rz...` 新 audit 再次启动 `devspace:first-tool` Watchdog，20:19:45 又误发 cooldown-deferred Bark。
-- [done] 证明根假设错误：同一 `openai/session=v1/33rz...` 不只出现在《查找聊天结论》，也真实出现在《整理实验报告要求》CID `6ac4ff09-...` 的 canonical body/tool 记录；19:30 起该 metadata 的 DevSpace audit 已明确在处理 ELISA/Transwell/MAPK，与旧 CID 无关。`openai/session` 因而不能作为永久 conversation 主键。
-- [in_progress] 把 current binding 改成可失效 lease：若绑定已 closed 或 canonical conversation 已 final，后续新 audit 不得直接复活旧 CID；先归档旧 lease、清空 current binding，进入 unbound provisional watchdog，等待当前 body exact tool+args 再绑定（允许重新绑定到同一 CID 或另一个 CID）。
-- [pending] 新增 binding history 表，保留 metadata 曾经对应过哪些 CID/turn/证据与失效原因；current `devspace_metadata_bindings` 只表示“当前可用于路由新 audit 的 lease”，不再承担永久历史语义。
-- [pending] 修正 exact-match 冲突语义：高置信 body exact-match 若指向与 current lease 不同的 CID，允许先归档旧 lease再 rebind，而不是永久 `conflict left unchanged`。
-- [pending] 回归覆盖：closed/final binding 收到新 audit 必须失效；active 非终态继续复用；exact-match 可 rebind；旧 CID 不再被新 metadata activity 重启 Watchdog。部署前清理当前错误 active watchdog/binding lease，重启 daemon 并观察自然 audit。
-
 ## 2026-10-07 北京时间通知 / 429 波次复盘 ExecPlan
 
 - [done] 人类可见时间统一改为北京时间：429 cooldown Bark 与 Watchdog deferred Bark 的绝对时间均格式化为 `YYYY-MM-DD HH:mm:ss 北京时间`。SQLite/内部状态继续保存 epoch/UTC 绝对时间，避免破坏排序、比较、迁移与跨时区计算。
