@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
 import { importOfficialExportZips } from '../src/local/official-export.ts'
 import { clusterCompletionBursts, readTurnTraceTail } from '../src/local/turn-trace-reader.ts'
-import { actorStatus, resetActor, sendActorPrompt } from '../src/local/chatgpt-actor.ts'
+import { actorStatus, inspectActorPage, resetActor, sendActorPrompt } from '../src/local/chatgpt-actor.ts'
 import { ActorDomDriftLedger } from '../src/local/dom-drift.ts'
 import { ProtocolDriftLedger } from '../src/local/protocol-drift.ts'
 import { loadIncidentNotificationConfig, sendIncidentNotification } from '../src/local/incident-notifier.ts'
@@ -54,6 +54,7 @@ Usage:
   chatgpt-archive turn-trace [--limit N] [--trace <path>] [--cluster-ms N]
   chatgpt-archive actor send --prompt-file <path> [--mode auto|new|continue|steer] [--target guardian|dedicated] [--conversation <UUID>] [--cdp URL] [--trace <path>] [--state <path>] [--dom-ledger <path>]
   chatgpt-archive actor batch --jobs-file <json> [--target guardian|dedicated] [--min-gap-ms N] [--cdp URL] [--trace <path>] [--state <path>] [--dom-ledger <path>]
+  chatgpt-archive actor inspect [--target guardian|dedicated] [--cdp URL] [--state <path>]
   chatgpt-archive actor status [--cdp URL] [--state <path>]
  chatgpt-archive actor reset [--cdp URL] [--state <path>]
   chatgpt-archive protocol status [--ledger <path>] [--dom-ledger <path>]
@@ -628,6 +629,22 @@ async function main() {
       console.log(JSON.stringify(await actorStatus(cdpHttp, actorStatePath), null, 2))
       return
     }
+    if (action === 'inspect') {
+      const actorTarget = String(flags.get('target') ?? 'guardian')
+      if (!['guardian', 'dedicated'].includes(actorTarget)) {
+        throw new Error('--target must be one of guardian|dedicated')
+      }
+      const timeoutMs = Number(flags.get('timeout-ms') ?? 20_000)
+      if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) throw new Error('--timeout-ms must be >= 1000')
+      console.log(JSON.stringify(await inspectActorPage({
+        cdpHttp,
+        statePath: actorStatePath,
+        daemonStatePath: DEFAULT_DAEMON_STATE_PATH,
+        targetMode: actorTarget,
+        timeoutMs,
+      }), null, 2))
+      return
+    }
     if (action === 'reset') {
       console.log(JSON.stringify(await resetActor(cdpHttp, actorStatePath), null, 2))
       return
@@ -748,7 +765,7 @@ async function main() {
       }, null, 2))
       return
     }
-    throw new Error('actor requires send|batch|status|reset')
+    throw new Error('actor requires send|batch|inspect|status|reset')
   }
 
   if (command === 'protocol') {
