@@ -89,6 +89,7 @@ export class LifeOpsSyncClient {
   private timer: NodeJS.Timeout | null = null
   private pumping = false
   private stopped = false
+  private persistChain: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly config: LifeOpsSyncConfig,
@@ -230,7 +231,14 @@ export class LifeOpsSyncClient {
     }
   }
 
-  private async persist(): Promise<void> {
+  private persist(): Promise<void> {
+    this.persistChain = this.persistChain.then(async () => {
+      await this.persistNow()
+    })
+    return this.persistChain
+  }
+
+  private async persistNow(): Promise<void> {
     const body: PendingFile = { version: 1, jobs: [...this.jobs.values()] }
     try {
       await fs.mkdir(path.dirname(this.options.pendingPath), { recursive: true })
