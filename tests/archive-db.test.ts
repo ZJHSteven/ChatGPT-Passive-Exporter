@@ -209,6 +209,49 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('turn notification ledger 只记录成功发送事实并可跨重启去重', () => {
+    const db = tempDb()
+    try {
+      expect(db.hasTurnNotification('turn-final:conversation-a:turn-a')).toBe(false)
+      db.markTurnNotificationSent({
+        notificationKey: 'turn-final:conversation-a:turn-a',
+        kind: 'turn-final',
+        conversationId: 'conversation-a',
+        turnKey: 'turn-a',
+        sentAt: 1234,
+        providerStatus: 200,
+        payload: { title: 'ChatGPT 正常完成', body: '会话 A' },
+      })
+      expect(db.hasTurnNotification('turn-final:conversation-a:turn-a')).toBe(true)
+      expect(db.getTurnNotification('turn-final:conversation-a:turn-a')).toMatchObject({
+        notificationKey: 'turn-final:conversation-a:turn-a',
+        kind: 'turn-final',
+        conversationId: 'conversation-a',
+        turnKey: 'turn-a',
+        sentAt: 1234,
+        providerStatus: 200,
+      })
+
+      // INSERT OR IGNORE 保留第一条成功发送事实；重复 WSS complete/settle 不会覆盖或重发。
+      db.markTurnNotificationSent({
+        notificationKey: 'turn-final:conversation-a:turn-a',
+        kind: 'turn-final',
+        conversationId: 'conversation-a',
+        turnKey: 'turn-a',
+        sentAt: 9999,
+        providerStatus: 201,
+        payload: { title: 'duplicate' },
+      })
+      expect(db.getTurnNotification('turn-final:conversation-a:turn-a')).toMatchObject({
+        sentAt: 1234,
+        providerStatus: 200,
+      })
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('导入 canonical conversation 并避免重复累计', () => {
     const db = tempDb()
     try {
