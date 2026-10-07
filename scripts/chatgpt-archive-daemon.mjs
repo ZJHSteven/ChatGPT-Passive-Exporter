@@ -662,6 +662,10 @@ export function shouldNotifyTurnFinal(trigger, diagnostic) {
   const normalized = String(trigger || '').trim().toLowerCase()
   if (normalized.startsWith('watchdog:')) return true
   if (normalized.startsWith('checkpoint:')) return true
+  if (normalized.startsWith('reconcile:gap-repair')) return true
+  if (normalized.startsWith('reconcile:wss-reconnect')) return true
+  if (normalized.startsWith('reconcile:guardian-recover')) return true
+  if (normalized.startsWith('reconcile:cooldown-recover')) return true
   return isConfirmedTerminalTrigger(normalized)
 }
 
