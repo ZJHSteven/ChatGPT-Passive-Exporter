@@ -1218,6 +1218,48 @@ export async function actorStatus(cdpHttp: string, statePath: string): Promise<R
   }
 }
 
+/**
+ * 只读检查 Actor 当前页面的闭环状态。
+ *
+ * 这个入口专门用于 DOM/时序漂移排障：它复用 sendActorPrompt() 完全相同的
+ * `readActorPageSnapshot()`，但不会导航、输入、点击或发任何 ChatGPT 请求。
+ * 因此当页面“肉眼看起来能发、Actor 却判不可发”时，可以直接比较 Actor 自己的判定，
+ * 避免再用另一套临时 DOM 查询制造第二套语义。
+ */
+export async function inspectActorPage(options: {
+  cdpHttp: string
+  statePath: string
+  daemonStatePath?: string | null
+  targetMode?: ActorTargetMode
+  timeoutMs?: number
+}): Promise<Record<string, unknown>> {
+  const timeoutMs = options.timeoutMs ?? 20_000
+  const targetMode = options.targetMode ?? 'guardian'
+  const target = await acquireActorTarget(
+    options.cdpHttp,
+    options.statePath,
+    timeoutMs,
+    targetMode,
+    options.daemonStatePath,
+  )
+  const targetId = String(target.id ?? target.targetId)
+  if (!target.webSocketDebuggerUrl) throw new Error('actor target has no webSocketDebuggerUrl')
+
+  const client = new ActorCdpClient(target.webSocketDebuggerUrl)
+  await client.connect()
+  try {
+    await client.send('Runtime.enable')
+    return {
+      targetId,
+      targetMode,
+      snapshot: await readActorPageSnapshot(client),
+    }
+  }
+  finally {
+    client.close()
+  }
+}
+
 export async function resetActor(cdpHttp: string, statePath: string): Promise<Record<string, unknown>> {
   const state = await readActorState(statePath)
   let closed = false
