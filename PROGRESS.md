@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 DOM drift 安全语义补回归：同一未知结构连续观察仍必须持续 pending，不能靠第二次重试绕过；仅 sidebar presence 改变且其余骨架完全一致时自动继承 baseline。提交 `d78f9b2`。
 - 2026-10-07 新增只读 `chatgpt-archive actor inspect`：直接复用 Actor 自己的 page snapshot 判据输出 route/CID/composer/send/stop/waiting/messageNodes，不导航、不输入、不点击、不发 ChatGPT 请求。用于定位“页面看起来可发但 Actor 判不可发”的 DOM/时序漂移，避免排障时再维护第二套临时 selector。提交 `8dd1d4d` / `03555d7`。
 - 2026-10-07 DOM drift fail-closed 语义修正：原实现 `pending=isNew&&!baseline` 会导致未知结构第一次被拦后，完全相同的第二次重试因 `isNew=false` 自动放行，绕过人工 approve。现改为任何 `baseline=false` variant 每次都持续 pending，直到人工 approve；同时仅对“除 sidebar presence 外其余安全骨架与已批准 baseline 完全一致”的折叠/虚拟化侧栏变体自动信任，完整 sidebar 布尔值仍保留在 forensic ledger。提交 `ea094eb`。
 - 2026-10-07 DOM drift v2 测试夹具适配严格索引检查：对确定存在的首个 attachment fixture 加 non-null 断言，消除 TS2322，不改变生产逻辑。提交 `251a61f`。
