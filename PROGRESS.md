@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Phase 4 continue E2E 第三个门控点已修：当前 composer 已通过严格 hit-test 后，其 form 内真实 `aria=发送 type=submit disabled=false` 仍会被重复中心点 hit-test 误判不可用。现在 send/stop 控件在“当前已验证 composer form”内只检查 rect、hidden/inert、display/visibility/opacity、自身 pointer-events 与 disabled，不再重复 `elementFromPoint`；new-chat/sidebar 仍保留严格 hit-test。提交 `5e3c431`。
 - 2026-10-07 Guardian visibility helper 修正 PowerShell 续行语法：结果字符串改为单行拼接，避免二元 `+` 置于新行开头导致 Windows PowerShell / pwsh 解析失败。提交 `b874ca8`。
 - 2026-10-07 Guardian visibility helper 第二轮兼容修复：Windows PowerShell 5.1 的 Add-Type 对内嵌 C# 新语法/诊断不稳定，现把 C# 收缩为纯 ASCII P/Invoke 声明，分支、异常和等待全部移回 PowerShell；最外层显式 try/catch + exit 1，避免 helper 编译失败却错误返回 exit 0。提交 `d4936de`。
 - 2026-10-07 Guardian visibility helper 首次真机运行暴露 Windows PowerShell 5.1 兼容问题：Add-Type 使用的旧 C# 编译器不支持 `nameof()`，且默认 non-terminating error 会让脚本错误地以 exit 0 结束。现改为普通参数名字符串并设置 `$ErrorActionPreference='Stop'`，保证租约建立失败一定向 Actor 返回非零状态。提交 `dd38283`。
