@@ -409,7 +409,16 @@ async function readActorPageSnapshot(client: ActorCdpClient): Promise<ActorPageS
       sendReady: Boolean(sendButton && !sendButton.disabled),
       stopVisible: Boolean(stopButton && !stopButton.disabled),
       waitingForFinal: /连接已中断|等待完整答复|connection interrupted|waiting for (?:the )?full (?:answer|response)/iu.test(bodyText),
-      messageNodes: document.querySelectorAll('[data-message-author-role]').length,
+      // ChatGPT Web 的消息 DOM 属性会变化；这里仅用于“上下文已经真正渲染”的闭环门控，
+      // 不承担消息解析。2026-10-07 当前 UI 已从 data-message-author-role 切到 selection/search
+      // 系列属性，因此保留多代语义锚点，只要求至少命中一个真实消息节点即可。
+      messageNodes: document.querySelectorAll([
+        '[data-message-author-role]',
+        '[data-chatgpt-selection-message-id]',
+        '[data-chatgpt-search-message-ids]',
+        '[data-user-message-bubble="true"]',
+        '[data-content-search-unit-key]',
+      ].join(',')).length,
     }
   })()`)
   return value as ActorPageSnapshot
