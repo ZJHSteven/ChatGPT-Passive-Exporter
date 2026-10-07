@@ -4732,6 +4732,49 @@ async function main() {
     }
   }
 
+  // Phase 5 Bridge 与 Archive daemon 同生命周期，但失败时不能拖死归档/WSS 主链。
+  // 默认只监听 loopback；token 只从独立 *.local.json 读取到内存，不写 state/log。
+  if (bridgeEnabled) {
+    try {
+      const bridgeAuthToken = await ensureArchiveBridgeAuthToken(bridgeAuthPath)
+      archiveBridge = new ArchiveBridgeServer({
+        archive,
+        authToken: bridgeAuthToken,
+        host: bridgeHost,
+        port: bridgePort,
+        submitTurn: async (input) => await sendActorPrompt({
+          cdpHttp,
+          statePath: actorStatePath,
+          daemonStatePath: statePath,
+          domLedgerPath,
+          tracePath: turnTracePath,
+          prompt: input.text,
+          conversationId: input.conversationId,
+          mode: input.mode,
+          targetMode: input.targetMode,
+        }),
+      })
+      await archiveBridge.start()
+      archiveBridgeStartedAt = Date.now()
+      archiveBridgeLastError = null
+      await log('Archive Bridge ready', {
+        host: bridgeHost,
+        port: archiveBridge.port,
+        authPath: bridgeAuthPath,
+      })
+    }
+    catch (error) {
+      archiveBridgeLastError = error instanceof Error ? error.message : String(error)
+      await archiveBridge?.stop().catch(() => {})
+      archiveBridge = null
+      await log('Archive Bridge failed to start; archive core remains available', {
+        host: bridgeHost,
+        port: bridgePort,
+        error: archiveBridgeLastError,
+      })
+    }
+  }
+
   process.on('SIGINT', () => { stopping = true })
   process.on('SIGTERM', () => { stopping = true })
 
