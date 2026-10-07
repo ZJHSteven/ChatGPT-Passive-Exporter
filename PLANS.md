@@ -1,3 +1,11 @@
+## 2026-10-07 Watchdog generation 收口 / 漏通知修复 ExecPlan
+
+- [in_progress] 复原 `6ac53e83-...` 的真实漏通知链：上一轮 02:32 turn 已在 03:58 watchdog 诊断并 Bark 200，但 active_watchdog generation 未关闭；14:49 新 turn 的首个 DevSpace tool 因同 CID 仍 active 被误当 heartbeat，直到 16:19 body 才发现 turn key 已变化并错误从“发现时刻”重新计 45min。
+- [pending] 修改 watchdog 生命周期：一次 watchdog timeout 诊断成功并完成 incident 分类后关闭当前 generation；后续 DevSpace first-tool 必须创建新 generation，不能在已诊断旧轮上续 heartbeat。
+- [pending] 给“晚发现新 turn”增加真实 start 回填：若 watchdog body 能从当前 user node 取到 create_time，则以该时间作为新 generation 的保守起点；若它本身已经超过 watchdog 阈值，本次诊断即可按新 turn 立案，不能再额外延迟 45min。
+- [pending] 加回归覆盖：① watchdog incident 后 generation 关闭；②同 metadata 后续 first-tool 新建 generation；③ stale catalog watchdog 发现 newer turn 时使用 user create_time，不使用发现时刻；④已有 cooldown/terminal/notification 语义不回归。
+- [pending] 全量 typecheck/test 后 cherry-pick 回主分支；生产重启继承现有 cooldown/state，验证 `6ac53e83-...` 不再保留上一轮 generation，并检查 Bark/incident 链。
+
 ## 2026-10-06 并行协调：Watchdog / binding / cooldown / DevSpace env ExecPlan
 
 > 并行约束：另一个 Agent 正在处理 Phase 3 / Phase 4 / Phase 5。本文任务只修改 DevSpace audit/env 热路径、Archive 历史 binding/backfill、429 cooldown 通知与相关文档/测试；不改 LiveTurn/Actor 主体实现。若发现目标文件被并行 Agent 修改，先停下对该文件的编辑并重新对比，不做覆盖式提交。
