@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 DOM drift v2 测试夹具适配严格索引检查：对确定存在的首个 attachment fixture 加 non-null 断言，消除 TS2322，不改变生产逻辑。提交 `251a61f`。
 - 2026-10-07 DOM drift v2 补回归：新增 voice/send/stop 三态必须同 signature，以及 v1 已锁 ledger 打开后只合并动态主动作差异、保留 baseline/count/时间包络的迁移测试。提交 `32bbe8c`。
 - 2026-10-07 Phase 4 Guardian 合并生产 E2E（continue）通过：在 CID `6ac5ebe1-...` 上 `actor send --mode continue --target guardian` 成功，request=`37424.1486`，HTTP 200 + `text/event-stream`，`navigationMode=already-there`，context/composer/message DOM 门控均通过，`firstDataAt` 与 `runningConfirmed=true`。此前三次失败分别暴露并修复 ancestor pointer-events 假阴性、消息 DOM 单 selector 漂移、send button 重复 hit-test 假阴性；闭环控制没有一次误发。
 - 2026-10-07 DOM drift 生产误报根因已修：锁定后的新 signature `b4e2b98ab87b1d2d` 与已批准 conversation 结构相比，唯一业务差异是 composer 主动作从 `voice` 切成 `send`；而当前 Web 会在空输入/有文本/生成中正常执行 `voice -> send -> stop`。v2 ledger 因此把三者归一为同一个 `primary-action` 槽位，并忽略该动态槽位会随状态变化的 type/testId，只继续校验 tag/aria/title 结构；attachment、composer/form、sidebar 等稳定骨架仍保留精确指纹。旧 v1 ledger 打开时会安全迁移并合并等价 variant，不会自动批准真正不同的结构。提交 `353a3b9`。
