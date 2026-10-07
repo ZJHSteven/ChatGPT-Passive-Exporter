@@ -126,6 +126,9 @@ export function restoreCooldownUntil(previousState: unknown, now?: number): numb
 /** cooldown 只冻结主动 API；返回 false 时 Guardian/WSS 仍应继续工作。 */
 export function activeApiAllowed(cooldownUntil: unknown, now?: number): boolean
 
+/** 将绝对时间戳格式化为人类可读的北京时间字符串；内部存储仍保持 epoch/UTC。 */
+export function formatBeijingTime(value: unknown): string
+
 /** 生成一次“首次进入 429 cooldown”的独立运行状态通知文案。 */
 export function buildCooldownNotificationPayload(input: {
   reason: unknown
