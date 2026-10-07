@@ -104,8 +104,11 @@ export function parseDevSpaceBodyToolCall(text: string, startedAtMs: number): De
   try {
     const payload = JSON.parse(text) as { path?: unknown, args?: unknown }
     const toolPath = typeof payload.path === 'string' ? payload.path : ''
-    if (!toolPath.toLowerCase().includes('/devspace/')) return null
     const segments = toolPath.split('/').filter(Boolean)
+    const transport = String(segments[0] ?? '').trim().toLowerCase().replace(/[_-]+/g, ' ')
+    // Backup Tunnel 与 DevSpace 走同一 MQ / tool_audit 数据源，只是 ChatGPT body 中
+    // 暴露的 provider 名不同。绑定必须把它们视为同一个 transport family。
+    if (transport !== 'devspace' && transport !== 'backup tunnel') return null
     const tool = segments.at(-1)
     if (!tool) return null
     return {

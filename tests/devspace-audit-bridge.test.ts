@@ -28,6 +28,17 @@ const audit = (
 })
 
 describe('DevSpace audit bridge', () => {
+  test('Backup Tunnel 与 DevSpace 作为同一 MQ transport family 解析', () => {
+    expect(parseDevSpaceBodyToolCall(JSON.stringify({
+      path: '/Backup Tunnel/link_x/exec_command',
+      args: { cwd: 'D:/Workspace', cmd: 'git status --short', maxOutputTokens: 12000 },
+    }), 1234)).toEqual({
+      tool: 'exec_command',
+      argsJson: JSON.stringify({ cwd: 'D:/Workspace', cmd: 'git status --short', maxOutputTokens: 12000 }),
+      startedAtMs: 1234,
+    })
+  })
+
   test('并发 metadata 通过 exact tool+args 区分，不再依赖时间唯一性', () => {
     const activities = groupDevSpaceActivity([
       audit('a1', 'meta-a', 10_000, { cwd: 'A', cmd: 'git status --short' }),
