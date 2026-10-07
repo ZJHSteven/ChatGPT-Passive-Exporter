@@ -1,3 +1,11 @@
+## 2026-10-07 北京时间通知 / 429 波次复盘 ExecPlan
+
+- [done] 人类可见时间统一改为北京时间：429 cooldown Bark 与 Watchdog deferred Bark 的绝对时间均格式化为 `YYYY-MM-DD HH:mm:ss 北京时间`。SQLite/内部状态继续保存 epoch/UTC 绝对时间，避免破坏排序、比较、迁移与跨时区计算。
+- [done] 回归验证：`node --check`、TypeScript typecheck、全量 24 files / 164 tests 通过；production daemon 已重启为 PID 59024，继承当前 cooldown。只读 payload canary 已确认 `1791377301865 -> 2026-10-07 20:48:21 北京时间`。
+- [done] 复盘 2026-10-06~10-07 北京时间的 429：按 `wasAlreadyCooling=false` 计 15 个独立 cooldown wave（10/6 3 波，10/7 截至约 19:40 12 波）；原始 `cooldown armed` 日志 65 条，因为同一波会被 passive observer / active request / 页面 retry 重复记录和滑动延长。
+- [done] 根因分阶段：早期 429 大量来自 Archive 自己的 `devspace:binding-probe` 与 Phase 3 checkpoint 高频 body polling；checkpoint 已默认 disabled。当前 19:34 起的新波则来自 native ChatGPT 页面/Guardian 的 catalog 列表请求，随后普通页面 `body-latest` 也持续 429；Archive active REST 已被 cooldown 阻断，但页面原生请求仍会自动重试。
+- [pending] 单独评估 native-page 429 的 cooldown 语义：当前任何普通页面再次 429 都会把 Archive 全局 60min cooldown 滑动延长，页面 retry loop 因而可能无限推迟 Archive recovery。不要未经讨论直接改；候选方案是区分 `account429Observed` 与 `archiveActiveCooldown`，或仅由 Archive/Guardian 主动请求的 429 延长完整 60min，而普通页面 429 只更新观测状态/尊重 Retry-After。
+
 ## 2026-10-07 Adaptive Watchdog / Gap Discovery / Safety Review 研究 ExecPlan
 
 - [done] 核清当前 DevSpace→Archive 行为：bound metadata 的 first-tool 只启动/续本 CID Watchdog，不触发 catalog gap-repair，也不主动拉 body；unbound metadata 先保存 provisional start，只有跨过 45min 仍未绑定时才 `scheduleGapRepair('devspace-unbound-timeout')`。WSS conversation transport rotation 与 Guardian recover 同样进入 `scheduleGapRepair()`，最终共用 `reconcileCatalog('gap-repair')` overlap 扫描。
