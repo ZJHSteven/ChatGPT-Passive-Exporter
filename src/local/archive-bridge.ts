@@ -20,11 +20,19 @@ export interface ArchiveBridgeConversationRow {
   importedAt: number
   messageCount: number
   resourceCount: number
+  terminalState?: string | null
+  incidentState?: string | null
+  lastFinishType?: string | null
+  lastFinishReason?: string | null
+  lastReasoningStatus?: string | null
 }
 
 export interface ArchiveBridgeDataSource {
   list(limit?: number): ArchiveBridgeConversationRow[]
   getMessages(conversationId: string): Array<Record<string, unknown>>
+  search?(query: string, limit?: number): Array<Record<string, unknown>>
+  listIncidents?(options?: { status?: 'open' | 'resolved', limit?: number }): Array<Record<string, unknown>>
+  listActiveWatchdogs?(limit?: number): Array<Record<string, unknown>>
 }
 
 export type ArchiveBridgeActorMode = 'auto' | 'new' | 'continue' | 'steer'
@@ -128,17 +136,79 @@ async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<Rec
 function sanitizeMessages(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
   return rows
     .filter(row => Number(row.hidden ?? 0) === 0)
-    .map(row => ({
-      messageId: typeof row.messageId === 'string' ? row.messageId : null,
-      ordinal: Number.isFinite(Number(row.ordinal)) ? Number(row.ordinal) : null,
-      role: typeof row.role === 'string' ? row.role : 'unknown',
-      authorName: typeof row.authorName === 'string' ? row.authorName : null,
-      recipient: typeof row.recipient === 'string' ? row.recipient : null,
-      channel: typeof row.channel === 'string' ? row.channel : null,
-      contentType: typeof row.contentType === 'string' ? row.contentType : null,
-      text: typeof row.text === 'string' ? row.text : '',
-      createTime: typeof row.createTime === 'number' ? row.createTime : null,
-    }))
+    .map(row => {
+      const channel = typeof row.channel === 'string' ? row.channel : null
+      const contentType = typeof row.contentType === 'string' ? row.contentType : null
+      // Reader 可以展示“发生过 reasoning / tool 阶段”及其状态，但不对外输出模型内部 reasoning 文本。
+      // 这既保留完整生命周期/工具链定位能力，也不把本来只供模型内部消费的思维文本固化成产品 API。
+      const reasoningRedacted = channel === 'analysis' || Boolean(contentType && /reasoning/iu.test(contentType))
+      return {
+        messageId: typeof row.messageId === 'string' ? row.messageId : null,
+        ordinal: Number.isFinite(Number(row.ordinal)) ? Number(row.ordinal) : null,
+        role: typeof row.role === 'string' ? row.role : 'unknown',
+        authorName: typeof row.authorName === 'string' ? row.authorName : null,
+        recipient: typeof row.recipient === 'string' ? row.recipient : null,
+        channel,
+        contentType,
+        text: reasoningRedacted ? '' : typeof row.text === 'string' ? row.text : '',
+        reasoningRedacted,
+        createTime: typeof row.createTime === 'number' ? row.createTime : null,
+        status: typeof row.status === 'string' ? row.status : null,
+        endTurn: row.endTurn === 1 || row.endTurn === true,
+        requestId: typeof row.requestId === 'string' ? row.requestId : null,
+        turnExchangeId: typeof row.turnExchangeId === 'string' ? row.turnExchangeId : null,
+        finishType: typeof row.finishType === 'string' ? row.finishType : null,
+        finishReason: typeof row.finishReason === 'string' ? row.finishReason : null,
+        reasoningStatus: typeof row.reasoningStatus === 'string' ? row.reasoningStatus : null,
+        modelSlug: typeof row.resolvedModelSlug === 'string'
+          ? row.resolvedModelSlug
+          : typeof row.modelSlug === 'string'
+            ? row.modelSlug
+            : null,
+      }
+    })
+}
+
+function conversationLifecycle(
+  conversationId: string,
+  archive: ArchiveBridgeDataSource,
+  turnExchangeId?: string | null,
+): {
+  state: 'running' | 'aborted' | 'completed' | 'idle'
+  active: Record<string, unknown> | null
+  incident: Record<string, unknown> | null
+} {
+  const active = archive.listActiveWatchdogs?.(1000)
+    .find(row => row.conversationId === conversationId) ?? null
+  const incident = archive.listIncidents?.({ status: 'open', limit: 1000 })
+    .find(row =>
+      row.conversationId === conversationId &&
+      (!turnExchangeId || row.turnExchangeId === turnExchangeId),
+    ) ?? null
+  if (incident) return { state: 'aborted', active, incident }
+  if (active) return { state: 'running', active, incident }
+  const conversation = archive.list(1000).find(row => row.id === conversationId)
+  if (conversation?.terminalState || conversation?.lastFinishType) {
+    return { state: 'completed', active, incident }
+  }
+  return { state: 'idle', active, incident }
+}
+
+function isoFromArchiveTime(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return new Date().toISOString()
+  const milliseconds = value < 10_000_000_000 ? value * 1000 : value
+  return new Date(milliseconds).toISOString()
+}
+
+function safeSummary(messages: Array<Record<string, unknown>>): string | null {
+  const candidates = messages.filter(message =>
+    message.role === 'assistant' &&
+    typeof message.text === 'string' &&
+    message.text.trim() &&
+    message.reasoningRedacted !== true,
+  )
+  const text = candidates.at(-1)?.text
+  return typeof text === 'string' ? text.trim().slice(0, 2000) : null
 }
 
 function validateTurnInput(body: Record<string, unknown>): ArchiveBridgeTurnInput {
@@ -342,8 +412,40 @@ export class ArchiveBridgeServer {
     }
 
     if (url.pathname === '/v1/conversations' && method === 'GET') {
+      const activeIds = new Set(
+        (this.options.archive.listActiveWatchdogs?.(1000) ?? [])
+          .map(row => typeof row.conversationId === 'string' ? row.conversationId : '')
+          .filter(Boolean),
+      )
+      const openIncidentIds = new Set(
+        (this.options.archive.listIncidents?.({ status: 'open', limit: 1000 }) ?? [])
+          .map(row => typeof row.conversationId === 'string' ? row.conversationId : '')
+          .filter(Boolean),
+      )
       jsonResponse(res, 200, {
-        conversations: this.options.archive.list(parseLimit(url.searchParams.get('limit'))),
+        conversations: this.options.archive.list(parseLimit(url.searchParams.get('limit'))).map(row => ({
+          ...row,
+          lifecycleState: openIncidentIds.has(row.id)
+            ? 'aborted'
+            : activeIds.has(row.id)
+              ? 'running'
+              : row.terminalState || row.lastFinishType
+                ? 'completed'
+                : 'idle',
+        })),
+      })
+      return
+    }
+
+    if (url.pathname === '/v1/search' && method === 'GET') {
+      if (!this.options.archive.search) {
+        jsonResponse(res, 501, { error: 'search_not_supported' })
+        return
+      }
+      const query = (url.searchParams.get('q') ?? '').trim()
+      jsonResponse(res, 200, {
+        query,
+        hits: query ? this.options.archive.search(query, parseLimit(url.searchParams.get('limit'), 50)) : [],
       })
       return
     }
@@ -353,6 +455,72 @@ export class ArchiveBridgeServer {
       const conversationId = decodeURIComponent(messagesMatch[1]!)
       const messages = sanitizeMessages(this.options.archive.getMessages(conversationId))
       jsonResponse(res, 200, { conversationId, messages })
+      return
+    }
+
+    const conversationMatch = /^\/v1\/conversations\/([^/]+)$/u.exec(url.pathname)
+    if (conversationMatch && method === 'GET') {
+      const conversationId = decodeURIComponent(conversationMatch[1]!)
+      const conversation = this.options.archive.list(1000).find(row => row.id === conversationId)
+      if (!conversation) {
+        jsonResponse(res, 404, { error: 'conversation_not_found' })
+        return
+      }
+      const lifecycle = conversationLifecycle(conversationId, this.options.archive)
+      jsonResponse(res, 200, {
+        conversation: { ...conversation, lifecycleState: lifecycle.state },
+        active: lifecycle.active,
+        incidents: (this.options.archive.listIncidents?.({ limit: 1000 }) ?? [])
+          .filter(row => row.conversationId === conversationId),
+      })
+      return
+    }
+
+    if (url.pathname === '/v1/worksites/resolve' && method === 'GET') {
+      const conversationId = (url.searchParams.get('conversation_id') ?? '').trim()
+      const turnExchangeId = (url.searchParams.get('turn_exchange_id') ?? '').trim() || null
+      if (!conversationId) {
+        jsonResponse(res, 400, { error: 'conversation_id_required' })
+        return
+      }
+      const conversation = this.options.archive.list(1000).find(row => row.id === conversationId)
+      if (!conversation) {
+        jsonResponse(res, 404, { error: 'conversation_not_found' })
+        return
+      }
+      const allMessages = sanitizeMessages(this.options.archive.getMessages(conversationId))
+      const messages = turnExchangeId
+        ? allMessages.filter(message => message.turnExchangeId === turnExchangeId)
+        : allMessages
+      const lifecycle = conversationLifecycle(conversationId, this.options.archive, turnExchangeId)
+      const runState = lifecycle.state === 'aborted'
+        ? 'aborted'
+        : lifecycle.state === 'running'
+          ? 'running'
+          : 'completed'
+      jsonResponse(res, 200, {
+        worksite: {
+          conversationId,
+          turnExchangeId,
+          title: conversation.title || `ChatGPT · ${conversationId}`,
+          summary: safeSummary(messages),
+          runState,
+          reviewState: 'unread',
+          url: `https://chatgpt.com/c/${conversationId}`,
+          updatedAt: isoFromArchiveTime(conversation.capturedAt || conversation.importedAt),
+          metadata: {
+            sourceFormat: conversation.sourceFormat,
+            currentNode: conversation.currentNode,
+            messageCount: messages.length,
+            terminalState: conversation.terminalState ?? null,
+            incidentState: conversation.incidentState ?? null,
+            lastFinishType: conversation.lastFinishType ?? null,
+            lastFinishReason: conversation.lastFinishReason ?? null,
+            lifecycleState: lifecycle.state,
+            openIncident: lifecycle.incident,
+          },
+        },
+      })
       return
     }
 
