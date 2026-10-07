@@ -1,3 +1,15 @@
+## 2026-10-07 Adaptive Watchdog / Gap Discovery / Safety Review 研究 ExecPlan
+
+- [done] 核清当前 DevSpace→Archive 行为：bound metadata 的 first-tool 只启动/续本 CID Watchdog，不触发 catalog gap-repair，也不主动拉 body；unbound metadata 先保存 provisional start，只有跨过 45min 仍未绑定时才 `scheduleGapRepair('devspace-unbound-timeout')`。WSS conversation transport rotation 与 Guardian recover 同样进入 `scheduleGapRepair()`，最终共用 `reconcileCatalog('gap-repair')` overlap 扫描。
+- [done] 明确 gap-repair 不是“每个新 turn 都打 conversation list”。当前只有 transport gap/recover 与 unbound-timeout 等恢复事件会排队；多次触发会合并为一个 pending repair。后续若做新 metadata 快速发现，应单独设计低频 binding-discovery，而不是滥用完整 gap-repair。
+- [done] Safety Review 继续作为正交 transient 状态而非 incident 主类。`safety_review_update(active=true, protection_type=bio/cyber)` 来自 HTTP SSE；review active 时 transport 可继续 ping/收数据，最终仍可能正常 final。只有随后 WSS/body 终态或 45min hard watchdog 才决定 normal final / complete-no-final / active-zombie/watchdog-timeout。ghost-execution/persistence-stall 也与 safety review 正交：body 可停更而 DevSpace 工具继续执行。
+- [done] 近期 2026-09-27 起可靠样本研究：76 个含 DevSpace 工具且最终自然 final、无 incident、tool audit 能与 turn/final 对齐的样本中，工具链跨度 p50≈8.29m、p75≈13.29m、p90≈16.51m、p95≈26.16m，最长≈32.98m；turn user→final p50≈10.32m、p90≈19.51m、p95≈31.65m，最长≈33.58m。顶端 33.2~33.6m 聚集提示可能存在约 2000s 级 wall-clock budget，但当前只能作为经验信号，不能宣称平台硬上限。
+- [done] 同一批 76 个自然 final 工具型 turn 的“上一工具结束→下一工具开始”最大静默：p50≈0.90m、p90≈2.60m、p95≈2.95m、最大≈4.31m，0/76 出现 ≥5m 静默。说明进入 DevSpace 连续工具阶段后，5~10m 无 running tool 且无新 audit 是高价值软异常信号，且无需额外 OpenAI API 请求。
+- [done] 单条 DevSpace tool audit 不能作为统一 hard timeout：近期绑定 metadata 共 7161 条完成调用，99% 单次时长约≤25s，但存在约 38.7m/42.2m 的成功 `exec_command` 长生命周期记录，因此必须区分“工具正在运行”与“工具链静默”。
+- [pending] 设计 soft watchdog，不改 45min hard watchdog：优先维护 `lastStrongProgressAt`（DevSpace tool start/finish、SSE substantive event、WSS async progress、passive body head/update 变化）；已有工具链且无 running tool 时，≥5m 静默可记录 suspected-stall，建议 10m 再通知用户；SSE ping 只证明 transport 活着，safety-review active 是门控状态，二者都不能单独证明模型有正文进展。
+- [pending] 评估“新 metadata 快速 binding discovery”：优先使用现有 passive catalog / conversation-created / 时间唯一候选，必要时把多个新 metadata 合并到一次低频首屏 catalog，而不是每个 first-tool 各打一轮 gap-repair。候选唯一时可建立 provisional binding，后续 canonical body 的 exact tool+args 再升级为 high-confidence。
+- [pending] 暂不启用固定 10min body polling，也不自动 steer/stop。若后续需要“接近执行预算提醒”，先基于 28~30m wall-clock + 近期实测分布做只通知 canary；自动向 active turn 注入“请收尾”属于会改变模型行为的动作，需另行明确授权和验证。
+
 ## 2026-10-07 Turn 终态 / Watchdog Bark 通知矩阵 ExecPlan
 
 - [done] 按用户新要求统一“每个 turn 最终都有可见 Bark 结果”：正常 complete+final 也通知；complete 后无 final/显式 interrupted 继续走 incident 通知；Watchdog 超时若当场拿得到 body，只发一次最终诊断，不先发重复 timeout 通知。
