@@ -9,6 +9,7 @@ import {
   classifyConversationBackendUrl,
   classifyCatalogAsyncStatus,
   effectiveActiveRequestGap,
+  formatBeijingTime,
   isConversationTransportTopic,
   classifyConversationEvent,
   conversationIdFromTargetUrl,
@@ -97,10 +98,15 @@ describe('ChatGPT Archive daemon WSS parser', () => {
         '原因：active body HTTP 429',
         '请求：/backend-api/conversation/example',
         'Retry-After：120',
-        '主动 API 冷却至：2026-10-06T09:02:52.322Z',
+        '主动 API 冷却至：2026-10-06 17:02:52 北京时间',
         'WSS/CDP 被动监听继续运行；滑动延长只记日志，不重复通知。',
       ].join('\n'),
     })
+  })
+
+  test('人类可见时间统一格式化为北京时间，数据库仍可继续保存绝对时间戳', () => {
+    expect(formatBeijingTime(Date.parse('2026-10-07T11:40:30.073Z')))
+      .toBe('2026-10-07 19:40:30 北京时间')
   })
 
   test('conversation transport repair 只跟随 conversation carrier 换代', () => {
