@@ -358,22 +358,6 @@ export class DevSpaceAuditBridge {
     return true
   }
 
-  /**
-   * Archive 发现 current metadata lease 已失效时，同步删除 DevSpace 侧“当前 binding”镜像。
-   *
-   * 这里故意只删 current mirror，不删 tool_audit：审计历史仍然是 append-only 证据；
-   * 真正的旧 lease 历史由 Archive 自己的 `devspace_metadata_binding_history` 保存。
-   */
-  clearBinding(metadataId: string): boolean {
-    if (!this.open() || !this.db) return false
-    if (!this.hasBindingTable) return false
-    const result = this.db.prepare(`
-      DELETE FROM chatgpt_conversation_bindings
-      WHERE metadata_id = ?
-    `).run(metadataId)
-    return Number(result.changes || 0) > 0
-  }
-
   close(): void {
     this.db?.close()
     this.db = null
