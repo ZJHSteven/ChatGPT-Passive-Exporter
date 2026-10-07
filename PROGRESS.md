@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 DOM drift fail-closed 语义修正：原实现 `pending=isNew&&!baseline` 会导致未知结构第一次被拦后，完全相同的第二次重试因 `isNew=false` 自动放行，绕过人工 approve。现改为任何 `baseline=false` variant 每次都持续 pending，直到人工 approve；同时仅对“除 sidebar presence 外其余安全骨架与已批准 baseline 完全一致”的折叠/虚拟化侧栏变体自动信任，完整 sidebar 布尔值仍保留在 forensic ledger。提交 `ea094eb`。
 - 2026-10-07 DOM drift v2 测试夹具适配严格索引检查：对确定存在的首个 attachment fixture 加 non-null 断言，消除 TS2322，不改变生产逻辑。提交 `251a61f`。
 - 2026-10-07 DOM drift v2 补回归：新增 voice/send/stop 三态必须同 signature，以及 v1 已锁 ledger 打开后只合并动态主动作差异、保留 baseline/count/时间包络的迁移测试。提交 `32bbe8c`。
 - 2026-10-07 Phase 4 Guardian 合并生产 E2E（continue）通过：在 CID `6ac5ebe1-...` 上 `actor send --mode continue --target guardian` 成功，request=`37424.1486`，HTTP 200 + `text/event-stream`，`navigationMode=already-there`，context/composer/message DOM 门控均通过，`firstDataAt` 与 `runningConfirmed=true`。此前三次失败分别暴露并修复 ancestor pointer-events 假阴性、消息 DOM 单 selector 漂移、send button 重复 hit-test 假阴性；闭环控制没有一次误发。
