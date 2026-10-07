@@ -38,6 +38,11 @@ export interface ArchiveConversationRow {
   importedAt: number
   messageCount: number
   resourceCount: number
+  terminalState: string | null
+  incidentState: string | null
+  lastFinishType: string | null
+  lastFinishReason: string | null
+  lastReasoningStatus: string | null
 }
 
 /** 一份外部数据源（官方 ZIP、被动 capture、在线 sync）在数据库中的登记信息。 */
@@ -2923,7 +2928,12 @@ export class ChatArchiveDb {
         captured_at AS capturedAt,
         imported_at AS importedAt,
         message_count AS messageCount,
-        resource_count AS resourceCount
+        resource_count AS resourceCount,
+        terminal_state AS terminalState,
+        incident_state AS incidentState,
+        last_finish_type AS lastFinishType,
+        last_finish_reason AS lastFinishReason,
+        last_reasoning_status AS lastReasoningStatus
       FROM conversations
       ORDER BY captured_at DESC, imported_at DESC
       LIMIT ?
@@ -3270,7 +3280,16 @@ export class ChatArchiveDb {
         content_type AS contentType,
         text,
         hidden,
-        create_time AS createTime
+        create_time AS createTime,
+        status,
+        end_turn AS endTurn,
+        request_id AS requestId,
+        turn_exchange_id AS turnExchangeId,
+        finish_type AS finishType,
+        finish_reason AS finishReason,
+        reasoning_status AS reasoningStatus,
+        model_slug AS modelSlug,
+        resolved_model_slug AS resolvedModelSlug
       FROM messages
       WHERE conversation_id = ?
       ORDER BY ordinal
