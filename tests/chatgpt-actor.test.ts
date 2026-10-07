@@ -149,5 +149,37 @@ describe('ChatGPT single actor helpers', () => {
       await fs.rm(dir, { recursive: true, force: true })
     }
   })
+
+  test('dead-owner Guardian lease 会被回收，后续失败也必须释放新 lease', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'actor-lease-stale-'))
+    const statePath = path.join(dir, 'actor.json')
+    const daemonStatePath = path.join(dir, 'daemon.json')
+    const lockPath = `${daemonStatePath}.actor.lock`
+    await fs.writeFile(lockPath, JSON.stringify({
+      version: 1,
+      pid: 2_000_000_000,
+      acquiredAt: Date.now(),
+      token: 'dead-owner',
+      targetMode: 'guardian',
+    }))
+
+    try {
+      // stale owner 被清掉以后会真正拿到新 lease；随后因为测试 daemon state 没有 Guardian
+      // 而安全失败。关键断言是 finally 仍把新 lease 删除，不留下永久死锁。
+      await expect(sendActorPrompt({
+        cdpHttp: 'http://127.0.0.1:1',
+        statePath,
+        daemonStatePath,
+        tracePath: path.join(dir, 'trace.jsonl'),
+        prompt: 'lease-stale-test',
+        targetMode: 'guardian',
+        timeoutMs: 500,
+      })).rejects.toThrow(/Guardian target is unavailable/u)
+      await expect(fs.access(lockPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    }
+    finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
 })
 
