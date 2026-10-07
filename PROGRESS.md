@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Guardian 跨进程 lease 已补并发回归：存活 owner 持锁时第二个 Actor 必须在 lease 层超时，不能进入页面/CDP 操作；dead-owner lock 必须可安全回收，且后续业务失败仍通过 finally 删除新 lease，不留下永久死锁。测试准备/用例提交 `6508ae4`、`7893e2f`、`eeaf820`。
 - 2026-10-07 Guardian 合并 Actor 已加入跨进程 lease：所有会改变页面的 `sendActorPrompt()` 先原子抢占 Guardian lease，拿到 Network 提交闭环后立即释放，不等待模型生成完成；因此只防止多个 CLI/Agent 同时导航/输入同一页，不限制 ChatGPT 本身同 tab 多 active SSE。lease 使用 `wx` 原子创建、owner PID 存活检查、dead-owner stale recovery 与 token 校验释放，成功结果额外返回 `leaseWaitMs`。提交 `5e06bbd` / `ad809c4`。
 - 2026-10-07 Guardian 真隐藏假设已被后续现场证伪：在保持 HWND 为 SW_HIDE 的情况下，当前 `8ac9753` hit-test + `e38adb6` 消息锚点修复后，finished-continuation 已能完成 route/context hydration 并走到 prompt-input 前的 DOM drift 门控；因此不需要为 Actor 临时显示/移屏 Guardian。此前实验 helper `scripts/windows-guardian-visibility.ps1` 已删除，避免引入无效窗口生命周期机制。提交 `dc6a78c`。
 - 2026-10-07 DOM drift 安全语义补回归：同一未知结构连续观察仍必须持续 pending，不能靠第二次重试绕过；仅 sidebar presence 改变且其余骨架完全一致时自动继承 baseline。提交 `d78f9b2`。
