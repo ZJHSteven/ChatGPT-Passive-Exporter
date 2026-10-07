@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 
 import {
+  checkpointSafetyStopReason,
   checkpointProbeDelayMs,
   createCheckpointWatch,
   normalizeCheckpointStreamStatus,
@@ -68,9 +69,31 @@ describe('Phase 3 checkpoint refresh state machine', () => {
     expect(withBody.lastUpdateTime).toBe(123.5)
     expect(withBody.turnExchangeId).toBe('turn-1')
     expect(withBody.requestId).toBe('request-1')
+    expect(withBody.lastProgressAt).toBe(11_100)
+    expect(withBody.progressEvents).toBe(1)
+
+    const sameBody = recordCheckpointBody({
+      state: withBody,
+      now: 15_000,
+      currentNode: 'node-1',
+      updateTime: 123.5,
+      turnExchangeId: 'turn-1',
+      requestId: 'request-1',
+    })
+    expect(sameBody.lastProgressAt).toBe(11_100)
+    expect(sameBody.progressEvents).toBe(1)
+
+    const advancedBody = recordCheckpointBody({
+      state: sameBody,
+      now: 16_000,
+      currentNode: 'node-2',
+      updateTime: 124.5,
+    })
+    expect(advancedBody.lastProgressAt).toBe(16_000)
+    expect(advancedBody.progressEvents).toBe(2)
 
     const errored = recordCheckpointError({
-      state: withBody,
+      state: advancedBody,
       now: 12_000,
       error: 'HTTP 503',
       retryDelayMs: 30_000,
@@ -88,6 +111,62 @@ describe('Phase 3 checkpoint refresh state machine', () => {
     expect(complete.lastStatus).toBe('complete')
     expect(complete.consecutiveErrors).toBe(0)
     expect(complete.lastError).toBeNull()
+  })
+
+  test('主动 polling 在年龄、请求预算、无进展任一边界前 fail-closed', () => {
+    const base = createCheckpointWatch({
+      conversationId: 'cid-safe',
+      source: 'devspace:first-tool',
+      now: 1_000,
+    })
+    expect(checkpointSafetyStopReason({
+      state: base,
+      now: 120_999,
+      maxWatchMs: 120_000,
+      maxRequests: 24,
+      noProgressMs: 60_000,
+    })).toBeNull()
+    expect(checkpointSafetyStopReason({
+      state: base,
+      now: 121_000,
+      maxWatchMs: 120_000,
+      maxRequests: 24,
+      noProgressMs: 60_000,
+    })).toBe('watch-age-limit')
+
+    const budgeted = {
+      ...base,
+      probes: 12,
+      bodyRefreshes: 12,
+    }
+    expect(checkpointSafetyStopReason({
+      state: budgeted,
+      now: 2_000,
+      maxWatchMs: 120_000,
+      maxRequests: 24,
+      noProgressMs: 60_000,
+    })).toBe('request-budget-limit')
+
+    const progressed = recordCheckpointBody({
+      state: base,
+      now: 10_000,
+      currentNode: 'node-1',
+      updateTime: 1,
+    })
+    expect(checkpointSafetyStopReason({
+      state: progressed,
+      now: 69_999,
+      maxWatchMs: 300_000,
+      maxRequests: 100,
+      noProgressMs: 60_000,
+    })).toBeNull()
+    expect(checkpointSafetyStopReason({
+      state: progressed,
+      now: 70_000,
+      maxWatchMs: 300_000,
+      maxRequests: 100,
+      noProgressMs: 60_000,
+    })).toBe('no-progress-limit')
   })
 })
 
