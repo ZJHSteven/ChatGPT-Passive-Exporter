@@ -1,5 +1,7 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Watchdog generation 修复生产验证完成：CID `6ac53e83-...` 实际共有三轮 user turn：02:32:15 `e1eb...`、14:49:39 `cb54...`、16:26:22 `347a...`，后三者均由 canonical body 精确确认。新 daemon PID 47156 启动后把旧错误 startedAt=16:19:06 自动回夹到 14:49:39，并于 16:39:45 立即排诊断；body 此时已含 16:26 新 turn，因此 14:49 那轮补建为 historical `abnormal-terminal`（用户已主动继续，按策略不补迟到 Bark），当前 Watchdog generation 切到 `347a...` 且 startedAt 精确为 16:26:22。证明“诊断后关闭 generation + body user create_time 回填”两层修复均在生产生效。
+- 2026-10-07 同一 CID 第一轮通知链复核：02:32 初始 turn 的 catalog late-start watchdog 在 03:28 进入诊断，03:58 body sync 后 `incident notification sent`，Bark provider HTTP 200；因此第一轮 Archive 确实发出过通知。第二轮 14:49 本应约 15:34 进入 Watchdog，却因旧 generation 未关闭而被 first-tool heartbeat 吞掉，这是本次实际漏通知，不是 metadata binding 或 Bark provider 故障。
 - 2026-10-07 Phase 5 Bridge 已从“孤立可测试组件”进入 production daemon 生命周期：`eee481e` 在常驻 daemon 中创建 `ArchiveBridgeServer`，token 通过独立 `archive-bridge-auth.local.json` 读取/首次生成，Bridge 注入真实 `ChatArchiveDb` 与 Guardian `sendActorPrompt()`，启动失败只记录 Bridge 独立错误而不拖死 Archive/WSS 主链。下一步补 shutdown、事件广播与 production E2E。
 - 2026-10-07 Bridge shutdown 已与 daemon 生命周期闭环：退出阶段先关闭所有 SSE 客户端/heartbeat/HTTP server，再清空 Bridge 引用，随后才关闭 Guardian/DevSpace/Archive；Bridge stop 异常只记日志，不阻断其余资源释放。提交 `197396e`。
 - 2026-10-07 Bridge 事件广播新增独立旁路保护：`publishBridgeEvent()` 只接收脱敏 lifecycle 元数据，Bridge/SSE 客户端异常只异步记日志，绝不反向抛进 WSS、LiveTurn、Archive 落库或 Actor 主链；原始 SSE chunk、resume credential、ChatGPT 登录凭据明确不进入 Bridge。提交 `01078e4`。

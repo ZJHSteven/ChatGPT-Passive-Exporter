@@ -4,7 +4,7 @@
 - [done] 修改 watchdog 生命周期：一次 watchdog timeout 诊断成功并完成 incident 分类后关闭当前 generation；后续 DevSpace first-tool 必须创建新 generation，不能在已诊断旧轮上续 heartbeat。
 - [done] 给“晚发现新 turn”增加真实 start 回填：若 watchdog body 能从当前 user node 取到 create_time，则以该时间作为新 generation 的保守起点；若它本身已经超过 watchdog 阈值，本次诊断即可按新 turn 立案，不能再额外延迟 45min。
 - [done] 加回归覆盖：① watchdog incident 后 generation 关闭；②同 metadata 后续 first-tool 新建 generation；③ stale catalog watchdog 发现 newer turn 时使用 user create_time，不使用发现时刻；④已有 cooldown/terminal/notification 语义不回归。隔离 worktree 已通过 node syntax、TypeScript typecheck、定向 5 files / 64 tests 与全量 24 files / 159 tests。
-- [in_progress] cherry-pick 回主分支并做生产部署验证：当前生产库错误 persisted start=16:19:06，而同 turn canonical user create_time=14:49:39；修复后的 startup clamp 应立即把年龄恢复为约 108min 并触发补诊断，而不是再等到 17:04。
+- [done] 已 cherry-pick 回主分支并完成生产部署验证：daemon PID 47156 启动后先把 `6ac53e83-...` persisted start 从错误的 16:19:06 回夹到 turn `cb54e2a0-...` 的真实 user create_time=14:49:39，并立即在 16:39:45 排入 overdue watchdog。诊断 body 随后又发现用户已于 16:26:22 开启第三轮 `347a2da3-...`，因此第二轮按 historical abnormal-terminal 落库且不补发迟到 Bark；当前 active_watchdog 已准确切到第三轮 startedAt=16:26:22。生产 checkpoint 仍 disabled、Bridge 127.0.0.1:47832 正常、cooldown=null。
 
 ## 2026-10-06 并行协调：Watchdog / binding / cooldown / DevSpace env ExecPlan
 
