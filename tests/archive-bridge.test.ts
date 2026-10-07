@@ -148,7 +148,17 @@ describe('Archive Bridge', () => {
       if (input.text === 'rate-limit') {
         throw new Error('ChatGPT actor blocked by active API cooldown until 2026-10-07T08:08:29.000Z')
       }
-      return { conversationId: input.conversationId ?? 'new-cid', cdpRequestId: 'x.1' }
+      return {
+        conversationId: input.conversationId ?? 'new-cid',
+        mode: input.mode === 'auto' ? 'continue' : input.mode,
+        submittedAt: 123,
+        boundAt: 456,
+        runningConfirmed: true,
+        // 这些字段只属于本机 Actor 取证面，Bridge 响应必须过滤掉。
+        targetId: 'internal-target',
+        cdpRequestId: 'x.1',
+        domSignatureReady: 'internal-dom-signature',
+      }
     })
 
     const invalid = await fetch(`${base}/v1/turns`, {
@@ -164,6 +174,20 @@ describe('Archive Bridge', () => {
       body: JSON.stringify({ mode: 'continue', conversationId: 'cid-1', text: '继续' }),
     })
     expect(accepted.status).toBe(202)
+    const acceptedBody = await accepted.json() as { accepted: boolean, result: Record<string, unknown> }
+    expect(acceptedBody).toEqual({
+      accepted: true,
+      result: {
+        conversationId: 'cid-1',
+        mode: 'continue',
+        submittedAt: 123,
+        boundAt: 456,
+        runningConfirmed: true,
+      },
+    })
+    expect(JSON.stringify(acceptedBody)).not.toContain('internal-target')
+    expect(JSON.stringify(acceptedBody)).not.toContain('x.1')
+    expect(JSON.stringify(acceptedBody)).not.toContain('internal-dom-signature')
     expect(calls.at(-1)).toEqual({
       text: '继续',
       conversationId: 'cid-1',
