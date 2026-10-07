@@ -151,6 +151,24 @@ export interface DevSpaceMetadataBindingRow {
   lifecycleState: 'unbound' | 'active' | 'closed'
 }
 
+/**
+ * `openai/session` 不是永久 conversation 主键：同一个值已经在真机上被不同 ChatGPT
+ * conversation 复用。因此 current binding 只能看作“当前租约”，旧租约必须另存历史，
+ * 不能因为 metadata 字符串相同就永久复活旧 conversation。
+ */
+export interface DevSpaceMetadataBindingHistoryRow {
+  id: number
+  metadataId: string
+  conversationId: string
+  validFrom: number
+  validTo: number
+  evidence: string | null
+  confidence: string | null
+  lastTurnExchangeId: string | null
+  lastRequestId: string | null
+  closeReason: string
+}
+
 /** daemon 重启后需要原样恢复的 conversation watchdog 计时状态。 */
 export interface ActiveWatchdogStateRow {
   conversationId: string
@@ -605,6 +623,27 @@ export class ChatArchiveDb {
 
       CREATE INDEX IF NOT EXISTS devspace_metadata_bindings_unbound
         ON devspace_metadata_bindings(lifecycle_state, last_seen_at DESC);
+
+      -- openai/session 会跨 conversation 复用，所以 devspace_metadata_bindings 只保存
+      -- “当前可用于路由新 audit 的 lease”。每次 lease 失效/换绑前，把旧映射归档到这里。
+      CREATE TABLE IF NOT EXISTS devspace_metadata_binding_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        metadata_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        valid_from INTEGER NOT NULL,
+        valid_to INTEGER NOT NULL,
+        evidence TEXT,
+        confidence TEXT,
+        last_turn_exchange_id TEXT,
+        last_request_id TEXT,
+        close_reason TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS devspace_metadata_binding_history_metadata
+        ON devspace_metadata_binding_history(metadata_id, valid_to DESC);
+
+      CREATE INDEX IF NOT EXISTS devspace_metadata_binding_history_conversation
+        ON devspace_metadata_binding_history(conversation_id, valid_to DESC);
 
       -- Watchdog 属于 conversation/turn 生命周期，不属于某一个 metadata。
       -- 同一 conversation 可能先后出现多个 openai/session，因此把 active timer 独立持久化。
@@ -3084,6 +3123,7 @@ export class ChatArchiveDb {
         confidence=excluded.confidence,
         last_turn_exchange_id=COALESCE(excluded.last_turn_exchange_id, devspace_metadata_bindings.last_turn_exchange_id),
         last_request_id=COALESCE(excluded.last_request_id, devspace_metadata_bindings.last_request_id),
+        unbound_watchdog_at=NULL,
         lifecycle_state=excluded.lifecycle_state
     `).run(
       input.metadataId,
@@ -3099,6 +3139,83 @@ export class ChatArchiveDb {
       input.lifecycleState ?? 'active',
     )
     return this.getDevSpaceMetadataBinding(input.metadataId)!
+  }
+
+  /**
+   * 结束当前 metadata→conversation lease，并把它完整归档。
+   *
+   * 重要：`first_seen_at` 在 release 后重置到本次新 audit 的时间。它表示“当前 lease epoch
+   * 的 provisional 起点”，不能继续沿用这个 metadata 几天前第一次出现的时间，否则新
+   * conversation 一复用旧 metadata 就会立刻被误判成已经超时几十小时。
+   */
+  releaseDevSpaceMetadataBinding(input: {
+    metadataId: string
+    observedAt: number
+    reason: string
+  }): DevSpaceMetadataBindingRow | null {
+    const existing = this.getDevSpaceMetadataBinding(input.metadataId)
+    if (!existing) return null
+    const observedAt = Math.max(0, Math.trunc(input.observedAt))
+    if (existing.conversationId) {
+      this.db.prepare(`
+        INSERT INTO devspace_metadata_binding_history (
+          metadata_id, conversation_id, valid_from, valid_to,
+          evidence, confidence, last_turn_exchange_id, last_request_id, close_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        existing.metadataId,
+        existing.conversationId,
+        Math.max(0, Math.trunc(existing.boundAt ?? existing.firstSeenAt)),
+        observedAt,
+        existing.evidence,
+        existing.confidence,
+        existing.lastTurnExchangeId,
+        existing.lastRequestId,
+        input.reason,
+      )
+    }
+    this.db.prepare(`
+      UPDATE devspace_metadata_bindings
+      SET conversation_id=NULL,
+          first_seen_at=?,
+          last_seen_at=max(last_seen_at, ?),
+          bound_at=NULL,
+          last_verified_at=NULL,
+          evidence=NULL,
+          confidence=NULL,
+          last_turn_exchange_id=NULL,
+          last_request_id=NULL,
+          unbound_watchdog_at=NULL,
+          lifecycle_state='unbound'
+      WHERE metadata_id=?
+    `).run(observedAt, observedAt, input.metadataId)
+    return this.getDevSpaceMetadataBinding(input.metadataId)
+  }
+
+  listDevSpaceMetadataBindingHistory(metadataId?: string): DevSpaceMetadataBindingHistoryRow[] {
+    const rows = metadataId
+      ? this.db.prepare(`
+          SELECT id, metadata_id AS metadataId, conversation_id AS conversationId,
+                 valid_from AS validFrom, valid_to AS validTo,
+                 evidence, confidence,
+                 last_turn_exchange_id AS lastTurnExchangeId,
+                 last_request_id AS lastRequestId,
+                 close_reason AS closeReason
+          FROM devspace_metadata_binding_history
+          WHERE metadata_id=?
+          ORDER BY valid_to ASC, id ASC
+        `).all(metadataId)
+      : this.db.prepare(`
+          SELECT id, metadata_id AS metadataId, conversation_id AS conversationId,
+                 valid_from AS validFrom, valid_to AS validTo,
+                 evidence, confidence,
+                 last_turn_exchange_id AS lastTurnExchangeId,
+                 last_request_id AS lastRequestId,
+                 close_reason AS closeReason
+          FROM devspace_metadata_binding_history
+          ORDER BY valid_to ASC, id ASC
+        `).all()
+    return rows as unknown as DevSpaceMetadataBindingHistoryRow[]
   }
 
   updateDevSpaceBindingTurn(input: {
