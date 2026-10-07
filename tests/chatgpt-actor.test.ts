@@ -1,3 +1,6 @@
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { buildActorSubmitTrace } from '../src/local/active-turn-recorder.ts'
 import {
@@ -5,6 +8,7 @@ import {
   buildActorDomObservationExpression,
   conversationIdFromUrl,
   resolveActorSendMode,
+  sendActorPrompt,
 } from '../src/local/chatgpt-actor.ts'
 
 describe('ChatGPT single actor helpers', () => {
