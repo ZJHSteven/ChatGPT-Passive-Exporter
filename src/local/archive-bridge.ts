@@ -180,6 +180,33 @@ function actorErrorStatus(error: unknown): number {
 }
 
 /**
+ * Actor 的完整返回值属于本机取证面，其中包含 targetId、CDP requestId、DOM signature、
+ * navigationMode 等实现细节。Family-AI 只需要知道“哪条 conversation、以什么发送语义、
+ * 何时提交/绑定、是否确认进入 running”。因此 Bridge 对外再收缩一层，避免把内部调试面
+ * 无意固化成远端产品 API。
+ */
+export function sanitizeArchiveBridgeTurnResult(
+  input: ArchiveBridgeTurnInput,
+  result: Record<string, unknown>,
+): Record<string, unknown> {
+  const conversationId = typeof result.conversationId === 'string' && result.conversationId
+    ? result.conversationId
+    : input.conversationId
+  const resultMode = typeof result.mode === 'string' && ['new', 'continue', 'steer'].includes(result.mode)
+    ? result.mode
+    : input.mode
+  const submittedAt = Number(result.submittedAt)
+  const boundAt = Number(result.boundAt)
+  return {
+    conversationId,
+    mode: resultMode,
+    submittedAt: Number.isFinite(submittedAt) && submittedAt > 0 ? submittedAt : null,
+    boundAt: Number.isFinite(boundAt) && boundAt > 0 ? boundAt : null,
+    runningConfirmed: result.runningConfirmed === true,
+  }
+}
+
+/**
  * Bridge token 独立于 ChatGPT 登录态。首次启动自动生成 256-bit 随机 token 并写入 data/*.local.json；
  * 后续 daemon 重启原样复用。调用方只能拿到 token 字符串用于内存校验，daemon state / log 不记录它。
  */
@@ -333,15 +360,16 @@ export class ArchiveBridgeServer {
       try {
         const input = validateTurnInput(await readJsonBody(req, this.options.maxBodyBytes))
         const result = await this.options.submitTurn(input)
+        const safeResult = sanitizeArchiveBridgeTurnResult(input, result)
         const event: ArchiveBridgeEvent = {
           version: 1,
           at: Date.now(),
           kind: 'actor-accepted',
-          conversationId: typeof result.conversationId === 'string' ? result.conversationId : input.conversationId,
-          requestId: typeof result.cdpRequestId === 'string' ? result.cdpRequestId : null,
+          conversationId: typeof safeResult.conversationId === 'string' ? safeResult.conversationId : input.conversationId,
+          event: typeof safeResult.mode === 'string' ? safeResult.mode : input.mode,
         }
         this.publish(event)
-        jsonResponse(res, 202, { accepted: true, result })
+        jsonResponse(res, 202, { accepted: true, result: safeResult })
       }
       catch (error) {
         const message = error instanceof Error ? error.message : String(error)
