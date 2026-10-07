@@ -1596,6 +1596,16 @@ async function main() {
     database: dbPath,
     turnTrace: turnTracePath,
     cdp: cdpHttp,
+    bridge: {
+      enabled: bridgeEnabled,
+      listening: archiveBridge?.listening ?? false,
+      host: bridgeHost,
+      port: archiveBridge?.port ?? bridgePort,
+      clients: archiveBridge?.clientCount ?? 0,
+      startedAt: archiveBridgeStartedAt,
+      authPath: bridgeAuthPath,
+      lastError: archiveBridgeLastError,
+    },
     guardian: guardian ? {
       targetId: guardian.targetId,
       windowId: guardian.windowId,
