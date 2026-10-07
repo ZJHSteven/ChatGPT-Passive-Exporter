@@ -50,6 +50,8 @@ import {
   parseDevSpaceBodyToolCall,
 } from '../src/local/devspace-audit-bridge.ts'
 import { DevSpaceAuditWakeListener } from '../src/local/devspace-audit-signal.ts'
+import { ArchiveBridgeServer, ensureArchiveBridgeAuthToken } from '../src/local/archive-bridge.ts'
+import { sendActorPrompt } from '../src/local/chatgpt-actor.ts'
 
 const DEFAULT_CDP = 'http://127.0.0.1:9222'
 const GUARDIAN_MARKER = 'chatgpt-archive-guardian'
@@ -60,6 +62,11 @@ const DEFAULT_LOG = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
 const DEFAULT_TURN_TRACE = path.join(PROJECT_ROOT, 'data', 'active-turn-trace.jsonl')
 const DEFAULT_NOTIFICATION_CONFIG = path.join(PROJECT_ROOT, 'data', 'archive-notification.local.json')
 const DEFAULT_PROTOCOL_LEDGER = path.join(PROJECT_ROOT, 'data', 'protocol-fingerprints.json')
+const DEFAULT_ACTOR_STATE = path.join(PROJECT_ROOT, 'data', 'archive-actor-state.json')
+const DEFAULT_DOM_LEDGER = path.join(PROJECT_ROOT, 'data', 'dom-fingerprints.json')
+const DEFAULT_BRIDGE_AUTH = path.join(PROJECT_ROOT, 'data', 'archive-bridge-auth.local.json')
+const DEFAULT_BRIDGE_HOST = '127.0.0.1'
+const DEFAULT_BRIDGE_PORT = 47_832
 const DEFAULT_IMAGE_ASSET_DIR = path.join(PROJECT_ROOT, 'data', 'assets', 'chatgpt')
 const DEVSPACE_POLL_OVERLAP_MS = 10_000
 const DEVSPACE_INITIAL_LOOKBACK_MS = 2 * 60_000
