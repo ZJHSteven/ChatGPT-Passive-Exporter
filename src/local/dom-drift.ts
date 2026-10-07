@@ -39,7 +39,24 @@ export interface ActorDomObservation {
   }>
 }
 
-export interface ActorDomShape extends ActorDomObservation {}
+/**
+ * 持久化指纹使用的“稳定形态”与浏览器原始观察故意不是同一个类型。
+ *
+ * `send / stop / voice` 在当前 ChatGPT composer 里是同一个右侧主动作槽位的三种运行态：
+ * 空输入时常见 voice，有文本时变 send，生成中又变 stop。它们会在一次正常发送的几十秒内
+ * 反复切换，不能作为“DOM 结构发生未知漂移”的证据。因此指纹层把三者归一成
+ * `primary-action`；attachment 仍单独保留，因为附件入口是真正相对稳定的结构控件。
+ */
+export interface ActorDomShape extends Omit<ActorDomObservation, 'controls'> {
+  controls: Array<{
+    semantic: 'attachment' | 'primary-action'
+    tag: string | null
+    type: string | null
+    testId: string | null
+    ariaPresent: boolean
+    titlePresent: boolean
+  }>
+}
 
 interface ActorDomVariantState {
   signature: string
@@ -52,7 +69,7 @@ interface ActorDomVariantState {
 }
 
 export interface ActorDomDriftState {
-  version: 1
+  version: 2
   createdAt: number
   baselineUntil: number
   baselineLockedAt: number | null
@@ -102,17 +119,29 @@ function normalizedNullable(value: unknown): string | null {
  * testid 本身属于自动化结构契约，因此保留；aria/title 的具体文字不保留，避免 locale/正文泄漏。
  */
 export function buildActorDomShape(input: ActorDomObservation): ActorDomShape {
-  const controls = (Array.isArray(input.controls) ? input.controls : [])
+  const normalizedControls = (Array.isArray(input.controls) ? input.controls : [])
     .filter(control => ['send', 'stop', 'attachment', 'voice'].includes(String(control?.semantic)))
-    .map(control => ({
-      semantic: control.semantic,
-      tag: normalizedNullable(control.tag)?.toUpperCase() ?? null,
-      type: normalizedNullable(control.type)?.toLowerCase() ?? null,
-      testId: normalizedNullable(control.testId),
-      ariaPresent: Boolean(control.ariaPresent),
-      titlePresent: Boolean(control.titlePresent),
-    }))
+    .map(control => {
+      const dynamicPrimary = ['send', 'stop', 'voice'].includes(control.semantic)
+      return {
+        // send / stop / voice 是同一动态槽位，不能因为业务状态切换就制造 DOM drift。
+        semantic: dynamicPrimary ? 'primary-action' as const : 'attachment' as const,
+        tag: normalizedNullable(control.tag)?.toUpperCase() ?? null,
+        // 主动作的 type/testId 也随 voice/send/stop 形态改变，因此只在稳定 attachment 上保留。
+        // 若主动作连 BUTTON 这一层或 aria/title 结构都变化，signature 仍会改变并触发人工复核。
+        type: dynamicPrimary ? null : normalizedNullable(control.type)?.toLowerCase() ?? null,
+        testId: dynamicPrimary ? null : normalizedNullable(control.testId),
+        ariaPresent: Boolean(control.ariaPresent),
+        titlePresent: Boolean(control.titlePresent),
+      }
+    })
     .sort((a, b) => stableJson(a).localeCompare(stableJson(b)))
+
+  // 某些 React 过渡帧会短暂同时挂着两个语义不同但结构相同的 primary 控件。
+  // 指纹关心“槽位结构是否存在”，不关心过渡帧里有几个等价副本，因此按稳定 JSON 去重。
+  const controls = normalizedControls.filter((control, index, all) => (
+    index === 0 || stableJson(control) !== stableJson(all[index - 1])
+  ))
 
   return {
     routeKind: ['home', 'conversation', 'project', 'other'].includes(input.routeKind)
@@ -144,7 +173,7 @@ export function actorDomSignature(shape: ActorDomShape): string {
 
 function newState(now: number, baselineWindowMs: number): ActorDomDriftState {
   return {
-    version: 1,
+    version: 2,
     createdAt: now,
     baselineUntil: now + baselineWindowMs,
     baselineLockedAt: null,
@@ -178,10 +207,13 @@ export class ActorDomDriftLedger {
     const baselineWindowMs = Math.max(60_000, options.baselineWindowMs ?? 6 * 3600_000)
     let state: ActorDomDriftState
     try {
-      state = JSON.parse(await fs.readFile(filePath, 'utf8')) as ActorDomDriftState
-      if (state?.version !== 1 || !state.variants || typeof state.variants !== 'object') {
+      const parsed = JSON.parse(await fs.readFile(filePath, 'utf8')) as ActorDomDriftState | (Omit<ActorDomDriftState, 'version'> & { version: 1 })
+      if (![1, 2].includes(Number(parsed?.version)) || !parsed.variants || typeof parsed.variants !== 'object') {
         throw new Error('unsupported Actor DOM drift ledger format')
       }
+      state = parsed.version === 1
+        ? migrateVersion1State(parsed, now)
+        : parsed
     }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
@@ -292,5 +324,52 @@ export class ActorDomDriftLedger {
     const temporary = this.filePath + '.tmp-' + process.pid
     await fs.writeFile(temporary, JSON.stringify(this.state, null, 2))
     await fs.rename(temporary, this.filePath)
+  }
+}
+
+/**
+ * v1 指纹把 voice/send/stop 当成三种不同 DOM 结构，导致正常 composer 状态切换在 baseline
+ * 锁定后被误报为漂移。v2 打开旧 ledger 时原地归一并合并等价 variant：
+ * - 任一旧 variant 已是 baseline，则合并后的 variant 仍是 baseline；
+ * - count 累加，first/last seen 取包络；
+ * - lastReportedAt 取最新值；
+ * - 不凭迁移自动批准真正不同的 composer/sidebar/attachment 结构。
+ */
+function migrateVersion1State(
+  legacy: Omit<ActorDomDriftState, 'version'> & { version: 1 },
+  now: number,
+): ActorDomDriftState {
+  const variants: Record<string, ActorDomVariantState> = {}
+  for (const oldVariant of Object.values(legacy.variants)) {
+    const shape = buildActorDomShape(oldVariant.shape as unknown as ActorDomObservation)
+    const signature = actorDomSignature(shape)
+    const existing = variants[signature]
+    if (!existing) {
+      variants[signature] = {
+        signature,
+        shape,
+        firstSeenAt: Number(oldVariant.firstSeenAt) || now,
+        lastSeenAt: Number(oldVariant.lastSeenAt) || now,
+        count: Math.max(0, Number(oldVariant.count) || 0),
+        baseline: Boolean(oldVariant.baseline),
+        lastReportedAt: oldVariant.lastReportedAt === null ? null : Number(oldVariant.lastReportedAt) || null,
+      }
+      continue
+    }
+    existing.firstSeenAt = Math.min(existing.firstSeenAt, Number(oldVariant.firstSeenAt) || existing.firstSeenAt)
+    existing.lastSeenAt = Math.max(existing.lastSeenAt, Number(oldVariant.lastSeenAt) || existing.lastSeenAt)
+    existing.count += Math.max(0, Number(oldVariant.count) || 0)
+    existing.baseline = existing.baseline || Boolean(oldVariant.baseline)
+    const reportedAt = oldVariant.lastReportedAt === null ? null : Number(oldVariant.lastReportedAt) || null
+    if (reportedAt !== null) existing.lastReportedAt = Math.max(existing.lastReportedAt ?? 0, reportedAt)
+  }
+
+  return {
+    version: 2,
+    createdAt: Number(legacy.createdAt) || now,
+    baselineUntil: Number(legacy.baselineUntil) || now,
+    baselineLockedAt: legacy.baselineLockedAt === null ? null : Number(legacy.baselineLockedAt) || now,
+    updatedAt: now,
+    variants,
   }
 }
