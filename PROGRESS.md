@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Phase 5 Bridge v1 补 5 组本地回归：token 生成/复用、health 与 Bearer 边界、canonical message 字段收缩 + hidden 过滤、Actor submit 输入校验/429 映射、SSE bridge-ready + 脱敏 lifecycle 发布。测试不访问 ChatGPT 网络，可在账户 cooldown 期间安全运行。提交 `3747c28`。
 - 2026-10-07 Phase 5 Bridge v1 核心服务已落地：新增 `src/local/archive-bridge.ts`，默认 loopback HTTP 服务支持 `/health`、Bearer 鉴权的 conversation list/messages、`POST /v1/turns` Actor 提交与 `GET /v1/events` SSE。Bridge token 与 ChatGPT 登录态完全隔离，可自动生成 256-bit 本地 token；事件只接受脱敏 lifecycle/canonical-update 类型，不直接透传原始 ChatGPT SSE，避免 resume credential 等内部能力泄漏。提交 `63a77b8`。
 - 2026-10-07 Phase 3 checkpoint 纯状态机已增加主动轮询安全止损：watch state 现在记录 `lastProgressAt/progressEvents`，canonical `current_node/update_time` 真变化才刷新进展时钟；新增 `checkpointSafetyStopReason()`，在下一次 probe 前按 watcher 最大年龄、`status+body` 总请求预算、无进展窗口返回 `watch-age-limit / request-budget-limit / no-progress-limit`。这层只计算状态，不发网络，供 daemon 统一 fail-closed。提交 `119549c`。
 - 2026-10-07 顶层导航 WSS retire 已完成生产 canary：部署后 daemon PID `21772` 在 cooldown 继承/REST block 状态下先自然建立 3 条账户 WSS；受控 reload 于 07:22:38 触发 `top-level document navigation`，一次 retire 旧 request `58448.275/293/394`，随后新 document 建回 3 条，最终 `activeSockets=3`、healthFailures=0。conversation carrier `58448.394 -> 58448.813`、generation 1→2，`shouldRepair=true`，证明 stale socket 计数修复没有吞掉 carrier generation/gap-repair 语义。
