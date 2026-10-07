@@ -25,6 +25,13 @@ interface ActorState {
   source?: 'guardian' | 'dedicated'
 }
 
+interface ActorLease {
+  path: string
+  token: string
+  acquiredAt: number
+  waitMs: number
+}
+
 export type ActorTargetMode = 'guardian' | 'dedicated'
 
 /**
@@ -66,6 +73,117 @@ interface ActorSendOptions {
   mode?: ActorSendMode
   targetMode?: ActorTargetMode
   timeoutMs?: number
+}
+
+function actorLeasePath(options: Pick<ActorSendOptions, 'statePath' | 'daemonStatePath' | 'targetMode'>): string {
+  const targetMode = options.targetMode ?? 'guardian'
+  if (targetMode === 'guardian' && options.daemonStatePath) {
+    return `${options.daemonStatePath}.actor.lock`
+  }
+  return `${options.statePath}.lock`
+}
+
+function processAppearsAlive(pid: unknown): boolean {
+  const numericPid = Number(pid)
+  if (!Number.isInteger(numericPid) || numericPid <= 0) return false
+  try {
+    process.kill(numericPid, 0)
+    return true
+  }
+  catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM'
+  }
+}
+
+async function readActorLeaseOwner(lockPath: string): Promise<{
+  pid: number | null
+  acquiredAt: number | null
+  token: string | null
+  ageMs: number | null
+} | null> {
+  try {
+    const stat = await fs.stat(lockPath)
+    let parsed: any = null
+    try { parsed = JSON.parse(await fs.readFile(lockPath, 'utf8')) }
+    catch { parsed = null }
+    const acquiredAt = Number(parsed?.acquiredAt || 0) || null
+    return {
+      pid: Number.isInteger(Number(parsed?.pid)) ? Number(parsed.pid) : null,
+      acquiredAt,
+      token: typeof parsed?.token === 'string' ? parsed.token : null,
+      ageMs: Math.max(0, Date.now() - (acquiredAt ?? stat.mtimeMs)),
+    }
+  }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+/**
+ * 单 Guardian 合并后必须跨进程串行化“会改变页面”的 Actor 操作。
+ *
+ * 这不是为了限制 ChatGPT 本身的同-tab 并发能力，而是防止两个独立 CLI/Agent 同时导航/输入
+ * 同一张隐藏 Guardian 页，把彼此的闭环状态机破坏掉。锁只覆盖“提交动作到 Network 证据闭环”这段，
+ * 后台 SSE 生成不持锁，因此 A 发出后仍可由后续 Actor SPA 切去 B 并启动另一条 conversation。
+ */
+async function acquireActorLease(options: ActorSendOptions, timeoutMs: number): Promise<ActorLease> {
+  const lockPath = actorLeasePath(options)
+  const token = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`
+  const startedAt = Date.now()
+  const malformedStaleMs = Math.max(120_000, timeoutMs * 3)
+  await fs.mkdir(path.dirname(lockPath), { recursive: true })
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const handle = await fs.open(lockPath, 'wx')
+      const acquiredAt = Date.now()
+      try {
+        await handle.writeFile(JSON.stringify({
+          version: 1,
+          pid: process.pid,
+          acquiredAt,
+          token,
+          targetMode: options.targetMode ?? 'guardian',
+        }))
+      }
+      finally {
+        await handle.close()
+      }
+      return { path: lockPath, token, acquiredAt, waitMs: acquiredAt - startedAt }
+    }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'EEXIST') throw error
+    }
+
+    const owner = await readActorLeaseOwner(lockPath)
+    if (!owner) continue
+    const ownerAlive = processAppearsAlive(owner.pid)
+    const malformedAndOld = owner.pid === null && Number(owner.ageMs || 0) >= malformedStaleMs
+    if (!ownerAlive && (owner.pid !== null || malformedAndOld)) {
+      try { await fs.rm(lockPath, { force: true }) }
+      catch { /* 下一轮重新观察；不能因为 stale cleanup 竞争失败而绕过锁。 */ }
+      continue
+    }
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+
+  const owner = await readActorLeaseOwner(lockPath)
+  throw new Error(
+    `ChatGPT actor lease timeout after ${timeoutMs}ms; ownerPid=${owner?.pid ?? 'unknown'} ageMs=${owner?.ageMs ?? 'unknown'}`,
+  )
+}
+
+async function releaseActorLease(lease: ActorLease): Promise<void> {
+  try {
+    const owner = await readActorLeaseOwner(lease.path)
+    if (!owner || owner.token !== lease.token) return
+    await fs.rm(lease.path, { force: true })
+  }
+  catch {
+    // 发送结果已经由 Network 闭环确认时，清理失败不应把一次成功发送改写成业务失败。
+    // 下次 acquire 会根据 owner pid/stale 语义安全恢复。
+  }
 }
 
 /**
