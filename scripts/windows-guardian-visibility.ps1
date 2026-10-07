@@ -27,16 +27,16 @@ using System.Runtime.InteropServices;
 public static class ChatGptArchiveGuardianVisibility
 {
     [DllImport("user32.dll")]
-    private static extern bool IsWindow(IntPtr hWnd);
+    public static extern bool IsWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
-    private static extern bool IsWindowVisible(IntPtr hWnd);
+    public static extern bool IsWindowVisible(IntPtr hWnd);
 
     [DllImport("user32.dll")]
-    private static extern bool ShowWindowAsync(IntPtr hWnd, int command);
+    public static extern bool ShowWindowAsync(IntPtr hWnd, int command);
 
     [DllImport("user32.dll")]
-    private static extern bool SetWindowPos(
+    public static extern bool SetWindowPos(
         IntPtr hWnd,
         IntPtr hWndInsertAfter,
         int x,
@@ -45,50 +45,53 @@ public static class ChatGptArchiveGuardianVisibility
         int height,
         uint flags
     );
-
-    public static string Run(long hwndValue, string action)
-    {
-        var hWnd = new IntPtr(hwndValue);
-        if (!IsWindow(hWnd)) throw new InvalidOperationException("Guardian HWND is no longer valid.");
-
-        var visibleBefore = IsWindowVisible(hWnd);
-
-        if (String.Equals(action, "show-offscreen", StringComparison.OrdinalIgnoreCase))
-        {
-            // 先把窗口移到经典 Win32 屏幕外坐标，再 SW_SHOWNOACTIVATE。
-            // SWP_NOZORDER(0x0004) | SWP_NOACTIVATE(0x0010)：不改 z-order，也不抢用户焦点。
-            if (!SetWindowPos(hWnd, IntPtr.Zero, -32000, -32000, 900, 700, 0x0004 | 0x0010))
-                throw new InvalidOperationException("SetWindowPos failed for Guardian HWND.");
-
-            // SW_SHOWNOACTIVATE = 4。窗口对 Chromium 来说重新进入 visible 生命周期，
-            // 但不会成为前台激活窗口；实际位置已经在屏幕外。
-            ShowWindowAsync(hWnd, 4);
-            System.Threading.Thread.Sleep(120);
-        }
-        else if (String.Equals(action, "hide", StringComparison.OrdinalIgnoreCase))
-        {
-            // SW_HIDE = 0。renderer/network/CDP 会话保持存活，只从桌面 Shell 隐藏。
-            ShowWindowAsync(hWnd, 0);
-            System.Threading.Thread.Sleep(80);
-        }
-        else
-        {
-            // Windows PowerShell 5.1 的 Add-Type 仍可能使用较老 C# 编译器，不依赖 nameof()。
-            throw new ArgumentOutOfRangeException("action");
-        }
-
-        var visibleAfter = IsWindowVisible(hWnd);
-        return hwndValue.ToString()
-            + "\t" + action
-            + "\t" + visibleBefore.ToString()
-            + "\t" + visibleAfter.ToString();
-    }
 }
 "@
 
-if (-not ('ChatGptArchiveGuardianVisibility' -as [type])) {
-  Add-Type -TypeDefinition $typeDefinition -Language CSharp
-}
+try {
+  # 内嵌 C# 保持纯 ASCII、只声明 P/Invoke；所有分支、异常和等待都放在 PowerShell 层，
+  # 避免 Windows PowerShell 5.1 的旧 Add-Type 编译器把新语法/警告提升成编译失败。
+  if (-not ('ChatGptArchiveGuardianVisibility' -as [type])) {
+    Add-Type -TypeDefinition $typeDefinition -Language CSharp -ErrorAction Stop
+  }
 
-$result = [ChatGptArchiveGuardianVisibility]::Run($Hwnd, $Action)
-Write-Output $result
+  $handle = [IntPtr]$Hwnd
+  if (-not [ChatGptArchiveGuardianVisibility]::IsWindow($handle)) {
+    throw 'Guardian HWND is no longer valid.'
+  }
+
+  $visibleBefore = [ChatGptArchiveGuardianVisibility]::IsWindowVisible($handle)
+  if ($Action -eq 'show-offscreen') {
+    # SWP_NOZORDER(0x0004) | SWP_NOACTIVATE(0x0010)：先挪到屏幕外，再显示且不抢焦点。
+    $moved = [ChatGptArchiveGuardianVisibility]::SetWindowPos(
+      $handle,
+      [IntPtr]::Zero,
+      -32000,
+      -32000,
+      900,
+      700,
+      (0x0004 -bor 0x0010)
+    )
+    if (-not $moved) { throw 'SetWindowPos failed for Guardian HWND.' }
+
+    # SW_SHOWNOACTIVATE = 4。
+    [void][ChatGptArchiveGuardianVisibility]::ShowWindowAsync($handle, 4)
+    Start-Sleep -Milliseconds 150
+  }
+  else {
+    # SW_HIDE = 0。
+    [void][ChatGptArchiveGuardianVisibility]::ShowWindowAsync($handle, 0)
+    Start-Sleep -Milliseconds 100
+  }
+
+  $visibleAfter = [ChatGptArchiveGuardianVisibility]::IsWindowVisible($handle)
+  Write-Output ($Hwnd.ToString()
+    + "`t" + $Action
+    + "`t" + $visibleBefore.ToString()
+    + "`t" + $visibleAfter.ToString())
+  exit 0
+}
+catch {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 1
+}
