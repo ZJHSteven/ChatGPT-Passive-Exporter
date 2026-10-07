@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Guardian 真隐藏假设已被后续现场证伪：在保持 HWND 为 SW_HIDE 的情况下，当前 `8ac9753` hit-test + `e38adb6` 消息锚点修复后，finished-continuation 已能完成 route/context hydration 并走到 prompt-input 前的 DOM drift 门控；因此不需要为 Actor 临时显示/移屏 Guardian。此前实验 helper `scripts/windows-guardian-visibility.ps1` 已删除，避免引入无效窗口生命周期机制。提交 `dc6a78c`。
 - 2026-10-07 DOM drift 安全语义补回归：同一未知结构连续观察仍必须持续 pending，不能靠第二次重试绕过；仅 sidebar presence 改变且其余骨架完全一致时自动继承 baseline。提交 `d78f9b2`。
 - 2026-10-07 新增只读 `chatgpt-archive actor inspect`：直接复用 Actor 自己的 page snapshot 判据输出 route/CID/composer/send/stop/waiting/messageNodes，不导航、不输入、不点击、不发 ChatGPT 请求。用于定位“页面看起来可发但 Actor 判不可发”的 DOM/时序漂移，避免排障时再维护第二套临时 selector。提交 `8dd1d4d` / `03555d7`。
 - 2026-10-07 DOM drift fail-closed 语义修正：原实现 `pending=isNew&&!baseline` 会导致未知结构第一次被拦后，完全相同的第二次重试因 `isNew=false` 自动放行，绕过人工 approve。现改为任何 `baseline=false` variant 每次都持续 pending，直到人工 approve；同时仅对“除 sidebar presence 外其余安全骨架与已批准 baseline 完全一致”的折叠/虚拟化侧栏变体自动信任，完整 sidebar 布尔值仍保留在 forensic ledger。提交 `ea094eb`。
