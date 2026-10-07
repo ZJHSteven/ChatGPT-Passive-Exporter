@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Phase 4 active steer 生产 E2E 抓到并修正真实响应契约：测试会话 `6ac602b1-7a0c-83ea-a30f-f2bec026786a` 在长回答仍 active 时提交 `PHASE4STEER1007`，Archive 随后确认同一 CID 已持久化该 user 消息并最终得到 assistant `[PHASE4STEER1007]`，证明 steer 实际成功；旧 Actor 仅因把所有正式发送都硬编码为 `text/event-stream`，看到 `/f/steer_turn` 的真实 `application/json` 成功响应后误报 drift。现改为按 mode 严格白名单：new/continue 仍要求 SSE，steer 接受第一方实测 JSON；提交 `be59505`。
 - 2026-10-07 Phase 5 Bridge v1 补 5 组本地回归：token 生成/复用、health 与 Bearer 边界、canonical message 字段收缩 + hidden 过滤、Actor submit 输入校验/429 映射、SSE bridge-ready + 脱敏 lifecycle 发布。测试不访问 ChatGPT 网络，可在账户 cooldown 期间安全运行。提交 `3747c28`。
 - 2026-10-07 Phase 5 Bridge v1 核心服务已落地：新增 `src/local/archive-bridge.ts`，默认 loopback HTTP 服务支持 `/health`、Bearer 鉴权的 conversation list/messages、`POST /v1/turns` Actor 提交与 `GET /v1/events` SSE。Bridge token 与 ChatGPT 登录态完全隔离，可自动生成 256-bit 本地 token；事件只接受脱敏 lifecycle/canonical-update 类型，不直接透传原始 ChatGPT SSE，避免 resume credential 等内部能力泄漏。提交 `63a77b8`。
 - 2026-10-07 Phase 3 checkpoint 纯状态机已增加主动轮询安全止损：watch state 现在记录 `lastProgressAt/progressEvents`，canonical `current_node/update_time` 真变化才刷新进展时钟；新增 `checkpointSafetyStopReason()`，在下一次 probe 前按 watcher 最大年龄、`status+body` 总请求预算、无进展窗口返回 `watch-age-limit / request-budget-limit / no-progress-limit`。这层只计算状态，不发网络，供 daemon 统一 fail-closed。提交 `119549c`。
