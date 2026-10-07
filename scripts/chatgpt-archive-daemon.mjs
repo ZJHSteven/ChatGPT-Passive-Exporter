@@ -1249,6 +1249,10 @@ async function main() {
   const checkpointFirstProbeMs = intFlag(flags, 'checkpoint-first-probe-ms', 1_000, 0)
   const checkpointErrorRetryMs = intFlag(flags, 'checkpoint-error-retry-ms', 30_000, 1000)
   const checkpointMaxErrors = intFlag(flags, 'checkpoint-max-errors', 3, 1)
+  // 紧急安全默认：2026-10-07 已确认 7~10s stream_status+body 主动轮询会在长 turn / sticky-active
+  // 上把账户持续推入 429 cooldown。先默认关闭 Archive 自己的主动 checkpoint polling；
+  // WSS/SSE/被动网页请求、gap repair、watchdog 仍照常工作。后续只有在限额模型重新验证后才显式 opt-in。
+  const checkpointPollingEnabled = flags.has('enable-checkpoint-polling')
   const watchdogMinutes = Number(flags.get('watchdog-minutes') ?? 45)
   if (!Number.isFinite(watchdogMinutes) || watchdogMinutes <= 0) throw new Error('--watchdog-minutes must be > 0')
   const watchdogMs = watchdogMinutes * 60_000
@@ -1604,6 +1608,7 @@ async function main() {
         .slice(-32),
     },
     checkpointRefresh: {
+      enabled: checkpointPollingEnabled,
       active: checkpointWatches.size,
       inFlight: checkpointInFlight,
       probes: checkpointProbes,
@@ -1706,6 +1711,7 @@ async function main() {
       checkpointFirstProbeMs,
       checkpointErrorRetryMs,
       checkpointMaxErrors,
+      checkpointPollingEnabled,
     },
     cooldownUntil: cooldownUntil || null,
     cooldownRecoveryPending,
@@ -2288,6 +2294,7 @@ async function main() {
    */
   const armCheckpointWatch = (conversationId, source, now = Date.now()) => {
     if (!conversationId) return null
+    if (!checkpointPollingEnabled) return null
     const existing = checkpointWatches.get(conversationId)
     if (existing) {
       existing.lastObservedAt = Math.max(Number(existing.lastObservedAt || 0), now)
@@ -2569,6 +2576,7 @@ async function main() {
    * fresh native body，则直接消费 passive cache，不重复打 backend。
    */
   const drainCheckpointWatches = async () => {
+    if (!checkpointPollingEnabled) return
     if (checkpointInFlight || syncInFlight || reconcileInFlight || stopping) return
     if (maxSyncConversations > 0 && syncedConversations >= maxSyncConversations) return
 
@@ -3842,6 +3850,7 @@ async function main() {
     const now = Date.now()
     for (const [conversationId, active] of activeTurns) {
       if (active.watchdogPendingAt) {
+        stopCheckpointWatch(conversationId, 'watchdog-pending', now)
         if (!ready.has(conversationId)) {
           const watchdogTrigger = watchdogTriggerForStartType(active.startType)
           markSyncReady(conversationId, watchdogTrigger, 0)
@@ -3856,6 +3865,9 @@ async function main() {
       }
       if (!shouldQueueWatchdogDiagnostic(active, now, watchdogMs)) continue
       // 同一个仍活跃 turn 至多每个 watchdog 窗口做一次诊断抓取；没有 complete 时不轮询。
+      // Watchdog 一旦接管，checkpoint 高频追踪必须立刻终止，不能让同一 zombie 一边被判超时
+      // 一边继续 7~10 秒主动 polling。
+      stopCheckpointWatch(conversationId, 'watchdog-timeout', now)
       active.lastWatchdogAt = now
       active.watchdogPendingAt = now
       persistActiveTurn(conversationId, active)
