@@ -163,6 +163,8 @@ describe('DevSpace audit bridge', () => {
         confidence: 'high',
         observedAt: Date.parse('2026-10-03T06:01:00.000Z'),
       })).toBe(true)
+      expect(bridge.clearBinding('meta-1')).toBe(true)
+      expect(bridge.clearBinding('meta-1')).toBe(false)
     }
     finally {
       bridge.close()
@@ -175,6 +177,6 @@ describe('DevSpace audit bridge', () => {
     `).get()
     verify.close()
     rmSync(root, { recursive: true, force: true })
-    expect(row).toEqual({ conversationId: 'conversation-1', turnExchangeId: 'turn-1' })
+    expect(row).toBeUndefined()
   })
 })
