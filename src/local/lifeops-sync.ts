@@ -83,6 +83,8 @@ export async function loadLifeOpsSyncConfig(filePath: string): Promise<LifeOpsSy
  * 并把待发送 payload 写入 data/ 下的 ignored JSON 文件；因此 daemon 崩溃/重启后仍会继续补送。
  */
 export class LifeOpsSyncClient {
+  private readonly config: LifeOpsSyncConfig
+  private readonly options: LifeOpsSyncClientOptions
   private readonly fetchImpl: typeof fetch
   private readonly now: () => number
   private readonly jobs = new Map<string, PendingJob>()
@@ -91,10 +93,11 @@ export class LifeOpsSyncClient {
   private stopped = false
   private persistChain: Promise<void> = Promise.resolve()
 
-  constructor(
-    private readonly config: LifeOpsSyncConfig,
-    private readonly options: LifeOpsSyncClientOptions,
-  ) {
+  constructor(config: LifeOpsSyncConfig, options: LifeOpsSyncClientOptions) {
+    // Archive daemon 直接由 Node 24 运行 .ts 源码，依赖的是原生 strip-only TypeScript loader。
+    // 因此这里不能使用需要转译语义的 parameter property；字段显式声明后只剩可擦除类型语法。
+    this.config = config
+    this.options = options
     this.fetchImpl = options.fetchImpl ?? fetch
     this.now = options.now ?? Date.now
   }
