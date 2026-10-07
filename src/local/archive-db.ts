@@ -164,6 +164,24 @@ export interface ActiveWatchdogStateRow {
 }
 
 /**
+ * Bark/其它旁路通知的持久去重记录。
+ *
+ * 这里只在远端 provider 已确认成功后写入，因此：
+ * - daemon 重启不会重复发送已经成功的通知；
+ * - 发送失败不会把 key 永久占住，后续同一事实再次被观察时仍可重试；
+ * - 运行期并发重复由 daemon 的 in-flight Set 兜底。
+ */
+export interface TurnNotificationLedgerRow {
+  notificationKey: string
+  kind: string
+  conversationId: string | null
+  turnKey: string | null
+  sentAt: number
+  providerStatus: number | null
+  payloadJson: string
+}
+
+/**
  * 在线 conversation body 中发现的图片资产映射。
  *
  * 注意：这里只存“索引 + 校验元数据 + 本地文件位置”，PNG/JPEG 二进制始终放在 SQLite 外。
@@ -601,6 +619,22 @@ export class ChatArchiveDb {
         last_diagnostic_turn_key TEXT,
         updated_at INTEGER NOT NULL
       );
+
+      -- 通知本身是旁路副作用，但用户明确要求“每个 turn 的终态都有可见结果”。
+      -- 因此成功发送后持久记账，避免 WSS 重复 complete、settle recheck、daemon restart
+      -- 造成同一 turn 反复 Bark。失败不落本表，让后续同事实观察仍有机会重试。
+      CREATE TABLE IF NOT EXISTS turn_notification_ledger (
+        notification_key TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        conversation_id TEXT,
+        turn_key TEXT,
+        sent_at INTEGER NOT NULL,
+        provider_status INTEGER,
+        payload_json TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS turn_notification_ledger_conversation
+        ON turn_notification_ledger(conversation_id, sent_at DESC);
     `)
 
     // 旧 prototype 数据库已经存在于用户机器上，因此采用“增量加列”而不是粗暴 DROP/重建。
@@ -3155,6 +3189,53 @@ export class ChatArchiveDb {
       ORDER BY started_at ASC
       LIMIT ?
     `).all(Math.max(1, Math.trunc(limit))) as unknown as ActiveWatchdogStateRow[]
+  }
+
+  hasTurnNotification(notificationKey: string): boolean {
+    const row = this.db.prepare(
+      'SELECT 1 AS found FROM turn_notification_ledger WHERE notification_key = ? LIMIT 1',
+    ).get(notificationKey) as { found?: number } | undefined
+    return row?.found === 1
+  }
+
+  markTurnNotificationSent(input: {
+    notificationKey: string
+    kind: string
+    conversationId?: string | null
+    turnKey?: string | null
+    sentAt?: number
+    providerStatus?: number | null
+    payload: unknown
+  }): void {
+    this.db.prepare(`
+      INSERT OR IGNORE INTO turn_notification_ledger (
+        notification_key, kind, conversation_id, turn_key, sent_at, provider_status, payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.notificationKey,
+      input.kind,
+      input.conversationId ?? null,
+      input.turnKey ?? null,
+      Math.max(0, Math.trunc(input.sentAt ?? Date.now())),
+      input.providerStatus ?? null,
+      JSON.stringify(input.payload ?? null),
+    )
+  }
+
+  getTurnNotification(notificationKey: string): TurnNotificationLedgerRow | null {
+    const row = this.db.prepare(`
+      SELECT notification_key AS notificationKey,
+             kind,
+             conversation_id AS conversationId,
+             turn_key AS turnKey,
+             sent_at AS sentAt,
+             provider_status AS providerStatus,
+             payload_json AS payloadJson
+      FROM turn_notification_ledger
+      WHERE notification_key = ?
+      LIMIT 1
+    `).get(notificationKey) as unknown as TurnNotificationLedgerRow | undefined
+    return row ?? null
   }
 
   getMessages(conversationId: string): Array<Record<string, unknown>> {
