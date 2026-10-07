@@ -185,8 +185,9 @@ async function main() {
             ...(request.headers || {}),
             ...nativeHeaderTemplate,
           }
-          if (pendingProbe.targetPath) mergedHeaders['x-openai-target-path'] = pendingProbe.targetPath
-          if (pendingProbe.targetRoute) mergedHeaders['x-openai-target-route'] = pendingProbe.targetRoute
+          // 2026-10-07 当前 Web 的 native read-only GET 不再携带旧的
+          // X-OpenAI-Target-Path/Route。probe 应复用原生 header template 本身，
+          // 不再人为注入这两个 legacy replay 标记。
           await page.send('Fetch.continueRequest', {
             requestId: event.requestId,
             headers: headerEntries(mergedHeaders),

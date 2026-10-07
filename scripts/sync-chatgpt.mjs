@@ -81,14 +81,25 @@ function parseArgs(argv) {
 function sanitizeCapturedHeaders(headers) {
   const allowed = new Set([
     'authorization',
+    'chatgpt-account-id',
+    'oai-did',
     'oai-client-build-number',
     'oai-client-version',
     'oai-device-id',
     'oai-language',
     'oai-session-id',
-    'X-OAI-IS-Client-Observation',
+    'originator',
+    'x-oai-is-client-observation',
+    'x-oai-mcp-form-version',
+    'x-openai-codex-window-type',
+    'x-openai-web-frontend',
   ])
-  return Object.fromEntries(Object.entries(headers || {}).filter(([key]) => allowed.has(key)))
+  const sanitized = {}
+  for (const [key, value] of Object.entries(headers || {})) {
+    const normalized = String(key).toLowerCase()
+    if (allowed.has(normalized)) sanitized[normalized] = value
+  }
+  return sanitized
 }
 
 /**
@@ -150,18 +161,27 @@ async function captureBackendHeaders(client, timeoutMs = 12_000) {
   await client.send('Runtime.enable')
 
   let captured = null
+  let firstAuthAt = null
   const off = client.on('Network.requestWillBeSent', (params) => {
     const request = params.request || {}
-    if (captured || !String(request.url || '').includes('/backend-api/')) return
+    if (!String(request.url || '').includes('/backend-api/')) return
     const headers = sanitizeCapturedHeaders(request.headers)
-    if (typeof headers.authorization === 'string' && headers.authorization.length > 20) captured = headers
+    if (typeof headers.authorization !== 'string' || headers.authorization.length <= 20) return
+    if (captured?.authorization && captured.authorization !== headers.authorization) {
+      captured = headers
+      firstAuthAt = Date.now()
+      return
+    }
+    captured = { ...(captured || {}), ...headers }
+    firstAuthAt ??= Date.now()
   })
 
   // Explicit sync is allowed to refresh one already-open ChatGPT tab once. This generates a genuine
   // ChatGPT backend request whose in-memory auth context we can reuse. No token is printed or persisted.
   await client.send('Page.reload', { ignoreCache: false })
   const started = Date.now()
-  while (!captured && Date.now() - started < timeoutMs) {
+  while ((!captured || !firstAuthAt || (Date.now() - firstAuthAt < 350 && !captured['oai-did']))
+    && Date.now() - started < timeoutMs) {
     await new Promise(resolve => setTimeout(resolve, 100))
   }
   off()
@@ -170,17 +190,13 @@ async function captureBackendHeaders(client, timeoutMs = 12_000) {
 }
 
 async function pageFetchText(client, { url, targetPath, targetRoute, headers }) {
-  const expression = `(${async function fetchWithHeaders(url, targetPath, targetRoute, baseHeaders) {
+  const expression = `(${async function fetchWithHeaders(url, baseHeaders) {
     const response = await fetch(url, {
       credentials: 'include',
-      headers: {
-        ...baseHeaders,
-        'X-OpenAI-Target-Path': targetPath,
-        'X-OpenAI-Target-Route': targetRoute,
-      },
+      headers: baseHeaders,
     })
     return { status: response.status, ok: response.ok, text: await response.text() }
-  }.toString()})(${JSON.stringify(url)}, ${JSON.stringify(targetPath)}, ${JSON.stringify(targetRoute)}, ${JSON.stringify(headers)})`
+  }.toString()})(${JSON.stringify(url)}, ${JSON.stringify(headers)})`
 
   const result = await client.send('Runtime.evaluate', {
     expression,

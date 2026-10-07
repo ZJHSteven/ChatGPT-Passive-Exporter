@@ -154,12 +154,18 @@ const STORAGE_KEY = 'chatgpt-passive-exporter/run-watch/latest/v1'
 const ACTIVE_API_BACKOFF_KEY = 'chatgpt-passive-exporter/active-api-backoff/v1'
 const AUTH_HEADER_ALLOWLIST = [
   'authorization',
+  'chatgpt-account-id',
+  'oai-did',
   'oai-session-id',
   'oai-device-id',
   'oai-client-version',
   'oai-client-build-number',
   'oai-language',
+  'originator',
   'x-oai-is-client-observation',
+  'x-oai-mcp-form-version',
+  'x-openai-codex-window-type',
+  'x-openai-web-frontend',
 ] as const
 
 function now(): number {
@@ -664,6 +670,9 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     path: string,
     targetRoute: string,
   ): Promise<{ ok: boolean, httpStatus?: number, body?: unknown, reason?: string }> => {
+    // `targetRoute` 保留在调用签名里，便于协议 ledger/调用点表达语义；当前 Web 的 native GET
+    // 不再携带旧的 X-OpenAI-Target-Path/Route，因此 production replay 不再主动注入这两个头。
+    void targetRoute
     const backoffUntil = activeRequestBackoffUntil()
     if (backoffUntil) {
       return {
@@ -679,8 +688,6 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
 
     const headers = new Headers()
     for (const [name, value] of ephemeralHeaders) headers.set(name, value)
-    headers.set('x-openai-target-path', path)
-    headers.set('x-openai-target-route', targetRoute)
 
     try {
       const response = await originalFetch.call(window, path, {

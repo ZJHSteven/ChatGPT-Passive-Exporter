@@ -627,12 +627,18 @@ function chatgptTime(value) {
 export function sanitizeCapturedHeaders(headers) {
   const allowed = new Set([
     'authorization',
+    'chatgpt-account-id',
+    'oai-did',
     'oai-client-build-number',
     'oai-client-version',
     'oai-device-id',
     'oai-language',
     'oai-session-id',
+    'originator',
     'x-oai-is-client-observation',
+    'x-oai-mcp-form-version',
+    'x-openai-codex-window-type',
+    'x-openai-web-frontend',
   ])
   const sanitized = {}
   for (const [key, value] of Object.entries(headers || {})) {
@@ -1045,14 +1051,10 @@ async function ensureGuardian(cdpHttp) {
 }
 
 async function pageFetchJson(page, { url, targetPath, targetRoute, headers }) {
-  const expression = `(${async function fetchJson(url, targetPath, targetRoute, headers) {
+  const expression = `(${async function fetchJson(url, headers) {
     const response = await fetch(url, {
       credentials: 'include',
-      headers: {
-        ...headers,
-        'X-OpenAI-Target-Path': targetPath,
-        'X-OpenAI-Target-Route': targetRoute,
-      },
+      headers,
     })
     const responseHeaders = {}
     for (const name of ['retry-after', 'x-request-id', 'cf-ray']) {
@@ -1064,7 +1066,7 @@ async function pageFetchJson(page, { url, targetPath, targetRoute, headers }) {
       text: await response.text(),
       headers: responseHeaders,
     }
-  }.toString()})(${JSON.stringify(url)}, ${JSON.stringify(targetPath)}, ${JSON.stringify(targetRoute)}, ${JSON.stringify(headers)})`
+  }.toString()})(${JSON.stringify(url)}, ${JSON.stringify(headers)})`
   const result = await page.send('Runtime.evaluate', {
     expression,
     awaitPromise: true,
@@ -4309,7 +4311,9 @@ async function main() {
      if (!String(request?.url || '').includes('/backend-api/')) return
      const headers = sanitizeCapturedHeaders(request.headers)
      if (typeof headers.authorization === 'string' && headers.authorization.length > 20) {
-       authHeaders = headers
+       authHeaders = authHeaders?.authorization === headers.authorization
+         ? { ...authHeaders, ...headers }
+         : headers
        lastAuthAt = Date.now()
      }
       const relativeUrl = relativeBackendUrl(request.url)

@@ -570,15 +570,28 @@ describe('ChatGPT Archive daemon WSS parser', () => {
   test('请求上下文白名单大小写无关，且不会复制 cookie / user-agent 等浏览器应自行生成的头', () => {
     expect(sanitizeCapturedHeaders({
       Authorization: 'Bearer fresh-token',
+      'ChatGPT-Account-ID': 'acct-1',
+      'OAI-DID': 'device-1',
       'OAI-Session-ID': 'fresh-session',
+      Originator: 'web',
       'X-OAI-IS-Client-Observation': '1',
+      'X-OAI-MCP-Form-Version': '2',
+      'X-OpenAI-Codex-Window-Type': 'main',
+      'X-OpenAI-Web-Frontend': '1',
+      'X-OAI-Turn-Trace-ID': 'must-not-copy-globally',
       Cookie: 'must-not-copy',
       'User-Agent': 'must-not-copy',
       Referer: 'must-not-copy',
     })).toEqual({
       authorization: 'Bearer fresh-token',
+      'chatgpt-account-id': 'acct-1',
+      'oai-did': 'device-1',
       'oai-session-id': 'fresh-session',
+      originator: 'web',
       'x-oai-is-client-observation': '1',
+      'x-oai-mcp-form-version': '2',
+      'x-openai-codex-window-type': 'main',
+      'x-openai-web-frontend': '1',
     })
   })
 
