@@ -1699,6 +1699,86 @@ async function main() {
     })
   }
 
+  // 运行期重复事件可能在 Bark 请求尚未返回时再次到达；SQLite ledger 只能去重“已经成功”的
+  // 通知，因此再用一个极小的 in-flight Set 挡住同进程并发重复。失败后 finally 删除，允许重试。
+  const notificationInFlight = new Set()
+
+  const conversationTitle = (conversationId) => {
+    const row = archive.db.prepare('SELECT title FROM conversations WHERE id=?').get(conversationId)
+    return row?.title || conversationId
+  }
+
+  /**
+   * 所有 turn/incident 级 Bark 都从这里出站：
+   * 1. 成功发送后才写持久 ledger；
+   * 2. 发送失败不占坑，未来重复事实可以再次尝试；
+   * 3. 通知永远 detached，不阻塞 Archive 主归档路径。
+   */
+  const dispatchPersistentNotification = ({
+    notificationKey,
+    kind,
+    conversationId = null,
+    turnKey = null,
+    payload,
+    successLog,
+    failureLog,
+    logFields = {},
+  }) => {
+    if (!notificationConfig || !notificationKey || !payload) return false
+    if (archive.hasTurnNotification(notificationKey) || notificationInFlight.has(notificationKey)) return false
+    notificationInFlight.add(notificationKey)
+    void (async () => {
+      notificationLastAttemptAt = Date.now()
+      const result = await sendIncidentNotification(notificationConfig, payload)
+      if (result.ok) {
+        archive.markTurnNotificationSent({
+          notificationKey,
+          kind,
+          conversationId,
+          turnKey,
+          sentAt: Date.now(),
+          providerStatus: result.status,
+          payload,
+        })
+        notificationLastSuccessAt = Date.now()
+        notificationLastError = null
+        await log(successLog, {
+          conversationId,
+          provider: notificationConfig.provider,
+          status: result.status,
+          notificationKey,
+          kind,
+          ...logFields,
+        })
+      }
+      else if (result.attempted) {
+        notificationLastError = result.error || 'notification failed'
+        await log(failureLog, {
+          conversationId,
+          provider: notificationConfig.provider,
+          status: result.status,
+          error: notificationLastError,
+          notificationKey,
+          kind,
+          ...logFields,
+        })
+      }
+    })().catch(async (error) => {
+      notificationLastError = error instanceof Error ? error.message : String(error)
+      await log(failureLog, {
+        conversationId,
+        provider: notificationConfig?.provider ?? null,
+        error: notificationLastError,
+        notificationKey,
+        kind,
+        ...logFields,
+      }).catch(() => {})
+    }).finally(() => {
+      notificationInFlight.delete(notificationKey)
+    })
+    return true
+  }
+
   const scheduleProtocolLedgerFlush = () => {
     if (!protocolLedger || protocolFlushTimer) return
     protocolFlushTimer = setTimeout(() => {
@@ -2026,44 +2106,6 @@ async function main() {
     ORDER BY i.detected_at ASC, i.id ASC
   `).all(conversationId)
 
-  const notifyIncident = async (conversationId, incident) => {
-    if (!notificationConfig || !incident) return
-    notificationLastAttemptAt = Date.now()
-    const body = [
-      incident.title || conversationId,
-      incident.reason || `${incident.terminalEvidence || 'abnormal'} / ${incident.tailShape || 'unknown tail'}`,
-    ].filter(Boolean).join('\n')
-    const result = await sendIncidentNotification(notificationConfig, {
-      title: incident.lifecycleClass === 'watchdog-timeout'
-        ? 'ChatGPT 运行超时'
-        : incident.lifecycleClass === 'active-zombie'
-          ? 'ChatGPT 活跃僵尸异常'
-        : incident.lifecycleClass === 'explicit-interrupted'
-          ? 'ChatGPT 运行中断'
-          : 'ChatGPT 异常结束',
-      body,
-      url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
-    })
-    if (result.ok) {
-      notificationLastSuccessAt = Date.now()
-      notificationLastError = null
-      await log('incident notification sent', {
-        conversationId,
-        provider: notificationConfig.provider,
-        status: result.status,
-      })
-    }
-    else if (result.attempted) {
-      notificationLastError = result.error || 'notification failed'
-      await log('incident notification failed', {
-        conversationId,
-        provider: notificationConfig.provider,
-        status: result.status,
-        error: notificationLastError,
-      })
-    }
-  }
-
   /**
    * 手机通知是 Archive 的旁路副作用，绝不能成为 conversation/body/SQLite 同步的关键路径。
    *
@@ -2076,13 +2118,32 @@ async function main() {
    */
   const dispatchIncidentNotification = (conversationId, incident) => {
     if (!notificationConfig || !incident) return
-    void notifyIncident(conversationId, incident).catch(async (error) => {
-      notificationLastError = error instanceof Error ? error.message : String(error)
-      await log('incident notification branch failed', {
-        conversationId,
-        provider: notificationConfig.provider,
-        error: notificationLastError,
-      }).catch(() => {})
+    const body = [
+      incident.title || conversationId,
+      incident.reason || `${incident.terminalEvidence || 'abnormal'} / ${incident.tailShape || 'unknown tail'}`,
+    ].filter(Boolean).join('\n')
+    const payload = {
+      title: incident.lifecycleClass === 'watchdog-timeout'
+        ? 'ChatGPT Watchdog 超时'
+        : incident.lifecycleClass === 'active-zombie'
+          ? 'ChatGPT Watchdog 超时 · Active Zombie'
+        : incident.lifecycleClass === 'complete-no-final'
+          ? 'ChatGPT Complete · 无 Final'
+        : incident.lifecycleClass === 'explicit-interrupted'
+          ? 'ChatGPT 运行中断'
+          : 'ChatGPT 异常结束',
+      body,
+      url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
+    }
+    dispatchPersistentNotification({
+      notificationKey: `incident:${incident.id}`,
+      kind: `incident:${incident.lifecycleClass || incident.incidentKind || 'abnormal-terminal'}`,
+      conversationId,
+      turnKey: incident.turnKey || incident.turnExchangeId || incident.id,
+      payload,
+      successLog: 'incident notification sent',
+      failureLog: 'incident notification failed',
+      logFields: { incidentId: incident.id },
     })
   }
 
