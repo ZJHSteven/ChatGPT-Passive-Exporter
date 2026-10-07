@@ -266,6 +266,8 @@ async function daemonCommand(positionals, flags) {
       'bridge-host',
       'bridge-port',
       'bridge-auth',
+      'lifeops-sync-config',
+      'lifeops-sync-pending',
       'actor-state',
       'dom-ledger',
     ]

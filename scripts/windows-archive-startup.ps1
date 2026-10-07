@@ -63,7 +63,11 @@ $arguments = @(
   ('"{0}"' -f $LauncherScript),
   ('"{0}"' -f $NodeExe),
   ('"{0}"' -f $DaemonScript),
-  '--db', ('"{0}"' -f $DbPath)
+  '--db', ('"{0}"' -f $DbPath),
+  # 登录/进程恢复首先恢复 WSS + 被动观察。历史缺口由后续 gap-repair / periodic 路径补齐；
+  # 不要在每次 Windows 登录、任务失败重启时立刻主动扫 catalog，以免把“进程高可用”
+  # 变成一个绕过 cooldown / slow-start 的额外 REST 请求源。
+  '--no-reconcile-on-start'
 ) -join ' '
 
 $actionParams = @{
