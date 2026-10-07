@@ -3292,6 +3292,11 @@ async function main() {
           tailShape: result.diagnostic.tailShape ?? null,
         })
         // SQLite/trace 到这里已经完成；通知只从已落库事实分叉出去，不参与 syncInFlight。
+        // 正常 final 与异常 incident 使用互斥条件：body 已经确认 final 时只发“正常完成”；
+        // complete-no-final/interrupted/watchdog-timeout 则继续由下面的 incident 分支发送。
+        if (shouldNotifyTurnFinal(trigger, result.diagnostic)) {
+          dispatchTurnFinalNotification(conversationId, result.diagnostic)
+        }
         const incidentsToNotify = [
           result.newIncident,
           ...(result.newHistoricalIncidents || []),
