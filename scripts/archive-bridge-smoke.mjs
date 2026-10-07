@@ -223,10 +223,9 @@ async function main() {
     }
   }
 
-  const captured = marker ? await capture.done : await Promise.race([
-    capture.done,
-    sleep(1000).then(() => ({ timedOut: false, acceptedConversationId: null, events: [] })),
-  ])
+  // 无副作用模式也等自己的 5 秒有界 capture 完成，这样 bridge-ready 会真实进入 events；
+  // 不能用一个更短的 Promise.race 提前返回，否则会把“监听器已收到但 done 尚未 resolve”误报为空。
+  const captured = await capture.done
   await capture.stop()
 
   const serialized = JSON.stringify({
