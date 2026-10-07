@@ -6,6 +6,18 @@
 - [done] 根因分阶段：早期 429 大量来自 Archive 自己的 `devspace:binding-probe` 与 Phase 3 checkpoint 高频 body polling；checkpoint 已默认 disabled。当前 19:34 起的新波则来自 native ChatGPT 页面/Guardian 的 catalog 列表请求，随后普通页面 `body-latest` 也持续 429；Archive active REST 已被 cooldown 阻断，但页面原生请求仍会自动重试。
 - [pending] 单独评估 native-page 429 的 cooldown 语义：当前任何普通页面再次 429 都会把 Archive 全局 60min cooldown 滑动延长，页面 retry loop 因而可能无限推迟 Archive recovery。不要未经讨论直接改；候选方案是区分 `account429Observed` 与 `archiveActiveCooldown`，或仅由 Archive/Guardian 主动请求的 429 延长完整 60min，而普通页面 429 只更新观测状态/尊重 Retry-After。
 
+## 2026-10-07 LifeOps Bridge / Reader ExecPlan
+
+> 目标：复用已经稳定运行的 Archive Bridge（127.0.0.1:47832），不要再造第二套本地控制面；只补 LifeOps 所需的工作现场读取、搜索、状态与同步能力，并继续保持 ChatGPT Cookie/Authorization 永不离开本机。
+
+- [ ] 扩展 Bridge 只读接口：conversation 搜索、conversation detail、turn/incident/live 状态；保留现有 list/messages/events/actor 接口兼容性。
+- [ ] 增加 LifeOps Worksite payload：conversationId + turnExchangeId 定位后返回标题、当前状态、canonical messages/tool 摘要和适合存入 LifeOps 的脱敏 metadata。
+- [ ] 增加 LifeOps push client：Conversation created / turn final / abnormal terminal 等稳定事件可推送到 LifeOps archive inbox；失败只记录并重试，不影响 Archive 主流程。
+- [ ] 外部访问继续走现有 `archive-bridge.zjhstudio.com -> win-laptop Tunnel -> 127.0.0.1:47832`，本地 Bridge 不改成公网 bind。
+- [ ] Cloudflare Access Service Token 只用于 Worker↔Bridge；Bridge 自己原有 Bearer token 保留为第二层 origin auth。
+- [ ] Archive Reader 所需数据全部来自 canonical SQLite / Bridge，不允许 Reader 为了展示主动增加 ChatGPT 私有 API 请求。
+- [ ] 回归：archive-bridge tests、daemon tests、全量 tests、生产 daemon reload 后 health/list/search/worksite/event smoke test。
+
 ## 2026-10-07 Adaptive Watchdog / Gap Discovery / Safety Review 研究 ExecPlan
 
 - [done] 核清当前 DevSpace→Archive 行为：bound metadata 的 first-tool 只启动/续本 CID Watchdog，不触发 catalog gap-repair，也不主动拉 body；unbound metadata 先保存 provisional start，只有跨过 45min 仍未绑定时才 `scheduleGapRepair('devspace-unbound-timeout')`。WSS conversation transport rotation 与 Guardian recover 同样进入 `scheduleGapRepair()`，最终共用 `reconcileCatalog('gap-repair')` overlap 扫描。
