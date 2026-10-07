@@ -5,6 +5,7 @@ import { describe, expect, test } from 'vitest'
 import { buildActorSubmitTrace } from '../src/local/active-turn-recorder.ts'
 import {
   actorConversationUrl,
+  actorResponseMimeAccepted,
   buildActorDomObservationExpression,
   conversationIdFromUrl,
   resolveActorSendMode,
@@ -87,6 +88,22 @@ describe('ChatGPT single actor helpers', () => {
     expect(() => new Function(`return ${expression}`)).not.toThrow()
     expect(expression).toContain("new RegExp('^/c/[0-9a-f-]{20,}(?:/|$)', 'iu')")
     expect(expression).toContain('(^|\\s)(send|发送)(\\s|$)')
+  })
+
+  test('new/continue 与 steer 使用各自第一方响应 MIME 契约', () => {
+    expect(actorResponseMimeAccepted('new', 'text/event-stream')).toBe(true)
+    expect(actorResponseMimeAccepted('continue', 'text/event-stream; charset=utf-8')).toBe(true)
+    expect(actorResponseMimeAccepted('steer', 'application/json')).toBe(true)
+    expect(actorResponseMimeAccepted('steer', 'application/json; charset=utf-8')).toBe(true)
+
+    expect(actorResponseMimeAccepted('new', 'application/json')).toBe(false)
+    expect(actorResponseMimeAccepted('continue', 'application/json')).toBe(false)
+    expect(actorResponseMimeAccepted('steer', 'text/event-stream')).toBe(false)
+
+    // CDP 偶尔可能没有给出 MIME；这种情况下仍由 HTTP 2xx、conversation identity 与页面状态
+    // 继续闭环，不能因为一个可选字段缺失把已接受请求误判成协议漂移。
+    expect(actorResponseMimeAccepted('new', null)).toBe(true)
+    expect(actorResponseMimeAccepted('steer', null)).toBe(true)
   })
 
   test('actor-submit 使用 requestWillBeSent 时刻作为可靠本地 start', () => {
