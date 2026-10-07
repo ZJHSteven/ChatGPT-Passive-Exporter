@@ -354,6 +354,8 @@ async function readActorPageSnapshot(client: ActorCdpClient): Promise<ActorPageS
       if (!element || !element.isConnected) return false
       const rect = element.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) return false
+      const ownStyle = window.getComputedStyle(element)
+      if (ownStyle.pointerEvents === 'none') return false
       for (let node = element; node; node = node.parentElement) {
         if (!(node instanceof HTMLElement)) continue
         if (node.hidden || node.hasAttribute('inert')) return false
@@ -361,9 +363,12 @@ async function readActorPageSnapshot(client: ActorCdpClient): Promise<ActorPageS
         if (style.display === 'none') return false
         if (style.visibility === 'hidden' || style.visibility === 'collapse') return false
         if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
-        if (style.pointerEvents === 'none') return false
         if (node === document.documentElement) break
       }
+      const x = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
+      const y = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
+      const hit = document.elementFromPoint(x, y)
+      if (hit && !element.contains(hit)) return false
       return true
     }
 
@@ -427,6 +432,8 @@ export function buildActorDomObservationExpression(): string {
       if (!element || !element.isConnected) return false
       const rect = element.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) return false
+      const ownStyle = window.getComputedStyle(element)
+      if (ownStyle.pointerEvents === 'none') return false
       for (let node = element; node; node = node.parentElement) {
         if (!(node instanceof HTMLElement)) continue
         if (node.hidden || node.hasAttribute('inert')) return false
@@ -434,9 +441,12 @@ export function buildActorDomObservationExpression(): string {
         if (style.display === 'none') return false
         if (style.visibility === 'hidden' || style.visibility === 'collapse') return false
         if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
-        if (style.pointerEvents === 'none') return false
         if (node === document.documentElement) break
       }
+      const x = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
+      const y = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
+      const hit = document.elementFromPoint(x, y)
+      if (hit && !element.contains(hit)) return false
       return true
     }
 
@@ -620,14 +630,20 @@ async function clickNewChatSpa(client: ActorCdpClient): Promise<boolean> {
       if (!element || !element.isConnected) return false
       const rect = element.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) return false
+      const ownStyle = window.getComputedStyle(element)
+      if (ownStyle.pointerEvents === 'none') return false
       for (let node = element; node; node = node.parentElement) {
         if (!(node instanceof HTMLElement)) continue
         if (node.hidden || node.hasAttribute('inert')) return false
         const style = window.getComputedStyle(node)
-        if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false
         if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
         if (node === document.documentElement) break
       }
+      const x = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
+      const y = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
+      const hit = document.elementFromPoint(x, y)
+      if (hit && !element.contains(hit)) return false
       return true
     }
     const candidates = [
@@ -657,14 +673,20 @@ async function clickConversationSpa(client: ActorCdpClient, conversationId: stri
       if (!element || !element.isConnected) return false
       const rect = element.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) return false
+      const ownStyle = window.getComputedStyle(element)
+      if (ownStyle.pointerEvents === 'none') return false
       for (let node = element; node; node = node.parentElement) {
         if (!(node instanceof HTMLElement)) continue
         if (node.hidden || node.hasAttribute('inert')) return false
         const style = window.getComputedStyle(node)
-        if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false
         if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
         if (node === document.documentElement) break
       }
+      const x = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
+      const y = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
+      const hit = document.elementFromPoint(x, y)
+      if (hit && !element.contains(hit)) return false
       return true
     }
     const target = [...document.querySelectorAll('a[href]')].find((anchor) => {
@@ -761,15 +783,20 @@ async function clearAndTypePrompt(client: ActorCdpClient, prompt: string): Promi
       if (!element || !element.isConnected) return false
       const rect = element.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) return false
+      const ownStyle = window.getComputedStyle(element)
+      if (ownStyle.pointerEvents === 'none') return false
       for (let node = element; node; node = node.parentElement) {
         if (!(node instanceof HTMLElement)) continue
         if (node.hidden || node.hasAttribute('inert')) return false
         const style = window.getComputedStyle(node)
         if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false
         if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
-        if (style.pointerEvents === 'none') return false
         if (node === document.documentElement) break
       }
+      const x = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
+      const y = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
+      const hit = document.elementFromPoint(x, y)
+      if (hit && !element.contains(hit)) return false
       return true
     }
     const input = [
@@ -806,14 +833,20 @@ async function clickSendHandler(client: ActorCdpClient): Promise<void> {
       if (!element || !element.isConnected) return false
       const rect = element.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) return false
+      const ownStyle = window.getComputedStyle(element)
+      if (ownStyle.pointerEvents === 'none') return false
       for (let node = element; node; node = node.parentElement) {
         if (!(node instanceof HTMLElement)) continue
         if (node.hidden || node.hasAttribute('inert')) return false
         const style = window.getComputedStyle(node)
-        if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false
         if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
         if (node === document.documentElement) break
       }
+      const x = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
+      const y = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
+      const hit = document.elementFromPoint(x, y)
+      if (hit && !element.contains(hit)) return false
       return true
     }
     const input = [
