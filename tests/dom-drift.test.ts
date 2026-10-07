@@ -63,7 +63,7 @@ describe('Actor DOM drift fingerprinting', () => {
   test('voice / send / stop 属于同一个动态主动作槽位，不制造 DOM drift', () => {
     const withVoice = observation({
       controls: [
-        observation().controls[0],
+        observation().controls[0]!,
         {
           semantic: 'voice',
           tag: 'button',
@@ -77,7 +77,7 @@ describe('Actor DOM drift fingerprinting', () => {
     const withSend = observation()
     const withStop = observation({
       controls: [
-        observation().controls[0],
+        observation().controls[0]!,
         {
           semantic: 'stop',
           tag: 'button',
