@@ -7,6 +7,11 @@ param(
   [long]$Hwnd
 )
 
+# Windows PowerShell 5.1 的很多错误（尤其 Add-Type 编译错误）默认只是 non-terminating error。
+# Actor 必须把“窗口租约没有真正建立”视为失败，因此脚本统一提升为 terminating error，
+# 让 Node 的 execFileSync 能可靠得到非零退出状态，而不是继续在 hidden page 上误发送。
+$ErrorActionPreference = 'Stop'
+
 # ChatGPT Archive 的 Guardian 在 Windows 上默认用 SW_HIDE 真隐藏，从而不占任务栏/Alt-Tab。
 # 但 2026-10-07 真实 E2E 发现：ChatGPT 某些 conversation 路由在“窗口一直处于 hidden”时只完成
 # URL / app-shell，conversation body 与 composer 不继续 hydration。Phase 4 Actor 因而需要一个很窄的
@@ -68,7 +73,8 @@ public static class ChatGptArchiveGuardianVisibility
         }
         else
         {
-            throw new ArgumentOutOfRangeException(nameof(action));
+            // Windows PowerShell 5.1 的 Add-Type 仍可能使用较老 C# 编译器，不依赖 nameof()。
+            throw new ArgumentOutOfRangeException("action");
         }
 
         var visibleAfter = IsWindowVisible(hWnd);
