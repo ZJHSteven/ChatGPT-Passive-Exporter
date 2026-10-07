@@ -48,6 +48,16 @@ function mockArchive(): ArchiveBridgeDataSource {
     listActiveWatchdogs() {
       return []
     },
+    getResources(conversationId: string) {
+      if (conversationId !== 'cid-1') return []
+      return [{
+        messageId: 'm2',
+        ordinal: 1,
+        kind: 'web-search',
+        label: '搜索测试',
+        data: { query: '测试', sourceCount: 3 },
+      }]
+    },
     getMessages(conversationId: string) {
       if (conversationId !== 'cid-1') return []
       return [
@@ -212,6 +222,13 @@ describe('Archive Bridge', () => {
       url: 'https://chatgpt.com/c/cid-1',
     })
     expect(JSON.stringify(body)).not.toContain('这里是模型内部推理')
+
+    const resources = await fetch(`${base}/v1/conversations/cid-1/resources`, { headers })
+    expect(resources.status).toBe(200)
+    expect(await resources.json()).toMatchObject({
+      conversationId: 'cid-1',
+      resources: [{ kind: 'web-search', label: '搜索测试', data: { query: '测试' } }],
+    })
   })
 
   test('turn submit 校验输入，并把 cooldown 映射为 HTTP 429', async () => {
