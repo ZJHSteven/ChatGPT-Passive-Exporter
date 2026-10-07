@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Guardian visibility helper 首次真机运行暴露 Windows PowerShell 5.1 兼容问题：Add-Type 使用的旧 C# 编译器不支持 `nameof()`，且默认 non-terminating error 会让脚本错误地以 exit 0 结束。现改为普通参数名字符串并设置 `$ErrorActionPreference='Stop'`，保证租约建立失败一定向 Actor 返回非零状态。提交 `dd38283`。
 - 2026-10-07 Phase 4 新增 Windows Guardian 可见性租约辅助脚本 `scripts/windows-guardian-visibility.ps1`：只接受 daemon 已知 HWND，支持 `show-offscreen`（先移到 -32000,-32000，再 SW_SHOWNOACTIVATE，不抢焦点）和 `hide`（SW_HIDE）。目的是验证并修复真隐藏 Guardian 在已有 conversation 路由上 URL 已到但 body/composer 不 hydration 的生产缺口；后续 Actor 将用 try/finally 临时租约，不恢复第二个常驻 Actor tab。提交 `483a2e8`。
 - 2026-10-07 Phase 4 continue E2E 第二个 DOM 漂移点已修：当前 Web 不再稳定提供 `[data-message-author-role]`，正文节点已迁移到 `data-chatgpt-selection-message-id / data-chatgpt-search-message-ids / data-user-message-bubble / data-content-search-unit-key` 等属性。Actor 的“上下文已渲染”门控改为多代语义锚点，只判断消息 DOM 是否实际出现；canonical 内容仍只来自 body/SSE，不从 DOM 解析消息。提交 `e38adb6`。
 - 2026-10-07 Phase 4 continue E2E 抓到新 DOM 交互判定 bug：目标 conversation 实际已完整加载并存在可见 `contenteditable role=textbox`，但旧 `usable()` 只要任意祖先 `pointer-events:none` 就判不可交互。当前 ChatGPT 浮动聊天/布局层会在中间祖先设 `pointer-events:none`、子控件重新设 `auto`，旧规则因此误杀。已统一改为“元素自身 pointer-events + hidden/inert/display/visibility/opacity + 中心点 `elementFromPoint` 命中”判据，覆盖 snapshot、DOM drift、新聊天/会话 SPA、输入与发送按钮。提交 `8ac9753`。
