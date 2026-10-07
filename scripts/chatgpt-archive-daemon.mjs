@@ -5078,6 +5078,14 @@ async function main() {
   }
  for (const observer of passivePageObservers.values()) observer.client.close()
   passivePageObservers.clear()
+  if (archiveBridge) {
+    await archiveBridge.stop().catch(async (error) => {
+      await log('Archive Bridge stop failed', {
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => {})
+    })
+    archiveBridge = null
+  }
   guardian?.page?.close()
   guardian?.browser?.close()
   await writeState()
