@@ -137,6 +137,31 @@ export function buildCooldownNotificationPayload(input: {
   body: string
 }
 
+export function buildWatchdogDeferredNotificationPayload(input: {
+  conversationId: string
+  title?: string | null
+  startedAt: number
+  now?: number
+  cooldownUntil: number
+}): { title: string, body: string, url?: string }
+
+export function buildUnboundWatchdogNotificationPayload(input: {
+  metadataId: string
+  startedAt: number
+  now?: number
+}): { title: string, body: string }
+
+export function buildTurnFinalNotificationPayload(input: {
+  conversationId: string
+  title?: string | null
+  diagnostic?: { hasImageGenerationFinal?: unknown, imageGenerationCount?: unknown } | null
+}): { title: string, body: string, url: string }
+
+export function shouldNotifyTurnFinal(
+  trigger: unknown,
+  diagnostic: { terminalEvidence?: unknown } | null | undefined,
+): boolean
+
 /** 单次 CDP 健康探活失败不立即拆 Guardian；连续达到阈值后才允许重建。 */
 export function shouldRebuildGuardianAfterHealthFailures(
   consecutiveFailures: unknown,
