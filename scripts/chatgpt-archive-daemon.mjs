@@ -2139,6 +2139,13 @@ async function main() {
       })
     }
   }
+  catch (error) {
+    notificationLastError = error instanceof Error ? error.message : String(error)
+    await log('incident notification config invalid; notifications disabled', {
+      configPath: notificationConfigPath,
+      error: notificationLastError,
+    })
+  }
 
   // LifeOps 同步完全是旁路 outbox：配置缺失时静默禁用；配置错误/网络错误只记日志，
   // 绝不能让 Archive/WSS/SQLite 主链无法启动。真正的发送与持久重试由 LifeOpsSyncClient 自己完成。
@@ -2165,13 +2172,6 @@ async function main() {
     await log('LifeOps sync config invalid; sync disabled', {
       configPath: lifeOpsSyncConfigPath,
       error: lifeOpsSyncLastError,
-    })
-  }
-  catch (error) {
-    notificationLastError = error instanceof Error ? error.message : String(error)
-    await log('incident notification config invalid; notifications disabled', {
-      configPath: notificationConfigPath,
-      error: notificationLastError,
     })
   }
 
