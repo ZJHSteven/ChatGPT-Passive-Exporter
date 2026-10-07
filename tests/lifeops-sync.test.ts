@@ -62,9 +62,10 @@ describe('LifeOps sync outbox', () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     expect(client.pendingCount).toBe(0)
+    // stop() 会等待最后一次持久化链完成；只有此后才把磁盘 outbox 视为稳定快照。
+    await client.stop()
     const persisted = JSON.parse(await fs.readFile(pendingPath, 'utf8')) as { jobs: unknown[] }
     expect(persisted.jobs).toHaveLength(0)
-    await client.stop()
   })
 
   test('失败会保留 outbox，不把 secret 写入队列文件', async () => {
