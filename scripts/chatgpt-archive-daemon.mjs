@@ -578,6 +578,29 @@ export function activeApiAllowed(cooldownUntil, now = Date.now()) {
 }
 
 /**
+ * 人类可见时间统一使用北京时间（Asia/Shanghai, UTC+8）。
+ *
+ * 数据库和内部状态仍保存 epoch/UTC 绝对时间：这样排序、比较、跨时区计算都不会受
+ * 展示时区影响；只有 Bark / CLI 等给人看的字符串在最后一步转换为北京时间。
+ */
+export function formatBeijingTime(value) {
+  const ms = Number(value)
+  if (!Number.isFinite(ms) || ms <= 0) return '未知时间'
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(ms))
+  const pick = type => parts.find(part => part.type === type)?.value ?? ''
+  return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}:${pick('second')} 北京时间`
+}
+
+/**
  * 429 cooldown 是 Archive 自己的运行状态通知，不属于 conversation incident taxonomy。
  *
  * 这里只负责生成稳定文案，便于单测；真正发送仍走现有 Bark provider。
@@ -592,7 +615,7 @@ export function buildCooldownNotificationPayload({
     `原因：${String(reason || 'HTTP 429')}`,
     route ? `请求：${route}` : null,
     retryAfter ? `Retry-After：${retryAfter}` : null,
-    `主动 API 冷却至：${new Date(Number(cooldownUntil || 0)).toISOString()}`,
+    `主动 API 冷却至：${formatBeijingTime(cooldownUntil)}`,
     'WSS/CDP 被动监听继续运行；滑动延长只记日志，不重复通知。',
   ].filter(Boolean)
   return {
@@ -616,8 +639,8 @@ export function buildWatchdogDeferredNotificationPayload({
       title || conversationId,
       `Watchdog 已运行 ${Math.floor(activeForMs / 60_000)} 分钟，达到超时阈值。`,
       '当前主动 body 请求处于 HTTP 429 cooldown，且尚无本次超时后的被动 body 可用于错误归因。',
-      `本轮起点：${new Date(Number(startedAt || now)).toISOString()}`,
-      `冷却至：${new Date(Number(cooldownUntil || now)).toISOString()}`,
+      `本轮起点：${formatBeijingTime(startedAt || now)}`,
+      `冷却至：${formatBeijingTime(cooldownUntil || now)}`,
       '冷却解除后会继续诊断；若随后确认异常，再发送最终诊断通知。',
     ].join('\n'),
     url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
