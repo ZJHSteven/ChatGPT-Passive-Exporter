@@ -1,3 +1,12 @@
+## 2026-10-07 Turn 终态 / Watchdog Bark 通知矩阵 ExecPlan
+
+- [done] 按用户新要求统一“每个 turn 最终都有可见 Bark 结果”：正常 complete+final 也通知；complete 后无 final/显式 interrupted 继续走 incident 通知；Watchdog 超时若当场拿得到 body，只发一次最终诊断，不先发重复 timeout 通知。
+- [done] Watchdog 到点但因 active API cooldown 暂时拿不到本次诊断 body 时，立即发一次 `watchdog-deferred-cooldown` Bark，包含 conversation title/CID、真实 watchdog 起点、已超时时长、cooldown 解除时间，并保留 generation 等待后续 body；后续诊断若产生最终异常分类，再发最终诊断通知。
+- [done] DevSpace metadata 尚未可靠绑定 canonical conversation 时，45min 到点仍发一次 `watchdog-unbound` Bark，明确“Watchdog 已到点，但当前无法可靠定位聊天”；不得猜 CID/title。绑定成功后继续既有 body 诊断链。
+- [done] 为 normal final / deferred watchdog / unbound watchdog / incident 增加持久成功 ledger + 运行期 in-flight 去重，按 `conversation+turn/generation+notification-kind` 去重；Bark 失败不落成功 ledger，后续同事实仍可重试。
+- [done] complete 通知只在 canonical body 已确认 final 后发送；`conversation-turn-complete` 首帧若 body 尚未 settle，不先报“正常完成”，15s settle 后按最终 body 只选一个终态通知。在线 gap-repair/wss-reconnect/guardian-recover/cooldown-recover 找回的 final 也通知，startup/periodic 历史补档不轰炸。
+- [in_progress] 隔离 worktree 已通过 node syntax、TypeScript typecheck、定向 3 files/62 tests 和全量 24 files/163 tests；待完成主分支文档冲突合并、生产部署，并以之后一条自然 complete 作为真实 Bark canary。
+
 ## 2026-10-07 Watchdog generation 收口 / 漏通知修复 ExecPlan
 
 - [done] 复原 `6ac53e83-...` 的真实漏通知链：上一轮 02:32 turn 已在 03:58 watchdog 诊断并 Bark 200，但 active_watchdog generation 未关闭；14:49 新 turn 的首个 DevSpace tool 因同 CID 仍 active 被误当 heartbeat，直到 16:19 body 才发现 turn key 已变化并错误从“发现时刻”重新计 45min。
