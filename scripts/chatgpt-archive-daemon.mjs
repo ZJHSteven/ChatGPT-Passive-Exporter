@@ -15,7 +15,7 @@
  */
 
 import fs from 'node:fs/promises'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import path from 'node:path'
 import process from 'node:process'
 import { execFileSync, spawn } from 'node:child_process'
@@ -1341,6 +1341,9 @@ async function main() {
   // `stream_status + canonical body` checkpoint fallback。它只在明确 active CID 上建立，
   // 并和 LiveTurn transport 分开：一旦本机已经有真正 live transport，就暂停主动 checkpoint。
   const checkpointWatches = new Map()
+  // 第一方 late-open 的 x-oai-turn-trace-id 已真机确认是每个 polling session 独立生成的 UUID。
+  // raw trace 只驻留内存，不写 state/log；同一 Guardian 可以同时承载多个 CID 的独立 polling session。
+  const checkpointTurnContexts = new Map()
   let checkpointInFlight = false
   let checkpointProbes = 0
   let checkpointBodyRefreshes = 0
@@ -1619,6 +1622,10 @@ async function main() {
       completed: checkpointCompleted,
       watches: [...checkpointWatches.values()]
         .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))
+        .map(watch => ({
+          ...watch,
+          turnTraceBound: checkpointTurnContexts.has(watch.conversationId),
+        }))
         .slice(-32),
     },
     devspace: {
@@ -2254,7 +2261,10 @@ async function main() {
     activeReplayRequestUrl = relativeBackendUrl(request.url)
     let response
     try {
-      response = await pageFetchJson(guardian.page, { ...request, headers: authHeaders })
+      const headers = options.extraHeaders
+        ? { ...authHeaders, ...options.extraHeaders }
+        : authHeaders
+      response = await pageFetchJson(guardian.page, { ...request, headers })
     }
     finally {
       activeReplayRequestUrl = null
@@ -2309,10 +2319,15 @@ async function main() {
       firstProbeDelayMs: checkpointFirstProbeMs,
     })
     checkpointWatches.set(conversationId, watch)
+    checkpointTurnContexts.set(conversationId, {
+      turnTraceId: randomUUID(),
+      createdAt: now,
+    })
     void log('checkpoint refresh armed', {
       conversationId,
       source: watch.source,
       firstProbeAt: watch.nextProbeAt,
+      turnTrace: 'session-scoped',
     }).catch(() => {})
     return watch
   }
@@ -2322,6 +2337,7 @@ async function main() {
     const watch = checkpointWatches.get(conversationId)
     if (!watch) return null
     checkpointWatches.delete(conversationId)
+    checkpointTurnContexts.delete(conversationId)
     void log('checkpoint refresh stopped', {
       conversationId,
       reason,
@@ -2387,6 +2403,7 @@ async function main() {
       kind: 'body',
     }, {
       skipRequestSlot: options.skipFirstRequestSlot === true,
+      extraHeaders: options.extraHeaders,
     })
     if (passiveFirst) passiveBodyPagesReused += 1
     if (!Array.isArray(first.messages)) throw new Error(`conversation ${conversationId} latest body has no messages[]`)
@@ -2476,9 +2493,9 @@ async function main() {
       pages += 1
 
       const pageInfo = pagePayload.page_info || {}
-      if (pageInfo.has_previous_page === false || allKnownBefore) {
+      if (pageInfo.has_previous_page === false || allKnownBefore || (options.latestOnly === true && pages === 1)) {
         let exactMapping = false
-        if (versionMarkerIds.size > 0) {
+        if (options.latestOnly !== true && versionMarkerIds.size > 0) {
           const exactSource = archive.db.prepare(`
             SELECT parent_source AS parentSource
             FROM mapping_nodes
@@ -2558,6 +2575,8 @@ async function main() {
         targetPath: messagePath,
         targetRoute: '/backend-api/conversations/{conversation_id}/messages',
         kind: 'body',
+      }, {
+        extraHeaders: options.extraHeaders,
       })
       if (passivePageEntry) {
         passiveBodyPagesReused += 1
@@ -2588,6 +2607,12 @@ async function main() {
     if (!due) return
 
     const [conversationId, current] = due
+    let turnContext = checkpointTurnContexts.get(conversationId)
+    if (!turnContext) {
+      turnContext = { turnTraceId: randomUUID(), createdAt: now }
+      checkpointTurnContexts.set(conversationId, turnContext)
+    }
+    const turnHeaders = { 'x-oai-turn-trace-id': turnContext.turnTraceId }
 
     // 本机原始 SSE / resume SSE / turn-WSS 比 checkpoint 更完整；有 live transport 时不制造重复请求。
     if (hasLiveTransportForConversation(conversationId)) {
@@ -2616,6 +2641,8 @@ async function main() {
         targetPath: statusPath,
         targetRoute: '/backend-api/conversation/{conversation_id}/stream_status',
         kind: 'body',
+      }, {
+        extraHeaders: turnHeaders,
       })
       checkpointProbes += 1
 
@@ -2691,6 +2718,8 @@ async function main() {
       try {
         result = await syncConversation(conversationId, 'checkpoint:streaming', {
           skipFirstRequestSlot: true,
+          extraHeaders: turnHeaders,
+          latestOnly: true,
         })
         syncedConversations += 1
       }
