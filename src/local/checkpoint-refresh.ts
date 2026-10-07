@@ -34,10 +34,19 @@ export interface CheckpointWatchState {
   lastStatusRaw: string | null
   lastCurrentNode: string | null
   lastUpdateTime: string | number | null
+  /** 最近一次 canonical head 发生真实变化的时间；用于无进展自动止损。 */
+  lastProgressAt: number
+  /** canonical head 真实前进的次数；首份 body 也记作一次已知进展。 */
+  progressEvents: number
   turnExchangeId: string | null
   requestId: string | null
   lastError: string | null
 }
+
+export type CheckpointSafetyStopReason =
+  | 'watch-age-limit'
+  | 'request-budget-limit'
+  | 'no-progress-limit'
 
 /**
  * 把第一方 status payload 压成 Archive 只需要的三态。
@@ -92,6 +101,8 @@ export function createCheckpointWatch(args: {
     lastStatusRaw: null,
     lastCurrentNode: null,
     lastUpdateTime: null,
+    lastProgressAt: args.now,
+    progressEvents: 0,
     turnExchangeId: null,
     requestId: null,
     lastError: null,
@@ -131,20 +142,59 @@ export function recordCheckpointBody(args: {
   requestId?: unknown
 }): CheckpointWatchState {
   const asString = (value: unknown): string | null => typeof value === 'string' && value ? value : null
+  const currentNode = asString(args.currentNode)
   const updateTime = typeof args.updateTime === 'string' || typeof args.updateTime === 'number'
     ? args.updateTime
     : null
+  const firstBody = args.state.bodyRefreshes === 0
+  const progressed = firstBody
+    || currentNode !== args.state.lastCurrentNode
+    || updateTime !== args.state.lastUpdateTime
   return {
     ...args.state,
     bodyRefreshes: args.state.bodyRefreshes + 1,
     lastObservedAt: args.now,
-    lastCurrentNode: asString(args.currentNode),
+    lastCurrentNode: currentNode,
     lastUpdateTime: updateTime,
+    lastProgressAt: progressed ? args.now : args.state.lastProgressAt,
+    progressEvents: args.state.progressEvents + (progressed ? 1 : 0),
     turnExchangeId: asString(args.turnExchangeId) ?? args.state.turnExchangeId,
     requestId: asString(args.requestId) ?? args.state.requestId,
     consecutiveErrors: 0,
     lastError: null,
   }
+}
+
+/**
+ * 主动 checkpoint polling 的纯安全门。
+ *
+ * 生产实测表明：第一方页面短时 7~10 秒 polling 本身成立，但把它无限复制成后台 watcher
+ * 会在几十到上百次私有请求后反复触发 429。因此“cadence 像第一方”不等于“可以无限运行”。
+ * 这里把单 watcher 的年龄、请求总量和无进展窗口都做成显式上限；daemon 在每次新 probe 前
+ * 先调用本函数，命中任一条件就停止且 suppress 该 CID，绝不再发本轮请求。
+ */
+export function checkpointSafetyStopReason(args: {
+  state: CheckpointWatchState
+  now: number
+  maxWatchMs: number
+  maxRequests: number
+  noProgressMs: number
+}): CheckpointSafetyStopReason | null {
+  const maxWatchMs = Math.max(1_000, Math.floor(Number(args.maxWatchMs) || 0))
+  const maxRequests = Math.max(1, Math.floor(Number(args.maxRequests) || 0))
+  const noProgressMs = Math.max(1_000, Math.floor(Number(args.noProgressMs) || 0))
+  const ageMs = Math.max(0, Number(args.now) - Number(args.state.startedAt || 0))
+  if (ageMs >= maxWatchMs) return 'watch-age-limit'
+
+  const requests = Math.max(0, Number(args.state.probes || 0))
+    + Math.max(0, Number(args.state.bodyRefreshes || 0))
+  if (requests >= maxRequests) return 'request-budget-limit'
+
+  if (args.state.bodyRefreshes > 0) {
+    const noProgressForMs = Math.max(0, Number(args.now) - Number(args.state.lastProgressAt || args.state.startedAt || 0))
+    if (noProgressForMs >= noProgressMs) return 'no-progress-limit'
+  }
+  return null
 }
 
 /**
