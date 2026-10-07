@@ -25,6 +25,7 @@ import {
   shouldRunDeferredGapRepair,
   shouldQueueWatchdogDiagnostic,
   shouldRepairConversationTransport,
+  shouldRetireWssSocketsForFrameNavigation,
   shouldAttachPassivePageObserver,
   watchdogDiagnosticTurnKey,
   reconcileWatchdogDiagnosticTurn,
@@ -38,6 +39,24 @@ import {
 } from '../scripts/chatgpt-archive-daemon.mjs'
 
 describe('ChatGPT Archive daemon WSS parser', () => {
+  test('只有顶层 ChatGPT document replacement 才淘汰旧 WSS；iframe/其它站点/SPA 不误判', () => {
+    expect(shouldRetireWssSocketsForFrameNavigation({
+      url: 'https://chatgpt.com/c/6ac5ebe1-c5c4-83ea-afc9-66a9cef1dd59',
+    })).toBe(true)
+    expect(shouldRetireWssSocketsForFrameNavigation({
+      url: 'https://chatgpt.com/',
+      parentId: '',
+    })).toBe(true)
+    expect(shouldRetireWssSocketsForFrameNavigation({
+      url: 'https://chatgpt.com/some-frame',
+      parentId: 'parent-frame-id',
+    })).toBe(false)
+    expect(shouldRetireWssSocketsForFrameNavigation({
+      url: 'https://example.com/',
+    })).toBe(false)
+    expect(shouldRetireWssSocketsForFrameNavigation(null)).toBe(false)
+  })
+
   test('Guardian 也属于被动页面 observer：物理合并后仍能抓 Actor SSE', () => {
     const guardian = {
       id: 'guardian-target',
