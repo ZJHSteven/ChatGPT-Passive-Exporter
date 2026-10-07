@@ -378,7 +378,26 @@ async function readActorPageSnapshot(client: ActorCdpClient): Promise<ActorPageS
       ...document.querySelectorAll('textarea'),
     ].find(usable) || null
     const form = input?.closest('form') || null
-    const buttons = form ? [...form.querySelectorAll('button')].filter(usable) : []
+    const usableComposerButton = (button) => {
+      if (!button || !button.isConnected || button.disabled) return false
+      const rect = button.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return false
+      const ownStyle = window.getComputedStyle(button)
+      if (ownStyle.display === 'none' || ownStyle.visibility === 'hidden' || ownStyle.visibility === 'collapse') return false
+      if (Number.parseFloat(ownStyle.opacity || '1') <= 0.01 || ownStyle.pointerEvents === 'none') return false
+      for (let node = button; node && node !== form; node = node.parentElement) {
+        if (!(node instanceof HTMLElement)) continue
+        if (node.hidden || node.hasAttribute('inert')) return false
+        const style = window.getComputedStyle(node)
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false
+        if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
+      }
+      return true
+    }
+    // input 已经通过严格 hit-test，form 因而是当前可交互 composer。其内部 submit/stop 控件
+    // 不再重复做 elementFromPoint 中心点命中测试：当前浮动聊天布局会在按钮上方叠加装饰层，
+    // 但第一方 button 自身仍是 enabled + pointer-events:auto，重复 hit-test 会产生假阴性。
+    const buttons = form ? [...form.querySelectorAll('button')].filter(usableComposerButton) : []
     const buttonIdentity = (button) => [
       button.getAttribute('data-testid') || '',
       button.getAttribute('aria-label') || '',
@@ -865,6 +884,22 @@ async function clickSendHandler(client: ActorCdpClient): Promise<void> {
     ].find(usable) || null
     const form = input?.closest('form') || null
     if (!form || !form.hasAttribute('data-chatgpt-composer')) return false
+    const usableComposerButton = (button) => {
+      if (!button || !button.isConnected || button.disabled) return false
+      const rect = button.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return false
+      const ownStyle = window.getComputedStyle(button)
+      if (ownStyle.display === 'none' || ownStyle.visibility === 'hidden' || ownStyle.visibility === 'collapse') return false
+      if (Number.parseFloat(ownStyle.opacity || '1') <= 0.01 || ownStyle.pointerEvents === 'none') return false
+      for (let node = button; node && node !== form; node = node.parentElement) {
+        if (!(node instanceof HTMLElement)) continue
+        if (node.hidden || node.hasAttribute('inert')) return false
+        const style = window.getComputedStyle(node)
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false
+        if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
+      }
+      return true
+    }
     const identity = (button) => [
       button.getAttribute('data-testid') || '',
       button.getAttribute('aria-label') || '',
@@ -872,7 +907,7 @@ async function clickSendHandler(client: ActorCdpClient): Promise<void> {
       (button.innerText || '').trim(),
     ].join(' ')
     const button = [...form.querySelectorAll('button')]
-      .filter(usable)
+      .filter(usableComposerButton)
       .find((candidate) => {
         const text = identity(candidate)
         if (/stop|停止/iu.test(text)) return false
