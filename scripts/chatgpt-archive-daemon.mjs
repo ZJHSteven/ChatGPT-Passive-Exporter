@@ -1199,6 +1199,22 @@ export function shouldRepairConversationTransport(observedCarrierBefore, current
   return Boolean(observedCarrierBefore) && current !== next
 }
 
+/**
+ * 只有真正的顶层 ChatGPT document replacement 才需要淘汰旧 WSS telemetry。
+ *
+ * ChatGPT 正常 sidebar/new-chat 路由走 SPA，不会触发 `Page.frameNavigated`；而 `Page.navigate`、
+ * reload、renderer 恢复会创建一个新的顶层 document。旧 document 的 WebSocket JS 对象此时已经
+ * 不可能继续属于当前页面，但 Chrome CDP 在 document replacement 场景下并不保证逐条补发
+ * `Network.webSocketClosed`。若继续把旧 requestId 留在 activeSocketIds，3 条账户 socket 会在每次
+ * full navigation 后累积成 6/9/12，最终让“是否仍有 WSS”这个健康判断失真。
+ */
+export function shouldRetireWssSocketsForFrameNavigation(frame) {
+  if (!frame || typeof frame !== 'object') return false
+  if (typeof frame.parentId === 'string' && frame.parentId) return false
+  const url = typeof frame.url === 'string' ? frame.url : ''
+  return url.startsWith('https://chatgpt.com/')
+}
+
 async function main() {
   const flags = parseArgs(process.argv.slice(2))
   const cdpHttp = String(flags.get('cdp') || DEFAULT_CDP).replace(/\/$/u, '')
@@ -4223,6 +4239,54 @@ async function main() {
    const page = guardian.page
     const guardianProtocolRequestSignatures = new Map()
     const guardianProtocolResponses = new Map()
+
+    page.on('Page.frameNavigated', ({ frame }) => {
+      if (!shouldRetireWssSocketsForFrameNavigation(frame)) return
+      const retiredIds = [...activeSocketIds]
+      if (retiredIds.length === 0) return
+
+      const now = Date.now()
+      for (const requestId of retiredIds) {
+        const socket = wssSocketTelemetry.get(requestId) || null
+        wssSocketTelemetry.delete(requestId)
+        recentWssSocketLifecycles.push({
+          requestId,
+          generation: socket?.generation ?? wssGeneration,
+          createdAt: socket?.createdAt ?? null,
+          closedAt: now,
+          lifetimeMs: socket?.createdAt ? Math.max(0, now - Number(socket.createdAt)) : null,
+          sentSubscribedTopics: socket ? [...socket.sentSubscribedTopics].sort() : [],
+          acknowledgedTopics: socket ? [...socket.acknowledgedTopics].sort() : [],
+          recoveredByTopic: socket ? Object.fromEntries([...socket.recoveredByTopic.entries()].sort(([a], [b]) => a.localeCompare(b))) : {},
+          observedMessageTopics: socket ? [...socket.observedMessageTopics].sort() : [],
+          controlFrames: socket?.controlFrames ?? 0,
+          activeSocketsAfter: 0,
+          enteredGlobalGap: true,
+          retiredBy: 'top-level-document-navigation',
+        })
+      }
+      if (recentWssSocketLifecycles.length > 32) recentWssSocketLifecycles = recentWssSocketLifecycles.slice(-32)
+      activeSocketIds = new Set()
+
+      if (conversationTransportRequestId) {
+        lastConversationTransportRequestId = conversationTransportRequestId
+        conversationTransportRequestId = null
+        lastConversationTransportClosedAt = now
+      }
+      lastWssClosedAt = now
+      wssGapStartedAt = now
+      subscribedTopics = new Set()
+      observedMessageTopics = new Set()
+      observedConversationEventTypes = new Set()
+      conversationSubscriptionRecovered = null
+
+      void log('ChatGPT WSS sockets retired for top-level document navigation', {
+        url: typeof frame?.url === 'string' ? frame.url : null,
+        retiredSockets: retiredIds.length,
+        requestIds: retiredIds.slice(0, 16),
+        conversationCarrier: lastConversationTransportRequestId,
+      })
+    })
 
     /**
      * 只记录 WSS 的协议控制面，不记录业务正文。
