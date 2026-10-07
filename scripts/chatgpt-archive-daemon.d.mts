@@ -181,6 +181,12 @@ export function shouldRepairConversationTransport(
   nextRequestId: unknown,
 ): boolean
 
+/** 顶层 ChatGPT document replacement 时旧 document WSS 不再算 active；iframe/SPA 不触发。 */
+export function shouldRetireWssSocketsForFrameNavigation(frame: {
+  parentId?: unknown
+  url?: unknown
+} | null | undefined): boolean
+
 /** 只有“无 WSS”从本次 gap 起持续超过 grace 后，才允许重建 Guardian。 */
 export function shouldRebuildGuardianForMissingWss(input: {
   now: number
