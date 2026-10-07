@@ -184,7 +184,41 @@ describe('Actor DOM drift fingerprinting', () => {
     }), 4_000)
     expect(drift.baseline).toBe(false)
     expect(drift.pending).toBe(true)
+    // 未审批结构不能因为“已经见过一次”就在第二次重试时自动放行。
+    const retry = ledger.observe(observation({
+      composer: {
+        tag: 'div',
+        id: 'new-prompt-root',
+        role: 'textbox',
+        contentEditable: 'true',
+        formMarker: true,
+      },
+    }), 4_500)
+    expect(retry.isNew).toBe(false)
+    expect(retry.baseline).toBe(false)
+    expect(retry.pending).toBe(true)
     expect(ledger.pendingChanges({ unreportedOnly: false })).toHaveLength(1)
+  })
+
+  test('仅 sidebar presence 变化时继承完全相同安全骨架的已批准 baseline', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'actor-dom-sidebar-variant-'))
+    const file = path.join(dir, 'ledger.json')
+    const ledger = await ActorDomDriftLedger.open(file, { now: 1_000, baselineWindowMs: 60_000 })
+    ledger.observe(observation(), 2_000)
+    ledger.lockBaseline(3_000)
+
+    const collapsedSidebar = ledger.observe(observation({
+      sidebar: {
+        canonicalConversationLink: false,
+        projectLink: false,
+        accountButton: false,
+      },
+    }), 4_000)
+
+    expect(collapsedSidebar.isNew).toBe(true)
+    expect(collapsedSidebar.baseline).toBe(true)
+    expect(collapsedSidebar.pending).toBe(false)
+    expect(ledger.pendingChanges({ unreportedOnly: false })).toEqual([])
   })
 
   test('人工 approve 后 pending 结构提升为可信基线并可持久化', async () => {
