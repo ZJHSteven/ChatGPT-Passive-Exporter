@@ -108,6 +108,21 @@ function hashShape(value: unknown): string {
   return createHash('sha256').update(stableJson(value)).digest('hex').slice(0, 16)
 }
 
+/**
+ * sidebar 里“当前有没有可见 conversation/project/account 入口”属于易变页面状态，而不是
+ * Actor 真正依赖的发送安全骨架：侧栏可能折叠、虚拟化、分页，目标 conversation 不在当前
+ * DOM 时 Actor 本来就会退回 full navigation。这里仅在 **其余所有结构字段完全一致** 时，
+ * 允许一个已批准 baseline 为新的 sidebar presence 变体背书。
+ *
+ * 注意这不是把 sidebar 从 forensic shape 里删除：完整布尔值仍落 ledger，便于事后看页面形态；
+ * 只是它单独变化不再阻断发送。composer/form/new-chat/attachment/primary-action 等任何变化仍 pending。
+ */
+function sameStableAutomationSkeleton(left: ActorDomShape, right: ActorDomShape): boolean {
+  const { sidebar: _leftSidebar, ...leftStable } = left
+  const { sidebar: _rightSidebar, ...rightStable } = right
+  return stableJson(leftStable) === stableJson(rightStable)
+}
+
 function normalizedNullable(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
@@ -246,7 +261,11 @@ export class ActorDomDriftLedger {
     const signature = actorDomSignature(shape)
     let variant = this.state.variants[signature]
     const isNew = !variant
-    const baseline = this.state.baselineLockedAt === null
+    const trustedSidebarVariant = this.state.baselineLockedAt !== null
+      && Object.values(this.state.variants).some(candidate => (
+        candidate.baseline && sameStableAutomationSkeleton(candidate.shape, shape)
+      ))
+    const baseline = this.state.baselineLockedAt === null || trustedSidebarVariant
     if (!variant) {
       variant = {
         signature,
@@ -259,6 +278,12 @@ export class ActorDomDriftLedger {
       }
       this.state.variants[signature] = variant
     }
+    else if (!variant.baseline && trustedSidebarVariant) {
+      // 旧版本可能已经把这个 sidebar-only 变体记录成 pending；升级后首次再观察时原地纠正，
+      // 不要求用户为纯折叠/虚拟化状态手工 approve。
+      variant.baseline = true
+      variant.lastReportedAt = observedAt
+    }
     variant.lastSeenAt = observedAt
     variant.count += 1
     this.state.updatedAt = observedAt
@@ -266,7 +291,9 @@ export class ActorDomDriftLedger {
       signature,
       isNew,
       baseline: variant.baseline,
-      pending: isNew && !variant.baseline,
+      // 未批准结构不能因为“已经见过一次”就在第二次重试时自动放行；只有 approve()、
+      // 学习期 baseline 或上面的严格 sidebar-only 等价规则能解除 pending。
+      pending: !variant.baseline,
       shape,
     }
   }
