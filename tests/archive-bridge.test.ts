@@ -24,7 +24,29 @@ function mockArchive(): ArchiveBridgeDataSource {
         importedAt: 210,
         messageCount: 3,
         resourceCount: 0,
+        terminalState: 'final',
+        incidentState: null,
+        lastFinishType: 'stop',
+        lastFinishReason: null,
+        lastReasoningStatus: 'finished',
       }].slice(0, limit)
+    },
+    search(query: string, limit = 20) {
+      if (!query.includes('测试')) return []
+      return [{
+        conversationId: 'cid-1',
+        messageId: 'm2',
+        title: '测试会话',
+        role: 'assistant',
+        text: '你好！',
+        rank: 0,
+      }].slice(0, limit)
+    },
+    listIncidents() {
+      return []
+    },
+    listActiveWatchdogs() {
+      return []
     },
     getMessages(conversationId: string) {
       if (conversationId !== 'cid-1') return []
@@ -39,6 +61,7 @@ function mockArchive(): ArchiveBridgeDataSource {
           text: '你好',
           hidden: 0,
           createTime: 1,
+          turnExchangeId: 'turn-1',
           // 任意额外 raw 字段都不应该被 Bridge 原样透出。
           metadataJson: '{"secret":"must-not-leak"}',
         },
@@ -61,6 +84,21 @@ function mockArchive(): ArchiveBridgeDataSource {
           text: '你好！',
           hidden: 0,
           createTime: 3,
+          turnExchangeId: 'turn-1',
+          finishType: 'stop',
+          reasoningStatus: 'finished',
+        },
+        {
+          messageId: 'reasoning-internal',
+          ordinal: 4,
+          role: 'assistant',
+          recipient: 'assistant',
+          channel: 'analysis',
+          contentType: 'reasoning',
+          text: '这里是模型内部推理，Reader 绝不能显示',
+          hidden: 0,
+          createTime: 2.5,
+          turnExchangeId: 'turn-1',
         },
       ]
     },
@@ -136,9 +174,44 @@ describe('Archive Bridge', () => {
     const messages = await fetch(`${base}/v1/conversations/cid-1/messages`, { headers })
     expect(messages.status).toBe(200)
     const body = await messages.json() as { messages: Array<Record<string, unknown>> }
-    expect(body.messages.map(item => item.messageId)).toEqual(['m1', 'm2'])
+    expect(body.messages.map(item => item.messageId)).toEqual(['m1', 'm2', 'reasoning-internal'])
     expect(JSON.stringify(body)).not.toContain('must-not-leak')
     expect(JSON.stringify(body)).not.toContain('内部隐藏消息')
+    expect(JSON.stringify(body)).not.toContain('这里是模型内部推理')
+    expect(body.messages.at(-1)).toMatchObject({
+      messageId: 'reasoning-internal',
+      reasoningRedacted: true,
+      text: '',
+      turnExchangeId: 'turn-1',
+    })
+  })
+
+  test('search 和 worksite resolve 返回可供 LifeOps 使用的脱敏工作现场', async () => {
+    const { base, headers } = await startBridge()
+
+    const search = await fetch(`${base}/v1/search?q=${encodeURIComponent('测试')}&limit=10`, { headers })
+    expect(search.status).toBe(200)
+    expect(await search.json()).toMatchObject({
+      query: '测试',
+      hits: [{ conversationId: 'cid-1', title: '测试会话' }],
+    })
+
+    const resolved = await fetch(
+      `${base}/v1/worksites/resolve?conversation_id=cid-1&turn_exchange_id=turn-1`,
+      { headers },
+    )
+    expect(resolved.status).toBe(200)
+    const body = await resolved.json() as { worksite: Record<string, unknown> }
+    expect(body.worksite).toMatchObject({
+      conversationId: 'cid-1',
+      turnExchangeId: 'turn-1',
+      title: '测试会话',
+      summary: '你好！',
+      runState: 'completed',
+      reviewState: 'unread',
+      url: 'https://chatgpt.com/c/cid-1',
+    })
+    expect(JSON.stringify(body)).not.toContain('这里是模型内部推理')
   })
 
   test('turn submit 校验输入，并把 cooldown 映射为 HTTP 429', async () => {
