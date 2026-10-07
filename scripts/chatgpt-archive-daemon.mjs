@@ -3678,6 +3678,9 @@ async function main() {
     for (const [metadataId, candidate] of unboundDevSpaceTurns) {
       if (now - Number(candidate.startedAt) < watchdogMs) continue
       archive.markDevSpaceUnboundWatchdog(metadataId, now)
+      // CID 还没解出来也不能静默：先告诉用户“Watchdog 已到点但当前无法安全定位聊天”。
+      // 持久 notification key 保证这个 provisional 事件跨循环/重启只成功发送一次。
+      dispatchUnboundWatchdogNotification(metadataId, candidate, now)
       if (!candidate.repairQueuedAt) {
         candidate.repairQueuedAt = now
         void log('unbound DevSpace watchdog exceeded threshold; queued catalog repair', {
@@ -4305,6 +4308,9 @@ async function main() {
     for (const [conversationId, active] of activeTurns) {
       if (active.watchdogPendingAt) {
         stopCheckpointWatch(conversationId, 'watchdog-pending', now)
+        // daemon 重启后若恢复的是“已经到点但恰逢 cooldown”的 pending generation，
+        // 仍然补发一次 provisional 到点通知；ledger 会自动跳过已经成功发送的那一条。
+        dispatchWatchdogDeferredNotification(conversationId, active, now)
         if (!ready.has(conversationId)) {
           const watchdogTrigger = watchdogTriggerForStartType(active.startType)
           markSyncReady(conversationId, watchdogTrigger, 0)
@@ -4325,6 +4331,9 @@ async function main() {
       active.lastWatchdogAt = now
       active.watchdogPendingAt = now
       persistActiveTurn(conversationId, active)
+      // cooldown 只会阻止主动 body，不应该阻止“Watchdog 已到点”这个事实本身通知用户。
+      // 非 cooldown 情况不在这里先发：body 能立即诊断时只发最终结果，避免一轮两条噪音。
+      dispatchWatchdogDeferredNotification(conversationId, active, now)
       const watchdogTrigger = watchdogTriggerForStartType(active.startType)
       markSyncReady(conversationId, watchdogTrigger, 0)
       void log('active turn exceeded watchdog; queued diagnostic body sync', {
