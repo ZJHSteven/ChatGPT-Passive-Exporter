@@ -3627,13 +3627,20 @@ async function main() {
    * 导致启动 CPU 飙高的问题。只有同一 metadata 的所有可信命中都落在同一个 conversation，
    * 才持久化 binding。
    */
-  const backfillStoredDevSpaceBindings = () => {
-    const unbound = archive.listDevSpaceMetadataBindings({ onlyUnbound: true, limit: 1000 })
+  const backfillStoredDevSpaceBindings = ({ sinceAt = null } = {}) => {
+    const unbound = archive.listDevSpaceMetadataBindings({
+      onlyUnbound: true,
+      ...(Number.isFinite(Number(sinceAt)) ? { sinceAt: Number(sinceAt) } : {}),
+      limit: 1000,
+    })
     if (unbound.length === 0) return 0
 
     const globalStartAt = Math.max(
       0,
-      Math.min(...unbound.map(binding => Number(binding.firstSeenAt))) - 5 * 60_000,
+      Math.min(...unbound.map(binding => Math.max(
+        Number(binding.firstSeenAt),
+        Number.isFinite(Number(sinceAt)) ? Number(sinceAt) : 0,
+      ))) - 5 * 60_000,
     )
     const globalEndAt = Math.max(
       ...unbound.map(binding => Number(binding.lastSeenAt)),
@@ -5264,6 +5271,19 @@ async function main() {
   if (devSpaceBackfilledBindings > 0) {
     await log('DevSpace exact-match binding backfill complete', {
       created: devSpaceBackfilledBindings,
+    })
+  }
+
+  // parser / binding 策略升级后，旧 metadata 可能“以前匹配不了、现在能匹配”。
+  // 每次启动只对近期 unbound 做一个窄窗口重验，避免为了几个活跃候选重扫数周历史。
+  const recentBackfillSinceAt = Date.now() - Math.max(watchdogMs * 2, 2 * 60 * 60_000)
+  const recentDevSpaceBackfilledBindings = backfillStoredDevSpaceBindings({
+    sinceAt: recentBackfillSinceAt,
+  })
+  if (recentDevSpaceBackfilledBindings > 0) {
+    await log('DevSpace recent exact-match binding backfill complete', {
+      created: recentDevSpaceBackfilledBindings,
+      sinceAt: recentBackfillSinceAt,
     })
   }
 

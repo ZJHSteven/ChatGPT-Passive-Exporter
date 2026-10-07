@@ -3103,6 +3103,7 @@ export class ChatArchiveDb {
         confidence=excluded.confidence,
         last_turn_exchange_id=COALESCE(excluded.last_turn_exchange_id, devspace_metadata_bindings.last_turn_exchange_id),
         last_request_id=COALESCE(excluded.last_request_id, devspace_metadata_bindings.last_request_id),
+        unbound_watchdog_at=NULL,
         lifecycle_state=excluded.lifecycle_state
     `).run(
       input.metadataId,
