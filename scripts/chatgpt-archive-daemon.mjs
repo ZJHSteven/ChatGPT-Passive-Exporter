@@ -1237,6 +1237,24 @@ async function main() {
   const protocolLedgerPath = flags.has('protocol-ledger')
     ? path.resolve(String(flags.get('protocol-ledger')))
     : DEFAULT_PROTOCOL_LEDGER
+  // Phase 5 Bridge 默认只监听 loopback。即使用户显式传了其它 host，也必须再给
+  // `--allow-remote-bridge` 才允许启动，避免一次参数误写把本地 Archive/Actor 控制面暴露出去。
+  const bridgeEnabled = !flags.has('no-bridge')
+  const bridgeHost = String(flags.get('bridge-host') || DEFAULT_BRIDGE_HOST).trim()
+  const bridgePort = intFlag(flags, 'bridge-port', DEFAULT_BRIDGE_PORT, 1)
+  const bridgeAuthPath = flags.has('bridge-auth')
+    ? path.resolve(String(flags.get('bridge-auth')))
+    : DEFAULT_BRIDGE_AUTH
+  const actorStatePath = flags.has('actor-state')
+    ? path.resolve(String(flags.get('actor-state')))
+    : DEFAULT_ACTOR_STATE
+  const domLedgerPath = flags.has('dom-ledger')
+    ? path.resolve(String(flags.get('dom-ledger')))
+    : DEFAULT_DOM_LEDGER
+  const loopbackBridgeHost = bridgeHost === '127.0.0.1' || bridgeHost === '::1' || bridgeHost === 'localhost'
+  if (bridgeEnabled && !loopbackBridgeHost && !flags.has('allow-remote-bridge')) {
+    throw new Error('Archive Bridge non-loopback bind requires explicit --allow-remote-bridge')
+  }
   const devSpaceDbPath = flags.has('devspace-db')
     ? path.resolve(String(flags.get('devspace-db')))
     : defaultDevSpaceDbPath()
@@ -1293,6 +1311,10 @@ async function main() {
   const archive = new ChatArchiveDb(dbPath)
   const devSpaceAuditBridge = new DevSpaceAuditBridge(devSpaceDbPath)
   const devSpaceAuditWakeListener = new DevSpaceAuditWakeListener()
+  /** Bridge 失败不能拖死 Archive 核心；状态会明确暴露 lastError，后续可单独修复/重启。 */
+  let archiveBridge = null
+  let archiveBridgeStartedAt = null
+  let archiveBridgeLastError = null
   let guardian = null
   // `guardian === null` 同时出现在“进程第一次启动”和“运行中自愈 catch 已清空旧 Guardian”两种
   // 场景；不能再仅凭 null 决定 reason。否则运行中 WSS/renderer 故障会被误标成 startup，
