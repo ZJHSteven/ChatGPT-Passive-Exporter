@@ -50,6 +50,11 @@ export interface DevSpaceBindingMatch {
   uniqueMatches: number
 }
 
+// 真机观测中 ChatGPT body 的 tool-call create_time 与 DevSpace tool_audit.started_at
+// 绝大多数只差几秒；p99 < 30s。保留 120s 覆盖 Host/SQLite 落盘抖动，但禁止把几小时
+// 甚至几天前另一个 conversation 的相同 tool+args 当成当前 turn 的 exact evidence。
+const DEVSPACE_BINDING_TIME_TOLERANCE_MS = 120_000
+
 export interface DevSpaceConversationBindingMirror {
   metadataId: string
   conversationId: string
@@ -92,8 +97,8 @@ export function groupDevSpaceActivity(events: DevSpaceAuditEvent[]): DevSpaceMet
 /**
  * 从 ChatGPT body 的 api_tool.call_tool 节点解析 DevSpace 调用。
  *
- * binding 不再依赖“某个时间窗里只有一个 metadata”这种脆弱条件，而是直接比较
- * 两边都已经存在的 tool + args。时间只用来缩小 SQLite 查询范围，不参与胜负判定。
+ * binding 不再依赖“某个时间窗里只有一个 metadata”这种脆弱条件，而是比较
+ * 两边都已经存在的 tool + args，并要求同一 fingerprint 的 audit/body 时间足够接近。
  */
 export function parseDevSpaceBodyToolCall(text: string, startedAtMs: number): DevSpaceBodyToolCall | null {
   try {
@@ -139,7 +144,7 @@ function toolArgsFingerprint(tool: string, argsJson: string): string | null {
 }
 
 /**
- * 用真实 tool + args 做 exact matching。
+ * 用真实 tool + args + 局部时间一致性做 exact matching。
  *
  * 接受规则故意简单：
  * - 至少两个不同 exact fingerprints；或
@@ -153,12 +158,21 @@ export function matchDevSpaceCandidateForTurn(input: {
 }): DevSpaceBindingMatch | null {
   if (input.bodyCalls.length === 0) return null
   const bound = new Set(input.alreadyBoundMetadataIds ?? [])
-  const bodyFingerprints = new Set(
-    input.bodyCalls
-      .map(call => toolArgsFingerprint(call.tool, call.argsJson))
-      .filter((value): value is string => Boolean(value)),
-  )
+  const bodyByFingerprint = new Map<string, number[]>()
+  for (const call of input.bodyCalls) {
+    const fingerprint = toolArgsFingerprint(call.tool, call.argsJson)
+    if (!fingerprint) continue
+    const times = bodyByFingerprint.get(fingerprint) ?? []
+    times.push(call.startedAtMs)
+    bodyByFingerprint.set(fingerprint, times)
+  }
+  const bodyFingerprints = new Set(bodyByFingerprint.keys())
   if (bodyFingerprints.size === 0) return null
+
+  const auditMatchesBodyInTime = (fingerprint: string, startedAtMs: number) => {
+    const times = bodyByFingerprint.get(fingerprint)
+    return Boolean(times?.some(time => Math.abs(time - startedAtMs) <= DEVSPACE_BINDING_TIME_TOLERANCE_MS))
+  }
 
   const fingerprintOwners = new Map<string, Set<string>>()
   for (const activity of input.activities) {
@@ -168,6 +182,7 @@ export function matchDevSpaceCandidateForTurn(input: {
     for (const audit of activity.audits) {
       const fingerprint = toolArgsFingerprint(audit.tool, audit.argsJson)
       if (!fingerprint || !bodyFingerprints.has(fingerprint)) continue
+      if (!auditMatchesBodyInTime(fingerprint, audit.startedAtMs)) continue
       const owners = fingerprintOwners.get(fingerprint) ?? new Set<string>()
       owners.add(activity.metadataId)
       fingerprintOwners.set(fingerprint, owners)
@@ -180,7 +195,9 @@ export function matchDevSpaceCandidateForTurn(input: {
     const exact = new Set<string>()
     for (const audit of activity.audits) {
       const fingerprint = toolArgsFingerprint(audit.tool, audit.argsJson)
-      if (fingerprint && bodyFingerprints.has(fingerprint)) exact.add(fingerprint)
+      if (fingerprint
+        && bodyFingerprints.has(fingerprint)
+        && auditMatchesBodyInTime(fingerprint, audit.startedAtMs)) exact.add(fingerprint)
     }
     if (exact.size === 0) continue
     const uniqueMatches = [...exact].filter(

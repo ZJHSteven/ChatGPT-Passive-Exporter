@@ -409,6 +409,20 @@ export function devSpaceFirstToolWatchdogState(auditAt) {
 }
 
 /**
+ * 当前 turn 的 canonical exact match 可以纠正历史 backfill；反过来不允许。
+ *
+ * `body:exact-tool-args-backfill` 来自一次性历史扫描，曾因缺少 per-call 时间局部性把
+ * 33rz... 错绑到另一个 conversation。在线 canonical body 的 exact match 更贴近当前事实，
+ * 因此允许它覆盖这种历史 binding；两个在线 exact 互相冲突时仍 fail-closed。
+ */
+export function shouldSupersedeDevSpaceBinding(existing, candidate) {
+  if (!existing?.conversationId || !candidate?.conversationId) return false
+  if (existing.conversationId === candidate.conversationId) return false
+  return existing.evidence === 'body:exact-tool-args-backfill'
+    && candidate.evidence === 'body:exact-tool-args'
+}
+
+/**
  * watchdog 只负责“超时后调查一次”，不能退化成固定周期 body 轮询器。
  *
  * 第一次超过阈值时允许调查；调查完成以后，如果再也没有新的运行进展，就保持沉默。
@@ -3445,13 +3459,23 @@ async function main() {
     const provisional = unboundDevSpaceTurns.get(input.metadataId)
     const timedOutBeforeBinding = Boolean(existing?.unboundWatchdogAt || provisional?.repairQueuedAt)
     if (existing?.conversationId && existing.conversationId !== input.conversationId) {
-      void log('DevSpace metadata binding conflict left unchanged', {
+      if (!shouldSupersedeDevSpaceBinding(existing, input)) {
+        void log('DevSpace metadata binding conflict left unchanged', {
+          metadataId: input.metadataId,
+          existingConversationId: existing.conversationId,
+          candidateConversationId: input.conversationId,
+          existingEvidence: existing.evidence,
+          candidateEvidence: input.evidence,
+        })
+        return existing
+      }
+      void log('DevSpace metadata backfill binding superseded by current exact body match', {
         metadataId: input.metadataId,
         existingConversationId: existing.conversationId,
         candidateConversationId: input.conversationId,
-        evidence: input.evidence,
+        existingEvidence: existing.evidence,
+        candidateEvidence: input.evidence,
       })
-      return existing
     }
     const completedAt = Number(recentConversationComplete.get(input.conversationId) || 0)
     const lifecycleState = input.lifecycleState
@@ -3469,6 +3493,25 @@ async function main() {
     unboundDevSpaceTurns.delete(input.metadataId)
     if (!existing?.conversationId) devSpaceBindingsCreated += 1
     mirrorDevSpaceBinding(binding)
+    if (existing?.conversationId && existing.conversationId !== input.conversationId) {
+      const staleConversationId = existing.conversationId
+      const staleWatchdog = activeTurns.get(staleConversationId)
+      if (staleWatchdog?.startType === 'devspace:first-tool') {
+        const otherBindings = archive.getDevSpaceMetadataBindingsForConversation(staleConversationId)
+          .filter(row => row.metadataId !== input.metadataId)
+        const hasIndependentAuditAtOrAfterStart = otherBindings.some(row =>
+          Number(row.lastAuditAt || 0) >= Number(staleWatchdog.startedAt || 0))
+        if (!hasIndependentAuditAtOrAfterStart) {
+          clearActiveTurn(staleConversationId)
+          void log('cleared stale DevSpace watchdog after binding correction', {
+            metadataId: input.metadataId,
+            staleConversationId,
+            correctedConversationId: input.conversationId,
+            staleStartedAt: staleWatchdog.startedAt,
+          })
+        }
+      }
+    }
     void log('DevSpace metadata bound to conversation', {
       metadataId: input.metadataId,
       conversationId: input.conversationId,
@@ -3536,8 +3579,8 @@ async function main() {
    * 对一个已经落盘的 ChatGPT turn 做 DevSpace binding。
    *
    * 关键点：不再用“时间窗里只有一个 metadata”判断身份。body 里的 api_tool.call_tool
-   * 本来就保存了 DevSpace tool 名和完整 args；tool_audit 也保存同一份 args，因此直接
-   * canonical exact-match 即可。时间只负责限制 SQLite 查询范围，避免扫整库。
+   * 本来就保存了 DevSpace tool 名和完整 args；tool_audit 也保存同一份 args，因此用
+   * canonical exact-match + 同 fingerprint 的局部时间一致性判断身份。
    */
   const matchDevSpaceBindingFromStoredTurn = (conversationId, turnExchangeId) => {
     const rows = archive.db.prepare(
@@ -3654,7 +3697,7 @@ async function main() {
         startAt: binding.firstSeenAt,
         observedAt: Date.now(),
         turnExchangeId: best.turnExchangeId,
-        evidence: 'body:exact-tool-args-backfill',
+        evidence: 'body:exact-tool-args-backfill-v2-time-local',
         confidence: 'high',
         lifecycleState: 'closed',
       })

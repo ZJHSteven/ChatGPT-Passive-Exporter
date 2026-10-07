@@ -67,6 +67,12 @@ export function devSpaceFirstToolWatchdogState(auditAt: number): {
   lastDiagnosticTurnKey: null
 }
 
+/** 当前 canonical exact match 只允许覆盖 legacy backfill binding，不覆盖另一个在线 exact binding。 */
+export function shouldSupersedeDevSpaceBinding(
+  existing: { conversationId?: unknown, evidence?: unknown } | null | undefined,
+  candidate: { conversationId?: unknown, evidence?: unknown } | null | undefined,
+): boolean
+
 /** watchdog 只在首次超时或“新进展后再次超时”时调查，不按固定间隔轮询 zombie。 */
 export function shouldQueueWatchdogDiagnostic(
   active: { startedAt?: unknown, lastEventAt?: unknown, lastWatchdogAt?: unknown, lastDiagnosticTurnKey?: unknown } | null | undefined,

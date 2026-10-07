@@ -79,6 +79,27 @@ describe('DevSpace audit bridge', () => {
       ],
       alreadyBoundMetadataIds: ['meta-old'],
     })).toBeNull()
+
+    // 历史 backfill 可能一次把很大的 audit 时间段读进内存；相同 tool+args 若来自
+    // 完全不同的时刻，不能因为 fingerprint 一样就被当成当前 turn 的 exact evidence。
+    expect(matchDevSpaceCandidateForTurn({
+      activities: groupDevSpaceActivity([
+        audit('wrong-1', 'meta-wrong', 10_000, { cmd: 'git status --short' }),
+        audit('wrong-2', 'meta-wrong', 20_000, { cmd: 'chatgpt-archive daemon status' }),
+        audit('right-1', 'meta-right', 3_600_000, { cmd: 'git status --short' }),
+        audit('right-2', 'meta-right', 3_610_000, { cmd: 'chatgpt-archive daemon status' }),
+      ]),
+      bodyCalls: [
+        parseDevSpaceBodyToolCall(JSON.stringify({
+          path: '/devspace/link_x/exec_command',
+          args: { cmd: 'git status --short' },
+        }), 3_600_500)!,
+        parseDevSpaceBodyToolCall(JSON.stringify({
+          path: '/devspace/link_x/exec_command',
+          args: { cmd: 'chatgpt-archive daemon status' },
+        }), 3_610_500)!,
+      ],
+    })?.activity.metadataId).toBe('meta-right')
   })
 
   test('本地 SQLite 可增量读取 audit，并在新 schema 存在时镜像 binding', () => {

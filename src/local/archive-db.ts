@@ -3078,7 +3078,12 @@ export class ChatArchiveDb {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(metadata_id) DO UPDATE SET
         conversation_id=excluded.conversation_id,
-        bound_at=COALESCE(devspace_metadata_bindings.bound_at, excluded.bound_at),
+        bound_at=CASE
+          WHEN devspace_metadata_bindings.conversation_id IS NULL
+            OR devspace_metadata_bindings.conversation_id <> excluded.conversation_id
+          THEN excluded.bound_at
+          ELSE COALESCE(devspace_metadata_bindings.bound_at, excluded.bound_at)
+        END,
         last_verified_at=excluded.last_verified_at,
         evidence=excluded.evidence,
         confidence=excluded.confidence,
