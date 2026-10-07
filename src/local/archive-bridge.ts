@@ -211,6 +211,54 @@ function safeSummary(messages: Array<Record<string, unknown>>): string | null {
   return typeof text === 'string' ? text.trim().slice(0, 2000) : null
 }
 
+/**
+ * 把 Archive canonical 数据收缩成 LifeOps 可以安全持久化的一份 Worksite。
+ *
+ * 这是 Bridge `/v1/worksites/resolve` 与 daemon 主动推送 LifeOps 共用的唯一构造器：
+ * 两条路径因此不会出现一个泄露 reasoning、另一个忘记 lifecycle 的分叉实现。
+ */
+export function buildArchiveBridgeWorksite(
+  archive: ArchiveBridgeDataSource,
+  conversationId: string,
+  turnExchangeId?: string | null,
+): Record<string, unknown> | null {
+  const conversation = archive.list(1000).find(row => row.id === conversationId)
+  if (!conversation) return null
+
+  const allMessages = sanitizeMessages(archive.getMessages(conversationId))
+  const messages = turnExchangeId
+    ? allMessages.filter(message => message.turnExchangeId === turnExchangeId)
+    : allMessages
+  const lifecycle = conversationLifecycle(conversationId, archive, turnExchangeId)
+  const runState = lifecycle.state === 'aborted'
+    ? 'aborted'
+    : lifecycle.state === 'running'
+      ? 'running'
+      : 'completed'
+
+  return {
+    conversationId,
+    turnExchangeId: turnExchangeId ?? null,
+    title: conversation.title || `ChatGPT · ${conversationId}`,
+    summary: safeSummary(messages),
+    runState,
+    reviewState: 'unread',
+    url: `https://chatgpt.com/c/${conversationId}`,
+    updatedAt: isoFromArchiveTime(conversation.capturedAt || conversation.importedAt),
+    metadata: {
+      sourceFormat: conversation.sourceFormat,
+      currentNode: conversation.currentNode,
+      messageCount: messages.length,
+      terminalState: conversation.terminalState ?? null,
+      incidentState: conversation.incidentState ?? null,
+      lastFinishType: conversation.lastFinishType ?? null,
+      lastFinishReason: conversation.lastFinishReason ?? null,
+      lifecycleState: lifecycle.state,
+      openIncident: lifecycle.incident,
+    },
+  }
+}
+
 function validateTurnInput(body: Record<string, unknown>): ArchiveBridgeTurnInput {
   const text = typeof body.text === 'string' ? body.text.trim() : ''
   if (!text) throw new Error('text must not be empty')
@@ -483,44 +531,12 @@ export class ArchiveBridgeServer {
         jsonResponse(res, 400, { error: 'conversation_id_required' })
         return
       }
-      const conversation = this.options.archive.list(1000).find(row => row.id === conversationId)
-      if (!conversation) {
+      const worksite = buildArchiveBridgeWorksite(this.options.archive, conversationId, turnExchangeId)
+      if (!worksite) {
         jsonResponse(res, 404, { error: 'conversation_not_found' })
         return
       }
-      const allMessages = sanitizeMessages(this.options.archive.getMessages(conversationId))
-      const messages = turnExchangeId
-        ? allMessages.filter(message => message.turnExchangeId === turnExchangeId)
-        : allMessages
-      const lifecycle = conversationLifecycle(conversationId, this.options.archive, turnExchangeId)
-      const runState = lifecycle.state === 'aborted'
-        ? 'aborted'
-        : lifecycle.state === 'running'
-          ? 'running'
-          : 'completed'
-      jsonResponse(res, 200, {
-        worksite: {
-          conversationId,
-          turnExchangeId,
-          title: conversation.title || `ChatGPT · ${conversationId}`,
-          summary: safeSummary(messages),
-          runState,
-          reviewState: 'unread',
-          url: `https://chatgpt.com/c/${conversationId}`,
-          updatedAt: isoFromArchiveTime(conversation.capturedAt || conversation.importedAt),
-          metadata: {
-            sourceFormat: conversation.sourceFormat,
-            currentNode: conversation.currentNode,
-            messageCount: messages.length,
-            terminalState: conversation.terminalState ?? null,
-            incidentState: conversation.incidentState ?? null,
-            lastFinishType: conversation.lastFinishType ?? null,
-            lastFinishReason: conversation.lastFinishReason ?? null,
-            lifecycleState: lifecycle.state,
-            openIncident: lifecycle.incident,
-          },
-        },
-      })
+      jsonResponse(res, 200, { worksite })
       return
     }
 
