@@ -1056,7 +1056,7 @@ async function waitForSendButtonReady(client: ActorCdpClient, timeoutMs: number)
   throw new Error('ChatGPT actor send button did not become ready before timeout')
 }
 
-export async function sendActorPrompt(options: ActorSendOptions): Promise<Record<string, unknown>> {
+async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Record<string, unknown>> {
   const timeoutMs = options.timeoutMs ?? 20_000
   if (!options.prompt.trim()) throw new Error('actor prompt is empty')
   const requestedMode = options.mode ?? 'auto'
@@ -1317,6 +1317,26 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
   }
   finally {
     client.close()
+  }
+}
+
+/**
+ * 对外发送入口：所有会改变 Actor/Guardian 页面的操作先拿跨进程 lease。
+ * lease 只持有到本次提交已经拿到 Network 闭环结果，不等待模型生成完成；因此不会破坏
+ * ChatGPT 本身“同 tab 多个 active conversation/SSE 并行”的能力。
+ */
+export async function sendActorPrompt(options: ActorSendOptions): Promise<Record<string, unknown>> {
+  const timeoutMs = options.timeoutMs ?? 20_000
+  const lease = await acquireActorLease(options, timeoutMs)
+  try {
+    const result = await sendActorPromptUnlocked(options)
+    return {
+      ...result,
+      leaseWaitMs: lease.waitMs,
+    }
+  }
+  finally {
+    await releaseActorLease(lease)
   }
 }
 
