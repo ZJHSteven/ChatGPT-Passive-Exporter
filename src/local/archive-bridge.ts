@@ -30,6 +30,7 @@ export interface ArchiveBridgeConversationRow {
 export interface ArchiveBridgeDataSource {
   list(limit?: number): ArchiveBridgeConversationRow[]
   getMessages(conversationId: string): Array<Record<string, unknown>>
+  getResources?(conversationId: string): Array<Record<string, unknown>>
   search?(query: string, limit?: number): Array<Record<string, unknown>>
   listIncidents?(options?: { status?: 'open' | 'resolved', limit?: number }): Array<Record<string, unknown>>
   listActiveWatchdogs?(limit?: number): Array<Record<string, unknown>>
@@ -503,6 +504,24 @@ export class ArchiveBridgeServer {
       const conversationId = decodeURIComponent(messagesMatch[1]!)
       const messages = sanitizeMessages(this.options.archive.getMessages(conversationId))
       jsonResponse(res, 200, { conversationId, messages })
+      return
+    }
+
+    const resourcesMatch = /^\/v1\/conversations\/([^/]+)\/resources$/u.exec(url.pathname)
+    if (resourcesMatch && method === 'GET') {
+      if (!this.options.archive.getResources) {
+        jsonResponse(res, 501, { error: 'resources_not_supported' })
+        return
+      }
+      const conversationId = decodeURIComponent(resourcesMatch[1]!)
+      const resources = this.options.archive.getResources(conversationId).map(row => ({
+        messageId: typeof row.messageId === 'string' ? row.messageId : null,
+        ordinal: Number.isFinite(Number(row.ordinal)) ? Number(row.ordinal) : null,
+        kind: typeof row.kind === 'string' ? row.kind : 'unknown',
+        label: typeof row.label === 'string' ? row.label : null,
+        data: row.data && typeof row.data === 'object' ? row.data : null,
+      }))
+      jsonResponse(res, 200, { conversationId, resources })
       return
     }
 
