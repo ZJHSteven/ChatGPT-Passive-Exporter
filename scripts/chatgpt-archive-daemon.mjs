@@ -3091,6 +3091,17 @@ async function main() {
             error: error instanceof Error ? error.message : String(error),
           })
         })
+        // canonical-update 只在 SQLite merge 成功以后广播；客户端收到它即可按 conversationId
+        // 重新 GET canonical messages。这样 Bridge 不需要复制原始 ChatGPT token stream，也不会
+        // 把 resume credential 等内部能力泄漏到 Family-AI。
+        publishBridgeEvent({
+          kind: 'canonical-update',
+          conversationId,
+          turnExchangeId: result.diagnostic.turnExchangeId ?? null,
+          requestId: result.diagnostic.requestId ?? null,
+          terminalEvidence: result.diagnostic.terminalEvidence ?? null,
+          tailShape: result.diagnostic.tailShape ?? null,
+        })
         // SQLite/trace 到这里已经完成；通知只从已落库事实分叉出去，不参与 syncInFlight。
         const incidentsToNotify = [
           result.newIncident,
@@ -3622,6 +3633,15 @@ async function main() {
           error: error instanceof Error ? error.message : String(error),
         }).catch(() => {})
       })
+      publishBridgeEvent({
+        at: event?.at,
+        kind: 'live-transport',
+        conversationId: event?.conversationId ?? null,
+        turnExchangeId: event?.turnExchangeId ?? null,
+        requestId: event?.cdpRequestId ?? null,
+        event: event?.event ?? null,
+        transport: event?.transport ?? null,
+      })
     }
 
     const appendTurnWssControl = (event) => {
@@ -4064,6 +4084,12 @@ async function main() {
       markSyncReady(event.conversationId, `wss:${event.type}`, nativeBodyGraceMs)
     }
     const activeAfterIds = [...activeTurns.keys()]
+    publishBridgeEvent({
+      at: now,
+      kind: 'wss-lifecycle',
+      conversationId: event.conversationId,
+      event: event.type,
+    })
     void turnRecorder.append(buildWssLifecycleTrace({
       at: now,
       event: {
