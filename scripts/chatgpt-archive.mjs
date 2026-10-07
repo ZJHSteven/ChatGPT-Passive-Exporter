@@ -65,7 +65,7 @@ Usage:
   chatgpt-archive protocol install-daily [--time HH:mm]
   chatgpt-archive protocol daily-status
   chatgpt-archive protocol uninstall-daily
-  chatgpt-archive daemon start [--cdp URL] [--reconcile-hours N] [--db <path>] [--devspace-db <path>] [--allow-active-image-resolver]
+  chatgpt-archive daemon start [--cdp URL] [--reconcile-hours N] [--db <path>] [--devspace-db <path>] [--allow-active-image-resolver] [--bridge-host HOST] [--bridge-port PORT] [--bridge-auth <path>] [--no-bridge] [--allow-remote-bridge]
   chatgpt-archive daemon status [--state <path>]
   chatgpt-archive daemon stop [--state <path>]
   chatgpt-archive daemon install-startup
@@ -263,6 +263,11 @@ async function daemonCommand(positionals, flags) {
      'notification-config',
       'protocol-ledger',
      'turn-trace',
+      'bridge-host',
+      'bridge-port',
+      'bridge-auth',
+      'actor-state',
+      'dom-ledger',
     ]
     for (const name of passFlags) {
       if (flags.has(name)) childArgs.push(`--${name}`, String(flags.get(name)))
@@ -270,6 +275,8 @@ async function daemonCommand(positionals, flags) {
     if (flags.has('no-reconcile-on-start')) childArgs.push('--no-reconcile-on-start')
     if (flags.has('no-auto-launch-chrome')) childArgs.push('--no-auto-launch-chrome')
     if (flags.has('allow-active-image-resolver')) childArgs.push('--allow-active-image-resolver')
+    if (flags.has('no-bridge')) childArgs.push('--no-bridge')
+    if (flags.has('allow-remote-bridge')) childArgs.push('--allow-remote-bridge')
 
     const child = spawn(process.execPath, childArgs, {
       detached: true,
