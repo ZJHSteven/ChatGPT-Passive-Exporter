@@ -50,7 +50,12 @@ import {
   parseDevSpaceBodyToolCall,
 } from '../src/local/devspace-audit-bridge.ts'
 import { DevSpaceAuditWakeListener } from '../src/local/devspace-audit-signal.ts'
-import { ArchiveBridgeServer, ensureArchiveBridgeAuthToken } from '../src/local/archive-bridge.ts'
+import {
+  ArchiveBridgeServer,
+  buildArchiveBridgeWorksite,
+  ensureArchiveBridgeAuthToken,
+} from '../src/local/archive-bridge.ts'
+import { LifeOpsSyncClient, loadLifeOpsSyncConfig } from '../src/local/lifeops-sync.ts'
 import { sendActorPrompt } from '../src/local/chatgpt-actor.ts'
 
 const DEFAULT_CDP = 'http://127.0.0.1:9222'
@@ -65,6 +70,8 @@ const DEFAULT_PROTOCOL_LEDGER = path.join(PROJECT_ROOT, 'data', 'protocol-finger
 const DEFAULT_ACTOR_STATE = path.join(PROJECT_ROOT, 'data', 'archive-actor-state.json')
 const DEFAULT_DOM_LEDGER = path.join(PROJECT_ROOT, 'data', 'dom-fingerprints.json')
 const DEFAULT_BRIDGE_AUTH = path.join(PROJECT_ROOT, 'data', 'archive-bridge-auth.local.json')
+const DEFAULT_LIFEOPS_SYNC_CONFIG = path.join(PROJECT_ROOT, 'data', 'lifeops-sync.local.json')
+const DEFAULT_LIFEOPS_SYNC_PENDING = path.join(PROJECT_ROOT, 'data', 'lifeops-sync-pending.json')
 const DEFAULT_BRIDGE_HOST = '127.0.0.1'
 const DEFAULT_BRIDGE_PORT = 47_832
 const DEFAULT_IMAGE_ASSET_DIR = path.join(PROJECT_ROOT, 'data', 'assets', 'chatgpt')
@@ -1419,6 +1426,12 @@ async function main() {
   const bridgeAuthPath = flags.has('bridge-auth')
     ? path.resolve(String(flags.get('bridge-auth')))
     : DEFAULT_BRIDGE_AUTH
+  const lifeOpsSyncConfigPath = flags.has('lifeops-sync-config')
+    ? path.resolve(String(flags.get('lifeops-sync-config')))
+    : DEFAULT_LIFEOPS_SYNC_CONFIG
+  const lifeOpsSyncPendingPath = flags.has('lifeops-sync-pending')
+    ? path.resolve(String(flags.get('lifeops-sync-pending')))
+    : DEFAULT_LIFEOPS_SYNC_PENDING
   const actorStatePath = flags.has('actor-state')
     ? path.resolve(String(flags.get('actor-state')))
     : DEFAULT_ACTOR_STATE
@@ -1688,6 +1701,8 @@ async function main() {
   let lastActiveRequestAt = 0
   let recoveryProbeRemaining = 0
   let notificationConfig = null
+  let lifeOpsSync = null
+  let lifeOpsSyncLastError = null
   let protocolLedger = null
   let protocolFlushTimer = null
   let activeReplayRequestUrl = null
@@ -1901,6 +1916,13 @@ async function main() {
       startedAt: archiveBridgeStartedAt,
       authPath: bridgeAuthPath,
       lastError: archiveBridgeLastError,
+    },
+    lifeOpsSync: {
+      enabled: Boolean(lifeOpsSync),
+      configPath: lifeOpsSyncConfigPath,
+      pendingPath: lifeOpsSyncPendingPath,
+      pendingCount: lifeOpsSync?.pendingCount ?? 0,
+      lastError: lifeOpsSyncLastError,
     },
     guardian: guardian ? {
       targetId: guardian.targetId,
@@ -2116,6 +2138,34 @@ async function main() {
         configPath: notificationConfigPath,
       })
     }
+  }
+
+  // LifeOps 同步完全是旁路 outbox：配置缺失时静默禁用；配置错误/网络错误只记日志，
+  // 绝不能让 Archive/WSS/SQLite 主链无法启动。真正的发送与持久重试由 LifeOpsSyncClient 自己完成。
+  try {
+    const lifeOpsSyncConfig = await loadLifeOpsSyncConfig(lifeOpsSyncConfigPath)
+    if (lifeOpsSyncConfig) {
+      lifeOpsSync = new LifeOpsSyncClient(lifeOpsSyncConfig, {
+        pendingPath: lifeOpsSyncPendingPath,
+        log: async (message, extra) => await log(message, extra),
+      })
+      await lifeOpsSync.start()
+      lifeOpsSyncLastError = null
+      await log('LifeOps sync enabled', {
+        baseUrl: lifeOpsSyncConfig.baseUrl,
+        configPath: lifeOpsSyncConfigPath,
+        pendingPath: lifeOpsSyncPendingPath,
+        pendingCount: lifeOpsSync.pendingCount,
+      })
+    }
+  }
+  catch (error) {
+    lifeOpsSyncLastError = error instanceof Error ? error.message : String(error)
+    lifeOpsSync = null
+    await log('LifeOps sync config invalid; sync disabled', {
+      configPath: lifeOpsSyncConfigPath,
+      error: lifeOpsSyncLastError,
+    })
   }
   catch (error) {
     notificationLastError = error instanceof Error ? error.message : String(error)
@@ -3332,6 +3382,16 @@ async function main() {
           terminalEvidence: result.diagnostic.terminalEvidence ?? null,
           tailShape: result.diagnostic.tailShape ?? null,
         })
+        // Canonical merge 成功后才推 LifeOps：这样 Inbox 永远来自已经持久化的 Archive 事实，
+        // 不会把半截 SSE/WSS chunk 当成工作现场。相同 conversation+turn 的后续 body 会被 outbox 合并。
+        if (lifeOpsSync) {
+          const worksite = buildArchiveBridgeWorksite(
+            archive,
+            conversationId,
+            result.diagnostic.turnExchangeId ?? null,
+          )
+          if (worksite) lifeOpsSync.enqueue(worksite)
+        }
         // SQLite/trace 到这里已经完成；通知只从已落库事实分叉出去，不参与 syncInFlight。
         // 正常 final 与异常 incident 使用互斥条件：body 已经确认 final 时只发“正常完成”；
         // complete-no-final/interrupted/watchdog-timeout 则继续由下面的 incident 分支发送。
@@ -5428,6 +5488,14 @@ async function main() {
       }).catch(() => {})
     })
     archiveBridge = null
+  }
+  if (lifeOpsSync) {
+    await lifeOpsSync.stop().catch(async (error) => {
+      await log('LifeOps sync stop failed', {
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => {})
+    })
+    lifeOpsSync = null
   }
   guardian?.page?.close()
   guardian?.browser?.close()
