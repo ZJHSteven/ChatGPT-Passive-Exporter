@@ -2950,11 +2950,25 @@ export class ChatArchiveDb {
         last_audit_id, last_audit_at, lifecycle_state
       ) VALUES (?, NULL, ?, ?, ?, ?, 'unbound')
       ON CONFLICT(metadata_id) DO UPDATE SET
+        first_seen_at=CASE
+          WHEN devspace_metadata_bindings.conversation_id IS NULL
+            AND devspace_metadata_bindings.unbound_watchdog_at IS NOT NULL
+            AND excluded.last_audit_at > devspace_metadata_bindings.unbound_watchdog_at
+          THEN excluded.first_seen_at
+          ELSE devspace_metadata_bindings.first_seen_at
+        END,
         last_seen_at=max(devspace_metadata_bindings.last_seen_at, excluded.last_seen_at),
         last_audit_id=CASE
           WHEN excluded.last_audit_at >= COALESCE(devspace_metadata_bindings.last_audit_at, 0)
           THEN excluded.last_audit_id ELSE devspace_metadata_bindings.last_audit_id END,
-        last_audit_at=max(COALESCE(devspace_metadata_bindings.last_audit_at, 0), excluded.last_audit_at)
+        last_audit_at=max(COALESCE(devspace_metadata_bindings.last_audit_at, 0), excluded.last_audit_at),
+        unbound_watchdog_at=CASE
+          WHEN devspace_metadata_bindings.conversation_id IS NULL
+            AND devspace_metadata_bindings.unbound_watchdog_at IS NOT NULL
+            AND excluded.last_audit_at > devspace_metadata_bindings.unbound_watchdog_at
+          THEN NULL
+          ELSE devspace_metadata_bindings.unbound_watchdog_at
+        END
     `).run(metadataId, auditAt, auditAt, input.auditId, auditAt)
     return this.getDevSpaceMetadataBinding(metadataId)!
   }

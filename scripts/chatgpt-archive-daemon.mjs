@@ -3548,11 +3548,13 @@ async function main() {
       return
     }
     const current = unboundDevSpaceTurns.get(event.metadataId)
+    const persistedStartAt = Number(binding.firstSeenAt || event.startedAtMs)
+    const generationRestarted = Boolean(current && persistedStartAt > Number(current.startedAt || 0))
     unboundDevSpaceTurns.set(event.metadataId, {
-      startedAt: current?.startedAt ?? event.startedAtMs,
+      startedAt: generationRestarted ? persistedStartAt : (current?.startedAt ?? persistedStartAt),
       lastEventAt: Math.max(Number(current?.lastEventAt || 0), event.startedAtMs),
       lastAuditId: event.id,
-      repairQueuedAt: current?.repairQueuedAt ?? null,
+      repairQueuedAt: generationRestarted ? null : (current?.repairQueuedAt ?? null),
     })
   }
 
@@ -3642,7 +3644,7 @@ async function main() {
     if (activities.length === 0) return 0
 
     const rows = archive.db.prepare(
-      "SELECT conversation_id AS conversationId, turn_exchange_id AS turnExchangeId, create_time AS createTime, text FROM messages WHERE recipient='api_tool.call_tool' AND text LIKE '%/devspace/%' AND create_time BETWEEN ? AND ? AND turn_exchange_id IS NOT NULL AND text<>'' ORDER BY create_time ASC",
+      "SELECT conversation_id AS conversationId, turn_exchange_id AS turnExchangeId, create_time AS createTime, text FROM messages WHERE recipient='api_tool.call_tool' AND create_time BETWEEN ? AND ? AND turn_exchange_id IS NOT NULL AND text<>'' ORDER BY create_time ASC",
     ).all(globalStartAt / 1000, globalEndAt / 1000)
     const callsByTurn = new Map()
     for (const row of rows) {
