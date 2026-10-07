@@ -1603,6 +1603,28 @@ async function main() {
     console.error(line.trim())
   }
 
+  /**
+   * Bridge 是旁路产品接口，不允许任何客户端/SSE 写失败反向破坏 Archive 主链。
+   * 这里只接受已经脱敏、体积很小的 lifecycle 元数据；原始 SSE chunk、resume credential、
+   * ChatGPT Authorization/Cookie 永远不会经过这个函数。
+   */
+  const publishBridgeEvent = (event) => {
+    if (!archiveBridge) return
+    try {
+      archiveBridge.publish({
+        version: 1,
+        at: Number(event?.at) || Date.now(),
+        ...event,
+      })
+    }
+    catch (error) {
+      void log('Archive Bridge event publish failed', {
+        kind: event?.kind ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
   try {
     protocolLedger = await ProtocolDriftLedger.open(protocolLedgerPath)
   }
