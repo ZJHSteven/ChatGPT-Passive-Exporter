@@ -601,6 +601,70 @@ export function buildCooldownNotificationPayload({
   }
 }
 
+/** Watchdog 到点但 429 cooldown 暂时阻止 body 诊断时的“先报到点、后报结论”通知。 */
+export function buildWatchdogDeferredNotificationPayload({
+  conversationId,
+  title,
+  startedAt,
+  now = Date.now(),
+  cooldownUntil,
+}) {
+  const activeForMs = Math.max(0, Number(now) - Number(startedAt || now))
+  return {
+    title: 'ChatGPT Watchdog 已超时 · 等待诊断',
+    body: [
+      title || conversationId,
+      `Watchdog 已运行 ${Math.floor(activeForMs / 60_000)} 分钟，达到超时阈值。`,
+      '当前主动 body 请求处于 HTTP 429 cooldown，且尚无本次超时后的被动 body 可用于错误归因。',
+      `本轮起点：${new Date(Number(startedAt || now)).toISOString()}`,
+      `冷却至：${new Date(Number(cooldownUntil || now)).toISOString()}`,
+      '冷却解除后会继续诊断；若随后确认异常，再发送最终诊断通知。',
+    ].join('\n'),
+    url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
+  }
+}
+
+/** DevSpace metadata 45 分钟后仍无法绑定 CID 时也必须显式告诉用户，禁止静默。 */
+export function buildUnboundWatchdogNotificationPayload({ metadataId, startedAt, now = Date.now() }) {
+  const activeForMs = Math.max(0, Number(now) - Number(startedAt || now))
+  const shortMetadata = typeof metadataId === 'string' && metadataId.length > 24
+    ? `${metadataId.slice(0, 12)}…${metadataId.slice(-8)}`
+    : String(metadataId || 'unknown')
+  return {
+    title: 'ChatGPT Watchdog 已超时 · 会话未绑定',
+    body: [
+      `DevSpace 会话键：${shortMetadata}`,
+      `Watchdog 已运行 ${Math.floor(activeForMs / 60_000)} 分钟。`,
+      '当前还没有足够证据把该 metadata 安全绑定到 canonical ChatGPT conversation，因此不能猜聊天名或 CID。',
+      'Archive 已启动 catalog/body 修复；绑定成功后继续正常诊断。',
+    ].join('\n'),
+  }
+}
+
+/** 正常 final 也作为 turn 的最终可见结果发送，和异常 incident 对称。 */
+export function buildTurnFinalNotificationPayload({ conversationId, title, diagnostic }) {
+  const imageSuffix = diagnostic?.hasImageGenerationFinal
+    ? `；包含 ${Number(diagnostic?.imageGenerationCount || 0)} 张生成图片`
+    : ''
+  return {
+    title: 'ChatGPT Turn 正常完成',
+    body: `${title || conversationId}\n服务端完成信号与 canonical body 已确认 final${imageSuffix}。`,
+    url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
+  }
+}
+
+/**
+ * 正常 final 通知只针对在线终态/Watchdog 诊断，不在 startup/periodic 历史补档时轰炸手机。
+ * settle trigger 由 isConfirmedTerminalTrigger 自己去掉 `:settle` 后识别。
+ */
+export function shouldNotifyTurnFinal(trigger, diagnostic) {
+  if (diagnostic?.terminalEvidence !== 'final') return false
+  const normalized = String(trigger || '').trim().toLowerCase()
+  if (normalized.startsWith('watchdog:')) return true
+  if (normalized.startsWith('checkpoint:')) return true
+  return isConfirmedTerminalTrigger(normalized)
+}
+
 /**
  * Guardian 的一次 Runtime 探活超时不等价于 renderer 已经死亡。
  *
