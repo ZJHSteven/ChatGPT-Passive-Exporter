@@ -119,5 +119,35 @@ describe('ChatGPT single actor helpers', () => {
       pageUrlBefore: 'https://chatgpt.com/',
     })
   })
+
+  test('Guardian lease 被存活进程持有时，第二个 Actor 不会越锁进入页面操作', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'actor-lease-held-'))
+    const statePath = path.join(dir, 'actor.json')
+    const daemonStatePath = path.join(dir, 'daemon.json')
+    const lockPath = `${daemonStatePath}.actor.lock`
+    await fs.writeFile(lockPath, JSON.stringify({
+      version: 1,
+      pid: process.pid,
+      acquiredAt: Date.now(),
+      token: 'held-by-this-test',
+      targetMode: 'guardian',
+    }))
+
+    try {
+      await expect(sendActorPrompt({
+        cdpHttp: 'http://127.0.0.1:1',
+        statePath,
+        daemonStatePath,
+        tracePath: path.join(dir, 'trace.jsonl'),
+        prompt: 'lease-test',
+        targetMode: 'guardian',
+        timeoutMs: 150,
+      })).rejects.toThrow(/actor lease timeout/u)
+      expect(await fs.readFile(lockPath, 'utf8')).toContain('held-by-this-test')
+    }
+    finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
 })
 
