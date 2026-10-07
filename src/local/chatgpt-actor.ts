@@ -35,6 +35,21 @@ interface ActorLease {
 export type ActorTargetMode = 'guardian' | 'dedicated'
 
 /**
+ * ChatGPT Web 的“普通新 turn”和“active follow-up steer”不是同一种响应协议：
+ * - `/f/conversation`：当前第一方页面返回 `text/event-stream`，这是新建/续接 turn 的原始 SSE；
+ * - `/f/steer_turn`：2026-10-07 production E2E 实测成功响应为 `application/json`，随后现有 active
+ *   generation 继续在页面/既有 transport 上收口。
+ *
+ * 因此不能再把“所有发送都必须 event-stream”写死；但仍然按 mode 严格白名单，而不是接受任意 MIME。
+ */
+export function actorResponseMimeAccepted(mode: ActorSendMode, mimeType: string | null): boolean {
+  if (!mimeType) return true
+  const normalized = mimeType.toLowerCase()
+  if (mode === 'steer') return normalized.includes('application/json')
+  return normalized.includes('text/event-stream')
+}
+
+/**
  * Phase 4 的发送语义必须显式区分三类第一方行为：
  *
  * - `new`：从新聊天页创建 conversation，正式请求是 `/f/conversation`；
@@ -1221,8 +1236,9 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
           throw new Error(`ChatGPT actor ${mode} request failed with HTTP ${responseState.status}`)
         }
         if (submitEvent && conversationId && responseState.status !== null && responseState.status >= 200 && responseState.status < 300) {
-          if (responseState.mimeType && !responseState.mimeType.includes('event-stream')) {
-            throw new Error(`ChatGPT actor ${mode} response drifted from event-stream: ${responseState.mimeType}`)
+          if (!actorResponseMimeAccepted(mode, responseState.mimeType)) {
+            const expectedMime = mode === 'steer' ? 'application/json' : 'text/event-stream'
+            throw new Error(`ChatGPT actor ${mode} response drifted from ${expectedMime}: ${responseState.mimeType}`)
           }
           boundAt = Date.now()
           const runningConfirmed = Boolean(
