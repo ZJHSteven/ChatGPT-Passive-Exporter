@@ -1,5 +1,6 @@
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
+- 2026-10-07 Bark 通知矩阵 production canary 已通过：daemon PID 55384，checkpoint polling=false、cooldown=null、Bridge 127.0.0.1:47832 正常。Guardian 新建 `Notifyfinal1007` CID `6ac625a8-47a0-83e9-9ddd-9897c68928d7`，WSS 10:57:51Z 收到 `conversation-turn-complete`，10:57:56Z canonical body 同步为 `terminal=final/tail=final`，assistant final=`NOTIFYFINAL1007`；10:58:01Z `turn final notification sent`，Bark provider HTTP 200。SQLite `turn_notification_ledger` 唯一 key=`turn-final:6ac625a8-...:cdda7ea4-...`，证明正常完成通知与持久去重均在生产生效。
 - 2026-10-07 Bark 通知矩阵已在隔离分支实现：正常 canonical final 现在也会通知；complete-no-final / interrupted / watchdog-timeout 继续由 incident 通知；Watchdog 到 45min 时如果正处于 429 cooldown，不再静默等 body，而是先发 `Watchdog 已超时 · 等待诊断`，后续拿到 body 再按最终事实通知；若 DevSpace metadata 仍未绑定 CID，也会发 `会话未绑定` 到点通知且绝不猜聊天名。若 body 当场可诊断则不先发 timeout，避免同一轮无意义双通知。
 - 2026-10-07 通知去重从纯内存升级为 SQLite `turn_notification_ledger`：成功 Bark 后按 stable notification key 持久记账，重复 WSS complete、settle、daemon restart 不重发；发送失败不记成功，允许后续事实再次触发重试。incident 也纳入同一 ledger；ImageGen 保留原有独立 `notification_sent_at`。
 - 2026-10-07 final 通知边界：WSS complete、checkpoint、watchdog，以及在线 gap-repair/wss-reconnect/guardian-recover/cooldown-recover 找回的 final 都通知；startup/periodic 历史扫描不通知，避免部署后把旧聊天批量推到手机。隔离分支 node syntax/typecheck PASS，定向 3 files/62 tests、全量 24 files/163 tests PASS。

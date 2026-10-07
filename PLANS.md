@@ -5,7 +5,7 @@
 - [done] DevSpace metadata 尚未可靠绑定 canonical conversation 时，45min 到点仍发一次 `watchdog-unbound` Bark，明确“Watchdog 已到点，但当前无法可靠定位聊天”；不得猜 CID/title。绑定成功后继续既有 body 诊断链。
 - [done] 为 normal final / deferred watchdog / unbound watchdog / incident 增加持久成功 ledger + 运行期 in-flight 去重，按 `conversation+turn/generation+notification-kind` 去重；Bark 失败不落成功 ledger，后续同事实仍可重试。
 - [done] complete 通知只在 canonical body 已确认 final 后发送；`conversation-turn-complete` 首帧若 body 尚未 settle，不先报“正常完成”，15s settle 后按最终 body 只选一个终态通知。在线 gap-repair/wss-reconnect/guardian-recover/cooldown-recover 找回的 final 也通知，startup/periodic 历史补档不轰炸。
-- [in_progress] 隔离 worktree 已通过 node syntax、TypeScript typecheck、定向 3 files/62 tests 和全量 24 files/163 tests；待完成主分支文档冲突合并、生产部署，并以之后一条自然 complete 作为真实 Bark canary。
+- [done] 隔离 worktree 与最新主分支均通过 node syntax、TypeScript typecheck、全量 24 files/163 tests；production daemon PID 55384 已部署。真实 Guardian canary `Notifyfinal1007`（CID `6ac625a8-...`）收到 WSS `conversation-turn-complete`，canonical final=`NOTIFYFINAL1007`，Bark HTTP 200，并在 `turn_notification_ledger` 落唯一 `turn-final:<cid>:<turn>` 记录。
 
 ## 2026-10-07 Watchdog generation 收口 / 漏通知修复 ExecPlan
 
