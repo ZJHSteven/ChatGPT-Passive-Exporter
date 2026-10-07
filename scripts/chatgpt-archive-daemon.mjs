@@ -2147,6 +2147,70 @@ async function main() {
     })
   }
 
+  const dispatchTurnFinalNotification = (conversationId, diagnostic) => {
+    if (!notificationConfig || !conversationId || !diagnostic) return false
+    const turnKey = watchdogDiagnosticTurnKey(diagnostic)
+      || diagnostic.currentNode
+      || diagnostic.lastMessageId
+      || 'unknown-turn'
+    const payload = buildTurnFinalNotificationPayload({
+      conversationId,
+      title: conversationTitle(conversationId),
+      diagnostic,
+    })
+    return dispatchPersistentNotification({
+      notificationKey: `turn-final:${conversationId}:${turnKey}`,
+      kind: 'turn-final',
+      conversationId,
+      turnKey,
+      payload,
+      successLog: 'turn final notification sent',
+      failureLog: 'turn final notification failed',
+    })
+  }
+
+  const dispatchWatchdogDeferredNotification = (conversationId, active, now = Date.now()) => {
+    if (!notificationConfig || !conversationId || !active) return false
+    if (activeApiAllowed(cooldownUntil, now)) return false
+    const startedAt = Number(active.startedAt || now)
+    const turnKey = typeof active.lastDiagnosticTurnKey === 'string' && active.lastDiagnosticTurnKey
+      ? active.lastDiagnosticTurnKey
+      : `generation:${startedAt}`
+    const payload = buildWatchdogDeferredNotificationPayload({
+      conversationId,
+      title: conversationTitle(conversationId),
+      startedAt,
+      now,
+      cooldownUntil,
+    })
+    return dispatchPersistentNotification({
+      notificationKey: `watchdog-deferred-cooldown:${conversationId}:${startedAt}`,
+      kind: 'watchdog-deferred-cooldown',
+      conversationId,
+      turnKey,
+      payload,
+      successLog: 'watchdog cooldown-deferred notification sent',
+      failureLog: 'watchdog cooldown-deferred notification failed',
+      logFields: { startedAt, cooldownUntil },
+    })
+  }
+
+  const dispatchUnboundWatchdogNotification = (metadataId, candidate, now = Date.now()) => {
+    if (!notificationConfig || !metadataId || !candidate) return false
+    const startedAt = Number(candidate.startedAt || now)
+    const payload = buildUnboundWatchdogNotificationPayload({ metadataId, startedAt, now })
+    return dispatchPersistentNotification({
+      notificationKey: `watchdog-unbound:${metadataId}:${startedAt}`,
+      kind: 'watchdog-unbound',
+      conversationId: null,
+      turnKey: metadataId,
+      payload,
+      successLog: 'unbound watchdog notification sent',
+      failureLog: 'unbound watchdog notification failed',
+      logFields: { metadataId, startedAt },
+    })
+  }
+
   /**
    * 429 cooldown 是独立运行状态提醒，不写 incidents 表，也不改变 Watchdog taxonomy。
    *
