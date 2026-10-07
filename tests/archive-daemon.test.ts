@@ -2,6 +2,9 @@ import { describe, expect, test } from 'vitest'
 import {
   activeApiAllowed,
   buildCooldownNotificationPayload,
+  buildTurnFinalNotificationPayload,
+  buildUnboundWatchdogNotificationPayload,
+  buildWatchdogDeferredNotificationPayload,
   catalogStableOverlapTarget,
   classifyConversationBackendUrl,
   classifyCatalogAsyncStatus,
@@ -34,6 +37,7 @@ import {
   shouldStartCatalogWatchdog,
   shouldNotifyHistoricalIncidentForTrigger,
   shouldNotifyIncidentTransition,
+  shouldNotifyTurnFinal,
   shouldRebuildGuardianForMissingWss,
   shouldClassifyTerminalForTrigger,
   shouldDeferConfirmedTerminalIncident,
@@ -523,6 +527,53 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(activeApiAllowed(2000, 1000)).toBe(false)
     expect(activeApiAllowed(1000, 1000)).toBe(true)
     expect(activeApiAllowed(0, 1000)).toBe(true)
+  })
+
+  test('Watchdog cooldown deferred 通知明确“已到点但尚未归因”并带聊天链接', () => {
+    const payload = buildWatchdogDeferredNotificationPayload({
+      conversationId: 'conversation-a',
+      title: '继续处理异常终止',
+      startedAt: 1_000,
+      now: 46 * 60_000 + 1_000,
+      cooldownUntil: 60 * 60_000,
+    })
+    expect(payload.title).toContain('Watchdog 已超时')
+    expect(payload.body).toContain('继续处理异常终止')
+    expect(payload.body).toContain('429 cooldown')
+    expect(payload.body).toContain('46 分钟')
+    expect(payload.url).toContain('/c/conversation-a')
+  })
+
+  test('未绑定 watchdog 到点也通知，但不猜 CID 或聊天名', () => {
+    const payload = buildUnboundWatchdogNotificationPayload({
+      metadataId: 'v1/abcdefghijklmnopqrstuvwxyz0123456789',
+      startedAt: 1_000,
+      now: 50 * 60_000 + 1_000,
+    })
+    expect(payload.title).toContain('会话未绑定')
+    expect(payload.body).toContain('50 分钟')
+    expect(payload.body).toContain('不能猜聊天名或 CID')
+    expect(payload).not.toHaveProperty('url')
+  })
+
+  test('正常 final 只在在线终态/Watchdog 路径通知，历史 startup/periodic 不补轰炸', () => {
+    const diagnostic = { terminalEvidence: 'final', hasImageGenerationFinal: false, imageGenerationCount: 0 }
+    expect(shouldNotifyTurnFinal('wss:conversation-turn-complete', diagnostic)).toBe(true)
+    expect(shouldNotifyTurnFinal('wss:conversation-turn-complete:settle', diagnostic)).toBe(true)
+    expect(shouldNotifyTurnFinal('watchdog:active-timeout', diagnostic)).toBe(true)
+    expect(shouldNotifyTurnFinal('checkpoint:body-terminal', diagnostic)).toBe(true)
+    expect(shouldNotifyTurnFinal('reconcile:startup', diagnostic)).toBe(false)
+    expect(shouldNotifyTurnFinal('reconcile:periodic', diagnostic)).toBe(false)
+    expect(shouldNotifyTurnFinal('wss:conversation-turn-complete', { terminalEvidence: 'none' })).toBe(false)
+
+    const payload = buildTurnFinalNotificationPayload({
+      conversationId: 'conversation-a',
+      title: '正常长任务',
+      diagnostic,
+    })
+    expect(payload.title).toContain('正常完成')
+    expect(payload.body).toContain('正常长任务')
+    expect(payload.body).toContain('canonical body 已确认 final')
   })
 
   test('短 WSS/gap repair 只需一整页稳定 overlap，startup/periodic 继续深扫描', () => {
