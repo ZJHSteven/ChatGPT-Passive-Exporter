@@ -85,10 +85,9 @@ try {
   }
 
   $visibleAfter = [ChatGptArchiveGuardianVisibility]::IsWindowVisible($handle)
-  Write-Output ($Hwnd.ToString()
-    + "`t" + $Action
-    + "`t" + $visibleBefore.ToString()
-    + "`t" + $visibleAfter.ToString())
+  # PowerShell 的换行续表达式规则比 C# 严格，避免把二元 + 放到新行开头。
+  $result = $Hwnd.ToString() + "`t" + $Action + "`t" + $visibleBefore.ToString() + "`t" + $visibleAfter.ToString()
+  Write-Output $result
   exit 0
 }
 catch {
