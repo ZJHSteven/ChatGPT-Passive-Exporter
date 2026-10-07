@@ -23,6 +23,7 @@
 - [pending] Phase 4 语音/附件：取证 Web 语音输入的实际音频上传/转录流程，以及图片/文件 attachment 的第一方 upload/asset 绑定路径；优先复用原生 UI/协议，不自行仿造未验证 upload token。
 - [pending] Phase 5 复用 Family-AI 产品壳：保留移动端/侧边栏的 conversation/project 列表、新建、切换、文本/语音/图片/文件输入和流式消息 UI；后端从原有第三方模型 API 改为 `ChatGPT Archive + Guardian/Actor CLI + LiveTurn/checkpoint stream`。iPhone 客户端只连自家后端，不直接持有 ChatGPT 会话凭据。
 - [pending] Phase 5 数据面：本地 SQLite/Archive 作为 canonical history；本机 Actor 发出的 turn 直接持有 original SSE，checkpoint watcher 仅负责远端/历史 fallback；前端按 turn identity 增量刷新，断线后从本地 durable event log/canonical body 追平，避免反复 late-attach ChatGPT SSE。
+- [in_progress] Phase 5 Bridge API：在 Archive daemon 内嵌一个默认仅监听 `127.0.0.1` 的自有 HTTP/SSE 控制面，认证使用独立本地 token（与 ChatGPT Cookie/Authorization 完全隔离）。v1 暴露 canonical conversation list/messages、Actor new/continue/steer submit、脱敏 lifecycle/canonical-update 事件；Family-AI Worker 后续只以 Secret 持有 Bridge URL/token 并做代理，iPhone/browser 不接触 ChatGPT 凭据。原始 `/f/conversation` SSE 不能直接透传，因为其中可能包含 resume credential；逐 token 正文 relay 必须先实现专门 sanitizer，v1 不以泄漏内部能力为代价追求假“全流式”。
 
 ## 2026-10-06 Phase 3 收口 / Phase 4 Guardian-Actor 合并复核 ExecPlan
 
