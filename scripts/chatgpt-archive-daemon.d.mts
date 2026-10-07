@@ -82,6 +82,16 @@ export function watchdogDiagnosticTurnKey(diagnostic: {
   lastMessageId?: unknown
 } | null | undefined): string | null
 
+/** 从 canonical body 的当前 user node 恢复该 turn 的真实开始时间（epoch ms）。 */
+export function watchdogTurnStartedAtFromPayload(
+  payload: { messages?: unknown[] } | null | undefined,
+  diagnostic: {
+    turnExchangeId?: unknown
+    requestId?: unknown
+    userMessageId?: unknown
+  } | null | undefined,
+): number | null
+
 /** 若 watchdog 发现同一 conversation 已切到新 turn，则重置 late-start 计时。 */
 export function reconcileWatchdogDiagnosticTurn(
   active: Record<string, unknown> | null | undefined,
@@ -92,7 +102,20 @@ export function reconcileWatchdogDiagnosticTurn(
     lastMessageId?: unknown
   } | null | undefined,
   now?: number,
-): { changed: boolean, turnKey: string | null, nextActive: any }
+  observedTurnStartedAt?: number | null,
+): {
+  changed: boolean
+  turnKey: string | null
+  turnStartedAt?: number | null
+  turnStartSource?: 'body-user-create-time' | 'diagnostic-observed-at' | null
+  nextActive: any
+}
+
+/** watchdog 诊断成功后决定当前 generation 是否应立即关闭。 */
+export function shouldCloseWatchdogGenerationAfterSync(
+  trigger: unknown,
+  result: { watchdogTurnChanged?: unknown, watchdogTurnAlreadyTimedOut?: unknown } | null | undefined,
+): boolean
 
 /** 把同步 trigger 映射成 incident kind。 */
 export function incidentKindForTrigger(trigger: unknown): 'active-zombie' | 'watchdog-timeout' | 'abnormal-terminal'

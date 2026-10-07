@@ -24,10 +24,12 @@ import {
   shouldRebuildGuardianAfterHealthFailures,
   shouldRunDeferredGapRepair,
   shouldQueueWatchdogDiagnostic,
+  shouldCloseWatchdogGenerationAfterSync,
   shouldRepairConversationTransport,
   shouldRetireWssSocketsForFrameNavigation,
   shouldAttachPassivePageObserver,
   watchdogDiagnosticTurnKey,
+  watchdogTurnStartedAtFromPayload,
   reconcileWatchdogDiagnosticTurn,
   shouldStartCatalogWatchdog,
   shouldNotifyHistoricalIncidentForTrigger,
@@ -454,6 +456,62 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     const same = reconcileWatchdogDiagnosticTurn(changed.nextActive, { turnExchangeId: 'turn-b' }, 71 * 60_000)
     expect(same.changed).toBe(false)
     expect(same.nextActive.startedAt).toBe(40 * 60_000)
+  })
+
+  test('晚发现新 turn 时优先使用 body 里的真实 user create_time，而不是发现时刻重新计 45 分钟', () => {
+    const userStartedAtMs = 100_000
+    const payload = {
+      messages: [{
+        id: 'user-b',
+        author: { role: 'user' },
+        create_time: userStartedAtMs / 1000,
+        metadata: { turn_exchange_id: 'turn-b', request_id: 'req-b' },
+      }],
+    }
+    const diagnostic = { turnExchangeId: 'turn-b', requestId: 'req-b', userMessageId: 'user-b' }
+    expect(watchdogTurnStartedAtFromPayload(payload, diagnostic)).toBe(userStartedAtMs)
+
+    const reconciled = reconcileWatchdogDiagnosticTurn({
+      startedAt: 0,
+      lastEventAt: 120_000,
+      lastWatchdogAt: 90_000,
+      watchdogPendingAt: 90_000,
+      lastDiagnosticTurnKey: 'turn-a',
+      startType: 'catalog:async-active:gap-repair',
+    }, diagnostic, 4_000_000, userStartedAtMs)
+
+    expect(reconciled).toMatchObject({
+      changed: true,
+      turnKey: 'turn-b',
+      turnStartedAt: userStartedAtMs,
+      turnStartSource: 'body-user-create-time',
+    })
+    expect(reconciled.nextActive).toMatchObject({
+      startedAt: userStartedAtMs,
+      lastEventAt: 120_000,
+      lastWatchdogAt: null,
+      watchdogPendingAt: null,
+      lastDiagnosticTurnKey: 'turn-b',
+    })
+  })
+
+  test('watchdog 诊断完成即关闭本 generation；只有刚发现且尚未超时的新 turn 保留', () => {
+    expect(shouldCloseWatchdogGenerationAfterSync('watchdog:active-timeout', {
+      watchdogTurnChanged: false,
+      watchdogTurnAlreadyTimedOut: false,
+    })).toBe(true)
+    expect(shouldCloseWatchdogGenerationAfterSync('watchdog:catalog-active-timeout', {
+      watchdogTurnChanged: true,
+      watchdogTurnAlreadyTimedOut: false,
+    })).toBe(false)
+    expect(shouldCloseWatchdogGenerationAfterSync('watchdog:catalog-active-timeout', {
+      watchdogTurnChanged: true,
+      watchdogTurnAlreadyTimedOut: true,
+    })).toBe(true)
+    expect(shouldCloseWatchdogGenerationAfterSync('wss:conversation-turn-complete', {
+      watchdogTurnChanged: false,
+      watchdogTurnAlreadyTimedOut: true,
+    })).toBe(false)
   })
 
   test('daemon 重启继承未过期的 429 cooldown，但不复活旧 cooldown', () => {

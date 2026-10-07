@@ -449,6 +449,46 @@ export function watchdogDiagnosticTurnKey(diagnostic) {
 }
 
 /**
+ * 从 canonical body 里恢复当前 logical turn 的真实 user 起点。
+ *
+ * Watchdog 的 late-start 兜底以前在“诊断时才发现已经换 turn”时，会直接拿“发现时刻”重新
+ * 计 45 分钟。对于已经运行了一小时以上的新 turn，这会再平白延迟一个完整 watchdog 窗口。
+ * body 既然已经给出了本轮 user message / turn_exchange_id / request_id，就优先使用 user
+ * message 的 create_time；拿不到时返回 null，调用方再退回“首次确认看到新 turn”的时刻。
+ */
+export function watchdogTurnStartedAtFromPayload(payload, diagnostic) {
+  const messages = Array.isArray(payload?.messages) ? payload.messages : []
+  if (messages.length === 0) return null
+  const userMessageId = typeof diagnostic?.userMessageId === 'string' ? diagnostic.userMessageId : null
+  const turnExchangeId = typeof diagnostic?.turnExchangeId === 'string' ? diagnostic.turnExchangeId : null
+  const requestId = typeof diagnostic?.requestId === 'string' ? diagnostic.requestId : null
+
+  const isUser = message => String(message?.author?.role ?? message?.role ?? '').toLowerCase() === 'user'
+  const messageTurn = message => {
+    const direct = typeof message?.turn_exchange_id === 'string' ? message.turn_exchange_id : null
+    const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : null
+    return direct ?? (typeof metadata?.turn_exchange_id === 'string' ? metadata.turn_exchange_id : null)
+  }
+  const messageRequest = message => {
+    const direct = typeof message?.request_id === 'string' ? message.request_id : null
+    const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : null
+    return direct ?? (typeof metadata?.request_id === 'string' ? metadata.request_id : null)
+  }
+  const candidates = messages.filter((message) => {
+    if (!isUser(message)) return false
+    if (userMessageId && message?.id === userMessageId) return true
+    if (turnExchangeId && messageTurn(message) === turnExchangeId) return true
+    if (requestId && messageRequest(message) === requestId) return true
+    return false
+  })
+  const times = candidates
+    .map(message => Number(message?.create_time))
+    .filter(value => Number.isFinite(value) && value > 0)
+    .map(value => value * 1000)
+  return times.length > 0 ? Math.min(...times) : null
+}
+
+/**
  * catalog late-start 只能先知道 conversation active，不知道具体 turn。
  * 如果一次 watchdog 已经诊断过 turn A，而后续 body 明确变成 turn B，A 的 startedAt 绝不能
  * 继续给 B 计时。此时把“第一次确认看到 B”的时刻作为新的保守 late-start 下界，并要求 B
@@ -457,7 +497,7 @@ export function watchdogDiagnosticTurnKey(diagnostic) {
  * 返回 changed=true 时，调用方仍可记录 body 中显式 interrupted/client_stopped；只是不得仅凭
  * open reasoning/tool tail 建 active-zombie/watchdog-timeout。
  */
-export function reconcileWatchdogDiagnosticTurn(active, diagnostic, now = Date.now()) {
+export function reconcileWatchdogDiagnosticTurn(active, diagnostic, now = Date.now(), observedTurnStartedAt = null) {
   if (!active || typeof active !== 'object') return { changed: false, turnKey: null, nextActive: active }
   const turnKey = watchdogDiagnosticTurnKey(diagnostic)
   if (!turnKey) return { changed: false, turnKey: null, nextActive: active }
@@ -465,13 +505,26 @@ export function reconcileWatchdogDiagnosticTurn(active, diagnostic, now = Date.n
     ? active.lastDiagnosticTurnKey
     : null
   if (previous && previous !== turnKey) {
+    const observedStart = Number(observedTurnStartedAt)
+    const current = Number(now)
+    const resetStartedAt = Number.isFinite(observedStart) && observedStart > 0 && observedStart <= current
+      ? observedStart
+      : current
+    const previousLastEventAt = Number(active.lastEventAt)
+    const resetLastEventAt = Number.isFinite(previousLastEventAt)
+      && previousLastEventAt >= resetStartedAt
+      && previousLastEventAt <= current
+      ? previousLastEventAt
+      : resetStartedAt
     return {
       changed: true,
       turnKey,
+      turnStartedAt: resetStartedAt,
+      turnStartSource: resetStartedAt === observedStart ? 'body-user-create-time' : 'diagnostic-observed-at',
       nextActive: {
         ...active,
-        startedAt: now,
-        lastEventAt: now,
+        startedAt: resetStartedAt,
+        lastEventAt: resetLastEventAt,
         lastWatchdogAt: null,
         watchdogPendingAt: null,
         lastDiagnosticTurnKey: turnKey,
@@ -481,8 +534,24 @@ export function reconcileWatchdogDiagnosticTurn(active, diagnostic, now = Date.n
   return {
     changed: false,
     turnKey,
+    turnStartedAt: Number(active.startedAt),
+    turnStartSource: null,
     nextActive: { ...active, lastDiagnosticTurnKey: turnKey },
   }
+}
+
+/**
+ * 一次 watchdog 诊断成功后，这个 generation 是否应该退出 activeTurns。
+ *
+ * 项目约定 watchdog 是“本轮硬超时并进入异常诊断”的终点，不是 zombie 的周期轮询器：
+ * - 诊断的就是当前 generation：完成后关闭；
+ * - 诊断时才发现已经换到新 turn，且新 turn 尚未到 45min：保留新 generation；
+ * - 新 turn 自己其实也早已超过 45min：本次诊断直接覆盖它，完成后也关闭。
+ */
+export function shouldCloseWatchdogGenerationAfterSync(trigger, result) {
+  if (!String(trigger || '').startsWith('watchdog:')) return false
+  if (!result?.watchdogTurnChanged) return true
+  return result?.watchdogTurnAlreadyTimedOut === true
 }
 
 /** 把 daemon trigger 映射到持久化 incident kind。 */
@@ -1437,14 +1506,34 @@ async function main() {
   // daemon 重启必须恢复“原计时器”，而不是由最近一次 DevSpace audit 重新开表。
   // active_watchdogs 是 conversation 级状态，因此不受同一 CID 多 metadata 的影响。
   for (const persisted of archive.listActiveWatchdogs()) {
-    activeTurns.set(persisted.conversationId, {
-      startedAt: persisted.startedAt,
+    let restoredStartedAt = Number(persisted.startedAt)
+    const diagnosticKey = typeof persisted.lastDiagnosticTurnKey === 'string' && persisted.lastDiagnosticTurnKey
+      ? persisted.lastDiagnosticTurnKey
+      : null
+    if (diagnosticKey) {
+      const row = archive.db.prepare(`
+        SELECT MIN(create_time) AS createTime
+        FROM messages
+        WHERE conversation_id = ?
+          AND role = 'user'
+          AND create_time IS NOT NULL
+          AND (turn_exchange_id = ? OR request_id = ? OR message_id = ?)
+      `).get(persisted.conversationId, diagnosticKey, diagnosticKey, diagnosticKey)
+      const canonicalStartedAt = Number(row?.createTime) * 1000
+      if (Number.isFinite(canonicalStartedAt) && canonicalStartedAt > 0 && canonicalStartedAt < restoredStartedAt) {
+        restoredStartedAt = canonicalStartedAt
+      }
+    }
+    const restored = {
+      startedAt: restoredStartedAt,
       lastEventAt: persisted.lastEventAt,
       lastWatchdogAt: persisted.lastWatchdogAt,
       watchdogPendingAt: persisted.watchdogPendingAt,
       startType: persisted.startType,
       lastDiagnosticTurnKey: persisted.lastDiagnosticTurnKey,
-    })
+    }
+    activeTurns.set(persisted.conversationId, restored)
+    if (restoredStartedAt !== Number(persisted.startedAt)) persistActiveTurn(persisted.conversationId, restored)
   }
   // metadata 尚未解出 canonical conversation 时，也先保存 first-tool 的真实时间。
   // binding 晚到以后仍以这个时间作为 watchdog.startedAt，不让发现延迟污染超时起点。
@@ -2471,19 +2560,39 @@ async function main() {
       conversation_id: first.conversation_id || conversationId,
     })
     let watchdogTurnChanged = false
+    let watchdogTurnStartedAt = null
+    let watchdogTurnAlreadyTimedOut = false
     if (String(trigger || '').startsWith('watchdog:')) {
       const currentActive = activeTurns.get(conversationId)
       if (currentActive) {
-        const reconciled = reconcileWatchdogDiagnosticTurn(currentActive, preliminaryDiagnostic, Date.now())
+        const diagnosedAt = Date.now()
+        const observedTurnStartedAt = watchdogTurnStartedAtFromPayload(first, preliminaryDiagnostic)
+        const reconciled = reconcileWatchdogDiagnosticTurn(
+          currentActive,
+          preliminaryDiagnostic,
+          diagnosedAt,
+          observedTurnStartedAt,
+        )
         watchdogTurnChanged = reconciled.changed
+        watchdogTurnStartedAt = Number.isFinite(Number(reconciled.turnStartedAt))
+          ? Number(reconciled.turnStartedAt)
+          : null
+        watchdogTurnAlreadyTimedOut = Boolean(
+          watchdogTurnChanged
+          && watchdogTurnStartedAt !== null
+          && diagnosedAt - watchdogTurnStartedAt >= watchdogMs,
+        )
         activeTurns.set(conversationId, reconciled.nextActive)
         persistActiveTurn(conversationId, reconciled.nextActive)
         if (watchdogTurnChanged) {
-          void log('watchdog body belongs to a newer turn; reset late-start timer', {
+          void log('watchdog body belongs to a newer turn; reconciled turn start', {
             conversationId,
             trigger,
             previousTurnKey: currentActive.lastDiagnosticTurnKey ?? null,
             turnKey: reconciled.turnKey,
+            turnStartedAt: watchdogTurnStartedAt,
+            turnStartSource: reconciled.turnStartSource,
+            alreadyTimedOut: watchdogTurnAlreadyTimedOut,
           })
         }
       }
@@ -2532,7 +2641,7 @@ async function main() {
         // COMPLETE 只决定它是不是 confirmed terminal；不能拿“尚未 COMPLETE”把 watchdog 变成空操作。
         allowIncompleteTailIncident: pages === 0
           && !terminalSettleNeeded
-          && !watchdogTurnChanged
+          && (!watchdogTurnChanged || watchdogTurnAlreadyTimedOut)
           && (confirmedTerminal || trigger.startsWith('watchdog:')),
         incidentKind: requestedIncidentKind,
       })
@@ -2616,6 +2725,9 @@ async function main() {
           exactMapping,
           passivePagesUsed,
           terminalSettleNeeded,
+          watchdogTurnChanged,
+          watchdogTurnStartedAt,
+          watchdogTurnAlreadyTimedOut,
         }
       }
       const nextCursor = pageInfo.start_cursor
@@ -2882,6 +2994,25 @@ async function main() {
         // body 一旦给出 turn_exchange_id，就可以把 earlier provisional metadata 做后验校验；
         // 该步骤只读局部时间窗，不扫描整库。
         reconcileDevSpaceBindingFromBody(conversationId, result.diagnostic)
+        const watchdogGenerationDone = shouldCloseWatchdogGenerationAfterSync(trigger, result)
+        if (watchdogGenerationDone && activeTurns.has(conversationId)) {
+          clearActiveTurn(conversationId)
+          stopCheckpointWatch(conversationId, 'watchdog-diagnostic-complete', Date.now())
+          archive.updateDevSpaceBindingTurn({
+            conversationId,
+            turnExchangeId: result.diagnostic.turnExchangeId ?? null,
+            requestId: result.diagnostic.requestId ?? null,
+            observedAt: Date.now(),
+            lifecycleState: 'closed',
+          })
+          await log('watchdog diagnostic closed active generation', {
+            conversationId,
+            trigger,
+            turnKey: watchdogDiagnosticTurnKey(result.diagnostic),
+            watchdogTurnChanged: result.watchdogTurnChanged,
+            watchdogTurnAlreadyTimedOut: result.watchdogTurnAlreadyTimedOut,
+          })
+        }
         // 一次 overlap 同步成功以后，本地副本已经追到本次 observation，因此才清 dirty。
         dirty.delete(conversationId)
         readySince.delete(conversationId)
