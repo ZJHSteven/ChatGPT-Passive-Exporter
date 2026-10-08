@@ -2046,16 +2046,18 @@ async function main() {
     }
     // 新语义 drift 第一次通常只是 info；第二次稳定复现时 count===2 才升级 warning。
     // 已存在的历史 variant 在 daemon 重启后不会被重新通知，避免部署新分类器后把旧账一次轰出来。
-    if (result.assessment?.notify && (result.isNew || result.assessment.count === 2)) {
-      queueProtocolDriftNotification(result.assessment)
-    }
     // 与 baseline 正交地检查“当前第一方 header 是否已超出生产 replay 捕获白名单”。
     // 这专门补 2026-10-07 暴露出的 bootstrap 漏洞：上游变化可能早于 monitor 安装。
     const productionCoverage = protocolLedger.assessProductionHeaderCoverage(
       result.signature,
       CAPTURED_HEADER_ALLOWLIST,
     )
-    if (productionCoverage?.notify && productionCoverage.count === 2) {
+    if (result.assessment?.notify && (result.isNew || result.assessment.count === 2)) {
+      // 正常 post-baseline 漂移优先使用更完整的 baseline diff；不要再为同一个新增 header
+      // 额外发一条“生产 allowlist 未覆盖”的重复通知。
+      queueProtocolDriftNotification(result.assessment)
+    }
+    else if (productionCoverage?.notify && productionCoverage.count === 2) {
       queueProtocolDriftNotification(productionCoverage)
     }
     scheduleProtocolLedgerFlush()
