@@ -750,7 +750,9 @@ export class ProtocolDriftLedger {
       .map(ref => ref.shape.contentType)
       .filter((value): value is string => Boolean(value)))
     const statusChanged = !baselineStatus.includes(shape.statusClass)
-    const contentTypeChanged = Boolean(shape.contentType) && baselineContentTypes.length > 0 && !baselineContentTypes.includes(shape.contentType)
+    const contentTypeChanged = shape.contentType !== null
+      && baselineContentTypes.length > 0
+      && !baselineContentTypes.includes(shape.contentType)
     if (statusChanged) details.push(`状态类别变为 ${shape.statusClass}（baseline: ${baselineStatus.join('/') || 'unknown'}）`)
     if (contentTypeChanged) details.push(`Content-Type 变为 ${shape.contentType}（baseline: ${baselineContentTypes.join('/') || 'unknown'}）`)
 
