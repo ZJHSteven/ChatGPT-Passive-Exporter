@@ -206,7 +206,9 @@ describe('DevSpace audit bridge', () => {
       expect(bridge.metadataToolState('meta-1')).toMatchObject({
         metadataId: 'meta-1',
         title: 'DevSpace 主题测试',
-        runningTools: 1,
+        // audit-1 是两分钟前遗留的 NULL；已有明显更晚的完成调用后，它不能永久
+        // 冒充当前 running tool。
+        runningTools: 0,
         latestStartedAt: Date.parse('2026-10-03T06:02:00.000Z'),
         latestFinishedAt: Date.parse('2026-10-03T06:02:01.000Z'),
         lastFinishedAuditId: 'audit-2',

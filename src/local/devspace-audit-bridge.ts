@@ -295,17 +295,33 @@ export class DevSpaceAuditBridge {
     if (!this.open() || !this.db) return null
     const summary = this.db.prepare(`
       SELECT
-        SUM(CASE WHEN finished_at IS NULL THEN 1 ELSE 0 END) AS runningTools,
         MAX(started_at) AS latestStartedAt,
         MAX(finished_at) AS latestFinishedAt
       FROM tool_audit
       WHERE metadata_id = ?
     `).get(metadataId) as {
-      runningTools?: number | null
       latestStartedAt?: string | null
       latestFinishedAt?: string | null
     } | undefined
     if (!summary?.latestStartedAt) return null
+    const latestStartedAtMs = Date.parse(summary.latestStartedAt)
+    if (!Number.isFinite(latestStartedAtMs)) return null
+
+    /**
+     * 异常终止可能留下永久 finished_at=NULL 的历史 audit，不能让它永远阻止 idle。
+     *
+     * 真正并行的 MCP tools 来自同一模型 tool batch，start 会非常接近；单个长命令即使
+     * 跑 40+ 分钟，它自己仍然是“最新 start”，因此不会被这里误清。只有当 metadata
+     * 后来已经出现了明显更晚（>60s）的新 tool start 时，旧 NULL 才视为孤儿记录。
+     */
+    const concurrentBatchFloor = new Date(latestStartedAtMs - 60_000).toISOString()
+    const running = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM tool_audit
+      WHERE metadata_id = ?
+        AND finished_at IS NULL
+        AND started_at >= ?
+    `).get(metadataId, concurrentBatchFloor) as { count?: number } | undefined
 
     const latest = this.db.prepare(`
       SELECT id, started_at AS startedAt
@@ -347,8 +363,8 @@ export class DevSpaceAuditBridge {
     return {
       metadataId,
       title: typeof context?.title === 'string' && context.title.trim() ? context.title.trim() : null,
-      runningTools: Math.max(0, Number(summary.runningTools || 0)),
-      latestStartedAt: parseOptionalTime(summary.latestStartedAt),
+      runningTools: Math.max(0, Number(running?.count || 0)),
+      latestStartedAt: latestStartedAtMs,
       latestFinishedAt: parseOptionalTime(summary.latestFinishedAt),
       latestAuditId: latest?.id ?? null,
       lastFinishedAuditId: lastFinished?.id ?? null,
