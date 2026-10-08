@@ -186,6 +186,20 @@ export function actorDomSignature(shape: ActorDomShape): string {
   return hashShape(shape)
 }
 
+/**
+ * DOM Bark 只需要指出“安全骨架哪一块变了”，不需要把整份 DOM/JSON 塞进通知。
+ * 这里比较的都是已经归一化后的结构字段，因此不会泄漏按钮文字或聊天正文。
+ */
+export function describeActorDomShapeDiff(before: ActorDomShape, after: ActorDomShape): string[] {
+  const details: string[] = []
+  if (before.routeKind !== after.routeKind) details.push(`页面类型: ${before.routeKind} → ${after.routeKind}`)
+  if (stableJson(before.composer) !== stableJson(after.composer)) details.push('composer 输入骨架发生变化')
+  if (stableJson(before.newChat) !== stableJson(after.newChat)) details.push('新建聊天入口骨架发生变化')
+  if (stableJson(before.controls) !== stableJson(after.controls)) details.push('发送/停止/附件等关键控件骨架发生变化')
+  if (stableJson(before.sidebar) !== stableJson(after.sidebar)) details.push('侧栏可见结构发生变化')
+  return details.length > 0 ? details : ['结构 hash 改变，但归一化关键字段未发现差异']
+}
+
 function newState(now: number, baselineWindowMs: number): ActorDomDriftState {
   return {
     version: 2,
@@ -329,6 +343,17 @@ export class ActorDomDriftLedger {
       if (variant) variant.lastReportedAt = now
     }
     this.state.updatedAt = now
+  }
+
+  /** 选择同 route 最近一次可信 baseline，给实时 Bark 生成最短可读 diff。 */
+  describePending(signature: string): string[] {
+    const variant = this.state.variants[signature]
+    if (!variant) return ['找不到对应 DOM 指纹']
+    const baseline = Object.values(this.state.variants)
+      .filter(candidate => candidate.baseline && candidate.shape.routeKind === variant.shape.routeKind)
+      .sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0]
+    if (!baseline) return ['该页面类型尚无可信 DOM baseline']
+    return describeActorDomShapeDiff(baseline.shape, variant.shape)
   }
 
   /** 人工确认某个 pending 结构是新版正常 DOM 后，将它提升为基线。 */
