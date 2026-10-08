@@ -16,6 +16,8 @@ export interface DevSpaceAuditEvent {
   metadataId: string
   tool: string
   argsJson: string
+  resultJson: string | null
+  error: string | null
   startedAt: string
   startedAtMs: number
   finishedAt: string | null
@@ -153,7 +155,7 @@ function canonicalJson(value: unknown): unknown {
   )
 }
 
-function toolArgsFingerprint(tool: string, argsJson: string): string | null {
+export function devSpaceToolArgsFingerprint(tool: string, argsJson: string): string | null {
   try {
     return tool + '\n' + JSON.stringify(canonicalJson(JSON.parse(argsJson)))
   }
@@ -179,7 +181,7 @@ export function matchDevSpaceCandidateForTurn(input: {
   const bound = new Set(input.alreadyBoundMetadataIds ?? [])
   const bodyByFingerprint = new Map<string, number[]>()
   for (const call of input.bodyCalls) {
-    const fingerprint = toolArgsFingerprint(call.tool, call.argsJson)
+    const fingerprint = devSpaceToolArgsFingerprint(call.tool, call.argsJson)
     if (!fingerprint) continue
     const times = bodyByFingerprint.get(fingerprint) ?? []
     times.push(call.startedAtMs)
@@ -199,7 +201,7 @@ export function matchDevSpaceCandidateForTurn(input: {
     // 否则一个 fingerprint 同时属于 meta-old(已绑定) 与 meta-new(未绑定) 时，
     // 跳过 meta-old 会把它错误地伪装成 meta-new 的唯一证据，造成误绑。
     for (const audit of activity.audits) {
-      const fingerprint = toolArgsFingerprint(audit.tool, audit.argsJson)
+      const fingerprint = devSpaceToolArgsFingerprint(audit.tool, audit.argsJson)
       if (!fingerprint || !bodyFingerprints.has(fingerprint)) continue
       if (!auditMatchesBodyInTime(fingerprint, audit.startedAtMs)) continue
       const owners = fingerprintOwners.get(fingerprint) ?? new Set<string>()
@@ -213,7 +215,7 @@ export function matchDevSpaceCandidateForTurn(input: {
     if (bound.has(activity.metadataId)) continue
     const exact = new Set<string>()
     for (const audit of activity.audits) {
-      const fingerprint = toolArgsFingerprint(audit.tool, audit.argsJson)
+      const fingerprint = devSpaceToolArgsFingerprint(audit.tool, audit.argsJson)
       if (fingerprint
         && bodyFingerprints.has(fingerprint)
         && auditMatchesBodyInTime(fingerprint, audit.startedAtMs)) exact.add(fingerprint)
@@ -394,8 +396,10 @@ export class DevSpaceAuditBridge {
     if (!this.open() || !this.db) return []
     const requestMetaExpr = this.hasRequestMetaJson ? 'request_meta_json' : 'NULL'
     const rows = this.db.prepare(`
-      SELECT id, metadata_id AS metadataId, tool, args_json AS argsJson, started_at AS startedAt,
-             finished_at AS finishedAt, ${requestMetaExpr} AS requestMetaJson
+      SELECT id, metadata_id AS metadataId, tool, args_json AS argsJson,
+             result_json AS resultJson, error,
+             started_at AS startedAt, finished_at AS finishedAt,
+             ${requestMetaExpr} AS requestMetaJson
       FROM tool_audit
       WHERE metadata_id IS NOT NULL
         AND metadata_id <> ''
@@ -407,6 +411,8 @@ export class DevSpaceAuditBridge {
       metadataId: string
       tool: string
       argsJson: string
+      resultJson: string | null
+      error: string | null
       startedAt: string
       finishedAt: string | null
       requestMetaJson: string | null
@@ -418,6 +424,77 @@ export class DevSpaceAuditBridge {
         ...row,
         startedAtMs,
       }]
+    })
+  }
+
+  /**
+   * 按 append-only audit id 读取当前最新状态。
+   *
+   * 同一个 audit 会先 INSERT(start)，结束时再 UPDATE(result/finished_at)。UDP finish 门铃到达时
+   * 增量 poll 可能因为 seen-id 去重不再进入 handler，因此 recovery overlay 需要能按 id 重读最终行。
+   */
+  auditById(auditId: string): DevSpaceAuditEvent | null {
+    if (!this.open() || !this.db || !auditId) return null
+    const requestMetaExpr = this.hasRequestMetaJson ? 'request_meta_json' : 'NULL'
+    const row = this.db.prepare(`
+      SELECT id, metadata_id AS metadataId, tool, args_json AS argsJson,
+             result_json AS resultJson, error,
+             started_at AS startedAt, finished_at AS finishedAt,
+             ${requestMetaExpr} AS requestMetaJson
+      FROM tool_audit
+      WHERE id = ?
+      LIMIT 1
+    `).get(auditId) as {
+      id: string
+      metadataId: string
+      tool: string
+      argsJson: string
+      resultJson: string | null
+      error: string | null
+      startedAt: string
+      finishedAt: string | null
+      requestMetaJson: string | null
+    } | undefined
+    if (!row) return null
+    const startedAtMs = Date.parse(row.startedAt)
+    if (!Number.isFinite(startedAtMs)) return null
+    return { ...row, startedAtMs }
+  }
+
+  /** 绑定刚建立时只回填这个 metadata 的局部时间窗，不扫描整个 DevSpace 历史库。 */
+  auditsForMetadata(metadataId: string, startAtMs: number, endAtMs: number, limit = 500): DevSpaceAuditEvent[] {
+    if (!this.open() || !this.db || !metadataId) return []
+    const requestMetaExpr = this.hasRequestMetaJson ? 'request_meta_json' : 'NULL'
+    const rows = this.db.prepare(`
+      SELECT id, metadata_id AS metadataId, tool, args_json AS argsJson,
+             result_json AS resultJson, error,
+             started_at AS startedAt, finished_at AS finishedAt,
+             ${requestMetaExpr} AS requestMetaJson
+      FROM tool_audit
+      WHERE metadata_id = ?
+        AND started_at >= ?
+        AND started_at <= ?
+      ORDER BY started_at ASC, id ASC
+      LIMIT ?
+    `).all(
+      metadataId,
+      new Date(Math.max(0, startAtMs)).toISOString(),
+      new Date(Math.max(startAtMs, endAtMs)).toISOString(),
+      Math.max(1, Math.trunc(limit)),
+    ) as Array<{
+      id: string
+      metadataId: string
+      tool: string
+      argsJson: string
+      resultJson: string | null
+      error: string | null
+      startedAt: string
+      finishedAt: string | null
+      requestMetaJson: string | null
+    }>
+    return rows.flatMap(row => {
+      const startedAtMs = Date.parse(row.startedAt)
+      return Number.isFinite(startedAtMs) ? [{ ...row, startedAtMs }] : []
     })
   }
 
