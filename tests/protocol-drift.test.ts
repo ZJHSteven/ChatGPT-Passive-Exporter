@@ -5,9 +5,9 @@ import { describe, expect, test } from 'vitest'
 import {
   buildProtocolRequestShape,
   buildProtocolResponseShape,
- classifyProtocolReplayCandidate,
+  classifyProtocolReplayCandidate,
   isArchiveProtocolRoute,
- ProtocolDriftLedger,
+  ProtocolDriftLedger,
 } from '../src/local/protocol-drift.ts'
 
 describe('protocol drift fingerprinting', () => {
@@ -107,5 +107,154 @@ describe('protocol drift fingerprinting', () => {
     })!
     expect(drift.pending).toBe(true)
     expect(ledger.pendingChanges()).toHaveLength(1)
+  })
+
+  test('message metadata 多态只记 info，不再制造协议 Bark', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protocol-metadata-noise-'))
+    const ledger = await ProtocolDriftLedger.open(path.join(dir, 'ledger.json'), {
+      now: 1_000,
+      baselineWindowMs: 60_000,
+    })
+    const request = ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/conversations/example?include_has_versions=true&num_turns=10',
+      method: 'GET',
+      headers: { Authorization: 'a', 'OAI-DID': 'device' },
+      observedAt: 2_000,
+    })!
+    ledger.observeResponse(request.signature, {
+      status: 200,
+      contentType: 'application/json',
+      body: {
+        messages: [{ id: 'm1', author: {}, content: {}, metadata: { model_slug: 'x' } }],
+        page_info: { has_next_page: false, has_previous_page: false, start_cursor: null, end_cursor: null },
+      },
+      observedAt: 3_000,
+    })
+    ledger.refreshBaselineLock(70_000)
+
+    const drift = ledger.observeResponse(request.signature, {
+      status: 200,
+      contentType: 'application/json',
+      body: {
+        messages: [{
+          id: 'm2',
+          author: {},
+          content: {},
+          metadata: { model_slug: 'x', dictation: true, attachments: [], writing_blocks: [] },
+        }],
+        page_info: { has_next_page: false, has_previous_page: false, start_cursor: null, end_cursor: null },
+      },
+      observedAt: 71_000,
+    })!
+    expect(drift.pending).toBe(true) // exact forensic shape 仍完整保留。
+    expect(drift.assessment).toMatchObject({
+      severity: 'info',
+      notify: false,
+      category: 'optional-shape',
+    })
+    expect(drift.assessment?.details.join(' ')).toContain('message metadata')
+  })
+
+  test('重复出现的新协议 header 升级 warning，并给出可读字段差异', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protocol-header-drift-'))
+    const ledger = await ProtocolDriftLedger.open(path.join(dir, 'ledger.json'), {
+      now: 1_000,
+      baselineWindowMs: 60_000,
+    })
+    ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/conversation/example',
+      method: 'GET',
+      headers: { Authorization: 'a', 'OAI-DID': 'device' },
+      observedAt: 2_000,
+    })
+    ledger.refreshBaselineLock(70_000)
+
+    const first = ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/conversation/example',
+      method: 'GET',
+      headers: { Authorization: 'a', 'OAI-DID': 'device', 'X-OAI-MCP-Form-Version': '2' },
+      observedAt: 71_000,
+    })!
+    expect(first.assessment).toMatchObject({ severity: 'info', notify: false })
+
+    const second = ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/conversation/example',
+      method: 'GET',
+      headers: { Authorization: 'a', 'OAI-DID': 'device', 'X-OAI-MCP-Form-Version': '2' },
+      observedAt: 72_000,
+    })!
+    expect(second.assessment).toMatchObject({
+      severity: 'warning',
+      notify: true,
+      category: 'request-contract',
+    })
+    expect(second.assessment?.details).toContain('新增协议 header: x-oai-mcp-form-version')
+  })
+
+  test('Conversation Body 核心 messages 消失第一次就判 critical', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protocol-breaking-response-'))
+    const ledger = await ProtocolDriftLedger.open(path.join(dir, 'ledger.json'), {
+      now: 1_000,
+      baselineWindowMs: 60_000,
+    })
+    const request = ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/conversations/example?include_has_versions=true&num_turns=10',
+      method: 'GET',
+      observedAt: 2_000,
+    })!
+    ledger.observeResponse(request.signature, {
+      status: 200,
+      contentType: 'application/json',
+      body: {
+        messages: [{ id: 'm1', author: {}, content: {}, metadata: {} }],
+        page_info: { has_next_page: false, has_previous_page: false, start_cursor: null, end_cursor: null },
+      },
+      observedAt: 3_000,
+    })
+    ledger.refreshBaselineLock(70_000)
+
+    const broken = ledger.observeResponse(request.signature, {
+      status: 200,
+      contentType: 'application/json',
+      body: {
+        page_info: { has_next_page: false, has_previous_page: false, start_cursor: null, end_cursor: null },
+      },
+      observedAt: 71_000,
+    })!
+    expect(broken.assessment).toMatchObject({
+      severity: 'critical',
+      notify: true,
+      category: 'response-contract',
+    })
+    expect(broken.assessment?.details.join(' ')).toContain('messages')
+  })
+
+  test('生产 header 覆盖检查不依赖 baseline，可发现安装监控前已经存在的协议字段', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protocol-production-coverage-'))
+    const ledger = await ProtocolDriftLedger.open(path.join(dir, 'ledger.json'), {
+      now: 1_000,
+      baselineWindowMs: 60_000,
+    })
+    const first = ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/conversations/example?include_has_versions=true&num_turns=10',
+      method: 'GET',
+      headers: { Authorization: 'a', 'X-OAI-New-Context': 'v1' },
+      observedAt: 2_000,
+    })!
+    ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/conversations/example?include_has_versions=true&num_turns=10',
+      method: 'GET',
+      headers: { Authorization: 'a', 'X-OAI-New-Context': 'v1' },
+      observedAt: 3_000,
+    })
+    expect(first.baseline).toBe(true)
+
+    const coverage = ledger.assessProductionHeaderCoverage(first.signature, ['authorization'])
+    expect(coverage).toMatchObject({
+      severity: 'warning',
+      notify: true,
+      category: 'request-contract',
+    })
+    expect(coverage?.details).toContain('未覆盖 header: x-oai-new-context')
   })
 })
