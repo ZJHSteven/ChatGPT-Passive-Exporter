@@ -276,6 +276,7 @@ export function classifyConversationEvent(type, updateType = null) {
     startsTurn: explicitTurnStart || asyncProgress,
     completesTurn: complete,
     asyncProgress,
+    explicitTurnStart,
   }
 }
 
@@ -1787,11 +1788,15 @@ async function main() {
   // activeTurns 现在承载“所有已纳入 watchdog 的 active”：既可能来自可靠 WSS/actor start，
   // 也可能来自 catalog 首次观察到 active 的保守 late-start。两者不能在取证输出里混称 reliable。
   const isCatalogLateActive = (active) => String(active?.startType || '').startsWith('catalog:')
+  const isWatchdogLatched = (active) => Number.isFinite(Number(active?.lastWatchdogAt))
   const reliableActiveIds = () => [...activeTurns.entries()]
-    .filter(([, active]) => !isCatalogLateActive(active))
+    .filter(([, active]) => !isCatalogLateActive(active) && !isWatchdogLatched(active))
     .map(([conversationId]) => conversationId)
   const catalogLateActiveIds = () => [...activeTurns.entries()]
-    .filter(([, active]) => isCatalogLateActive(active))
+    .filter(([, active]) => isCatalogLateActive(active) && !isWatchdogLatched(active))
+    .map(([conversationId]) => conversationId)
+  const timedOutWatchdogIds = () => [...activeTurns.entries()]
+    .filter(([, active]) => isWatchdogLatched(active))
     .map(([conversationId]) => conversationId)
   const turnRecorder = new ActiveTurnRecorder(turnTracePath)
   const eventCounts = new Map()
