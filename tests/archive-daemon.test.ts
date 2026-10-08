@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   activeApiAllowed,
+  buildDevSpaceIdleNotificationPayload,
   buildCooldownNotificationPayload,
   buildTurnFinalNotificationPayload,
   buildUnboundWatchdogNotificationPayload,
@@ -8,6 +9,7 @@ import {
   catalogProgressedAfterWatchdog,
   catalogStableOverlapTarget,
   classifyConversationBackendUrl,
+  crossedDevSpaceIdleThresholds,
   classifyCatalogAsyncStatus,
   effectiveActiveRequestGap,
   formatBeijingTime,
@@ -50,6 +52,35 @@ import {
 } from '../scripts/chatgpt-archive-daemon.mjs'
 
 describe('ChatGPT Archive daemon WSS parser', () => {
+  test('DevSpace idle 只在 1/3/5 分钟边界穿越时触发，重启不会补轰炸旧阈值', () => {
+    expect(crossedDevSpaceIdleThresholds(59_000, 61_000)).toEqual([60_000])
+    expect(crossedDevSpaceIdleThresholds(61_000, 179_000)).toEqual([])
+    expect(crossedDevSpaceIdleThresholds(179_000, 181_000)).toEqual([180_000])
+    expect(crossedDevSpaceIdleThresholds(181_000, 301_000)).toEqual([300_000])
+    expect(crossedDevSpaceIdleThresholds(240_000, 241_000)).toEqual([])
+  })
+
+  test('DevSpace idle 通知是独立 Bug 分组，并明确不是 turn 终止证据', () => {
+    const unbound = buildDevSpaceIdleNotificationPayload({
+      metadataId: 'v1/abcdefghijklmnopqrstuvwxyz',
+      title: '改造 DevSpace',
+      thresholdMs: 180_000,
+    })
+    expect(unbound.title).toContain('3 分钟')
+    expect(unbound.body).toContain('以“改造 DevSpace”为主题')
+    expect(unbound.body).toContain('不代表 turn 已结束')
+    expect(unbound.group).toBe('DevSpace Bug')
+    expect(unbound).not.toHaveProperty('url')
+
+    const bound = buildDevSpaceIdleNotificationPayload({
+      conversationId: 'conversation-a',
+      metadataId: 'meta-a',
+      title: 'Canonical title',
+      thresholdMs: 300_000,
+    })
+    expect(bound.body).toContain('Canonical title')
+    expect(bound.url).toContain('/c/conversation-a')
+  })
   test('当前 exact body 只允许纠正历史 backfill，不覆盖另一个在线 exact binding', () => {
     expect(shouldSupersedeDevSpaceBinding(
       { conversationId: 'old', evidence: 'body:exact-tool-args-backfill' },

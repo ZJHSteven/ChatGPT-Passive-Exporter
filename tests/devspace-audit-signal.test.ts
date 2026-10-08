@@ -13,10 +13,12 @@ describe('DevSpace audit wake listener', () => {
       metadataId: 'meta-1',
       startedAt: '2026-10-06T06:00:00.000Z',
       tool: 'exec_command',
+      phase: 'finish',
     }))
     expect(parseDevSpaceAuditWakeSignal(valid)).toMatchObject({
       auditId: 'audit-1',
       metadataId: 'meta-1',
+      phase: 'finish',
     })
     expect(parseDevSpaceAuditWakeSignal(Buffer.from('{bad json'))).toBeNull()
   })
@@ -56,6 +58,7 @@ describe('DevSpace audit wake listener', () => {
           metadataId: 'meta-live',
           startedAt: '2026-10-06T06:00:00.000Z',
           tool: 'read',
+          phase: 'start',
         })),
         port,
         '127.0.0.1',
@@ -64,6 +67,7 @@ describe('DevSpace audit wake listener', () => {
         auditId: 'audit-live',
         metadataId: 'meta-live',
         tool: 'read',
+        phase: 'start',
       })
       expect(listener.stats()).toMatchObject({
         listening: true,
