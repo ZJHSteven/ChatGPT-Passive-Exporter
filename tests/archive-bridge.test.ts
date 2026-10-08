@@ -120,9 +120,10 @@ async function startBridge(
     conversationId: input.conversationId ?? 'new-cid',
     cdpRequestId: '123.45',
   }),
+  archive: ArchiveBridgeDataSource = mockArchive(),
 ) {
   const bridge = new ArchiveBridgeServer({
-    archive: mockArchive(),
+    archive,
     authToken: TOKEN,
     submitTurn,
     host: '127.0.0.1',
@@ -145,6 +146,50 @@ afterEach(async () => {
 })
 
 describe('Archive Bridge', () => {
+  test('messages API 在 canonical 尾部追加带 provenance 的 DevSpace provisional recovery', async () => {
+    const archive = mockArchive()
+    archive.getDevSpaceRecoveryMessages = (conversationId: string) => conversationId === 'cid-1'
+      ? [{
+          messageId: 'devspace-recovery:audit-1:conclusion',
+          ordinal: 5,
+          role: 'assistant',
+          authorName: 'DevSpace Recover',
+          recipient: 'all',
+          channel: 'commentary',
+          contentType: 'text',
+          text: '已完成阶段一，现在继续核验。',
+          hidden: 0,
+          createTime: 4,
+          status: 'provisional',
+          provisional: true,
+          recoverySource: 'devspace-audit',
+          recoveryKind: 'assistant-conclusion',
+          auditId: 'audit-1',
+          metadataId: 'meta-1',
+          superseded: false,
+        }]
+      : []
+    const { base, headers } = await startBridge(undefined, archive)
+    const response = await fetch(`${base}/v1/conversations/cid-1/messages`, { headers })
+    expect(response.status).toBe(200)
+    const body = await response.json() as {
+      canonicalCount: number
+      provisionalCount: number
+      messages: Array<Record<string, unknown>>
+    }
+    expect(body.canonicalCount).toBe(4)
+    expect(body.provisionalCount).toBe(1)
+    expect(body.messages.at(-1)).toMatchObject({
+      messageId: 'devspace-recovery:audit-1:conclusion',
+      provisional: true,
+      recoverySource: 'devspace-audit',
+      recoveryKind: 'assistant-conclusion',
+      auditId: 'audit-1',
+      metadataId: 'meta-1',
+      text: '已完成阶段一，现在继续核验。',
+    })
+  })
+
   test('token 首次随机生成，后续重启复用同一份本地凭据', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-bridge-auth-'))
     const file = path.join(dir, 'auth.local.json')
