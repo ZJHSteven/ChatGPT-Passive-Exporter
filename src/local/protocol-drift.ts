@@ -1041,6 +1041,11 @@ export class ProtocolDriftLedger {
     this.refreshBaselineLock(now)
     const variants = Object.values(this.state.variants)
     const responseVariants = variants.reduce((sum, variant) => sum + Object.keys(variant.responses).length, 0)
+    const rawExactPending = this.pendingChanges({ unreportedOnly: true }).length
+    const semanticActionable = dedupeProtocolAssessments(this.assessedPendingChanges({
+      unreportedOnly: false,
+      notifyOnly: true,
+    })).length
     return {
       filePath: this.filePath,
       baselineMode: this.state.baselineLockedAt === null ? 'learning' : 'locked',
@@ -1048,7 +1053,10 @@ export class ProtocolDriftLedger {
       baselineLockedAt: this.state.baselineLockedAt,
       requestVariants: variants.length,
       responseVariants,
-      pendingUnreported: this.pendingChanges({ unreportedOnly: true }).length,
+      // 旧字段保留兼容；它是 forensic exact-shape 数量，绝不能再直接拿来当报警数。
+      pendingUnreported: rawExactPending,
+      rawExactPending,
+      semanticActionable,
       approvedReplayTemplates: variants.filter(variant => variant.approvedForReplay).length,
       replayCandidates: variants.filter(variant => variant.candidate.eligible).length,
     }
