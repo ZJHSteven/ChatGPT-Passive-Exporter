@@ -38,7 +38,7 @@ describe('LifeOps sync outbox', () => {
     })
   })
 
-  test('同一个 conversation/turn 会合并更新，成功后从持久 outbox 删除', async () => {
+  test('同一个 sourceEventId 会合并更新，成功后从持久 outbox 删除', async () => {
     const dir = await tempDir()
     const pendingPath = path.join(dir, 'pending.json')
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -56,8 +56,8 @@ describe('LifeOps sync outbox', () => {
       ingestToken: 'ingest',
     }, { fetchImpl, pendingPath })
     await client.start()
-    client.enqueue({ conversationId: 'c1', turnExchangeId: 't1', title: 'Title', summary: 'old' })
-    client.enqueue({ conversationId: 'c1', turnExchangeId: 't1', title: 'Title', summary: 'new summary' })
+    client.enqueue({ sourceEventId: 'turn:c1:t1', conversationId: 'c1', turnExchangeId: 't1', title: 'Title', summary: 'old' })
+    client.enqueue({ sourceEventId: 'turn:c1:t1', conversationId: 'c1', turnExchangeId: 't1', title: 'Title', summary: 'new summary' })
     await new Promise(resolve => setTimeout(resolve, 25))
 
     expect(fetchImpl).toHaveBeenCalledTimes(1)
@@ -89,6 +89,54 @@ describe('LifeOps sync outbox', () => {
     expect(text).not.toContain('sensitive-secret')
     expect(text).not.toContain('sensitive-ingest')
     expect(text).not.toContain('sensitive-id')
+    await client.stop()
+  })
+
+  test('metadata-only incident 可以先入 outbox，随后用同一 sourceEventId 补齐 conversation', async () => {
+    const dir = await tempDir()
+    const pendingPath = path.join(dir, 'pending.json')
+    const bodies: Array<Record<string, unknown>> = []
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const client = new LifeOpsSyncClient({
+      enabled: true,
+      baseUrl: 'https://lifeops.example.com',
+      accessClientId: 'id',
+      accessClientSecret: 'secret',
+      ingestToken: 'ingest',
+    }, { fetchImpl, pendingPath })
+    await client.start()
+
+    client.enqueue({
+      sourceEventId: 'incident:metadata-1:watchdog',
+      metadataId: 'metadata-1',
+      inboxKind: 'incident',
+      inboxHealth: 'incident',
+      incidentType: 'active-zombie',
+    })
+    // 在第一轮网络 pump 前，用同一事件身份补齐 canonical identity；只应发送最新 payload。
+    client.enqueue({
+      sourceEventId: 'incident:metadata-1:watchdog',
+      metadataId: 'metadata-1',
+      conversationId: 'cid-1',
+      turnExchangeId: 'turn-1',
+      title: '后来绑定到真实聊天',
+      inboxKind: 'incident',
+      inboxHealth: 'incident',
+      incidentType: 'active-zombie',
+    })
+    await new Promise(resolve => setTimeout(resolve, 25))
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(bodies[0]).toMatchObject({
+      sourceEventId: 'incident:metadata-1:watchdog',
+      metadataId: 'metadata-1',
+      conversationId: 'cid-1',
+      turnExchangeId: 'turn-1',
+    })
     await client.stop()
   })
 })
