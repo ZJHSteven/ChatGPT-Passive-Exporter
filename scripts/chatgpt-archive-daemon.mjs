@@ -1923,6 +1923,7 @@ async function main() {
   // 需要让第一次 body sync 继续使用同一 sourceEventId，才能把 provisional 事件原地补齐。
   // 这只是短生命周期桥接；即使 daemon 恰好重启，LifeOps 端还有 conversation+turn 二次归并兜底。
   const lifeOpsEventOverrideByConversation = new Map()
+  const lifeOpsWatchdogQueued = new Set()
   let protocolLedger = null
   let protocolFlushTimer = null
   let activeReplayRequestUrl = null
@@ -2718,8 +2719,11 @@ async function main() {
   const enqueueLifeOpsWatchdogTimeout = (conversationId, active, now = Date.now()) => {
     if (!lifeOpsSync || !conversationId || !active) return false
     const startedAt = Number(active.startedAt || now)
+    const sourceEventId = watchdogLifeOpsEventId(conversationId, startedAt)
+    if (lifeOpsWatchdogQueued.has(sourceEventId)) return false
+    lifeOpsWatchdogQueued.add(sourceEventId)
     return enqueueLifeOpsEvent({
-      sourceEventId: watchdogLifeOpsEventId(conversationId, startedAt),
+      sourceEventId,
       conversationId,
       turnExchangeId: null,
       title: conversationTitle(conversationId),
@@ -2749,8 +2753,11 @@ async function main() {
   const enqueueLifeOpsUnboundWatchdog = (metadataId, candidate, now = Date.now()) => {
     if (!lifeOpsSync || !metadataId || !candidate) return false
     const startedAt = Number(candidate.startedAt || now)
+    const sourceEventId = unboundWatchdogLifeOpsEventId(metadataId, startedAt)
+    if (lifeOpsWatchdogQueued.has(sourceEventId)) return false
+    lifeOpsWatchdogQueued.add(sourceEventId)
     return enqueueLifeOpsEvent({
-      sourceEventId: unboundWatchdogLifeOpsEventId(metadataId, startedAt),
+      sourceEventId,
       metadataId,
       inboxKind: 'incident',
       inboxHealth: 'incident',
