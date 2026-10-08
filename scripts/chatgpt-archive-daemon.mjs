@@ -872,8 +872,16 @@ function chatgptTime(value) {
   return null
 }
 
-export function sanitizeCapturedHeaders(headers) {
-  const allowed = new Set([
+/**
+ * Archive 主动只读 replay 会从第一方页面捕获并复用的账户/客户端上下文 header。
+ * 这个集合故意导出：Protocol Drift 运行时会把“第一方稳定出现、但这里尚未覆盖”的新 header
+ * 直接判成 production compatibility warning。这样即使新 header 在 24h baseline 建立前就已经存在，
+ * 也不会再发生“baseline 认为正常、生产代码其实已经落后”的漏报。
+ *
+ * turn-scoped `x-oai-turn-trace-id` 不在这里：它必须由每个 turn session 单独管理，绝不能
+ * 从 A turn 的 native request 捕获后全局复用到 B conversation。
+ */
+export const CAPTURED_HEADER_ALLOWLIST = [
     'authorization',
     'chatgpt-account-id',
     'oai-did',
@@ -887,7 +895,10 @@ export function sanitizeCapturedHeaders(headers) {
     'x-oai-mcp-form-version',
     'x-openai-codex-window-type',
     'x-openai-web-frontend',
-  ])
+  ]
+
+export function sanitizeCapturedHeaders(headers) {
+  const allowed = new Set(CAPTURED_HEADER_ALLOWLIST)
   const sanitized = {}
   for (const [key, value] of Object.entries(headers || {})) {
     const normalized = String(key).toLowerCase()
