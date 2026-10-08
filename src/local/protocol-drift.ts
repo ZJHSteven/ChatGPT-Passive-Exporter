@@ -517,16 +517,23 @@ export class ProtocolDriftLedger {
       variant.sampleTargetIds = sortedUnique([...variant.sampleTargetIds, input.targetId]).slice(0, 8)
     }
     this.state.updatedAt = now
+    const assessment = variant.baseline ? null : this.assessRequestVariant(signature)
     return {
       signature,
       isNew,
       baseline: variant.baseline,
       pending: isNew && !variant.baseline,
       candidate: variant.candidate,
+      assessment,
     }
   }
 
-  observeResponse(requestSignature: string, input: ProtocolResponseInput): { signature: string, isNew: boolean, pending: boolean } | null {
+  observeResponse(requestSignature: string, input: ProtocolResponseInput): {
+    signature: string
+    isNew: boolean
+    pending: boolean
+    assessment: ProtocolDriftAssessment | null
+  } | null {
     const request = this.state.variants[requestSignature]
     if (!request) return null
     const now = input.observedAt ?? Date.now()
@@ -552,7 +559,306 @@ export class ProtocolDriftLedger {
     response.count += 1
     request.candidate = classifyProtocolReplayCandidate(request.shape, shape)
     this.state.updatedAt = now
-    return { signature, isNew, pending: isNew && !response.baseline }
+    const assessment = response.baseline ? null : this.assessResponseVariant(requestSignature, signature)
+    return { signature, isNew, pending: isNew && !response.baseline, assessment }
+  }
+
+  /**
+   * 选“安装 monitor 时学到的 baseline”作为兼容性参照，而不是拿任意最近 variant 互相比。
+   * 这样一次真正的 header/query 漂移不会因为后来又出现了 20/40/60 三个 offset 变体而被自我洗白。
+   */
+  private baselineRequestsFor(shape: ProtocolRequestShape): ProtocolRequestVariantState[] {
+    const family = protocolContractFamily(shape)
+    return Object.values(this.state.variants).filter(variant => (
+      variant.baseline
+      && variant.shape.method === shape.method
+      && protocolContractFamily(variant.shape) === family
+    ))
+  }
+
+  private baselineResponsesFor(request: ProtocolRequestVariantState): ProtocolResponseVariantState[] {
+    const family = protocolContractFamily(request.shape)
+    return Object.values(this.state.variants)
+      .filter(variant => variant.baseline
+        && variant.shape.method === request.shape.method
+        && protocolContractFamily(variant.shape) === family)
+      .flatMap(variant => Object.values(variant.responses).filter(response => response.baseline))
+  }
+
+  /**
+   * 请求层只把“baseline 从未出现过的新协议字段 / baseline 一直都有但现在缺失的稳定字段”
+   * 当作兼容性候选。正常分页的 offset/limit 值变化、同一 route 的一次性稀疏 header 变体
+   * 仍保留在 forensic ledger，但不会第一眼就 Bark。
+   */
+  assessRequestVariant(signature: string): ProtocolDriftAssessment | null {
+    const variant = this.state.variants[signature]
+    if (!variant || variant.baseline) return null
+    const shape = variant.shape
+    const family = protocolContractFamily(shape)
+    const label = familyLabel(family)
+    const important = familyIsOperationallyImportant(family)
+    const refs = this.baselineRequestsFor(shape)
+    const details: string[] = []
+
+    if (refs.length === 0) {
+      details.push('baseline 中没有同家族请求')
+      const repeated = variant.count >= 2
+      const severity: ProtocolDriftSeverity = important && repeated ? 'warning' : 'info'
+      return {
+        severity,
+        notify: severity !== 'info',
+        category: important ? 'request-contract' : 'observation',
+        summary: `${label} 出现新的请求家族`,
+        details,
+        impact: important
+          ? (repeated ? '该请求已重复出现，可能代表第一方协议新增/迁移；需要核对生产 replay。' : '目前只见 1 次，先作为候选证据，重复后再通知。')
+          : '该 route 不参与 Archive/Actor 的关键 replay，仅保留取证。',
+        dedupeKey: assessmentDedupeKey({ kind: 'request-new-family', family, method: shape.method, route: shape.route }),
+        route: shape.route,
+        method: shape.method,
+        family,
+        requestSignature: signature,
+        count: variant.count,
+      }
+    }
+
+    const knownHeaders = unionLists(refs.map(ref => ref.shape.protocolHeaderNames))
+    const stableHeaders = intersectLists(refs.map(ref => ref.shape.protocolHeaderNames))
+    const addedHeaders = difference(shape.protocolHeaderNames, knownHeaders)
+    const missingStableHeaders = difference(stableHeaders, shape.protocolHeaderNames)
+    if (addedHeaders.length > 0) details.push(`新增协议 header: ${addedHeaders.join(', ')}`)
+    if (missingStableHeaders.length > 0) details.push(`缺少 baseline 稳定 header: ${missingStableHeaders.join(', ')}`)
+
+    const knownQueryKeys = unionLists(refs.map(ref => ref.shape.queryKeys))
+    const stableQueryKeys = intersectLists(refs.map(ref => ref.shape.queryKeys))
+    const addedQueryKeys = difference(shape.queryKeys, knownQueryKeys)
+    const missingStableQueryKeys = difference(stableQueryKeys, shape.queryKeys)
+    if (addedQueryKeys.length > 0) details.push(`新增 query key: ${addedQueryKeys.join(', ')}`)
+    if (missingStableQueryKeys.length > 0) details.push(`缺少 baseline 稳定 query key: ${missingStableQueryKeys.join(', ')}`)
+
+    const changedQueryValues = shape.queryKeys.filter(key => {
+      if (queryValueIsVolatile(key)) return false
+      const value = shape.query[key]
+      return refs.some(ref => key in ref.shape.query)
+        && !refs.some(ref => ref.shape.query[key] === value)
+    })
+    if (changedQueryValues.length > 0) {
+      details.push(`query 语义值变化: ${changedQueryValues.map(key => `${key}=${shape.query[key]}`).join(', ')}`)
+    }
+
+    const knownPostKeys = unionLists(refs.map(ref => ref.shape.postBodyKeys))
+    const stablePostKeys = intersectLists(refs.map(ref => ref.shape.postBodyKeys))
+    const addedPostKeys = difference(shape.postBodyKeys, knownPostKeys)
+    const missingStablePostKeys = difference(stablePostKeys, shape.postBodyKeys)
+    if (addedPostKeys.length > 0) details.push(`新增 POST 字段: ${addedPostKeys.join(', ')}`)
+    if (missingStablePostKeys.length > 0) details.push(`缺少 baseline 稳定 POST 字段: ${missingStablePostKeys.join(', ')}`)
+
+    const hasContractDifference = addedHeaders.length > 0
+      || missingStableHeaders.length > 0
+      || addedQueryKeys.length > 0
+      || missingStableQueryKeys.length > 0
+      || changedQueryValues.length > 0
+      || addedPostKeys.length > 0
+      || missingStablePostKeys.length > 0
+
+    if (!hasContractDifference) {
+      return {
+        severity: 'info',
+        notify: false,
+        category: 'optional-shape',
+        summary: `${label} 仅出现正常参数/传输变体`,
+        details: ['route/method/query 契约与 baseline 一致；差异仅来自分页值或非协议 header'],
+        impact: '不影响 Archive/Actor 兼容性，不发送 Bark。',
+        dedupeKey: assessmentDedupeKey({ kind: 'request-noise', family }),
+        route: shape.route,
+        method: shape.method,
+        family,
+        requestSignature: signature,
+        count: variant.count,
+      }
+    }
+
+    // 单次稀疏请求很容易来自某个特殊页面状态；至少重复两次再把 request contract 升成 warning。
+    const repeated = variant.count >= 2
+    const severity: ProtocolDriftSeverity = important && repeated ? 'warning' : 'info'
+    return {
+      severity,
+      notify: severity !== 'info',
+      category: 'request-contract',
+      summary: `${label} 请求契约发生变化`,
+      details,
+      impact: important
+        ? (repeated
+          ? '第一方已重复使用该新契约；生产 replay/header/query 模板需要复核。'
+          : '目前只见 1 次，先记录证据；重复出现后再 Bark，避免 A/B/偶发页面状态误报。')
+        : '该 route 不属于关键 replay，暂不通知。',
+      dedupeKey: assessmentDedupeKey({
+        kind: 'request-contract',
+        family,
+        addedHeaders,
+        missingStableHeaders,
+        addedQueryKeys,
+        missingStableQueryKeys,
+        changedQueryValues: changedQueryValues.map(key => [key, shape.query[key]]),
+        addedPostKeys,
+        missingStablePostKeys,
+      }),
+      route: shape.route,
+      method: shape.method,
+      family,
+      requestSignature: signature,
+      count: variant.count,
+    }
+  }
+
+  /**
+   * Response 不再把 message.metadata 的“字段并集”当协议契约。
+   * 真正会让 Archive 读不懂数据的，是 messages/page_info/mapping/items 等核心 transport 字段消失，
+   * 或 JSON/status 契约改变；attachments/writing_blocks/dictation 等内容型 metadata 只记 info。
+   */
+  assessResponseVariant(requestSignature: string, responseSignature: string): ProtocolDriftAssessment | null {
+    const request = this.state.variants[requestSignature]
+    const response = request?.responses[responseSignature]
+    if (!request || !response || response.baseline) return null
+    const family = protocolContractFamily(request.shape)
+    const label = familyLabel(family)
+    const important = familyIsOperationallyImportant(family)
+    const refs = this.baselineResponsesFor(request)
+    const shape = response.shape
+    const details: string[] = []
+
+    if (refs.length === 0) {
+      return {
+        severity: 'info',
+        notify: false,
+        category: 'observation',
+        summary: `${label} 首次记录新的 response 家族`,
+        details: ['没有 baseline response 可做可靠 schema diff'],
+        impact: '先保留证据；request 层若属于关键新协议会单独分级。',
+        dedupeKey: assessmentDedupeKey({ kind: 'response-no-baseline', family }),
+        route: request.shape.route,
+        method: request.shape.method,
+        family,
+        requestSignature,
+        responseSignature,
+        count: response.count,
+      }
+    }
+
+    const baselineStatus = unionLists(refs.map(ref => [ref.shape.statusClass]))
+    const baselineContentTypes = unionLists(refs.map(ref => ref.shape.contentType ? [ref.shape.contentType] : []))
+    const statusChanged = !baselineStatus.includes(shape.statusClass)
+    const contentTypeChanged = Boolean(shape.contentType) && baselineContentTypes.length > 0 && !baselineContentTypes.includes(shape.contentType)
+    if (statusChanged) details.push(`状态类别变为 ${shape.statusClass}（baseline: ${baselineStatus.join('/') || 'unknown'}）`)
+    if (contentTypeChanged) details.push(`Content-Type 变为 ${shape.contentType}（baseline: ${baselineContentTypes.join('/') || 'unknown'}）`)
+
+    const requiredTop: Record<string, string[]> = {
+      catalog: ['items'],
+      'body-latest': ['messages', 'page_info'],
+      'body-cursor': ['messages', 'page_info'],
+      mapping: ['mapping'],
+      'stream-status': ['status'],
+    }
+    const operationalTop: Record<string, string[]> = {
+      catalog: ['items', 'total', 'limit', 'offset'],
+      'body-latest': ['messages', 'page_info'],
+      'body-cursor': ['messages', 'page_info'],
+      mapping: ['mapping'],
+      'stream-status': ['status'],
+    }
+    const requiredMessage = ['id', 'author', 'content', 'metadata']
+    const operationalPageInfo = ['has_next_page', 'has_previous_page', 'start_cursor', 'end_cursor']
+
+    const missingRequiredTop = (requiredTop[family] || []).filter(key => !shape.topLevelKeys.includes(key))
+    const missingOperationalTop = (operationalTop[family] || [])
+      .filter(key => !shape.topLevelKeys.includes(key) && !missingRequiredTop.includes(key))
+    const missingMessage = ['body-latest', 'body-cursor'].includes(family)
+      ? requiredMessage.filter(key => !shape.messageKeys.includes(key))
+      : []
+    const missingPageInfo = ['body-latest', 'body-cursor'].includes(family) && shape.topLevelKeys.includes('page_info')
+      ? operationalPageInfo.filter(key => !shape.pageInfoKeys.includes(key))
+      : []
+
+    if (missingRequiredTop.length > 0) details.push(`缺少核心 response 字段: ${missingRequiredTop.join(', ')}`)
+    if (missingOperationalTop.length > 0) details.push(`缺少常用 response 字段: ${missingOperationalTop.join(', ')}`)
+    if (missingMessage.length > 0) details.push(`messages 缺少核心字段: ${missingMessage.join(', ')}`)
+    if (missingPageInfo.length > 0) details.push(`page_info 缺少字段: ${missingPageInfo.join(', ')}`)
+
+    const critical = important && (missingRequiredTop.length > 0 || missingMessage.length > 0)
+    const warning = important && !critical && (
+      statusChanged
+      || contentTypeChanged
+      || missingOperationalTop.length > 0
+      || missingPageInfo.length > 0
+    ) && response.count >= 2
+
+    if (critical || warning) {
+      const severity: ProtocolDriftSeverity = critical ? 'critical' : 'warning'
+      return {
+        severity,
+        notify: true,
+        category: 'response-contract',
+        summary: `${label} 响应契约${critical ? '出现破坏性变化' : '发生变化'}`,
+        details,
+        impact: critical
+          ? 'Archive/Actor 依赖的核心 transport 字段缺失，可能直接导致同步/诊断失败。'
+          : '第一方 response 的稳定读取契约发生变化，需要复核解析器。',
+        dedupeKey: assessmentDedupeKey({
+          kind: 'response-contract', family, statusChanged, contentTypeChanged,
+          missingRequiredTop, missingOperationalTop, missingMessage, missingPageInfo,
+        }),
+        route: request.shape.route,
+        method: request.shape.method,
+        family,
+        requestSignature,
+        responseSignature,
+        count: response.count,
+      }
+    }
+
+    const knownTop = unionLists(refs.map(ref => ref.shape.topLevelKeys))
+    const addedTop = difference(shape.topLevelKeys, knownTop)
+    const knownMetadata = unionLists(refs.map(ref => ref.shape.messageMetadataKeys))
+    const addedMetadata = difference(shape.messageMetadataKeys, knownMetadata)
+    const optionalDetails: string[] = []
+    if (addedTop.length > 0) optionalDetails.push(`新增可选 top-level 字段: ${addedTop.join(', ')}`)
+    if (addedMetadata.length > 0) optionalDetails.push(`新增 message metadata: ${addedMetadata.join(', ')}`)
+    if (optionalDetails.length === 0) optionalDetails.push('核心 transport schema 与 baseline 一致；差异来自可选内容字段组合')
+    return {
+      severity: 'info',
+      notify: false,
+      category: 'optional-shape',
+      summary: `${label} 仅出现内容/可选字段多态`,
+      details: optionalDetails,
+      impact: '不影响解析器核心契约，不发送 Bark。',
+      dedupeKey: assessmentDedupeKey({ kind: 'response-optional', family }),
+      route: request.shape.route,
+      method: request.shape.method,
+      family,
+      requestSignature,
+      responseSignature,
+      count: response.count,
+    }
+  }
+
+  assessChange(change: ProtocolPendingChange): ProtocolDriftAssessment | null {
+    return change.kind === 'request'
+      ? this.assessRequestVariant(change.requestSignature)
+      : change.responseSignature
+        ? this.assessResponseVariant(change.requestSignature, change.responseSignature)
+        : null
+  }
+
+  assessedPendingChanges(options: { unreportedOnly?: boolean, notifyOnly?: boolean } = {}): Array<{
+    change: ProtocolPendingChange
+    assessment: ProtocolDriftAssessment
+  }> {
+    const notifyOnly = options.notifyOnly ?? false
+    return this.pendingChanges({ unreportedOnly: options.unreportedOnly })
+      .map(change => ({ change, assessment: this.assessChange(change) }))
+      .filter((item): item is { change: ProtocolPendingChange, assessment: ProtocolDriftAssessment } => (
+        Boolean(item.assessment) && (!notifyOnly || item.assessment!.notify)
+      ))
   }
 
   pendingChanges(options: { unreportedOnly?: boolean } = {}): ProtocolPendingChange[] {
