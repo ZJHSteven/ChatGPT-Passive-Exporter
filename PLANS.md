@@ -1,3 +1,19 @@
+## 2026-10-08 Protocol Drift 实时分级 / 可读告警 ExecPlan
+
+- [in_progress] 复盘 2026-09-28 至今的 HTTP/DOM drift ledger、Bark report-state 与 2026-10-07 Watchdog 协议升级，区分“真实兼容性漂移”“第一方语义变体”“内容/metadata 多态噪声”，解释为什么真漂移被日报噪声淹没。
+- [pending] 将 HTTP drift 从“精确 shape hash 是否新出现”升级为语义分级：稳定 route/method/query/header/response 核心字段变化进入 warning/critical；message metadata 可选字段组合、分页 offset、已知 observation-only 资源等只作为 info evidence，不触发 Bark。
+- [pending] 为每个可通知 drift 生成可读 diff（具体 `+header/-header`、`+query/-query`、核心 response key 增删、route/method 变化及影响的 replay family），Bark 不再只输出不可解释的 hash。
+- [pending] 把重要 HTTP/DOM drift 改为 daemon 事件触发后短 debounce 聚合并立即 Bark；保留 CLI `protocol report` 作为人工审计入口，但卸载每日 12:00 定时通知，避免延迟到次日和一次堆几十项。
+- [pending] 增加 regression：内容型 metadata 变化不报警；稳定 request/header/query 漂移可读且分级；breaking response key 缺失为 critical；同一语义变化去重；实时 notifier 不重复；CLI report 与 daemon 使用同一 classifier/formatter。
+- [pending] 跑 node syntax、TypeScript typecheck、protocol/daemon 定向测试与全量测试；重载 production daemon，卸载 `ChatGPT Archive Protocol Drift` 日任务，并用本地 synthetic ledger 验证 Bark 文本而不主动访问 ChatGPT backend。
+
+## 2026-10-08 Watchdog 468min / overnight 429 回放修复 ExecPlan
+
+- [in_progress] 修复 DevSpace audit overlap 去重：`seenDevSpaceAuditIds` 只能在事件已经落到下一次 `pollSince()` 查询下界之外后删除，不能按事件绝对年龄 2h 清理；否则长时间没有新 audit 时，最后一条旧 first-tool 会被 overlap 每轮重放并复活已关闭 watchdog。
+- [in_progress] 修复 catalog active generation 复活：catalog watchdog 完成一次 body 诊断且 body 仍无 terminal 时，保留“本 generation 已诊断”的持久 active_watchdog 状态；同一未变化的 `async_status=active` 不得在后续 gap-repair 从旧 `firstSeenAt` 重新建代。只有 catalog update_time / strong progress 前进后才重新武装 45min 窗口。
+- [pending] 增加回归：旧 audit 即使已经远超 2h，只要仍位于 overlap 查询窗口就必须继续去重；catalog zombie 诊断后不重复拉 body，真实 progress 后重新从 progress 时刻计 45min。
+- [pending] 跑 node syntax、TypeScript typecheck、Watchdog/daemon 定向测试与全量测试；随后仅重载 Archive daemon，验证生产日志不再每分钟复活同一 `startedAt`，且 cooldown pending 在解除后仍能自动 body retry。
+
 ## 2026-10-07 北京时间通知 / 429 波次复盘 ExecPlan
 
 - [done] 人类可见时间统一改为北京时间：429 cooldown Bark 与 Watchdog deferred Bark 的绝对时间均格式化为 `YYYY-MM-DD HH:mm:ss 北京时间`。SQLite/内部状态继续保存 epoch/UTC 绝对时间，避免破坏排序、比较、迁移与跨时区计算。
