@@ -1099,7 +1099,8 @@ export function extractDevSpaceConclusion(argsJson) {
 
 /**
  * Conclusion 是工具链中的“阶段性结论”，不是 turn final，也不改变任何 Archive 生命周期。
- * 手机展示只需要知道它属于哪个可读聊天；metadata ID 继续留在内部日志，不暴露到通知正文。
+ * 手机展示优先给可读聊天名；只有 conversation/title 都没有时才给 `meta/XXXXXXXX` 短别名，
+ * 完整 metadata ID 始终只留在内部日志与 SQLite。
  */
 export function buildDevSpaceConclusionNotificationPayload({
   conversationId = null,
@@ -2165,6 +2166,7 @@ async function main() {
       payload: buildDevSpaceConclusionNotificationPayload({
         conversationId,
         title,
+        metadataId: event.metadataId,
         tool: event.tool,
         conclusion,
       }),
@@ -2918,7 +2920,15 @@ async function main() {
   const dispatchUnboundWatchdogNotification = (metadataId, candidate, now = Date.now()) => {
     if (!notificationConfig || !metadataId || !candidate) return false
     const startedAt = Number(candidate.startedAt || now)
-    const payload = buildUnboundWatchdogNotificationPayload({ metadataId, startedAt, now })
+    // 45min 到点属于极低频路径，此时再按 metadata 单次读取 title 即可；不为普通 tool hot path
+    // 额外增加 SQLite 查询。若 legacy metadata 没有 title，payload 会退回可口述的 meta/XXXXXXXX。
+    const metadataTitle = devSpaceAuditBridge.metadataToolState(metadataId)?.title ?? null
+    const payload = buildUnboundWatchdogNotificationPayload({
+      metadataId,
+      title: metadataTitle,
+      startedAt,
+      now,
+    })
     return dispatchPersistentNotification({
       notificationKey: `watchdog-unbound:${metadataId}:${startedAt}`,
       kind: 'watchdog-unbound',
@@ -4470,6 +4480,7 @@ async function main() {
       archive.markDevSpaceUnboundWatchdog(metadataId, now)
       // CID 还没解出来也不能静默：先告诉用户“Watchdog 已到点但当前无法安全定位聊天”。
       // 持久 notification key 保证这个 provisional 事件跨循环/重启只成功发送一次。
+      enqueueLifeOpsUnboundWatchdog(metadataId, candidate, now)
       dispatchUnboundWatchdogNotification(metadataId, candidate, now)
       if (!candidate.repairQueuedAt) {
         candidate.repairQueuedAt = now
@@ -5110,6 +5121,7 @@ async function main() {
       if (active.watchdogPendingAt) {
         stopCheckpointWatch(conversationId, 'watchdog-pending', now)
         // daemon 重启后恢复 timed-out generation 时仍补发一次“到点”事实；持久 ledger 会去重。
+        enqueueLifeOpsWatchdogTimeout(conversationId, active, now)
         dispatchWatchdogTimeoutNotification(conversationId, active, now)
         if (!ready.has(conversationId)) {
           const watchdogTrigger = watchdogTriggerForStartType(active.startType)
@@ -5132,6 +5144,7 @@ async function main() {
       active.watchdogPendingAt = now
       persistActiveTurn(conversationId, active)
       // Watchdog 到点事实与 body 是否可立即拉取无关：第一条通知现在始终立即发送。
+      enqueueLifeOpsWatchdogTimeout(conversationId, active, now)
       dispatchWatchdogTimeoutNotification(conversationId, active, now)
       const watchdogTrigger = watchdogTriggerForStartType(active.startType)
       markSyncReady(conversationId, watchdogTrigger, 0)
