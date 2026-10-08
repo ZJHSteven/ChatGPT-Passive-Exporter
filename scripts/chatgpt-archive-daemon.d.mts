@@ -272,6 +272,7 @@ export function shouldRebuildGuardianForMissingWss(input: {
 }): boolean
 
 /** 从当前页面真实 backend 请求中提取短生命周期、允许复用的请求上下文字段。 */
+export const CAPTURED_HEADER_ALLOWLIST: string[]
 export function sanitizeCapturedHeaders(headers: Record<string, unknown>): Record<string, unknown>
 
 /** 从已存在的 ChatGPT conversation target URL 提取 conversation id。 */
