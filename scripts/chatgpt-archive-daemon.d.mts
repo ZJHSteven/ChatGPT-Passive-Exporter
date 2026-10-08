@@ -55,16 +55,10 @@ export function shouldStartCatalogWatchdog(input?: {
 }): boolean
 
 /** catalog 服务端 update_time 真正前进后，从 progress 时刻重新武装 watchdog。 */
-export function rearmCatalogWatchdogOnProgress<T extends Record<string, unknown> | null | undefined>(
+export function recordCatalogWatchdogProgress<T extends Record<string, unknown> | null | undefined>(
   active: T,
   now?: number,
 ): T
-
-/** 重启后用 catalog update_time 判断 persisted tombstone 之后是否发生过真实新进展。 */
-export function catalogProgressedAfterWatchdog(
-  active: Record<string, unknown> | null | undefined,
-  updateTime: unknown,
-): boolean
 
 /** DevSpace overlap 中仍可能被下一轮 poll 返回的 audit id 必须继续保留去重。 */
 export function shouldRetainSeenDevSpaceAudit(
@@ -172,6 +166,20 @@ export function buildWatchdogDeferredNotificationPayload(input: {
   now?: number
   cooldownUntil: number
 }): { title: string, body: string, url?: string }
+
+export function buildWatchdogTimeoutNotificationPayload(input: {
+  conversationId: string
+  title?: string | null
+  startedAt: number
+  now?: number
+}): { title: string, body: string, url?: string }
+
+export function buildWatchdogDiagnosisNotificationPayload(input: {
+  conversationId: string
+  title?: string | null
+  diagnostic?: { terminalEvidence?: unknown, tailShape?: unknown } | null
+  incident?: { reason?: unknown } | null
+}): { title: string, body: string, url: string }
 
 export function buildUnboundWatchdogNotificationPayload(input: {
   metadataId: string

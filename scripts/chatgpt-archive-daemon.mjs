@@ -710,6 +710,56 @@ export function buildWatchdogDeferredNotificationPayload({
   }
 }
 
+/**
+ * Watchdog 到点本身就是必须可见的事实，不依赖 body 是否能立即拉取，也不依赖 cooldown。
+ * 这是两阶段通知的第一条：先告诉用户“这个 turn 已经跨过 45min 硬边界”。
+ */
+export function buildWatchdogTimeoutNotificationPayload({
+  conversationId,
+  title,
+  startedAt,
+  now = Date.now(),
+}) {
+  const activeForMs = Math.max(0, Number(now) - Number(startedAt || now))
+  return {
+    title: 'ChatGPT Watchdog 已超时',
+    body: [
+      title || conversationId,
+      `Watchdog 已运行 ${Math.floor(activeForMs / 60_000)} 分钟，达到超时阈值。`,
+      `本轮起点：${formatBeijingTime(startedAt || now)}`,
+      '本 turn 已锁定为 timed-out；后续同 turn 的工具、WSS 或 catalog 进展不会重新启动 Watchdog。',
+      'Archive 会继续等待/拉取 canonical body，诊断完成后再发送第二条结果通知。',
+    ].join('\n'),
+    url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
+  }
+}
+
+/**
+ * Watchdog 两阶段通知的第二条：只要 canonical body 成功完成诊断，就必须给用户一个结果。
+ * 这里不能依赖“是否新建 incident”，否则已有 incident / 同一 incident 更新会造成静默漏报。
+ */
+export function buildWatchdogDiagnosisNotificationPayload({ conversationId, title, diagnostic, incident = null }) {
+  const terminal = String(diagnostic?.terminalEvidence || 'none')
+  const tail = String(diagnostic?.tailShape || 'unknown')
+  const reason = incident?.reason || (
+    terminal === 'final'
+      ? 'canonical body 已确认 final。'
+      : `canonical body 已完成诊断：terminal=${terminal}，tail=${tail}。`
+  )
+  return {
+    title: terminal === 'final'
+      ? 'ChatGPT Watchdog 诊断完成 · 已有 Final'
+      : 'ChatGPT Watchdog 诊断完成',
+    body: [
+      title || conversationId,
+      reason,
+      `terminal：${terminal}`,
+      `tail：${tail}`,
+    ].join('\n'),
+    url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
+  }
+}
+
 /** DevSpace metadata 45 分钟后仍无法绑定 CID 时也必须显式告诉用户，禁止静默。 */
 export function buildUnboundWatchdogNotificationPayload({ metadataId, startedAt, now = Date.now() }) {
   const activeForMs = Math.max(0, Number(now) - Number(startedAt || now))
