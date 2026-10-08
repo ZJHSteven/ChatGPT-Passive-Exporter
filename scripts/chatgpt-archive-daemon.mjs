@@ -1913,6 +1913,31 @@ async function main() {
     return true
   }
 
+  const notifyActorDomDrift = ({ phase, result, details }) => {
+    if (!result?.signature || !result?.shape) return false
+    const body = [
+      `页面：${result.shape.routeKind}`,
+      `阶段：${phase}`,
+      ...(details || []).map(detail => `• ${detail}`),
+      '影响：Actor 已 fail-closed，本次不会继续导航/输入/发送；需要确认新版 DOM 后再 approve。',
+    ].join('\n')
+    return dispatchPersistentNotification({
+      notificationKey: `dom-drift:${result.signature}`,
+      kind: 'dom-drift',
+      payload: {
+        title: 'ChatGPT DOM 漂移：Actor 已安全阻断',
+        body,
+      },
+      successLog: 'DOM drift notification sent',
+      failureLog: 'DOM drift notification failed',
+      logFields: {
+        phase,
+        routeKind: result.shape.routeKind,
+        signature: result.signature,
+      },
+    })
+  }
+
   /**
    * HTTP protocol drift 不再等每天 12:00 批处理。真正 actionable 的语义 drift 在第二次稳定出现
    * （或第一次就已经是 critical）时进入这个 10 秒聚合窗口，然后立即 Bark。
@@ -5479,6 +5504,7 @@ async function main() {
           conversationId: input.conversationId,
           mode: input.mode,
           targetMode: input.targetMode,
+          onDomDrift: notifyActorDomDrift,
         }),
       })
       await archiveBridge.start()
