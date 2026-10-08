@@ -16,8 +16,9 @@ export interface DevSpaceAuditEvent {
   metadataId: string
   tool: string
   argsJson: string
-  resultJson: string | null
-  error: string | null
+  /** 旧 fixture / 兼容调用可以缺省；真实 SQLite poll 会返回 null 或最终值。 */
+  resultJson?: string | null
+  error?: string | null
   startedAt: string
   startedAtMs: number
   finishedAt: string | null
