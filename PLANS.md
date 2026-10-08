@@ -7,7 +7,7 @@
 - [done] 429 责任按共享门控累计量分析，不以最后一个 429 请求归责。05:09/07:26/09:30/11:41 四个独立 wave 前 60min，Archive 受管主动请求约 71/66/67/73 次，其中 Watchdog queue 约 62/60/59/60 次；说明 stale-Watchdog 风暴本身已是主要可控负载之一。旧遥测没有逐条持久成功 native request，因此无法诚实给出双方精确占比。
 - [done] 解释周期：01:22 最后 audit 不是立即 replay；旧 seen-id 要先等绝对 2h 过期，约 03:22 才开始 stale overlap 重放。之后约每分钟一个 Watchdog/body 请求，约 05:09 首次重新撞共享 429；每次 60min cooldown + 后续再积累形成约两小时一波。
 - [done] 增加回归：同 generation progress 不重启 watchdog；catalog progress 只更新证据；诊断后 tombstone 保留；Watchdog timeout/diagnosis 文案分离；旧 deferred ledger 兼容迁移。`node --check`、TypeScript、daemon 定向 38/38、全量 25 files / 177 tests 全通过。
-- [in_progress] 部署新 daemon 并做 production 验证：16 个官方页继续 frozen；重载必须继承当前 cooldown，验证 Guardian/WSS/Bridge 正常、checkpoint 仍 disabled、timed-out tombstone 与 running 统计分离，且官方页冻结后不再产生 native REST/429。
+- [done] 部署新 daemon 并做 production 验证：PID 3676，16 个官方页继续 frozen；原 cooldown `13:41:05 北京时间` 被完整继承，Guardian/WSS=3、Bridge=true、checkpoint=false、lastError=null。新状态显示 `active=0 / timedOutAwaitingDiagnosis=2`，证明 timed-out tombstone 已与 running 分离；重启未因新 notification key 重复补发第一阶段，05:06 后暂未出现新的 native/active 429 或主动 body/catalog sync。
 
 ## 2026-10-08 Protocol Drift 实时分级 / 可读告警 ExecPlan
 

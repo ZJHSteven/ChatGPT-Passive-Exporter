@@ -8,7 +8,7 @@
 - 429 责任已按共享门控重算，不能再用“最后谁拿到 429 就怪谁”。四个夜间独立 wave 前 60min 的 Archive 受管主动 REST 约为：05:09=71（Watchdog queue 62）、07:26=66（60）、09:30=67（59）、11:41=73（60）；30min 约 33~37，10min 约 10~19。旧成功 native 请求没有逐条持久化，只能看到部分 capture failure/429 下界，因此无法给出官方页 vs Archive 的精确历史比例；但 Archive stale-Watchdog 本身已经接近每分钟一请求，显然是主要可控负载之一。
 - “01点到5点为何不立即爆”的时间形状与 seen-id bug 精确一致：最后 audit≈01:22；旧代码按 wall-clock 2h 清理 seen-id，因此约 03:22 才忘掉最后一条 audit，而 10s overlap 仍会返回它，随后才开始每轮 stale first-tool→Watchdog→body 的重复链。积累约 1h47m 后 05:09 首次撞 429；再叠加每波约 60min cooldown，形成 05:09→07:26→09:30→11:41 的约两小时节奏。
 - 12:41:05 北京时间又观察到普通页面 mapping 429；当时上一轮 cooldown 只剩约 45 秒，但旧策略仍把全局 cooldown 滑动续到 13:41:05。为先止血，已通过 CDP 将 16 个普通 `chatgpt.com` 页面全部 `Page.setWebLifecycleState(frozen)`，仅保留 Guardian/Archive；冻结后十余分钟日志统计 `native429=0 / active429=0 / nativeCapture=0 / conversationSynced=0 / catalogReconcile=0 / watchdogQueued=0`，WSS lifecycle 仍能收到 conversation events，说明页面 REST 已成功静默而 Archive 监听链未被关闭。
-- 代码验证：`node --check` PASS，TypeScript typecheck PASS，daemon 定向 38/38 tests，全量 25 files / 177 tests PASS。production 尚未重载到这批 latch/两阶段通知提交；当前先保留官方页 frozen 与既有 cooldown，部署后再做最终状态验证。
+- 代码验证：`node --check` PASS，TypeScript typecheck PASS，daemon 定向 38/38 tests，全量 25 files / 177 tests PASS。production 已重载为 PID 3676；原 `13:41:05 北京时间` cooldown 完整继承，WSS=3、Bridge=true、checkpoint=false、lastError=null。最关键的生产状态已从旧语义变为 `active=0 / timedOutAwaitingDiagnosis=2`：两条已跨 Watchdog 边界的 generation 不再冒充 running，只等待后续 body 诊断。重启日志没有重复发送新 `watchdog timeout notification`，说明 legacy deferred ledger 迁移去重生效；16 个普通页面继续 frozen，05:06 后暂未出现新的 native/active 429、conversation sync 或 catalog reconcile。
 
 ## 2026-10-08 Protocol Drift 告警机制重构
 
