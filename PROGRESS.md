@@ -1,3 +1,15 @@
+## 2026-10-08 Protocol Drift 告警机制重构
+
+- 旧 drift Bark 的真实行为已复盘：Windows 计划任务每天 12:00 才运行 `protocol report --notify`，且 `StartWhenAvailable` 会在错过时间后补跑。因此 2026-10-08 12:00 的 74 项并不是中午突然发生，而是主要汇总 10/7 14:03~19:35 才首次观察到的请求/响应 shape；10/7 下午人工已经完成真协议审计时，自动告警天然要晚到次日。
+- 旧 HTTP classifier 把整个 response 的 `messageMetadataKeys` 并集参加 exact hash；语音输入、attachments、writing_blocks、search/citations 等正常内容能力会不断制造新 response signature。当前 forensic ledger 虽有 57 request variants / 155 response variants / 136 raw pending，但离线语义重分类后没有任何 breaking response critical，证明 raw hash 数不能再直接当“协议变更数”。
+- 旧 monitor 还有更关键的 bootstrap 漏洞：它只比较“first-party 当前 shape vs 安装时 first-party baseline”，不比较“first-party 当前协议 vs Archive production replay 实现”。因此 `oai-did / x-oai-mcp-form-version / x-openai-web-frontend` 等字段若在 24h baseline 前就已存在，哪怕旧生产 allowlist 仍停留在 `oai-device-id/oai-client-*` 时代，也不会被叫作新 drift；这解释了 10/7 必须靠人工审计才发现真正兼容性落后。
+- 新 classifier 保留 exact shape 作为 forensic evidence，但新增 `ProtocolDriftAssessment` 语义层：request 只对新增协议 header/query/POST schema 等稳定契约升级；response 只对 `messages/page_info/mapping/items/status` 等核心 transport 契约变化升级。可选 metadata、分页 offset/limit 值、late first observation、旧 Target canary/replay 标记等均降为 info/no-Bark。
+- 当前历史 raw pending 经新规则只剩 3 类值得人读的语义变化：① Conversation Mapping 自 9/30 起稳定带 `x-oai-mcp-form-version`；② Mapping 的 turn-scoped 变体出现 `x-oai-turn-trace-id`（该 header 明确不进入全局账户 allowlist）；③ `/backend-api/f/conversation` 自 10/6 起 POST schema 新增 `genui_state_snapshots`。这三类均是 warning/协议演化证据，目前 production header coverage 检查为 0 未覆盖项，且历史 ledger 中没有核心 response critical。
+- 新增 production compatibility 轴：daemon 会把第一方只读 replay family 的当前 protocol header 与真实 `CAPTURED_HEADER_ALLOWLIST` 比较；即使一个上游 header 早于 baseline 就存在，只要 production 尚未覆盖且稳定复现，也会直接 warning。turn-scoped trace header、Accept/Content-Type 等明确排除，避免错误全局复用。
+- 通知改成事件驱动：warning 第二次稳定出现、critical 首次出现即进入约 10 秒短聚合窗口，按 semantic key 持久去重后直接 Bark；正文直接给“什么字段变了、route/method、影响、观察次数”，不再显示一串无法解释的 request/response hash。DOM 未知安全骨架也在 Actor fail-closed 当场发送可读 diff；sidebar-only 折叠/虚拟化仍自动视为安全等价。
+- 每天 12:00 的 `ChatGPT Archive Protocol Drift` Windows 任务已卸载，`daily-status` 当前 `Installed=false`；`protocol report` 仍保留为人工审计命令，但同样只展示 semantic actionable drift，DOM 历史 sidebar-only pending 已过滤为 0。
+- 验证：新增回归覆盖 metadata 多态=no Bark、新 header 二次复现=warning、Body `messages` 消失=critical、baseline 前上游字段但 production allowlist 落后仍可检出。`node --check`、TypeScript typecheck、全量 25 files / 177 tests 全通过。production daemon 已重载为 PID 14560；Bridge `127.0.0.1:47832` 正常，启动日志确认 Guardian WSS 恢复 3 sockets。重启继承既有 cooldown，不新增主动 ChatGPT backend probe；启动 production coverage 扫描没有补发历史 Bark。
+
 ## 2026-10-08 Watchdog 468min / overnight 429 根因与修复
 
 - `468 分钟` 不是 Watchdog 阈值被改大；生产阈值仍是 45min。09:30 北京时间一次 gap-repair 把三个已诊断过但 catalog 仍为 `async_status=active` 的 conversation 从原始 `firstSeenAt≈01:41:58` 重新建成 watchdog，故到点文案显示的是陈旧 generation 的实际年龄 `≈468min`，并立即再次进入 timeout。根因是 watchdog body 诊断清了 `activeTurns`，却没有为 unchanged catalog generation 留下“已诊断”状态。
