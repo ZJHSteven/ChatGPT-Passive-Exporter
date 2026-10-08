@@ -4024,15 +4024,57 @@ async function main() {
           terminalEvidence: result.diagnostic.terminalEvidence ?? null,
           tailShape: result.diagnostic.tailShape ?? null,
         })
-        // Canonical merge 成功后才推 LifeOps：这样 Inbox 永远来自已经持久化的 Archive 事实，
-        // 不会把半截 SSE/WSS chunk 当成工作现场。相同 conversation+turn 的后续 body 会被 outbox 合并。
+        // Inbox 只接收“已经有明确意义”的 Turn：
+        // - 正常路径必须已经观察到 final；
+        // - Incident / Watchdog 可以在没有 final 时进入；
+        // - complete 但 body 仍落后一拍（terminalSettleNeeded）先等 bounded settle，不误报成健康事件。
+        // Worksite 本身只同步 metadata/link，不读取正文；同 Conversation 后续 Turn 更新同一引用。
         if (lifeOpsSync) {
-          const worksite = buildArchiveBridgeWorksite(
-            archive,
-            conversationId,
-            result.diagnostic.turnExchangeId ?? null,
+          const currentIncident = result.newIncident || latestOpenIncident(conversationId)
+          const watchdogTrigger = String(trigger || '').startsWith('watchdog:')
+          const shouldEnqueueInboxTurn = !result.terminalSettleNeeded && (
+            result.diagnostic.terminalEvidence === 'final'
+            || Boolean(currentIncident)
+            || watchdogTrigger
           )
-          if (worksite) lifeOpsSync.enqueue(worksite)
+          if (shouldEnqueueInboxTurn) {
+            const worksite = buildArchiveBridgeWorksite(
+              archive,
+              conversationId,
+              result.diagnostic.turnExchangeId ?? null,
+            )
+            if (worksite) {
+              const override = lifeOpsEventOverrideByConversation.get(conversationId)
+              const watchdogSourceEventId = watchdogTrigger && watchdogGenerationStartedAt > 0
+                ? watchdogLifeOpsEventId(conversationId, watchdogGenerationStartedAt)
+                : null
+              const incidentType = currentIncident?.lifecycleClass
+                || currentIncident?.incidentKind
+                || (watchdogTrigger ? 'watchdog-timeout' : null)
+              lifeOpsSync.enqueue({
+                ...worksite,
+                sourceEventId: override?.sourceEventId
+                  || watchdogSourceEventId
+                  || worksite.sourceEventId,
+                metadataId: override?.metadataId ?? null,
+                inboxKind: currentIncident || watchdogTrigger ? 'incident' : 'turn',
+                inboxHealth: currentIncident || watchdogTrigger ? 'incident' : 'healthy',
+                finalState: result.diagnostic.terminalEvidence ?? null,
+                incidentType,
+                incidentState: currentIncident?.status
+                  || (watchdogTrigger ? 'diagnosed' : null),
+                metadata: {
+                  ...(worksite.metadata || {}),
+                  trigger,
+                  requestId: result.diagnostic.requestId ?? null,
+                  tailShape: result.diagnostic.tailShape ?? null,
+                  incidentId: currentIncident?.id ?? null,
+                  incidentReason: currentIncident?.reason ?? null,
+                },
+              })
+              if (override) lifeOpsEventOverrideByConversation.delete(conversationId)
+            }
+          }
         }
         // SQLite/trace 到这里已经完成；通知只从已落库事实分叉出去，不参与 syncInFlight。
         // Watchdog 固定是“两阶段”：到点时已经发第一条；body 一旦诊断成功，这里无条件发第二条，
