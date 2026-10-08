@@ -185,6 +185,25 @@ export function buildTurnFinalNotificationPayload(input: {
   diagnostic?: { hasImageGenerationFinal?: unknown, imageGenerationCount?: unknown } | null
 }): { title: string, body: string, url: string }
 
+/** 返回本轮主循环刚跨过的 DevSpace 工具静默阈值（当前固定为 1/3/5 分钟）。 */
+export function crossedDevSpaceIdleThresholds(
+  previousIdleMs: unknown,
+  currentIdleMs: unknown,
+): number[]
+
+/** 生成独立 DevSpace Bug 分组的软提醒；它不表示 ChatGPT turn 已终止。 */
+export function buildDevSpaceIdleNotificationPayload(input: {
+  conversationId?: string | null
+  title?: string | null
+  metadataId: unknown
+  thresholdMs: unknown
+}): {
+  title: string
+  body: string
+  group: string
+  url?: string
+}
+
 export function shouldNotifyTurnFinal(
   trigger: unknown,
   diagnostic: { terminalEvidence?: unknown } | null | undefined,
