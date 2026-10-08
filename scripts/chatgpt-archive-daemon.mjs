@@ -2354,6 +2354,8 @@ async function main() {
       bindingsCreated: devSpaceBindingsCreated,
       bindingMirrors: devSpaceBindingMirrors,
       unboundActive: unboundDevSpaceTurns.size,
+      idleCandidates: devSpaceIdleCandidates.size,
+      idleNotificationsQueued: devSpaceIdleNotificationsQueued,
       bindings: archive.listDevSpaceMetadataBindings({ limit: 100 }).map(binding => ({
         metadataId: binding.metadataId,
         conversationId: binding.conversationId,
