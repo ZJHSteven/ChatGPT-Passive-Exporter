@@ -534,8 +534,19 @@ export class ArchiveBridgeServer {
     const messagesMatch = /^\/v1\/conversations\/([^/]+)\/messages$/u.exec(url.pathname)
     if (messagesMatch && method === 'GET') {
       const conversationId = decodeURIComponent(messagesMatch[1]!)
-      const messages = sanitizeMessages(this.options.archive.getMessages(conversationId))
-      jsonResponse(res, 200, { conversationId, messages })
+      const allMessages = sanitizeMessages(this.options.archive.getMessages(conversationId))
+      const page = paginateOrdinalRows(
+        allMessages,
+        parseLimit(url.searchParams.get('limit'), 120),
+        parseBeforeOrdinal(url.searchParams.get('before_ordinal')),
+      )
+      jsonResponse(res, 200, {
+        conversationId,
+        messages: page.rows,
+        total: page.total,
+        hasMore: page.hasMore,
+        nextBeforeOrdinal: page.nextBeforeOrdinal,
+      })
       return
     }
 
