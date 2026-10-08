@@ -250,6 +250,8 @@ export class DevSpaceAuditBridge {
   readonly dbPath: string
   private db: DatabaseSync | null = null
   private hasRequestMetaJson = false
+  private hasResultJson = false
+  private hasError = false
   private hasBindingTable = false
   private hasMetadataContextTable = false
 
@@ -274,6 +276,8 @@ export class DevSpaceAuditBridge {
     }
     const columns = db.prepare('PRAGMA table_info(tool_audit)').all() as Array<{ name?: string }>
     this.hasRequestMetaJson = columns.some(column => column.name === 'request_meta_json')
+    this.hasResultJson = columns.some(column => column.name === 'result_json')
+    this.hasError = columns.some(column => column.name === 'error')
     this.hasBindingTable = Boolean(db.prepare(`
       SELECT 1 AS ok FROM sqlite_master
       WHERE type='table' AND name='chatgpt_conversation_bindings'
@@ -396,9 +400,11 @@ export class DevSpaceAuditBridge {
   pollSince(sinceAtMs: number, limit = 250): DevSpaceAuditEvent[] {
     if (!this.open() || !this.db) return []
     const requestMetaExpr = this.hasRequestMetaJson ? 'request_meta_json' : 'NULL'
+    const resultJsonExpr = this.hasResultJson ? 'result_json' : 'NULL'
+    const errorExpr = this.hasError ? 'error' : 'NULL'
     const rows = this.db.prepare(`
       SELECT id, metadata_id AS metadataId, tool, args_json AS argsJson,
-             result_json AS resultJson, error,
+             ${resultJsonExpr} AS resultJson, ${errorExpr} AS error,
              started_at AS startedAt, finished_at AS finishedAt,
              ${requestMetaExpr} AS requestMetaJson
       FROM tool_audit
@@ -437,9 +443,11 @@ export class DevSpaceAuditBridge {
   auditById(auditId: string): DevSpaceAuditEvent | null {
     if (!this.open() || !this.db || !auditId) return null
     const requestMetaExpr = this.hasRequestMetaJson ? 'request_meta_json' : 'NULL'
+    const resultJsonExpr = this.hasResultJson ? 'result_json' : 'NULL'
+    const errorExpr = this.hasError ? 'error' : 'NULL'
     const row = this.db.prepare(`
       SELECT id, metadata_id AS metadataId, tool, args_json AS argsJson,
-             result_json AS resultJson, error,
+             ${resultJsonExpr} AS resultJson, ${errorExpr} AS error,
              started_at AS startedAt, finished_at AS finishedAt,
              ${requestMetaExpr} AS requestMetaJson
       FROM tool_audit
@@ -466,9 +474,11 @@ export class DevSpaceAuditBridge {
   auditsForMetadata(metadataId: string, startAtMs: number, endAtMs: number, limit = 500): DevSpaceAuditEvent[] {
     if (!this.open() || !this.db || !metadataId) return []
     const requestMetaExpr = this.hasRequestMetaJson ? 'request_meta_json' : 'NULL'
+    const resultJsonExpr = this.hasResultJson ? 'result_json' : 'NULL'
+    const errorExpr = this.hasError ? 'error' : 'NULL'
     const rows = this.db.prepare(`
       SELECT id, metadata_id AS metadataId, tool, args_json AS argsJson,
-             result_json AS resultJson, error,
+             ${resultJsonExpr} AS resultJson, ${errorExpr} AS error,
              started_at AS startedAt, finished_at AS finishedAt,
              ${requestMetaExpr} AS requestMetaJson
       FROM tool_audit
