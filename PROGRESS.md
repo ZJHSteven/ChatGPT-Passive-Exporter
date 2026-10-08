@@ -7,7 +7,9 @@
 - Archive 已加入 Conclusion 即时通知：新 `tool_audit` 的 `args_json.conclusion` 非空时，立即走现有 detached/persistent Bark 分支；notification key=`devspace-conclusion:<auditId>`，因此 start/finish UDP、60s durable catch-up、daemon 重启都不会重复成功通知。无 Conclusion 时只做一次本地 JSON 空值判断，不增加网络请求。
 - Conclusion Bark 使用独立 group=`DevSpace Conclusion`，正文包含可读聊天身份、工具名和阶段性结论；已绑定 conversation 时用 canonical title + 聊天 URL，未绑定但有 `init.title` 时用 title，再无 title 时只展示可口述短别名 `meta/XXXXXXXX`。完整 metadata ID 只保留在 SQLite / daemon 日志中。
 - 同一短别名策略同步用于无 title 的 DevSpace idle / unbound Watchdog 手机通知；45min unbound Watchdog 会优先读取 `init.title`，只有 legacy 无 title 才显示 `meta/XXXXXXXX`，不再把整串 metadata ID 塞进通知。
-- 回归当前已通过：`node --check` PASS、TypeScript PASS、Conclusion/DevSpace 定向 45/45 tests PASS、全量 25 files / 183 tests PASS。尚待完成 production build + Archive daemon 重载/真机通知 canary。
+- 最终 current-main 回归已通过：`node --check` PASS、TypeScript PASS、Conclusion/DevSpace 定向 45/45 tests PASS、全量 25 files / 183 tests PASS、Chrome/Edge/Firefox/Userscript 完整 build PASS。生产 Archive daemon 已由 PID 32892 受控重载到 PID 55448；WSS=3、Bridge listening=true、DevSpace UDP listener=true、notification provider=Bark、`lastError=null`。
+- 首次重载额外暴露 `lifeops-sync.local.json` 文件尾残留 Windows `0x1A` 控制字符，导致 JSON parser 在正文结束后报 `Unexpected non-whitespace character`；已只移除尾控制字符并保持配置内容不变，第二次重载后 LifeOps Sync 恢复 `enabled=true / lastError=null`。这不是 Conclusion 功能本身的故障，但已避免部署后留下旁路回归。
+- 重载后暂未自然出现新的非空 Conclusion，因此还没有新的真实 Bark 200 canary；代码、持久去重、payload 与生产 daemon 均已上线，下一条真实 `args_json.conclusion` 会直接经过该分支。没有为了 canary 人工伪造/插入 tool_audit，避免污染 metadata/binding 事实库。
 
 ## 2026-10-08 DevSpace 1/3/5 分钟工具静默 Bug 通知
 
