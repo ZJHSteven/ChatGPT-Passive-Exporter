@@ -2182,6 +2182,97 @@ async function main() {
     })
   }
 
+  /**
+   * 把已经绑定到 canonical conversation 的 DevSpace audit 镜像为 provisional recovery 事实。
+   *
+   * 这一步只写 Archive 本地 SQLite，不访问 ChatGPT 网络，也不会改 canonical messages。
+   * start/finish 两次看到同一个 auditId 时由 ArchiveDb upsert 合并，finish 会补齐 result/error。
+   */
+  const persistDevSpaceRecoveryAudit = (event, bindingOverride = null) => {
+    if (!event?.id || !event?.metadataId || !event?.tool) return false
+    const binding = bindingOverride ?? archive.getDevSpaceMetadataBinding(event.metadataId)
+    if (!binding?.conversationId) return false
+    const toolFingerprint = devSpaceToolArgsFingerprint(event.tool, event.argsJson)
+    if (!toolFingerprint) return false
+    const finishedAt = event.finishedAt ? Date.parse(event.finishedAt) : null
+    archive.upsertDevSpaceRecoveryAudit({
+      auditId: event.id,
+      conversationId: binding.conversationId,
+      metadataId: event.metadataId,
+      tool: event.tool,
+      toolFingerprint,
+      argsJson: event.argsJson,
+      resultJson: event.resultJson ?? null,
+      error: event.error ?? null,
+      conclusion: extractDevSpaceConclusion(event.argsJson),
+      startedAt: event.startedAtMs,
+      finishedAt: Number.isFinite(finishedAt) ? finishedAt : null,
+      observedAt: Date.now(),
+    })
+    return true
+  }
+
+  /** finish 门铃到达时按 audit id 重读最终行，覆盖 start 阶段只有 args/started_at 的 provisional。 */
+  const refreshDevSpaceRecoveryAudit = (auditId) => {
+    const event = devSpaceAuditBridge.auditById(auditId)
+    return event ? persistDevSpaceRecoveryAudit(event) : false
+  }
+
+  /** binding 晚到时只补 exact-match 附近的局部 audit 窗口，避免历史全库重扫。 */
+  const backfillDevSpaceRecoveryForBinding = (binding, startAt, observedAt) => {
+    if (!binding?.conversationId || !binding?.metadataId) return 0
+    const windowStart = Math.max(0, Number(startAt || observedAt || Date.now()) - 2 * 60_000)
+    const windowEnd = Math.max(windowStart, Number(observedAt || Date.now()) + 2 * 60_000)
+    const audits = devSpaceAuditBridge.auditsForMetadata(
+      binding.metadataId,
+      windowStart,
+      windowEnd,
+      1000,
+    )
+    let mirrored = 0
+    for (const event of audits) {
+      if (persistDevSpaceRecoveryAudit(event, binding)) mirrored += 1
+    }
+    return mirrored
+  }
+
+  /**
+   * first-party body 到达后，用同一套 canonical tool+args fingerprint 淘汰 provisional。
+   * 这里只读 canonical messages 表，绝不会把 recovery 自己生成的 call 节点拿来和自己匹配。
+   */
+  const reconcileDevSpaceRecoveryWithCanonical = (conversationId) => {
+    const activeRecovery = archive.listDevSpaceRecoveryAudits(conversationId, false)
+    if (activeRecovery.length === 0) return 0
+    const minAt = Math.max(0, Math.min(...activeRecovery.map(row => Number(row.startedAt))) - 120_000)
+    const maxAt = Math.max(...activeRecovery.map(row => Number(row.startedAt))) + 120_000
+    const rows = archive.db.prepare(`
+      SELECT message_id AS messageId, create_time AS createTime, text
+      FROM messages
+      WHERE conversation_id = ?
+        AND recipient = 'api_tool.call_tool'
+        AND create_time IS NOT NULL
+        AND create_time BETWEEN ? AND ?
+        AND text <> ''
+      ORDER BY create_time ASC, row_id ASC
+    `).all(conversationId, minAt / 1000, maxAt / 1000)
+    let superseded = 0
+    for (const row of rows) {
+      const call = parseDevSpaceBodyToolCall(String(row.text || ''), Number(row.createTime) * 1000)
+      if (!call) continue
+      const toolFingerprint = devSpaceToolArgsFingerprint(call.tool, call.argsJson)
+      if (!toolFingerprint) continue
+      const matchedAuditId = archive.supersedeDevSpaceRecoveryAudit({
+        conversationId,
+        toolFingerprint,
+        canonicalStartedAt: call.startedAtMs,
+        canonicalMessageId: String(row.messageId || ''),
+        observedAt: Date.now(),
+      })
+      if (matchedAuditId) superseded += 1
+    }
+    return superseded
+  }
+
   const notifyActorDomDrift = ({ phase, result, details }) => {
     if (!result?.signature || !result?.shape) return false
     const body = [
