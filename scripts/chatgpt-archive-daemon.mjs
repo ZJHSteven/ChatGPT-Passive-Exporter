@@ -1905,6 +1905,10 @@ async function main() {
   let notificationConfig = null
   let lifeOpsSync = null
   let lifeOpsSyncLastError = null
+  // metadata-only watchdog 先进入 LifeOps Inbox 后，后续一旦绑定出 canonical conversation/turn，
+  // 需要让第一次 body sync 继续使用同一 sourceEventId，才能把 provisional 事件原地补齐。
+  // 这只是短生命周期桥接；即使 daemon 恰好重启，LifeOps 端还有 conversation+turn 二次归并兜底。
+  const lifeOpsEventOverrideByConversation = new Map()
   let protocolLedger = null
   let protocolFlushTimer = null
   let activeReplayRequestUrl = null
@@ -2612,7 +2616,9 @@ async function main() {
   }
 
   const latestOpenIncident = (conversationId) => archive.db.prepare(`
-    SELECT i.id, i.incident_kind AS incidentKind, i.lifecycle_class AS lifecycleClass,
+    SELECT i.id, i.turn_exchange_id AS turnExchangeId, i.turn_key AS turnKey,
+           i.incident_kind AS incidentKind, i.lifecycle_class AS lifecycleClass,
+           i.detected_at AS detectedAt, i.last_observed_at AS lastObservedAt, i.status,
            i.reason, i.terminal_evidence AS terminalEvidence, i.tail_shape AS tailShape,
            c.title
     FROM incidents i
@@ -2623,9 +2629,10 @@ async function main() {
   `).get(conversationId) || null
 
   const incidentSnapshots = (conversationId) => archive.db.prepare(`
-    SELECT i.id, i.incident_kind AS incidentKind, i.lifecycle_class AS lifecycleClass,
+    SELECT i.id, i.turn_exchange_id AS turnExchangeId, i.turn_key AS turnKey,
+           i.incident_kind AS incidentKind, i.lifecycle_class AS lifecycleClass,
            i.reason, i.terminal_evidence AS terminalEvidence, i.tail_shape AS tailShape,
-           i.detected_at AS detectedAt, i.status,
+           i.detected_at AS detectedAt, i.last_observed_at AS lastObservedAt, i.status,
            c.title
     FROM incidents i
     JOIN conversations c ON c.id = i.conversation_id
