@@ -3,7 +3,11 @@ import path from 'node:path'
 // Node 24 直接执行本项目 `.ts` 源文件时不会像 Vite/Vitest 一样自动补扩展名；
 // 这是运行时 import（不是 type-only），因此必须显式写 `.ts`。
 import { ActiveTurnRecorder, buildActorSubmitTrace } from './active-turn-recorder.ts'
-import { ActorDomDriftLedger, type ActorDomObservation } from './dom-drift.ts'
+import {
+  ActorDomDriftLedger,
+  type ActorDomObservation,
+  type ActorDomObserveResult,
+} from './dom-drift.ts'
 
 const DEFAULT_CDP_TIMEOUT_MS = 10_000
 const CHATGPT_HOME = 'https://chatgpt.com/'
@@ -88,6 +92,11 @@ interface ActorSendOptions {
   mode?: ActorSendMode
   targetMode?: ActorTargetMode
   timeoutMs?: number
+  /**
+   * daemon/Bridge 可注入一个旁路通知回调：DOM 安全骨架发生未知漂移时，在真正抛错阻断发送之前
+   * 把完整结构证据交给宿主。CLI 直调用不需要提供；回调失败也不能放行 Actor。
+   */
+  onDomDrift?: ((input: { phase: string, result: ActorDomObserveResult }) => void | Promise<void>) | null
 }
 
 function actorLeasePath(options: Pick<ActorSendOptions, 'statePath' | 'daemonStatePath' | 'targetMode'>): string {
@@ -717,12 +726,14 @@ async function observeActorDomShape(
   client: ActorCdpClient,
   ledger: ActorDomDriftLedger | null,
   phase: string,
+  onDomDrift?: ActorSendOptions['onDomDrift'],
 ): Promise<string | null> {
   if (!ledger) return null
   const observation = await readActorDomObservation(client)
   const result = ledger.observe(observation)
   await ledger.flush()
   if (result.pending) {
+    await onDomDrift?.({ phase, result })
     throw new Error(
       `ChatGPT actor DOM drift detected before ${phase}: ${result.signature} route=${result.shape.routeKind}; `
       + 'review/approve the DOM fingerprint before retrying',
@@ -1101,7 +1112,7 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
 
     // 任何导航/输入/点击之前先采一份当前页骨架。baseline 锁定后若这里已经漂移，
     // Actor 必须在真正改变页面之前停止，不能“先点了再告诉用户 DOM 变了”。
-    const domSignatureBefore = await observeActorDomShape(client, domLedger, 'navigation')
+    const domSignatureBefore = await observeActorDomShape(client, domLedger, 'navigation', options.onDomDrift)
 
     // Network listener 必须在 SPA 导航之前挂好：旧 conversation 切换时第一方页面会自己读取
     // conversation body。这个响应是“上下文已经真正到达浏览器”的强闭环证据，不能导航完以后再补监听。
@@ -1213,7 +1224,7 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
 
       // 目标 route/context 已经真正 ready 后再采第二份结构指纹。第一份保护“怎么导航”，
       // 第二份保护“怎么发送”；两者都通过以后才允许把 prompt 写入页面。
-      const domSignatureReady = await observeActorDomShape(client, domLedger, 'prompt input')
+      const domSignatureReady = await observeActorDomShape(client, domLedger, 'prompt input', options.onDomDrift)
 
       await clearAndTypePrompt(client, options.prompt)
       // hidden/background target 可能因为 React 后台调度延迟挂载 submit 控件；这里等“状态变成可提交”，
