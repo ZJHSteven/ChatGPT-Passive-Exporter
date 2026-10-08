@@ -3742,6 +3742,15 @@ async function main() {
           }
         }
 
+        const recoverySuperseded = reconcileDevSpaceRecoveryWithCanonical(conversationId)
+        if (recoverySuperseded > 0) {
+          await log('canonical body superseded DevSpace recovery overlay', {
+            conversationId,
+            trigger,
+            recoverySuperseded,
+          })
+        }
+
         return {
           conversationId,
           pages,
@@ -3761,6 +3770,7 @@ async function main() {
           watchdogTurnChanged,
           watchdogTurnStartedAt,
           watchdogTurnAlreadyTimedOut,
+          recoverySuperseded,
         }
       }
       const nextCursor = pageInfo.start_cursor
@@ -4716,6 +4726,13 @@ async function main() {
         allowIncompleteTailIncident: false,
         incidentKind: 'abnormal-terminal',
       })
+      const recoverySuperseded = reconcileDevSpaceRecoveryWithCanonical(conversationId)
+      if (recoverySuperseded > 0) {
+        void log('passive canonical body superseded DevSpace recovery overlay', {
+          conversationId,
+          recoverySuperseded,
+        })
+      }
 
       const readyAt = readySince.get(conversationId)
       if (readyAt && passiveObservationMatchesReady(capturedAt, readyAt)) {
