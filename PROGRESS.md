@@ -7,6 +7,9 @@
 - canonical Conversation Body 每次主动 sync 或 passive native latest merge 后，会读取真正 `messages` 表中的 DevSpace/Backup Tunnel tool-call，按与 binding 相同的 `tool + canonical args` fingerprint + ±120s 时间窗匹配最近 provisional audit；匹配后只标记 `superseded_at/superseded_by_message_id`，不删除 forensic 记录。对应 tool/result/conclusion 会一起退出 Reader overlay；服务器永远缺失的异常尾部则继续保留。
 - 对现有 9 条 Conclusion 的语义审计：约 3 条是真正阶段 checkpoint（例如“生产 DevSpace 已完成受控重启”“当前聊天属于 legacy metadata”），另外 6 条主要是 `Copy / Verify / Deploy / Final verification` 这类下一步动作标签。根因是 Conclusion 是 tool **输入**，模型必须在该工具执行前写入；因此它天然只能承载“截至上一工具已确认的结论/当前操作目的”，不能承载本次工具刚返回才发现的结果。MCP schema 本轮明确不改。
 - 当前验证已扩大到最终 current-main：`node --check` PASS、TypeScript PASS、定向 3 files / 37 tests PASS、全量 25 files / 185 tests PASS；Chrome/Edge/Firefox/Userscript 完整 build PASS。下一步只剩 production daemon 受控重载与真机 provisional 增长/后续 canonical supersede 验证。
+- production daemon 已由 PID 55448 受控重载到 PID 65276；迁移表 `devspace_recovery_audits` 已真实创建。重载后 WSS 恢复 3 sockets、Bridge listening=true、LifeOps Sync enabled=true、DevSpace UDP listener=true、daemon `lastError=null`。
+- 真机 provisional canary 已自然发生，无需伪造 audit：当前 `DevSpace功能改造` conversation（`6ac71dea-...`）及另一条并行 conversation 已连续写入 recovery audit；检查时生产表共 27 条 active audit，当前 conversation 的 Reader overlay 可展开 37 个 provisional call/result 节点，finish 门铃已能把 `write_stdin/exec_command` 从 running 更新为 finished 并填入真实输出。
+- 当前 `superseded=0` 是预期现场：本轮还在运行，canonical body 尚未收回这些最新工具节点。canonical exact-match supersede 已由单测验证；本轮不为了 canary 主动额外请求 ChatGPT Body，后续第一份自然 passive/正常 sync body 到达时日志会记录 `...superseded DevSpace recovery overlay`，对应 audit 保留 forensic 行但退出 Reader overlay。
 
 ## 2026-10-09 DevSpace Conclusion 即时 Bark / schema 可见性统计
 
