@@ -32,7 +32,11 @@ import {
   sendIncidentNotification,
 } from '../src/local/incident-notifier.ts'
 import { summarizeFrame as summarizeWssFrame } from './wss-stability-probe.mjs'
-import { ProtocolDriftLedger } from '../src/local/protocol-drift.ts'
+import {
+  ProtocolDriftLedger,
+  dedupeProtocolAssessments,
+  formatProtocolDriftAssessment,
+} from '../src/local/protocol-drift.ts'
 import { diagnoseLatestRun } from '../src/core/run-diagnostics.ts'
 import { LiveTurnTransportTracker } from '../src/local/live-turn-transport.ts'
 import {
@@ -1830,6 +1834,8 @@ async function main() {
   // 运行期重复事件可能在 Bark 请求尚未返回时再次到达；SQLite ledger 只能去重“已经成功”的
   // 通知，因此再用一个极小的 in-flight Set 挡住同进程并发重复。失败后 finally 删除，允许重试。
   const notificationInFlight = new Set()
+  const protocolDriftPending = new Map()
+  let protocolDriftNotifyTimer = null
 
   const conversationTitle = (conversationId) => {
     const row = archive.db.prepare('SELECT title FROM conversations WHERE id=?').get(conversationId)
@@ -1907,6 +1913,97 @@ async function main() {
     return true
   }
 
+  /**
+   * HTTP protocol drift 不再等每天 12:00 批处理。真正 actionable 的语义 drift 在第二次稳定出现
+   * （或第一次就已经是 critical）时进入这个 10 秒聚合窗口，然后立即 Bark。
+   *
+   * 10 秒只用于把同一轮页面自然产生的 catalog/body/mapping 连续变化合成一条可读通知，
+   * 不是“定时日报”；没有新 drift 就完全没有任务/请求。
+   */
+  const flushProtocolDriftNotifications = async () => {
+    protocolDriftNotifyTimer = null
+    if (!notificationConfig || protocolDriftPending.size === 0) return
+
+    const queued = dedupeProtocolAssessments([...protocolDriftPending.values()]
+      .map(assessment => ({ assessment })))
+      .map(item => item.assessment)
+      .filter(assessment => !archive.hasTurnNotification(`protocol-drift:${assessment.dedupeKey}`))
+    protocolDriftPending.clear()
+    if (queued.length === 0) return
+
+    const keys = queued.map(assessment => `protocol-drift:${assessment.dedupeKey}`)
+    if (keys.some(key => notificationInFlight.has(key))) return
+    for (const key of keys) notificationInFlight.add(key)
+
+    const critical = queued.filter(item => item.severity === 'critical').length
+    const warning = queued.filter(item => item.severity === 'warning').length
+    const shown = queued.slice(0, 4)
+    const body = shown.map(formatProtocolDriftAssessment).join('\n\n')
+      + (queued.length > shown.length ? `\n\n另有 ${queued.length - shown.length} 项语义漂移已合并。` : '')
+    const title = critical > 0
+      ? `ChatGPT 协议严重漂移 ${critical} 项${warning > 0 ? ` / 警告 ${warning} 项` : ''}`
+      : `ChatGPT 协议漂移警告 ${warning} 项`
+
+    notificationLastAttemptAt = Date.now()
+    try {
+      const result = await sendIncidentNotification(notificationConfig, { title, body })
+      if (result.ok) {
+        const sentAt = Date.now()
+        for (const assessment of queued) {
+          archive.markTurnNotificationSent({
+            notificationKey: `protocol-drift:${assessment.dedupeKey}`,
+            kind: 'protocol-drift',
+            sentAt,
+            providerStatus: result.status,
+            payload: { title, body, assessment },
+          })
+        }
+        notificationLastSuccessAt = sentAt
+        notificationLastError = null
+        await log('protocol drift notification sent', {
+          provider: notificationConfig.provider,
+          status: result.status,
+          critical,
+          warning,
+          semanticKeys: queued.map(item => item.dedupeKey),
+        })
+      }
+      else if (result.attempted) {
+        notificationLastError = result.error || 'protocol drift notification failed'
+        await log('protocol drift notification failed', {
+          provider: notificationConfig.provider,
+          status: result.status,
+          error: notificationLastError,
+          semanticKeys: queued.map(item => item.dedupeKey),
+        })
+      }
+    }
+    catch (error) {
+      notificationLastError = error instanceof Error ? error.message : String(error)
+      await log('protocol drift notification branch failed', {
+        error: notificationLastError,
+        semanticKeys: queued.map(item => item.dedupeKey),
+      }).catch(() => {})
+    }
+    finally {
+      for (const key of keys) notificationInFlight.delete(key)
+    }
+  }
+
+  const queueProtocolDriftNotification = (assessment) => {
+    if (!assessment?.notify || !notificationConfig) return false
+    const notificationKey = `protocol-drift:${assessment.dedupeKey}`
+    if (archive.hasTurnNotification(notificationKey) || notificationInFlight.has(notificationKey)) return false
+    const existing = protocolDriftPending.get(assessment.dedupeKey)
+    if (!existing || assessment.count >= existing.count) protocolDriftPending.set(assessment.dedupeKey, assessment)
+    if (!protocolDriftNotifyTimer) {
+      protocolDriftNotifyTimer = setTimeout(() => {
+        void flushProtocolDriftNotifications()
+      }, 10_000)
+    }
+    return true
+  }
+
   const scheduleProtocolLedgerFlush = () => {
     if (!protocolLedger || protocolFlushTimer) return
     protocolFlushTimer = setTimeout(() => {
@@ -1947,6 +2044,20 @@ async function main() {
         candidateEligible: result.candidate.eligible,
       })
     }
+    // 新语义 drift 第一次通常只是 info；第二次稳定复现时 count===2 才升级 warning。
+    // 已存在的历史 variant 在 daemon 重启后不会被重新通知，避免部署新分类器后把旧账一次轰出来。
+    if (result.assessment?.notify && (result.isNew || result.assessment.count === 2)) {
+      queueProtocolDriftNotification(result.assessment)
+    }
+    // 与 baseline 正交地检查“当前第一方 header 是否已超出生产 replay 捕获白名单”。
+    // 这专门补 2026-10-07 暴露出的 bootstrap 漏洞：上游变化可能早于 monitor 安装。
+    const productionCoverage = protocolLedger.assessProductionHeaderCoverage(
+      result.signature,
+      CAPTURED_HEADER_ALLOWLIST,
+    )
+    if (productionCoverage?.notify && productionCoverage.count === 2) {
+      queueProtocolDriftNotification(productionCoverage)
+    }
     scheduleProtocolLedgerFlush()
     return result.signature
   }
@@ -1964,6 +2075,9 @@ async function main() {
         requestSignature,
         responseSignature: result.signature,
       })
+    }
+    if (result?.assessment?.notify && (result.isNew || result.assessment.count === 2)) {
+      queueProtocolDriftNotification(result.assessment)
     }
     scheduleProtocolLedgerFlush()
   }
