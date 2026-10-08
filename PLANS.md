@@ -1,3 +1,13 @@
+## 2026-10-08 Watchdog 单向闸门 / 通知完整性 / 官方页面止血 ExecPlan
+
+- [done] 临时止血：通过 CDP 将 16 个普通 `chatgpt.com` 页面置为 `frozen`，仅保留 Archive Guardian 与 daemon 自己的受控主动请求链；不关闭标签页、不杀 Chrome，后续可恢复 `active`。
+- [in_progress] 把 Watchdog 语义改成“每个 logical turn 一次性单向闸门”：45min 一旦到点，本 generation 永久进入 timed-out / awaiting-diagnosis；同 turn 后续 DevSpace/WSS/catalog progress 只能补证据，绝不能重新武装或延后 deadline。只有确认新的 turn identity（turn_exchange_id/request_id/user turn）才允许创建新的 Watchdog generation。
+- [in_progress] 通知矩阵改为用户最新要求：正常 turn = 1 条最终通知；WSS complete + no-final/interrupted = 1 条异常通知；Watchdog turn = 到点立即 1 条 `Watchdog 已超时`，不受 cooldown 影响，body 诊断成功后再且只再发 1 条诊断结果，总计恰好 2 条。不能因为“当场能拉 body”而省掉第一条，也不能因为 incident 已存在而省掉第二条。
+- [in_progress] 审计近期漏通知：区分“根本未生成 ledger”“ledger 已 Bark 200 但客户端未显著收到”“功能上线前历史 turn”。重点核对用户列出的分析异常终止、需求梳理、恢复 ClassFlow、分析 Watchdog、CapsWriter、构建个人工作基准等会话。
+- [in_progress] 429 责任按共享门控累计量分析，不以最后一个 429 请求归责；分别统计/估计每个 429 wave 前 1/10/30/60min 的 native page 与 Archive active 请求，并解释 01:22 audit 的 2h seen-id 过期为何约 03:22 才开始 replay、进而形成 05:09→07:26→09:30 的周期。
+- [pending] 增加回归：同 generation progress 不重启 watchdog；stale first-tool/catalog 不能复活 timed-out turn；新 turn 可创建新 generation；watchdog timeout/diagnosis 两条通知各自持久去重；normal/complete-no-final 各恰好一条。
+- [pending] 跑 node syntax、TypeScript、daemon/notification 定向测试和全量测试；仅重载 Archive daemon，验证 frozen 官方页面下 native 请求显著下降、Guardian/WSS/Bridge 正常、checkpoint 仍 disabled、无主动 429 风暴。
+
 ## 2026-10-08 Protocol Drift 实时分级 / 可读告警 ExecPlan
 
 - [done] 复盘 2026-09-28 至今的 HTTP/DOM drift ledger、Bark report-state 与 2026-10-07 Watchdog 协议升级，确认旧机制同时存在“daily 延迟”“exact-shape 噪声”“自己 canary/replay 污染”以及“只比 first-party baseline、不比 production implementation”四类问题。
