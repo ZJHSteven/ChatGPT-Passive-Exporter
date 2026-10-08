@@ -96,7 +96,11 @@ interface ActorSendOptions {
    * daemon/Bridge 可注入一个旁路通知回调：DOM 安全骨架发生未知漂移时，在真正抛错阻断发送之前
    * 把完整结构证据交给宿主。CLI 直调用不需要提供；回调失败也不能放行 Actor。
    */
-  onDomDrift?: ((input: { phase: string, result: ActorDomObserveResult }) => void | Promise<void>) | null
+  onDomDrift?: ((input: {
+    phase: string
+    result: ActorDomObserveResult
+    details: string[]
+  }) => void | Promise<void>) | null
 }
 
 function actorLeasePath(options: Pick<ActorSendOptions, 'statePath' | 'daemonStatePath' | 'targetMode'>): string {
@@ -733,7 +737,7 @@ async function observeActorDomShape(
   const result = ledger.observe(observation)
   await ledger.flush()
   if (result.pending) {
-    await onDomDrift?.({ phase, result })
+    await onDomDrift?.({ phase, result, details: ledger.describePending(result.signature) })
     throw new Error(
       `ChatGPT actor DOM drift detected before ${phase}: ${result.signature} route=${result.shape.routeKind}; `
       + 'review/approve the DOM fingerprint before retrying',
