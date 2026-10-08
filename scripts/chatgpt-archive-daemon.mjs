@@ -2123,6 +2123,47 @@ async function main() {
     }
   }
 
+  /**
+   * DevSpace audit 一旦携带 conclusion 就立即旁路 Bark。
+   *
+   * 这里故意先解析 conclusion、确认非空后才额外读取 metadata title / binding，避免给绝大多数
+   * 普通工具调用增加 SQLite 查询。通知 key 直接使用 append-only audit id，因此 begin/finish UDP、
+   * 60 秒 durable catch-up、daemon 重启重放都只能成功发送一次。
+   */
+  const dispatchDevSpaceConclusionNotification = (event) => {
+    if (!notificationConfig || !event?.id || !event?.metadataId) return false
+    const conclusion = extractDevSpaceConclusion(event.argsJson)
+    if (!conclusion) return false
+
+    const binding = archive.getDevSpaceMetadataBinding(event.metadataId)
+    const conversationId = binding?.conversationId || null
+    const metadataState = conversationId ? null : devSpaceAuditBridge.metadataToolState(event.metadataId)
+    const title = conversationId
+      ? conversationTitle(conversationId)
+      : metadataState?.title ?? null
+
+    return dispatchPersistentNotification({
+      notificationKey: `devspace-conclusion:${event.id}`,
+      kind: 'devspace-conclusion',
+      conversationId,
+      turnKey: binding?.lastTurnExchangeId ?? null,
+      payload: buildDevSpaceConclusionNotificationPayload({
+        conversationId,
+        title,
+        tool: event.tool,
+        conclusion,
+      }),
+      successLog: 'DevSpace conclusion notification sent',
+      failureLog: 'DevSpace conclusion notification failed',
+      logFields: {
+        metadataId: event.metadataId,
+        auditId: event.id,
+        tool: event.tool,
+        bound: Boolean(conversationId),
+      },
+    })
+  }
+
   const notifyActorDomDrift = ({ phase, result, details }) => {
     if (!result?.signature || !result?.shape) return false
     const body = [
@@ -2639,6 +2680,77 @@ async function main() {
     WHERE i.conversation_id = ?
     ORDER BY i.detected_at ASC, i.id ASC
   `).all(conversationId)
+
+  /**
+   * LifeOps 是 Archive 的旁路消费者；任何 enqueue 失败都只记在 outbox，不得影响归档主链。
+   * 这里的 payload 只包含事件身份、Conversation 引用和生命周期元数据，不读取/上传聊天正文。
+   */
+  const enqueueLifeOpsEvent = (payload) => {
+    if (!lifeOpsSync || !payload) return false
+    lifeOpsSync.enqueue(payload)
+    return true
+  }
+
+  const watchdogLifeOpsEventId = (conversationId, startedAt) =>
+    `incident:watchdog:${conversationId}:${Number(startedAt || 0)}`
+
+  const unboundWatchdogLifeOpsEventId = (metadataId, startedAt) =>
+    `incident:devspace-unbound:${metadataId}:${Number(startedAt || 0)}`
+
+  /**
+   * Watchdog 一到阈值就先向 Inbox 留下一条 Incident，即使 cooldown 导致 body 暂时拉不到。
+   * 等 body/turn id 后来可用时，用同 sourceEventId 再次 enqueue 原地补齐。
+   */
+  const enqueueLifeOpsWatchdogTimeout = (conversationId, active, now = Date.now()) => {
+    if (!lifeOpsSync || !conversationId || !active) return false
+    const startedAt = Number(active.startedAt || now)
+    return enqueueLifeOpsEvent({
+      sourceEventId: watchdogLifeOpsEventId(conversationId, startedAt),
+      conversationId,
+      turnExchangeId: null,
+      title: conversationTitle(conversationId),
+      runState: 'aborted',
+      reviewState: 'unread',
+      url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
+      updatedAt: new Date(now).toISOString(),
+      inboxKind: 'incident',
+      inboxHealth: 'incident',
+      incidentType: 'watchdog-timeout-pending-diagnosis',
+      incidentState: 'watchdog-fired',
+      metadata: {
+        startedAt,
+        lastEventAt: active.lastEventAt ?? null,
+        startType: active.startType ?? null,
+        lastDiagnosticTurnKey: active.lastDiagnosticTurnKey ?? null,
+        cooldownUntil: Number(cooldownUntil || 0) || null,
+      },
+    })
+  }
+
+  /**
+   * DevSpace 已经证明“某个 metadata 对应的工作持续超过 watchdog”，但还没有 canonical CID 时，
+   * 也先创建一条 metadata-only Incident。后续 bindDevSpaceMetadataToConversation 会用同一个 key
+   * 补齐 conversation/turn/title/url，而不是创建第二张卡。
+   */
+  const enqueueLifeOpsUnboundWatchdog = (metadataId, candidate, now = Date.now()) => {
+    if (!lifeOpsSync || !metadataId || !candidate) return false
+    const startedAt = Number(candidate.startedAt || now)
+    return enqueueLifeOpsEvent({
+      sourceEventId: unboundWatchdogLifeOpsEventId(metadataId, startedAt),
+      metadataId,
+      inboxKind: 'incident',
+      inboxHealth: 'incident',
+      incidentType: 'active-zombie-unbound',
+      incidentState: 'metadata-only',
+      updatedAt: new Date(now).toISOString(),
+      metadata: {
+        startedAt,
+        lastEventAt: candidate.lastEventAt ?? null,
+        lastAuditId: candidate.lastAuditId ?? null,
+        reason: 'DevSpace watchdog reached threshold before metadata could be bound to a canonical conversation',
+      },
+    })
+  }
 
   /**
    * 手机通知是 Archive 的旁路副作用，绝不能成为 conversation/body/SQLite 同步的关键路径。
@@ -4114,6 +4226,7 @@ async function main() {
     // begin 事件会看到 runningTools>0 并立即取消旧 idle generation。
     // finish 事件即使 auditId 已经见过，也会由 wake callback 额外按 metadata 重读。
     refreshDevSpaceIdleCandidate(event.metadataId)
+    dispatchDevSpaceConclusionNotification(event)
     if (binding.conversationId) {
       activateBoundDevSpaceTurn(binding, event.startedAtMs)
       return
