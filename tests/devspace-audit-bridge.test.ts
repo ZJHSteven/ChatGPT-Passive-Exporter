@@ -216,6 +216,33 @@ describe('DevSpace audit bridge', () => {
       expect(bridge.recentMetadataToolStates(
         Date.parse('2026-10-03T06:01:30.000Z'),
       )).toHaveLength(1)
+
+      // 真正的当前长命令不能因为“已经运行很久”被超时清掉：只要它仍是最新 tool
+      // batch 的 start，就始终计入 runningTools。这里先插入一个最新未完成调用验证。
+      const writer = new DatabaseSync(dbPath)
+      try {
+        writer.prepare(`
+          INSERT INTO tool_audit
+            (id, metadata_id, request_meta_json, tool, args_json, started_at, finished_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          'audit-3',
+          'meta-1',
+          '{"keys":[]}',
+          'exec_command',
+          '{"cmd":"long-running"}',
+          '2026-10-03T06:02:30.000Z',
+          null,
+        )
+      }
+      finally {
+        writer.close()
+      }
+      expect(bridge.metadataToolState('meta-1')).toMatchObject({
+        runningTools: 1,
+        latestAuditId: 'audit-3',
+        lastFinishedAuditId: 'audit-2',
+      })
       expect(bridge.mirrorBinding({
         metadataId: 'meta-1',
         conversationId: 'conversation-1',
