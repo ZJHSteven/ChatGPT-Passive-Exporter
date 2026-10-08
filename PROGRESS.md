@@ -1,8 +1,9 @@
 ## 2026-10-09 DevSpace Conclusion 即时 Bark / schema 可见性统计
 
-- Conclusion 使用率统计已改为“**确定看到新 MCP schema**”的严格口径：只纳入真实 ChatGPT metadata 中实际出现过 `init(title=...)` 的会话，并且只从该次 init 之后开始计 `exec_command / write_stdin / read`。这样会自动剔除升级前已存在、Host 仍缓存旧 schema 的长 conversation，也剔除测试 metadata 与人工 DB 补 title。
-- 严格样本目前只有 2 个真实 metadata、21 次可统计工具调用：20 次 `exec_command` + 1 次 `write_stdin`；只有 1 次带非空 `conclusion`，使用率约 4.8%。分会话为 `v1/3oWe...` 1/2，`v1/4VU...` 0/19。样本仍很小，但已经足以确认“即使模型确实看得到参数，Conclusion 也尚未形成稳定使用习惯”。
-- 旧口径的 1216 次上线后工具调用被判定为严重受 schema-cache 污染，不再用来评价模型是否愿意填写 Conclusion。生产历史总共只观察到 9 次非空 Conclusion、3 个 metadata，其中大量来自升级前已存在会话，不能与严格样本混算。
+- 纠正一次统计口径错误：`init(title=...)` 只能证明“这个 metadata 肯定看到了新 schema”，但**不是必要条件**。legacy metadata 在迁移时已经被 grandfather 为 initialized，后续即使 Host 已刷新到新版 schema，再次 `init` 仍允许省略 title；因此 metadata context 的空 title 不能反推“仍在旧 schema”。
+- 新的“硬证据可见窗口”定义为：某 metadata 首次出现 `init(title=...)`，或首次真实 tool args 出现非空 `conclusion`，两者取更早时间；从该时间起再统计 `exec_command / write_stdin / read`。测试 metadata 继续剔除。
+- 按该保守口径，当前有 4 个真实 metadata、142 次可统计工具调用、9 次非空 Conclusion，约 6.34%。分布：`v1/3oWe...` 1/2，`v1/5bEhc...` 2/91，`v1/4VUv...` 0/19，`v1/31Bv...` 6/30。
+- 这个 6.34% 仍不是无偏总体使用率：对只靠“首次 Conclusion”才证明 schema 可见的 legacy metadata，首次 Conclusion 之前可能已经看到了新 schema，但那段调用无法被当前遥测确定，因此被保守排除；另外“已刷新新 schema 但从未使用 Conclusion、也没有 title-bearing init”的 legacy metadata 仍不可识别，会造成向上选择偏差。生产历史真实 Conclusion 总数仍是 9，没有任何记录丢失。
 - 关于“Conclusion 是否导致工具段之间的可见 assistant commentary 减少”：当前严格样本不足以做因果判断。`Chrome窗口位置异常` 是确定新-schema、19 次工具调用、0 Conclusion，但仍有 3 条可见 commentary；另一个新-schema metadata 只有 2 次可统计调用。现阶段没有证据支持“模型把原本 commentary 全搬进 conclusion”的假设。
 - Archive 已加入 Conclusion 即时通知：新 `tool_audit` 的 `args_json.conclusion` 非空时，立即走现有 detached/persistent Bark 分支；notification key=`devspace-conclusion:<auditId>`，因此 start/finish UDP、60s durable catch-up、daemon 重启都不会重复成功通知。无 Conclusion 时只做一次本地 JSON 空值判断，不增加网络请求。
 - Conclusion Bark 使用独立 group=`DevSpace Conclusion`，正文包含可读聊天身份、工具名和阶段性结论；已绑定 conversation 时用 canonical title + 聊天 URL，未绑定但有 `init.title` 时用 title，再无 title 时只展示可口述短别名 `meta/XXXXXXXX`。完整 metadata ID 只保留在 SQLite / daemon 日志中。
