@@ -111,6 +111,38 @@ function parseLimit(value: string | null, fallback = 50): number {
   return Math.max(1, Math.min(200, Math.trunc(numeric)))
 }
 
+/**
+ * Reader 使用 ordinal 做稳定游标，而不是 offset。
+ * Archive 的 ordinal 在单个 conversation 内单调递增；用 before_ordinal 翻历史页时，
+ * 即使后台继续追加新消息，已经浏览过的页面也不会整体错位。
+ */
+function parseBeforeOrdinal(value: string | null): number | null {
+  if (value === null || value.trim() === '') return null
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return null
+  return Math.trunc(numeric)
+}
+
+function paginateOrdinalRows<T extends Record<string, unknown>>(
+  rows: T[],
+  limit: number,
+  beforeOrdinal: number | null,
+): { rows: T[]; total: number; hasMore: boolean; nextBeforeOrdinal: number | null } {
+  const eligible = beforeOrdinal === null
+    ? rows
+    : rows.filter((row) => Number.isFinite(Number(row.ordinal)) && Number(row.ordinal) < beforeOrdinal)
+  const page = eligible.slice(-limit)
+  const firstOrdinal = page.length > 0 && Number.isFinite(Number(page[0]!.ordinal))
+    ? Number(page[0]!.ordinal)
+    : null
+  return {
+    rows: page,
+    total: rows.length,
+    hasMore: eligible.length > page.length,
+    nextBeforeOrdinal: firstOrdinal,
+  }
+}
+
 async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
   let bytes = 0
