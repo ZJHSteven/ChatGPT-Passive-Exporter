@@ -2325,6 +2325,18 @@ async function main() {
         provider: notificationConfig.provider,
         configPath: notificationConfigPath,
       })
+      // 启动时额外做一次“第一方现状 vs 当前生产 allowlist”检查。这不是重放历史 drift：
+      // 只有当前代码确实仍漏掉第一方已稳定使用的账户级 header 才会通知。
+      // 因此即使那个 header 早于 protocol baseline（2026-10-07 的真实漏报场景），也能被发现。
+      if (protocolLedger) {
+        for (const signature of Object.keys(protocolLedger.state.variants)) {
+          const coverage = protocolLedger.assessProductionHeaderCoverage(
+            signature,
+            CAPTURED_HEADER_ALLOWLIST,
+          )
+          if (coverage?.notify) queueProtocolDriftNotification(coverage)
+        }
+      }
     }
   }
   catch (error) {
@@ -5662,6 +5674,10 @@ async function main() {
   }
 
  await log('daemon stopping')
+  if (protocolDriftNotifyTimer) {
+    clearTimeout(protocolDriftNotifyTimer)
+    protocolDriftNotifyTimer = null
+  }
   if (protocolFlushTimer) {
     clearTimeout(protocolFlushTimer)
     protocolFlushTimer = null
