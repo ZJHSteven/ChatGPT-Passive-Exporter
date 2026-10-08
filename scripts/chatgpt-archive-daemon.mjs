@@ -1787,6 +1787,10 @@ async function main() {
   let devSpaceAuditsObserved = 0
   let devSpaceBindingsCreated = 0
   let devSpaceBindingMirrors = 0
+  // 这里只追踪“最近有 DevSpace 活动、并且当前没有 running tool”的 metadata。
+  // 每项保留上一轮观察到的 idle 时长，用于精确识别 1/3/5 分钟阈值穿越。
+  const devSpaceIdleCandidates = new Map()
+  let devSpaceIdleNotificationsQueued = 0
   // daemon 重启不能把一个已经计时几十分钟的 provisional watchdog 重新从 0 开始。
   // 从 Archive 自己的持久 binding 表恢复近期未绑定 metadata；firstSeenAt 仍是原始首个工具时间。
   for (const binding of archive.listDevSpaceMetadataBindings({
