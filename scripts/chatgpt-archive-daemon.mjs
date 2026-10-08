@@ -50,6 +50,7 @@ import {
 import {
   DevSpaceAuditBridge,
   defaultDevSpaceDbPath,
+  devSpaceToolArgsFingerprint,
   matchDevSpaceCandidateForTurn,
   parseDevSpaceBodyToolCall,
 } from '../src/local/devspace-audit-bridge.ts'
