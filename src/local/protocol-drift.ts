@@ -774,6 +774,58 @@ export class ProtocolDriftLedger {
   }
 
   /**
+   * 这是旧 monitor 缺失的第二条轴：不仅要看“第一方今天 vs 第一方 baseline”，还要看
+   * “第一方当前稳定请求 vs 我们生产 replay 真正会携带的 header”。
+   *
+   * 2026-10-07 的真实问题正属于这一类：`oai-did / x-oai-mcp-form-version /
+   * x-openai-web-frontend` 在 monitor 建 baseline 时已经存在，因此“新 shape”算法不会报警，
+   * 但生产 allowlist 仍停留在旧字段。这个检查不受 baseline 影响，直接发现实现落后。
+   */
+  assessProductionHeaderCoverage(
+    signature: string,
+    supportedHeaderNames: string[],
+    options: { ignoredHeaderNames?: string[] } = {},
+  ): ProtocolDriftAssessment | null {
+    const variant = this.state.variants[signature]
+    if (!variant) return null
+    const family = protocolContractFamily(variant.shape)
+    const replayFamilies = new Set(['catalog', 'body-latest', 'body-cursor', 'mapping', 'stream-status'])
+    if (!replayFamilies.has(family)) return null
+
+    const supported = new Set(supportedHeaderNames.map(value => value.toLowerCase()))
+    const ignored = new Set([
+      'accept',
+      'content-type',
+      // turn trace 必须由每个 turn session 自己建立/继承，禁止放进全局账户 header 捕获集合。
+      'x-oai-turn-trace-id',
+      ...(options.ignoredHeaderNames || []).map(value => value.toLowerCase()),
+    ])
+    const uncovered = variant.shape.protocolHeaderNames
+      .filter(header => !supported.has(header) && !ignored.has(header))
+      .filter(header => header !== 'x-openai-target-path' && header !== 'x-openai-target-route')
+    if (uncovered.length === 0) return null
+
+    const repeated = variant.count >= 2
+    const label = familyLabel(family)
+    return {
+      severity: repeated ? 'warning' : 'info',
+      notify: repeated,
+      category: 'request-contract',
+      summary: `${label} 出现生产 replay 尚未覆盖的协议 header`,
+      details: [`未覆盖 header: ${uncovered.join(', ')}`],
+      impact: repeated
+        ? '第一方已重复使用这些 header，但 Archive 的账户级请求上下文白名单尚未覆盖；需要检查生产 replay 是否已落后。'
+        : '目前只见 1 次，先记录；重复出现后再通知。',
+      dedupeKey: assessmentDedupeKey({ kind: 'production-header-coverage', family, uncovered }),
+      route: variant.shape.route,
+      method: variant.shape.method,
+      family,
+      requestSignature: signature,
+      count: variant.count,
+    }
+  }
+
+  /**
    * Response 不再把 message.metadata 的“字段并集”当协议契约。
    * 真正会让 Archive 读不懂数据的，是 messages/page_info/mapping/items 等核心 transport 字段消失，
    * 或 JSON/status 契约改变；attachments/writing_blocks/dictation 等内容型 metadata 只记 info。
