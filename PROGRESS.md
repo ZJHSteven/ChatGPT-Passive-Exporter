@@ -1,3 +1,15 @@
+## 2026-10-08 Watchdog 单向闸门 / 通知完整性 / 429 责任重算
+
+- 用户重新明确了正确状态机：Watchdog 不是“周期性 inactivity timer”，而是每个 logical turn 的一次性硬边界。45min 到点后该 generation 永久进入 `timed-out / awaiting-diagnosis`；同 turn 后续 DevSpace tool、WSS async progress、catalog update_time 只允许补充诊断证据，绝不能重新武装 Watchdog、延后 deadline 或把 tombstone 重新算作 running。只有明确的新 turn identity / explicit turn-start 才能创建下一代 Watchdog。
+- 旧实现的概念性错误已确认：`shouldQueueWatchdogDiagnostic()` 曾允许 `lastEventAt > lastWatchdogAt` 后再静默一个窗口就第二次诊断；reliable watchdog body 成功后又会清掉 generation；catalog progress 还会重置 startedAt/lastWatchdogAt。三者叠加使同一 turn 有机会被弱证据重复复活。
+- 新实现已改为 latch：`lastWatchdogAt` 一旦存在，同 generation 永不再次 queue；body 诊断成功也保留 tombstone，直到明确 terminal/new turn；catalog progress 只推进 `lastEventAt`；DevSpace 后续工具不再给 timed-out generation arm checkpoint；WSS async progress 也不能解除 latch，只有 explicit turn-start 可新建 generation。daemon state 将 running active 与 `timedOutAwaitingDiagnosis` 分开统计。
+- 通知矩阵已改成固定两阶段 Watchdog：第 1 条在 45min 到点立即发送，与 cooldown/body 能否读取无关；第 2 条在 canonical body 诊断成功后无条件发送，与“是否新建 incident”无关。Watchdog 路径不再额外叠加 turn-final/incident 第 3 条。旧 `watchdog-deferred-cooldown:<cid>:<startedAt>` 成功 ledger 被视为第一阶段已送达，升级重启不会给老 generation 重复补一条新 timeout。
+- 近期通知账本说明“少通知”不是单一故障：`分析工具调用超时规律` 4 条 turn-final、`构建个人工作基准` 1 条、`CapsWriter性能分析` 1 条均已 Bark HTTP 200；`分析异常终止原因` 虽有 11 个 incident 但 notification=0，主要因为这些 incident 是 historical-turn/backfill，旧策略故意不在今天补轰炸。另有大量聊天完成于 10/7 18:50~18:52 北京时间 turn-final 功能上线前，本来就没有 final ledger。
+- 429 责任已按共享门控重算，不能再用“最后谁拿到 429 就怪谁”。四个夜间独立 wave 前 60min 的 Archive 受管主动 REST 约为：05:09=71（Watchdog queue 62）、07:26=66（60）、09:30=67（59）、11:41=73（60）；30min 约 33~37，10min 约 10~19。旧成功 native 请求没有逐条持久化，只能看到部分 capture failure/429 下界，因此无法给出官方页 vs Archive 的精确历史比例；但 Archive stale-Watchdog 本身已经接近每分钟一请求，显然是主要可控负载之一。
+- “01点到5点为何不立即爆”的时间形状与 seen-id bug 精确一致：最后 audit≈01:22；旧代码按 wall-clock 2h 清理 seen-id，因此约 03:22 才忘掉最后一条 audit，而 10s overlap 仍会返回它，随后才开始每轮 stale first-tool→Watchdog→body 的重复链。积累约 1h47m 后 05:09 首次撞 429；再叠加每波约 60min cooldown，形成 05:09→07:26→09:30→11:41 的约两小时节奏。
+- 12:41:05 北京时间又观察到普通页面 mapping 429；当时上一轮 cooldown 只剩约 45 秒，但旧策略仍把全局 cooldown 滑动续到 13:41:05。为先止血，已通过 CDP 将 16 个普通 `chatgpt.com` 页面全部 `Page.setWebLifecycleState(frozen)`，仅保留 Guardian/Archive；冻结后十余分钟日志统计 `native429=0 / active429=0 / nativeCapture=0 / conversationSynced=0 / catalogReconcile=0 / watchdogQueued=0`，WSS lifecycle 仍能收到 conversation events，说明页面 REST 已成功静默而 Archive 监听链未被关闭。
+- 代码验证：`node --check` PASS，TypeScript typecheck PASS，daemon 定向 38/38 tests，全量 25 files / 177 tests PASS。production 尚未重载到这批 latch/两阶段通知提交；当前先保留官方页 frozen 与既有 cooldown，部署后再做最终状态验证。
+
 ## 2026-10-08 Protocol Drift 告警机制重构
 
 - 旧 drift Bark 的真实行为已复盘：Windows 计划任务每天 12:00 才运行 `protocol report --notify`，且 `StartWhenAvailable` 会在错过时间后补跑。因此 2026-10-08 12:00 的 74 项并不是中午突然发生，而是主要汇总 10/7 14:03~19:35 才首次观察到的请求/响应 shape；10/7 下午人工已经完成真协议审计时，自动告警天然要晚到次日。

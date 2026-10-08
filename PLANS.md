@@ -1,12 +1,13 @@
 ## 2026-10-08 Watchdog 单向闸门 / 通知完整性 / 官方页面止血 ExecPlan
 
 - [done] 临时止血：通过 CDP 将 16 个普通 `chatgpt.com` 页面置为 `frozen`，仅保留 Archive Guardian 与 daemon 自己的受控主动请求链；不关闭标签页、不杀 Chrome，后续可恢复 `active`。
-- [in_progress] 把 Watchdog 语义改成“每个 logical turn 一次性单向闸门”：45min 一旦到点，本 generation 永久进入 timed-out / awaiting-diagnosis；同 turn 后续 DevSpace/WSS/catalog progress 只能补证据，绝不能重新武装或延后 deadline。只有确认新的 turn identity（turn_exchange_id/request_id/user turn）才允许创建新的 Watchdog generation。
-- [in_progress] 通知矩阵改为用户最新要求：正常 turn = 1 条最终通知；WSS complete + no-final/interrupted = 1 条异常通知；Watchdog turn = 到点立即 1 条 `Watchdog 已超时`，不受 cooldown 影响，body 诊断成功后再且只再发 1 条诊断结果，总计恰好 2 条。不能因为“当场能拉 body”而省掉第一条，也不能因为 incident 已存在而省掉第二条。
-- [in_progress] 审计近期漏通知：区分“根本未生成 ledger”“ledger 已 Bark 200 但客户端未显著收到”“功能上线前历史 turn”。重点核对用户列出的分析异常终止、需求梳理、恢复 ClassFlow、分析 Watchdog、CapsWriter、构建个人工作基准等会话。
-- [in_progress] 429 责任按共享门控累计量分析，不以最后一个 429 请求归责；分别统计/估计每个 429 wave 前 1/10/30/60min 的 native page 与 Archive active 请求，并解释 01:22 audit 的 2h seen-id 过期为何约 03:22 才开始 replay、进而形成 05:09→07:26→09:30 的周期。
-- [pending] 增加回归：同 generation progress 不重启 watchdog；stale first-tool/catalog 不能复活 timed-out turn；新 turn 可创建新 generation；watchdog timeout/diagnosis 两条通知各自持久去重；normal/complete-no-final 各恰好一条。
-- [pending] 跑 node syntax、TypeScript、daemon/notification 定向测试和全量测试；仅重载 Archive daemon，验证 frozen 官方页面下 native 请求显著下降、Guardian/WSS/Bridge 正常、checkpoint 仍 disabled、无主动 429 风暴。
+- [done] 把 Watchdog 语义改成“每个 logical turn 一次性单向闸门”：45min 一旦到点，本 generation 永久进入 timed-out / awaiting-diagnosis；同 turn 后续 DevSpace/WSS/catalog progress 只能补证据，绝不能重新武装或延后 deadline。明确的新 turn identity / explicit turn-start 才允许创建新的 Watchdog generation。
+- [done] 通知矩阵改为用户最新要求：正常 turn = 1 条最终通知；WSS complete + no-final/interrupted = 1 条异常通知；Watchdog turn = 到点立即 1 条 `Watchdog 已超时`，不受 cooldown 影响，body 诊断成功后再且只再发 1 条诊断结果，总计恰好 2 条。旧 `watchdog-deferred-cooldown` ledger 视为已经完成第一阶段，升级后不重复补轰炸。
+- [done] 审计近期漏通知：确认同时存在“根本未生成 ledger”“ledger 已 Bark 200 但客户端未显著收到”“功能上线前/历史 backfill 被策略抑制”三类。`分析异常终止原因` 虽有 11 个 incident 但均为历史/补档类，notification ledger=0；`构建个人工作基准`、`CapsWriter性能分析`、`分析工具调用超时规律` 等已有 provider=200 的 turn-final ledger。
+- [done] 429 责任按共享门控累计量分析，不以最后一个 429 请求归责。05:09/07:26/09:30/11:41 四个独立 wave 前 60min，Archive 受管主动请求约 71/66/67/73 次，其中 Watchdog queue 约 62/60/59/60 次；说明 stale-Watchdog 风暴本身已是主要可控负载之一。旧遥测没有逐条持久成功 native request，因此无法诚实给出双方精确占比。
+- [done] 解释周期：01:22 最后 audit 不是立即 replay；旧 seen-id 要先等绝对 2h 过期，约 03:22 才开始 stale overlap 重放。之后约每分钟一个 Watchdog/body 请求，约 05:09 首次重新撞共享 429；每次 60min cooldown + 后续再积累形成约两小时一波。
+- [done] 增加回归：同 generation progress 不重启 watchdog；catalog progress 只更新证据；诊断后 tombstone 保留；Watchdog timeout/diagnosis 文案分离；旧 deferred ledger 兼容迁移。`node --check`、TypeScript、daemon 定向 38/38、全量 25 files / 177 tests 全通过。
+- [in_progress] 部署新 daemon 并做 production 验证：16 个官方页继续 frozen；重载必须继承当前 cooldown，验证 Guardian/WSS/Bridge 正常、checkpoint 仍 disabled、timed-out tombstone 与 running 统计分离，且官方页冻结后不再产生 native REST/429。
 
 ## 2026-10-08 Protocol Drift 实时分级 / 可读告警 ExecPlan
 
