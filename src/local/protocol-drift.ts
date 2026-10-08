@@ -130,6 +130,46 @@ export interface ProtocolDriftAssessment {
   count: number
 }
 
+/** 同一语义 drift 可能由 offset=0/28、new/continue 等多个 exact variant 同时命中。 */
+export function dedupeProtocolAssessments<T extends { assessment: ProtocolDriftAssessment }>(items: T[]): T[] {
+  const best = new Map<string, T>()
+  const severityRank: Record<ProtocolDriftSeverity, number> = { info: 0, warning: 1, critical: 2 }
+  for (const item of items) {
+    const key = item.assessment.dedupeKey
+    const current = best.get(key)
+    if (!current
+      || severityRank[item.assessment.severity] > severityRank[current.assessment.severity]
+      || item.assessment.count > current.assessment.count) {
+      best.set(key, item)
+    }
+  }
+  return [...best.values()].sort((a, b) => (
+    severityRank[b.assessment.severity] - severityRank[a.assessment.severity]
+      || a.assessment.summary.localeCompare(b.assessment.summary)
+  ))
+}
+
+/**
+ * Bark/CLI 共用的人类可读格式。hash 仍保留在 ledger，但通知正文只说“什么变了、有什么影响”。
+ */
+export function formatProtocolDriftAssessment(assessment: ProtocolDriftAssessment): string {
+  const severity = assessment.severity === 'critical'
+    ? '严重'
+    : assessment.severity === 'warning'
+      ? '警告'
+      : '信息'
+  const details = assessment.details.length > 0
+    ? assessment.details.map(detail => `• ${detail}`).join('\n')
+    : '• 未发现可解释字段差异'
+  return [
+    `[${severity}] ${assessment.summary}`,
+    `${assessment.method} ${assessment.route}`,
+    details,
+    `影响：${assessment.impact}`,
+    `观察次数：${assessment.count}`,
+  ].join('\n')
+}
+
 const UUIDISH = /^[0-9a-f]{8}-[0-9a-f-]{20,}$/iu
 
 function sortedUnique(values: string[]): string[] {
