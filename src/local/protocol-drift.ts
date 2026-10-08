@@ -602,17 +602,13 @@ export class ProtocolDriftLedger {
 
     if (refs.length === 0) {
       details.push('baseline 中没有同家族请求')
-      const repeated = variant.count >= 2
-      const severity: ProtocolDriftSeverity = important && repeated ? 'warning' : 'info'
       return {
-        severity,
-        notify: severity !== 'info',
-        category: important ? 'request-contract' : 'observation',
-        summary: `${label} 出现新的请求家族`,
+        severity: 'info',
+        notify: false,
+        category: 'observation',
+        summary: `${label} 在 baseline 后首次出现`,
         details,
-        impact: important
-          ? (repeated ? '该请求已重复出现，可能代表第一方协议新增/迁移；需要核对生产 replay。' : '目前只见 1 次，先作为候选证据，重复后再通知。')
-          : '该 route 不参与 Archive/Actor 的关键 replay，仅保留取证。',
+        impact: '这是 late first observation，不足以证明协议发生过迁移；保留取证但不单独 Bark。',
         dedupeKey: assessmentDedupeKey({ kind: 'request-new-family', family, method: shape.method, route: shape.route }),
         route: shape.route,
         method: shape.method,
@@ -626,7 +622,13 @@ export class ProtocolDriftLedger {
     const stableHeaders = intersectLists(refs.map(ref => ref.shape.protocolHeaderNames))
     const addedHeaders = difference(shape.protocolHeaderNames, knownHeaders)
     const missingStableHeaders = difference(stableHeaders, shape.protocolHeaderNames)
-    if (addedHeaders.length > 0) details.push(`新增协议 header: ${addedHeaders.join(', ')}`)
+    // 这两个 Target 头是 Archive 旧主动 replay/canary 曾经自行注入过的历史标记，
+    // 不是当前第一方 Web 正常 GET 的稳定协议。它们继续留在 forensic ledger，不能反过来
+    // 让“自己造的请求”伪装成上游协议漂移。
+    const meaningfulAddedHeaders = addedHeaders.filter(header => (
+      header !== 'x-openai-target-path' && header !== 'x-openai-target-route'
+    ))
+    if (meaningfulAddedHeaders.length > 0) details.push(`新增协议 header: ${meaningfulAddedHeaders.join(', ')}`)
     if (missingStableHeaders.length > 0) details.push(`缺少 baseline 稳定 header: ${missingStableHeaders.join(', ')}`)
 
     const knownQueryKeys = unionLists(refs.map(ref => ref.shape.queryKeys))
@@ -653,12 +655,13 @@ export class ProtocolDriftLedger {
     if (addedPostKeys.length > 0) details.push(`新增 POST 字段: ${addedPostKeys.join(', ')}`)
     if (missingStablePostKeys.length > 0) details.push(`缺少 baseline 稳定 POST 字段: ${missingStablePostKeys.join(', ')}`)
 
-    const hasContractDifference = addedHeaders.length > 0
-      || missingStableHeaders.length > 0
+    const strongContractDifference = meaningfulAddedHeaders.length > 0
       || addedQueryKeys.length > 0
-      || missingStableQueryKeys.length > 0
       || changedQueryValues.length > 0
       || addedPostKeys.length > 0
+    const hasContractDifference = strongContractDifference
+      || missingStableHeaders.length > 0
+      || missingStableQueryKeys.length > 0
       || missingStablePostKeys.length > 0
 
     if (!hasContractDifference) {
@@ -670,6 +673,25 @@ export class ProtocolDriftLedger {
         details: ['route/method/query 契约与 baseline 一致；差异仅来自分页值或非协议 header'],
         impact: '不影响 Archive/Actor 兼容性，不发送 Bark。',
         dedupeKey: assessmentDedupeKey({ kind: 'request-noise', family }),
+        route: shape.route,
+        method: shape.method,
+        family,
+        requestSignature: signature,
+        count: variant.count,
+      }
+    }
+
+    // “缺少某个 baseline 字段”通常只是 endpoint/page state 更稀疏，单凭缺失不足以推断
+    // 服务端开始强制新协议。真正用于主动 Bark 的是新增 header/query/POST schema 或语义值变化。
+    if (!strongContractDifference) {
+      return {
+        severity: 'info',
+        notify: false,
+        category: 'optional-shape',
+        summary: `${label} 仅出现稀疏请求变体`,
+        details,
+        impact: '只有 baseline 字段缺失，没有新增协议要求；暂不发送 Bark。',
+        dedupeKey: assessmentDedupeKey({ kind: 'request-sparse', family, missingStableHeaders, missingStableQueryKeys, missingStablePostKeys }),
         route: shape.route,
         method: shape.method,
         family,
@@ -695,7 +717,7 @@ export class ProtocolDriftLedger {
       dedupeKey: assessmentDedupeKey({
         kind: 'request-contract',
         family,
-        addedHeaders,
+        addedHeaders: meaningfulAddedHeaders,
         missingStableHeaders,
         addedQueryKeys,
         missingStableQueryKeys,
