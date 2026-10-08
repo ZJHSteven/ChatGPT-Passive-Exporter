@@ -234,22 +234,15 @@ function isoFromArchiveTime(value: number): string {
   return new Date(milliseconds).toISOString()
 }
 
-function safeSummary(messages: Array<Record<string, unknown>>): string | null {
-  const candidates = messages.filter(message =>
-    message.role === 'assistant' &&
-    typeof message.text === 'string' &&
-    message.text.trim() &&
-    message.reasoningRedacted !== true,
-  )
-  const text = candidates.at(-1)?.text
-  return typeof text === 'string' ? text.trim().slice(0, 2000) : null
-}
-
 /**
  * 把 Archive canonical 数据收缩成 LifeOps 可以安全持久化的一份 Worksite。
  *
- * 这是 Bridge `/v1/worksites/resolve` 与 daemon 主动推送 LifeOps 共用的唯一构造器：
- * 两条路径因此不会出现一个泄露 reasoning、另一个忘记 lifecycle 的分叉实现。
+ * 这里**刻意不读取 messages**。Worksite 对 LifeOps 的职责只是“引用这条 Conversation，并告诉
+ * Inbox 这一个 Turn 当前是什么生命周期状态”，不是替 Work Item 生成摘要。过去为了 summary 扫整段
+ * conversation，会让一个几千条消息的大聊天在核心同步链上产生完全没必要的成本；V0.5 把摘要职责
+ * 交回 Work Item 自己的 currentState，历史正文只在用户显式打开 Archive Reader 时分页读取。
+ *
+ * 这是 Bridge `/v1/worksites/resolve` 与 daemon 主动推送 LifeOps 共用的唯一元数据构造器。
  */
 export function buildArchiveBridgeWorksite(
   archive: ArchiveBridgeDataSource,
@@ -259,10 +252,6 @@ export function buildArchiveBridgeWorksite(
   const conversation = archive.list(1000).find(row => row.id === conversationId)
   if (!conversation) return null
 
-  const allMessages = sanitizeMessages(archive.getMessages(conversationId))
-  const messages = turnExchangeId
-    ? allMessages.filter(message => message.turnExchangeId === turnExchangeId)
-    : allMessages
   const lifecycle = conversationLifecycle(conversationId, archive, turnExchangeId)
   const runState = lifecycle.state === 'aborted'
     ? 'aborted'
@@ -271,18 +260,26 @@ export function buildArchiveBridgeWorksite(
       : 'completed'
 
   return {
+    sourceEventId: `turn:${conversationId}:${turnExchangeId || conversation.currentNode || conversation.capturedAt}`,
     conversationId,
     turnExchangeId: turnExchangeId ?? null,
     title: conversation.title || `ChatGPT · ${conversationId}`,
-    summary: safeSummary(messages),
     runState,
     reviewState: 'unread',
+    inboxKind: lifecycle.state === 'aborted' ? 'incident' : 'turn',
+    inboxHealth: lifecycle.state === 'aborted' ? 'incident' : 'healthy',
+    finalState: conversation.lastFinishType ?? conversation.terminalState ?? null,
+    incidentType: lifecycle.incident && typeof lifecycle.incident.lifecycleClass === 'string'
+      ? lifecycle.incident.lifecycleClass
+      : null,
+    incidentState: lifecycle.state === 'aborted' ? 'open' : null,
     url: `https://chatgpt.com/c/${conversationId}`,
     updatedAt: isoFromArchiveTime(conversation.capturedAt || conversation.importedAt),
     metadata: {
       sourceFormat: conversation.sourceFormat,
       currentNode: conversation.currentNode,
-      messageCount: messages.length,
+      messageCount: conversation.messageCount,
+      resourceCount: conversation.resourceCount,
       terminalState: conversation.terminalState ?? null,
       incidentState: conversation.incidentState ?? null,
       lastFinishType: conversation.lastFinishType ?? null,
