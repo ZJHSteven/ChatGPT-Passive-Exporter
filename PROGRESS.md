@@ -1,3 +1,13 @@
+## 2026-10-09 DevSpace Recover provisional Conversation Body overlay
+
+- 已把“Conversation Body 因 cooldown/429/CDP 不可用而暂时拉不下来”与“本地 DevSpace 工具事实已经存在”正式拆成两层：新增 `devspace_recovery_audits` 本地持久表，保存已绑定 metadata 的 audit id、tool、canonical args fingerprint、result/error、Conclusion、start/finish 时间，以及后续 canonical supersede 证据。它不是 ChatGPT first-party `messages`，不参与 mapping、terminal、incident 或 Watchdog 判定。
+- daemon 现在在已绑定 metadata 的每个 DevSpace audit start 上机会式写 provisional；finish UDP 门铃会按 audit id 重读 SQLite，补齐同一 audit 的最终 result/error，避免 seen-id 去重让临时 tool-result 永久停在 running。binding 晚到时只回填 exact-match 起点前后约 2 分钟局部窗口，不全库扫历史。
+- Reader/Bridge `/v1/conversations/:cid/messages` 会把 canonical messages 与仍 active 的 recovery overlay 叠加展示，并显式暴露 `provisional=true / recoverySource=devspace-audit / recoveryKind / auditId / metadataId`。canonical 原始 API 仍通过 `ArchiveDb.getMessages()` 单独读取，因此内部 metadata binding 不会把 recovery 自己生成的 tool-call 当证据反向绑定自己。
+- 一个 audit 最多生成三类 provisional 可见节点：①非空 Conclusion -> assistant commentary checkpoint；②assistant `api_tool.call_tool` 风格的 tool-call；③finish 后的 tool-result。Conclusion 目前不当作 canonical 已验证事实，只标为 `assistant-conclusion` recovery checkpoint。
+- canonical Conversation Body 每次主动 sync 或 passive native latest merge 后，会读取真正 `messages` 表中的 DevSpace/Backup Tunnel tool-call，按与 binding 相同的 `tool + canonical args` fingerprint + ±120s 时间窗匹配最近 provisional audit；匹配后只标记 `superseded_at/superseded_by_message_id`，不删除 forensic 记录。对应 tool/result/conclusion 会一起退出 Reader overlay；服务器永远缺失的异常尾部则继续保留。
+- 对现有 9 条 Conclusion 的语义审计：约 3 条是真正阶段 checkpoint（例如“生产 DevSpace 已完成受控重启”“当前聊天属于 legacy metadata”），另外 6 条主要是 `Copy / Verify / Deploy / Final verification` 这类下一步动作标签。根因是 Conclusion 是 tool **输入**，模型必须在该工具执行前写入；因此它天然只能承载“截至上一工具已确认的结论/当前操作目的”，不能承载本次工具刚返回才发现的结果。MCP schema 本轮明确不改。
+- 当前定向验证：`node --check` PASS、TypeScript PASS、`devspace-audit-bridge + archive-db + archive-bridge` 3 files / 37 tests PASS。尚待全量 tests/build 与 production daemon 重载/真机 provisional 增长验证。
+
 ## 2026-10-09 DevSpace Conclusion 即时 Bark / schema 可见性统计
 
 - 纠正一次统计口径错误：`init(title=...)` 只能证明“这个 metadata 肯定看到了新 schema”，但**不是必要条件**。legacy metadata 在迁移时已经被 grandfather 为 initialized，后续即使 Host 已刷新到新版 schema，再次 `init` 仍允许省略 title；因此 metadata context 的空 title 不能反推“仍在旧 schema”。
