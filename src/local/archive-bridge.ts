@@ -557,14 +557,25 @@ export class ArchiveBridgeServer {
         return
       }
       const conversationId = decodeURIComponent(resourcesMatch[1]!)
-      const resources = this.options.archive.getResources(conversationId).map(row => ({
+      const allResources = this.options.archive.getResources(conversationId).map(row => ({
         messageId: typeof row.messageId === 'string' ? row.messageId : null,
         ordinal: Number.isFinite(Number(row.ordinal)) ? Number(row.ordinal) : null,
         kind: typeof row.kind === 'string' ? row.kind : 'unknown',
         label: typeof row.label === 'string' ? row.label : null,
         data: row.data && typeof row.data === 'object' ? row.data : null,
       }))
-      jsonResponse(res, 200, { conversationId, resources })
+      const page = paginateOrdinalRows(
+        allResources,
+        parseLimit(url.searchParams.get('limit'), 120),
+        parseBeforeOrdinal(url.searchParams.get('before_ordinal')),
+      )
+      jsonResponse(res, 200, {
+        conversationId,
+        resources: page.rows,
+        total: page.total,
+        hasMore: page.hasMore,
+        nextBeforeOrdinal: page.nextBeforeOrdinal,
+      })
       return
     }
 
