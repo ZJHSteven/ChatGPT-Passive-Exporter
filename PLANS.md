@@ -1,3 +1,15 @@
+## 2026-10-09 DevSpace Conclusion 即时 Bark ExecPlan
+
+目标：把 DevSpace 工具参数中的非空 `conclusion` 作为“阶段性结论”即时推送到手机，帮助用户在长工具链中及时掌握模型当前进展；该通知只做旁路可观测性，不改变 Watchdog / idle / turn 终态状态机。
+
+1. 复用现有 DevSpace audit 事件流：每条新 `tool_audit` 首次被 Archive 观察到时解析 `args_json.conclusion`；为空则完全不做额外工作，非空才进入通知分支。
+2. 通知命名优先级固定为：已绑定 canonical conversation -> Archive conversation title；未绑定但 DevSpace metadata context 有 `init.title` -> title；两者都没有 -> 仅显示“未命名、尚未绑定的 DevSpace 会话”，不再把 metadata ID 暴露给手机通知。
+3. Bark 使用独立 `DevSpace Conclusion` group；正文包含工具名 + conclusion 原文，已绑定 conversation 时带聊天 URL；notification key 用 audit id 做持久去重，避免 UDP start/finish、60s catch-up 或 daemon 重启重复发送。
+4. 不在 DevSpace 进程增加网络请求，不改 tool hot path；通知继续由 Archive detached Bark 分支负责。
+5. 回归覆盖：有 conclusion 立即排队；无 conclusion 不通知；绑定 / title fallback / 无名 fallback 三种文案；同 audit id 持久去重。
+
+状态：已确认生产数据中 Conclusion 上线后仅 9 次真实使用、涉及 3 个 metadata；正在实现 Archive 即时 Bark 与回归测试。
+
 ## 2026-10-08 DevSpace 工具静默独立 Bug 通知
 
 目标：复用现有 Bark 传输和 DevSpace UDP 门铃，但与 45min Watchdog / incident taxonomy 完全解耦，增加一个只描述“工具活动静默”的轻量提醒通道。
