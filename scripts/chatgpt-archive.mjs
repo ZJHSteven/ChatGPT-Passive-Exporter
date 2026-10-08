@@ -9,7 +9,11 @@ import { importOfficialExportZips } from '../src/local/official-export.ts'
 import { clusterCompletionBursts, readTurnTraceTail } from '../src/local/turn-trace-reader.ts'
 import { actorStatus, inspectActorPage, resetActor, sendActorPrompt } from '../src/local/chatgpt-actor.ts'
 import { ActorDomDriftLedger } from '../src/local/dom-drift.ts'
-import { ProtocolDriftLedger } from '../src/local/protocol-drift.ts'
+import {
+  ProtocolDriftLedger,
+  dedupeProtocolAssessments,
+  formatProtocolDriftAssessment,
+} from '../src/local/protocol-drift.ts'
 import { loadIncidentNotificationConfig, sendIncidentNotification } from '../src/local/incident-notifier.ts'
 
 /**
@@ -372,6 +376,10 @@ async function protocolCommand(positionals, flags) {
     console.log(JSON.stringify({
       summary: ledger.summary(),
       pending: ledger.pendingChanges({ unreportedOnly: false }),
+      actionable: dedupeProtocolAssessments(ledger.assessedPendingChanges({
+        unreportedOnly: false,
+        notifyOnly: true,
+      })).map(item => item.assessment),
       dom: {
         summary: domLedger.summary(),
         pending: domLedger.pendingChanges({ unreportedOnly: false }),
@@ -424,15 +432,18 @@ async function protocolCommand(positionals, flags) {
 
   if (action === 'report') {
     const summary = ledger.summary()
-    const allPending = ledger.pendingChanges({ unreportedOnly: false })
+    const actionable = dedupeProtocolAssessments(ledger.assessedPendingChanges({
+      unreportedOnly: false,
+      notifyOnly: true,
+    }))
     const domSummary = domLedger.summary()
     const allDomPending = domLedger.pendingChanges({ unreportedOnly: false })
     const reportState = await readJsonOr(reportStatePath, { version: 1, notified: {} })
     reportState.version = 1
     reportState.notified = reportState.notified || {}
-    const changeKey = change => 'protocol:' + change.kind + ':' + change.requestSignature + ':' + (change.responseSignature || '')
+    const semanticChangeKey = item => 'protocol-semantic:' + item.assessment.dedupeKey
     const domChangeKey = change => 'dom:' + change.signature
-    const pending = allPending.filter(change => !reportState.notified[changeKey(change)])
+    const pending = actionable.filter(item => !reportState.notified[semanticChangeKey(item)])
     const domPending = allDomPending.filter(change => !reportState.notified[domChangeKey(change)])
     const pendingTotal = pending.length + domPending.length
     let notification = null
@@ -441,15 +452,7 @@ async function protocolCommand(positionals, flags) {
         ? path.resolve(String(flags.get('notification-config')))
         : DEFAULT_NOTIFICATION_CONFIG_PATH
       const config = await loadIncidentNotificationConfig(notificationPath)
-      const protocolLines = pending.map((change) => {
-        const suffix = change.kind === 'response'
-          ? ' response=' + change.responseSignature
-          : ''
-        const query = Object.keys(change.query).length > 0
-          ? ' ' + JSON.stringify(change.query)
-          : ''
-        return '[HTTP] ' + change.kind + ' ' + change.method + ' ' + change.route + query + ' [' + change.requestSignature + suffix + ']'
-      })
+      const protocolLines = pending.map(item => formatProtocolDriftAssessment(item.assessment))
       const domLines = domPending.map(change => (
         '[DOM] route=' + change.routeKind + ' signature=' + change.signature
       ))
@@ -463,14 +466,14 @@ async function protocolCommand(positionals, flags) {
       notification = result
       if (result.ok) {
         const now = Date.now()
-        for (const change of pending) reportState.notified[changeKey(change)] = now
+        for (const item of pending) reportState.notified[semanticChangeKey(item)] = now
         for (const change of domPending) reportState.notified[domChangeKey(change)] = now
         await writeJsonAtomic(reportStatePath, reportState)
       }
     }
     console.log(JSON.stringify({
       summary,
-      pending,
+      pending: pending.map(item => ({ change: item.change, assessment: item.assessment })),
       dom: {
         summary: domSummary,
         pending: domPending,
