@@ -1,3 +1,13 @@
+# 2026-10-08 DevSpace 1/3/5 分钟工具静默 Bug 通知（实施中）
+
+- 独立 worktree `feat/devspace-silence` 开始实现软提醒：不恢复 ChatGPT REST polling，不新增网络 timer；直接复用 Archive 现有 5s daemon 主循环 + DevSpace 本机 SQLite。
+- DevSpace bridge 新增 metadata tool state：`runningTools`、最后 start/finish、last finished audit id，以及 v10 `chatgpt_metadata_contexts.title`。只有 `runningTools===0` 才进入 idle 候选；计时从最后一次 `finished_at` 开始。
+- UDP listener 兼容可选 `phase=start|finish`。同 auditId 的 finish 门铃即使被增量 audit 去重，也会按 metadata 强制重读 SQLite；60s fallback 会重读少量 tracked metadata，覆盖 finish datagram 丢包。
+- 软提醒只在 1/3/5 分钟阈值穿越时进入 Bark；绑定 CID 时优先 canonical conversation title + 点击链接，未绑定时回退 DevSpace init title。Bark 单条通知支持覆盖 group=`DevSpace Bug`，与 ChatGPT Archive incident 分组独立。
+- 已绑定 metadata 若 Archive lifecycle 已变成 `closed` 会立刻退出候选，不再发送 idle Bug。通知文本明确“可能停止 / 准备 Final / 纯思考 / 其它工具”，且声明不代表 turn 已结束、不改变正式 Watchdog/incident。
+- daemon 重启只恢复最近 6 分钟有 start/finish 活动的 metadata，并把 `lastCheckedIdleMs` 初始化为当前年龄，因此不会一次性补发已经错过的历史 1/3 分钟提醒。
+- 已添加 bridge/signal/notifier/daemon 纯函数测试；尚待 typecheck、定向测试、全量测试并部署。
+
 ## 2026-10-08 Protocol Drift 告警机制重构
 
 - 旧 drift Bark 的真实行为已复盘：Windows 计划任务每天 12:00 才运行 `protocol report --notify`，且 `StartWhenAvailable` 会在错过时间后补跑。因此 2026-10-08 12:00 的 74 项并不是中午突然发生，而是主要汇总 10/7 14:03~19:35 才首次观察到的请求/响应 shape；10/7 下午人工已经完成真协议审计时，自动告警天然要晚到次日。
