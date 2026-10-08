@@ -4714,14 +4714,25 @@ async function main() {
     markDirty(event.conversationId, `wss:${event.type}`)
     if (behavior.startsTurn) {
       const current = activeTurns.get(event.conversationId)
-      const nextActive = {
-        startedAt: current?.startedAt ?? now,
-        lastEventAt: now,
-        lastWatchdogAt: current?.lastWatchdogAt ?? null,
-        watchdogPendingAt: current?.watchdogPendingAt ?? null,
-        startType: current?.startType ?? (event.updateType ? `${event.type}:${event.updateType}` : event.type),
-        lastDiagnosticTurnKey: current?.lastDiagnosticTurnKey ?? null,
-      }
+      const explicitNewTurn = Boolean(behavior.explicitTurnStart)
+      const latched = isWatchdogLatched(current)
+      const nextActive = latched && explicitNewTurn
+        ? {
+            startedAt: now,
+            lastEventAt: now,
+            lastWatchdogAt: null,
+            watchdogPendingAt: null,
+            startType: event.updateType ? `${event.type}:${event.updateType}` : event.type,
+            lastDiagnosticTurnKey: null,
+          }
+        : {
+            startedAt: current?.startedAt ?? now,
+            lastEventAt: now,
+            lastWatchdogAt: current?.lastWatchdogAt ?? null,
+            watchdogPendingAt: current?.watchdogPendingAt ?? null,
+            startType: current?.startType ?? (event.updateType ? `${event.type}:${event.updateType}` : event.type),
+            lastDiagnosticTurnKey: current?.lastDiagnosticTurnKey ?? null,
+          }
       activeTurns.set(event.conversationId, nextActive)
       persistActiveTurn(event.conversationId, nextActive)
     }
