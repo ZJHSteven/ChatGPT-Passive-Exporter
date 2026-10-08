@@ -3957,6 +3957,9 @@ async function main() {
       auditId: event.id,
       auditAt: event.startedAtMs,
     })
+    // begin 事件会看到 runningTools>0 并立即取消旧 idle generation。
+    // finish 事件即使 auditId 已经见过，也会由 wake callback 额外按 metadata 重读。
+    refreshDevSpaceIdleCandidate(event.metadataId)
     if (binding.conversationId) {
       activateBoundDevSpaceTurn(binding, event.startedAtMs)
       return
