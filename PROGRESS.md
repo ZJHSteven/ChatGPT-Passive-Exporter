@@ -8,6 +8,7 @@
 - 已绑定 metadata 若 Archive lifecycle 已变成 `closed` 会退出候选。通知文本明确“可能停止 / 准备 Final / 纯思考 / 其它工具”，且声明不代表 turn 已结束、不改变正式 Watchdog/incident。
 - daemon 重启只恢复最近 6 分钟有 start/finish 活动的 metadata，并把 `lastCheckedIdleMs` 初始化为当前年龄，因此不会一次性补发已经错过的历史 1/3 分钟提醒。
 - 隔离 feature 基线已通过 TypeScript、定向 4 files / 49 tests、全量 25 files / 180 tests 与完整 build。当前-main 合并后仍需重新跑同等级回归后才能重载生产。
+- current production main 集成分支最终验证完成：TypeScript PASS；DevSpace idle 定向 4 files / 49 tests PASS；全量 25 files / 180 tests PASS；Chrome/Edge/Firefox/Userscript 完整 build PASS。最新 Watchdog latch/two-stage notification 与本功能在同一最终代码上共同通过回归，具备 production fast-forward + daemon 正规重载条件。
 
 ## 2026-10-08 Watchdog 单向闸门 / 通知完整性 / 429 责任重算
 
