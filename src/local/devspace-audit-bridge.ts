@@ -38,6 +38,22 @@ export interface DevSpaceMetadataSummary {
   auditCount: number
 }
 
+/**
+ * 某个 metadata 当前的工具活动状态。
+ *
+ * Archive 只用这些控制面字段判断“现在是否存在正在运行的 DevSpace 工具”和
+ * “最后一次工具结束是什么时候”；不读取 result 正文，也不把它当 turn 终止证据。
+ */
+export interface DevSpaceMetadataToolState {
+  metadataId: string
+  title: string | null
+  runningTools: number
+  latestStartedAt: number | null
+  latestFinishedAt: number | null
+  latestAuditId: string | null
+  lastFinishedAuditId: string | null
+}
+
 export interface DevSpaceBodyToolCall {
   tool: string
   argsJson: string
@@ -232,6 +248,7 @@ export class DevSpaceAuditBridge {
   private db: DatabaseSync | null = null
   private hasRequestMetaJson = false
   private hasBindingTable = false
+  private hasMetadataContextTable = false
 
   constructor(dbPath: string) {
     this.dbPath = path.resolve(dbPath)
@@ -259,8 +276,102 @@ export class DevSpaceAuditBridge {
       WHERE type='table' AND name='chatgpt_conversation_bindings'
       LIMIT 1
     `).get())
+    this.hasMetadataContextTable = Boolean(db.prepare(`
+      SELECT 1 AS ok FROM sqlite_master
+      WHERE type='table' AND name='chatgpt_metadata_contexts'
+      LIMIT 1
+    `).get())
     this.db = db
     return true
+  }
+
+  /**
+   * 读取一个 metadata 当前的 idle/running 状态。
+   *
+   * 查询只命中 metadata_id 索引，并且只取少量时间/ID 字段；即使主循环每 60 秒
+   * 对少数活跃 metadata 做 durable catch-up，也远轻于任何 ChatGPT 网络请求。
+   */
+  metadataToolState(metadataId: string): DevSpaceMetadataToolState | null {
+    if (!this.open() || !this.db) return null
+    const summary = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN finished_at IS NULL THEN 1 ELSE 0 END) AS runningTools,
+        MAX(started_at) AS latestStartedAt,
+        MAX(finished_at) AS latestFinishedAt
+      FROM tool_audit
+      WHERE metadata_id = ?
+    `).get(metadataId) as {
+      runningTools?: number | null
+      latestStartedAt?: string | null
+      latestFinishedAt?: string | null
+    } | undefined
+    if (!summary?.latestStartedAt) return null
+
+    const latest = this.db.prepare(`
+      SELECT id, started_at AS startedAt
+      FROM tool_audit
+      WHERE metadata_id = ?
+      ORDER BY started_at DESC, id DESC
+      LIMIT 1
+    `).get(metadataId) as { id?: string, startedAt?: string } | undefined
+    const lastFinished = this.db.prepare(`
+      SELECT id, finished_at AS finishedAt
+      FROM tool_audit
+      WHERE metadata_id = ? AND finished_at IS NOT NULL
+      ORDER BY finished_at DESC, id DESC
+      LIMIT 1
+    `).get(metadataId) as { id?: string, finishedAt?: string } | undefined
+
+    // DevSpace 可能在 Archive 之后才热升级到 v10；首次缺表时允许重新探测。
+    if (!this.hasMetadataContextTable) {
+      this.hasMetadataContextTable = Boolean(this.db.prepare(`
+        SELECT 1 AS ok FROM sqlite_master
+        WHERE type='table' AND name='chatgpt_metadata_contexts'
+        LIMIT 1
+      `).get())
+    }
+    const context = this.hasMetadataContextTable
+      ? this.db.prepare(`
+          SELECT title
+          FROM chatgpt_metadata_contexts
+          WHERE metadata_id = ?
+          LIMIT 1
+        `).get(metadataId) as { title?: string } | undefined
+      : undefined
+
+    const parseOptionalTime = (value: string | null | undefined) => {
+      if (!value) return null
+      const parsed = Date.parse(value)
+      return Number.isFinite(parsed) ? parsed : null
+    }
+    return {
+      metadataId,
+      title: typeof context?.title === 'string' && context.title.trim() ? context.title.trim() : null,
+      runningTools: Math.max(0, Number(summary.runningTools || 0)),
+      latestStartedAt: parseOptionalTime(summary.latestStartedAt),
+      latestFinishedAt: parseOptionalTime(summary.latestFinishedAt),
+      latestAuditId: latest?.id ?? null,
+      lastFinishedAuditId: lastFinished?.id ?? null,
+    }
+  }
+
+  /** daemon 重启后只恢复最近几分钟有真实 start/finish 活动的 metadata，不扫描全历史。 */
+  recentMetadataToolStates(sinceActivityAtMs: number, limit = 200): DevSpaceMetadataToolState[] {
+    if (!this.open() || !this.db) return []
+    const since = new Date(Math.max(0, sinceActivityAtMs)).toISOString()
+    const rows = this.db.prepare(`
+      SELECT metadata_id AS metadataId
+      FROM tool_audit
+      WHERE metadata_id IS NOT NULL
+        AND metadata_id <> ''
+        AND (started_at >= ? OR finished_at >= ?)
+      GROUP BY metadata_id
+      ORDER BY MAX(COALESCE(finished_at, started_at)) DESC
+      LIMIT ?
+    `).all(since, since, Math.max(1, Math.trunc(limit))) as Array<{ metadataId: string }>
+    return rows
+      .map(row => this.metadataToolState(row.metadataId))
+      .filter((state): state is DevSpaceMetadataToolState => Boolean(state))
   }
 
   pollSince(sinceAtMs: number, limit = 250): DevSpaceAuditEvent[] {
