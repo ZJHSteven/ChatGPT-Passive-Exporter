@@ -5,6 +5,7 @@ import {
   buildTurnFinalNotificationPayload,
   buildUnboundWatchdogNotificationPayload,
   buildWatchdogDeferredNotificationPayload,
+  catalogProgressedAfterWatchdog,
   catalogStableOverlapTarget,
   classifyConversationBackendUrl,
   classifyCatalogAsyncStatus,
@@ -442,6 +443,17 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     })
     expect(shouldQueueWatchdogDiagnostic(rearmed, 100 * 60_000 + 45 * 60_000 - 1, 45 * 60_000)).toBe(false)
     expect(shouldQueueWatchdogDiagnostic(rearmed, 100 * 60_000 + 45 * 60_000, 45 * 60_000)).toBe(true)
+  })
+
+  test('catalog tombstone 跨 daemon 重启后只接受 watchdog 之后的服务端 progress', () => {
+    const tombstone = {
+      startType: 'catalog:async-active:gap-repair',
+      lastWatchdogAt: Date.parse('2026-10-08T01:30:00Z'),
+    }
+    expect(catalogProgressedAfterWatchdog(tombstone, Date.parse('2026-10-08T01:29:59Z') / 1000)).toBe(false)
+    expect(catalogProgressedAfterWatchdog(tombstone, Date.parse('2026-10-08T01:30:01Z') / 1000)).toBe(true)
+    expect(catalogProgressedAfterWatchdog(tombstone, Date.parse('2026-10-08T01:30:01Z'))).toBe(true)
+    expect(catalogProgressedAfterWatchdog({ ...tombstone, startType: 'devspace:first-tool' }, Date.now())).toBe(false)
   })
 
   test('DevSpace audit overlap 的 seen-id 只在 cursor 已越过查询下界后删除', () => {

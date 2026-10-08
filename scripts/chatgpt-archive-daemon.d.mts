@@ -60,6 +60,12 @@ export function rearmCatalogWatchdogOnProgress<T extends Record<string, unknown>
   now?: number,
 ): T
 
+/** 重启后用 catalog update_time 判断 persisted tombstone 之后是否发生过真实新进展。 */
+export function catalogProgressedAfterWatchdog(
+  active: Record<string, unknown> | null | undefined,
+  updateTime: unknown,
+): boolean
+
 /** DevSpace overlap 中仍可能被下一轮 poll 返回的 audit id 必须继续保留去重。 */
 export function shouldRetainSeenDevSpaceAudit(
   eventAt: unknown,

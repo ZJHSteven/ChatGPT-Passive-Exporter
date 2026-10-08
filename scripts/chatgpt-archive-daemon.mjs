@@ -394,6 +394,22 @@ export function rearmCatalogWatchdogOnProgress(active, now = Date.now()) {
 }
 
 /**
+ * daemon 重启会丢掉内存 catalogActive，但 persisted catalog watchdog 仍在。
+ * 如果服务端 update_time 已经晚于上一次 watchdog 诊断，说明重启期间确有新进展，应该把
+ * tombstone 重新武装；否则 unchanged active 继续保持已诊断状态。
+ */
+export function catalogProgressedAfterWatchdog(active, updateTime) {
+  if (!active || typeof active !== 'object') return false
+  if (!String(active.startType || '').startsWith('catalog:')) return false
+  const watchdogAt = Number(active.lastWatchdogAt)
+  let observed = Number(updateTime)
+  if (!Number.isFinite(watchdogAt) || watchdogAt <= 0 || !Number.isFinite(observed) || observed <= 0) return false
+  // ChatGPT catalog update_time 当前为 epoch seconds；兼容未来直接给 epoch ms。
+  if (observed < 100_000_000_000) observed *= 1000
+  return observed > watchdogAt
+}
+
+/**
  * DevSpace audit polling 会故意回看一个短 overlap，避免 cursor 边界丢事件。
  * 因此 seen-id 只能在对应事件已经落到“下一次查询下界”之外后删除；按 wall-clock 年龄
  * 清理会让长时间没有新 audit 时的最后一条记录永远留在 overlap 中，并在 seen-id 过期后
@@ -4584,7 +4600,7 @@ async function main() {
               current
               && nextUpdateTime !== null
               && String(nextUpdateTime) !== String(current.updateTime ?? ''),
-            )
+            ) || catalogProgressedAfterWatchdog(activeTurns.get(id), nextUpdateTime)
             catalogActive.set(id, {
               firstSeenAt: current?.firstSeenAt ?? now,
               lastSeenAt: now,
@@ -4653,8 +4669,11 @@ async function main() {
               })
             })
           }
-          else if (asyncState === 'complete' && wasCatalogActive) {
+          else if (asyncState === 'complete' && (wasCatalogActive || isCatalogLateActive(activeTurns.get(id)))) {
             // 低频 list 看到了 active→complete，而 WSS complete 没到：这是典型 gap repair。
+            // persisted catalog tombstone 可能跨 daemon 重启存在，此时内存 catalogActive 尚为空，
+            // 也必须按 complete 清掉，不能永久污染 queue.active/oldestActiveMs。
+            const hadCatalogGeneration = wasCatalogActive || isCatalogLateActive(activeTurns.get(id))
             catalogActive.delete(id)
             clearActiveTurn(id)
             stopCheckpointWatch(id, `reconcile:${reason}:async-complete`, now)
@@ -4664,7 +4683,7 @@ async function main() {
               asyncStatus: item.async_status ?? null,
               classifiedState: 'complete',
               reason,
-              wasCatalogActive: true,
+              wasCatalogActive: hadCatalogGeneration,
               reliableActiveAfterIds: reliableActiveIds(),
               catalogActiveAfterIds: catalogActive.keys(),
             })).catch(async (error) => {
