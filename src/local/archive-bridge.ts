@@ -106,6 +106,7 @@ function isAuthorized(req: IncomingMessage, expected: string): boolean {
 }
 
 function parseLimit(value: string | null, fallback = 50): number {
+  if (value === null || value.trim() === '') return fallback
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return fallback
   return Math.max(1, Math.min(200, Math.trunc(numeric)))
