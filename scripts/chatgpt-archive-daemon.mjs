@@ -4338,6 +4338,11 @@ async function main() {
     unboundDevSpaceTurns.delete(input.metadataId)
     if (!existing?.conversationId) devSpaceBindingsCreated += 1
     mirrorDevSpaceBinding(binding)
+    const recoveryMirrored = backfillDevSpaceRecoveryForBinding(
+      binding,
+      input.startAt,
+      input.observedAt,
+    )
     if (existing?.conversationId && existing.conversationId !== input.conversationId) {
       const staleConversationId = existing.conversationId
       const staleWatchdog = activeTurns.get(staleConversationId)
@@ -4364,6 +4369,7 @@ async function main() {
       confidence: input.confidence,
       lifecycleState,
       startAt: input.startAt,
+      recoveryMirrored,
     })
     if (lifecycleState === 'active') activateBoundDevSpaceTurn(binding, input.startAt)
     if (timedOutBeforeBinding) {
@@ -4427,6 +4433,7 @@ async function main() {
     refreshDevSpaceIdleCandidate(event.metadataId)
     dispatchDevSpaceConclusionNotification(event)
     if (binding.conversationId) {
+      persistDevSpaceRecoveryAudit(event, binding)
       activateBoundDevSpaceTurn(binding, event.startedAtMs)
       return
     }
