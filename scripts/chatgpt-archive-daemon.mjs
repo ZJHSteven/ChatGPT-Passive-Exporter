@@ -82,6 +82,8 @@ const DEFAULT_IMAGE_ASSET_DIR = path.join(PROJECT_ROOT, 'data', 'assets', 'chatg
 const DEVSPACE_POLL_OVERLAP_MS = 10_000
 const DEVSPACE_INITIAL_LOOKBACK_MS = 2 * 60_000
 const DEVSPACE_FALLBACK_POLL_MS = 60_000
+const DEVSPACE_IDLE_ALERT_THRESHOLDS_MS = [60_000, 180_000, 300_000]
+const DEVSPACE_IDLE_STARTUP_LOOKBACK_MS = 6 * 60_000
 const IMAGE_ASSET_HYDRATE_INTERVAL_MS = 30_000
 const SLEEPING_TARGET_RETRY_MS = 5 * 60_000
 const WINDOWS_HIDE_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-hide-window.ps1')
@@ -992,6 +994,49 @@ export function shouldNotifyIncidentTransition(before, after) {
   return before.incidentKind !== after.incidentKind
     || before.lifecycleClass !== after.lifecycleClass
     || before.terminalEvidence !== after.terminalEvidence
+}
+
+/**
+ * 计算本次主循环刚跨过了哪些 DevSpace idle 阈值。
+ *
+ * previousIdleMs 很重要：daemon 重启时会把它初始化为“当前已经 idle 的时长”，
+ * 因此不会把 1/3 分钟的历史提醒一起补轰炸；只有进程在线期间真正跨过阈值才提醒。
+ */
+export function crossedDevSpaceIdleThresholds(previousIdleMs, currentIdleMs) {
+  const before = Math.max(0, Number(previousIdleMs || 0))
+  const after = Math.max(0, Number(currentIdleMs || 0))
+  if (after < before) return []
+  return DEVSPACE_IDLE_ALERT_THRESHOLDS_MS.filter(threshold => before < threshold && after >= threshold)
+}
+
+/** 软 Bug 提醒的文案与正式 incident 明确分离；它不声称 turn 已结束。 */
+export function buildDevSpaceIdleNotificationPayload({
+  conversationId = null,
+  title = null,
+  metadataId,
+  thresholdMs,
+}) {
+  const minutes = Math.round(Number(thresholdMs) / 60_000)
+  const shortMetadata = String(metadataId || '').length > 20
+    ? `${String(metadataId).slice(0, 20)}…`
+    : String(metadataId || '<unknown>')
+  const subject = title
+    ? conversationId
+      ? `聊天：${title}`
+      : `聊天：以“${title}”为主题（尚未绑定 Conversation）`
+    : `metadata：${shortMetadata}（尚未绑定 Conversation）`
+  const payload = {
+    title: `DevSpace Bug · 工具静默 ${minutes} 分钟`,
+    body: [
+      subject,
+      `DevSpace 已连续约 ${minutes} 分钟没有新的工具调用，且当前没有正在运行的 DevSpace 工具。`,
+      '可能是本轮已经停止，也可能正在准备 Final、纯模型思考，或正在使用 DevSpace 之外的工具。',
+      '这是软提醒，不代表 turn 已结束；Archive 的正式 Watchdog / incident 判定不受影响。',
+    ].join('\n'),
+    group: 'DevSpace Bug',
+  }
+  if (conversationId) payload.url = `https://chatgpt.com/c/${conversationId}`
+  return payload
 }
 
 /**
