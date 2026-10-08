@@ -5,7 +5,8 @@ import {
   buildTurnFinalNotificationPayload,
   buildUnboundWatchdogNotificationPayload,
   buildWatchdogDeferredNotificationPayload,
-  catalogProgressedAfterWatchdog,
+  buildWatchdogDiagnosisNotificationPayload,
+  buildWatchdogTimeoutNotificationPayload,
   catalogStableOverlapTarget,
   classifyConversationBackendUrl,
   classifyCatalogAsyncStatus,
@@ -25,7 +26,7 @@ import {
   restoreCooldownUntil,
   sanitizeCapturedHeaders,
   passiveObservationMatchesReady,
-  rearmCatalogWatchdogOnProgress,
+  recordCatalogWatchdogProgress,
   shouldBlockGuardianConversationRest,
   shouldRebuildGuardianAfterHealthFailures,
   shouldRunDeferredGapRepair,
@@ -419,7 +420,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(incidentKindForTrigger('wss:conversation-turn-complete')).toBe('abnormal-terminal')
   })
 
-  test('catalog generation 已诊断后保持 tombstone；真实 progress 才从新时刻重新武装', () => {
+  test('catalog generation 已诊断后保持 tombstone；真实 progress 只能记证据，不能重新武装', () => {
     expect(shouldCloseWatchdogGenerationAfterSync('watchdog:catalog-active-timeout', {
       watchdogTurnChanged: false,
       watchdogTurnAlreadyTimedOut: false,
@@ -433,27 +434,12 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       startType: 'catalog:async-active:gap-repair',
       lastDiagnosticTurnKey: 'turn-a',
     }
-    const rearmed = rearmCatalogWatchdogOnProgress(diagnosed, 100 * 60_000)
-    expect(rearmed).toEqual({
+    const progressed = recordCatalogWatchdogProgress(diagnosed, 100 * 60_000)
+    expect(progressed).toEqual({
       ...diagnosed,
-      startedAt: 100 * 60_000,
       lastEventAt: 100 * 60_000,
-      lastWatchdogAt: null,
-      watchdogPendingAt: null,
     })
-    expect(shouldQueueWatchdogDiagnostic(rearmed, 100 * 60_000 + 45 * 60_000 - 1, 45 * 60_000)).toBe(false)
-    expect(shouldQueueWatchdogDiagnostic(rearmed, 100 * 60_000 + 45 * 60_000, 45 * 60_000)).toBe(true)
-  })
-
-  test('catalog tombstone 跨 daemon 重启后只接受 watchdog 之后的服务端 progress', () => {
-    const tombstone = {
-      startType: 'catalog:async-active:gap-repair',
-      lastWatchdogAt: Date.parse('2026-10-08T01:30:00Z'),
-    }
-    expect(catalogProgressedAfterWatchdog(tombstone, Date.parse('2026-10-08T01:29:59Z') / 1000)).toBe(false)
-    expect(catalogProgressedAfterWatchdog(tombstone, Date.parse('2026-10-08T01:30:01Z') / 1000)).toBe(true)
-    expect(catalogProgressedAfterWatchdog(tombstone, Date.parse('2026-10-08T01:30:01Z'))).toBe(true)
-    expect(catalogProgressedAfterWatchdog({ ...tombstone, startType: 'devspace:first-tool' }, Date.now())).toBe(false)
+    expect(shouldQueueWatchdogDiagnostic(progressed, 100 * 60_000 + 45 * 60_000, 45 * 60_000)).toBe(false)
   })
 
   test('DevSpace audit overlap 的 seen-id 只在 cursor 已越过查询下界后删除', () => {
@@ -465,7 +451,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shouldRetainSeenDevSpaceAudit(9_999, 20_000, 10_000)).toBe(false)
   })
 
-  test('watchdog 首次超时只调查一次；新进展后再次静默满窗口才重新武装', () => {
+  test('watchdog 首次超时只调查一次；同 turn 后续新进展也绝不重新武装', () => {
     const watchdogMs = 30 * 60_000
     const active = { startedAt: 0, lastEventAt: 0, lastWatchdogAt: null }
     expect(shouldQueueWatchdogDiagnostic(active, watchdogMs - 1, watchdogMs)).toBe(false)
@@ -478,7 +464,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
 
     const progressed = { ...diagnosed, lastEventAt: watchdogMs + 5_000 }
     expect(shouldQueueWatchdogDiagnostic(progressed, watchdogMs * 2, watchdogMs)).toBe(false)
-    expect(shouldQueueWatchdogDiagnostic(progressed, watchdogMs * 2 + 5_000, watchdogMs)).toBe(true)
+    expect(shouldQueueWatchdogDiagnostic(progressed, watchdogMs * 20, watchdogMs)).toBe(false)
   })
 
   test('DevSpace first-tool 新 turn 不能继承上一轮 binding 的 turn key', () => {
@@ -570,11 +556,11 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     })
   })
 
-  test('watchdog 诊断完成即关闭本 generation；只有刚发现且尚未超时的新 turn 保留', () => {
+  test('watchdog 诊断后保留 tombstone；明确 terminal/new turn 再由其它路径结束或替换', () => {
     expect(shouldCloseWatchdogGenerationAfterSync('watchdog:active-timeout', {
       watchdogTurnChanged: false,
       watchdogTurnAlreadyTimedOut: false,
-    })).toBe(true)
+    })).toBe(false)
     expect(shouldCloseWatchdogGenerationAfterSync('watchdog:catalog-active-timeout', {
       watchdogTurnChanged: true,
       watchdogTurnAlreadyTimedOut: false,
@@ -613,6 +599,28 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(payload.body).toContain('429 cooldown')
     expect(payload.body).toContain('46 分钟')
     expect(payload.url).toContain('/c/conversation-a')
+  })
+
+  test('Watchdog 到点通知与诊断结果通知是两条独立稳定文案', () => {
+    const timeout = buildWatchdogTimeoutNotificationPayload({
+      conversationId: 'conversation-a',
+      title: '长任务',
+      startedAt: 1_000,
+      now: 46 * 60_000 + 1_000,
+    })
+    expect(timeout.title).toBe('ChatGPT Watchdog 已超时')
+    expect(timeout.body).toContain('46 分钟')
+    expect(timeout.body).toContain('不会重新启动 Watchdog')
+
+    const diagnosis = buildWatchdogDiagnosisNotificationPayload({
+      conversationId: 'conversation-a',
+      title: '长任务',
+      diagnostic: { terminalEvidence: 'none', tailShape: 'tool-result-returned' },
+      incident: { reason: '最新工具结果已经回来，但尚无 final。' },
+    })
+    expect(diagnosis.title).toContain('诊断完成')
+    expect(diagnosis.body).toContain('最新工具结果已经回来')
+    expect(diagnosis.body).toContain('tool-result-returned')
   })
 
   test('未绑定 watchdog 到点也通知，但不猜 CID 或聊天名', () => {
