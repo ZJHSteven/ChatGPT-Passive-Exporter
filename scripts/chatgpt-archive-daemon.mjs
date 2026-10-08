@@ -2277,11 +2277,14 @@ async function main() {
       dirty: dirty.size,
       ready: ready.size,
       catalogActive: catalogActive.size,
-      active: activeTurns.size,
+      active: reliableActiveIds().length + catalogLateActiveIds().length,
       reliableActive: reliableActiveIds().length,
       catalogLateActive: catalogLateActiveIds().length,
-      oldestActiveMs: activeTurns.size > 0
-        ? Math.max(...[...activeTurns.values()].map(item => Date.now() - item.startedAt))
+      timedOutAwaitingDiagnosis: timedOutWatchdogIds().length,
+      oldestActiveMs: (reliableActiveIds().length + catalogLateActiveIds().length) > 0
+        ? Math.max(...[...activeTurns.values()]
+            .filter(item => !isWatchdogLatched(item))
+            .map(item => Date.now() - item.startedAt))
         : 0,
       activeTurns: [...activeTurns.entries()].map(([conversationId, active]) => ({
         conversationId,
