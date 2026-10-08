@@ -10,7 +10,7 @@
 6. 对 Conversation Body 拉取失败/处于 cooldown 的聊天，不需要再额外打 ChatGPT 网络请求：只要 DevSpace audit 已经绑定 conversation，overlay 会本地持续增长。异常终止且服务器永远没有对应节点时，provisional 继续保留作为 forensic recovery。
 7. 回归覆盖：start→call、finish→result、conclusion checkpoint、绑定晚到回填、canonical exact match supersede、无 match 永久保留、Bridge 输出 provenance、provisional 不影响 terminal/incident。
 
-状态：已确认现有 9 条 Conclusion 中约 3 条是真正阶段 checkpoint、其余多为下一步 action label；因此本轮把 Conclusion 当“可选 provisional assistant checkpoint”，不把它当已验证 canonical 事实，也不修改 MCP schema/强制每次工具填写。
+状态：主体已完成并部署 production。现有 9 条 Conclusion 中约 3 条是真正阶段 checkpoint、其余多为下一步 action label；因此 Conclusion 只作为“可选 provisional assistant checkpoint”，不当作已验证 canonical 事实，也未修改 MCP schema/强制每次工具填写。全量 25 files / 185 tests + 四套 build 通过；PID 65276 真机已自然写入 recovery overlay。canonical supersede 的代码/单测已完成，线上自然证据等待后续 first-party body 自然到达，不为 canary 主动增加 ChatGPT 请求。
 
 ## 2026-10-09 DevSpace Conclusion 即时 Bark ExecPlan
 
