@@ -383,34 +383,15 @@ export function shouldStartCatalogWatchdog({
  * 每次真实 progress 都从该观察时刻重新武装一个完整 watchdog 窗口，同时保留上次 body
  * 的 turn key，便于下次诊断识别“同 turn 恢复后又卡住”还是已经换到新 turn。
  */
-export function rearmCatalogWatchdogOnProgress(active, now = Date.now()) {
+export function recordCatalogWatchdogProgress(active, now = Date.now()) {
   if (!active || typeof active !== 'object') return active
   if (!String(active.startType || '').startsWith('catalog:')) return active
   const at = Number(now)
   if (!Number.isFinite(at) || at <= 0) return active
   return {
     ...active,
-    startedAt: at,
     lastEventAt: at,
-    lastWatchdogAt: null,
-    watchdogPendingAt: null,
   }
-}
-
-/**
- * daemon 重启会丢掉内存 catalogActive，但 persisted catalog watchdog 仍在。
- * 如果服务端 update_time 已经晚于上一次 watchdog 诊断，说明重启期间确有新进展，应该把
- * tombstone 重新武装；否则 unchanged active 继续保持已诊断状态。
- */
-export function catalogProgressedAfterWatchdog(active, updateTime) {
-  if (!active || typeof active !== 'object') return false
-  if (!String(active.startType || '').startsWith('catalog:')) return false
-  const watchdogAt = Number(active.lastWatchdogAt)
-  let observed = Number(updateTime)
-  if (!Number.isFinite(watchdogAt) || watchdogAt <= 0 || !Number.isFinite(observed) || observed <= 0) return false
-  // ChatGPT catalog update_time 当前为 epoch seconds；兼容未来直接给 epoch ms。
-  if (observed < 100_000_000_000) observed *= 1000
-  return observed > watchdogAt
 }
 
 /**
@@ -495,7 +476,6 @@ export function shouldSupersedeDevSpaceBinding(existing, candidate) {
  */
 export function shouldQueueWatchdogDiagnostic(active, now = Date.now(), watchdogMs = 45 * 60_000) {
   const startedAt = Number(active?.startedAt)
-  const lastEventAt = Number(active?.lastEventAt)
   const lastWatchdogAt = active?.lastWatchdogAt === null || active?.lastWatchdogAt === undefined
     ? null
     : Number(active.lastWatchdogAt)
@@ -503,9 +483,10 @@ export function shouldQueueWatchdogDiagnostic(active, now = Date.now(), watchdog
   const threshold = Math.max(0, Number(watchdogMs) || 0)
   if (!Number.isFinite(startedAt) || !Number.isFinite(current)) return false
   if (current - startedAt < threshold) return false
-  if (lastWatchdogAt === null || !Number.isFinite(lastWatchdogAt)) return true
-  if (!Number.isFinite(lastEventAt) || lastEventAt <= lastWatchdogAt) return false
-  return current - lastEventAt >= threshold
+  // 每个 logical turn 的 Watchdog 只允许跨过一次 45min 边界。
+  // 一旦 lastWatchdogAt 已存在，这一代就已经进入 timed-out / awaiting-diagnosis；
+  // 同 turn 后续任何 tool/WSS/catalog progress 只能补证据，不能重新武装第二个 Watchdog。
+  return lastWatchdogAt === null || !Number.isFinite(lastWatchdogAt)
 }
 
 /**
@@ -630,13 +611,10 @@ export function reconcileWatchdogDiagnosticTurn(active, diagnostic, now = Date.n
  */
 export function shouldCloseWatchdogGenerationAfterSync(trigger, result) {
   if (!String(trigger || '').startsWith('watchdog:')) return false
-  // catalog active-zombie 的 body 诊断只是“本 generation 已调查过”，不是新的 catalog
-  // terminal 证据。保留带 lastWatchdogAt 的 active_watchdog tombstone，后续同一个未变化的
-  // async-active observation 就不会从旧 firstSeenAt 重新建代；真实 update_time progress 会
-  // 通过 rearmCatalogWatchdogOnProgress() 开启下一代 45min 窗口。
-  if (String(trigger || '').startsWith('watchdog:catalog-active-timeout')) return false
-  if (!result?.watchdogTurnChanged) return true
-  return result?.watchdogTurnAlreadyTimedOut === true
+  // body 诊断完成后仍保留这一代 tombstone。只有明确 terminal 或明确发现新的 turn identity
+  // 才由其它路径清除/替换；这样旧 first-tool、catalog update_time、async progress 都没有
+  // “clear 后重新创建同一代”的机会。
+  return false
 }
 
 /** 把 daemon trigger 映射到持久化 incident kind。 */
