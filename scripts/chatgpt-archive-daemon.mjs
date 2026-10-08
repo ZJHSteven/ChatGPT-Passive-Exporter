@@ -764,11 +764,23 @@ export function buildWatchdogDiagnosisNotificationPayload({ conversationId, titl
 }
 
 /** DevSpace metadata 45 分钟后仍无法绑定 CID 时也必须显式告诉用户，禁止静默。 */
-export function buildUnboundWatchdogNotificationPayload({ title = null, startedAt, now = Date.now() }) {
+/**
+ * 给手机通知生成一个可口述、可检索的 metadata 短别名。
+ *
+ * 完整 metadata ID 很长，展示价值低；但完全隐藏又会让用户无法说“帮我查刚才那条通知”。
+ * 因此保留去掉 `v1/` 后的前 8 个字符，例如 `meta/31BvfaYk`。Archive/DevSpace 日志仍保存
+ * 完整 ID，收到这个短别名后可以用前缀唯一回查。
+ */
+export function shortDevSpaceMetadataAlias(metadataId) {
+  const normalized = String(metadataId || '').trim().replace(/^v1\//u, '')
+  return normalized ? `meta/${normalized.slice(0, 8)}` : 'meta/unknown'
+}
+
+export function buildUnboundWatchdogNotificationPayload({ metadataId, title = null, startedAt, now = Date.now() }) {
   const activeForMs = Math.max(0, Number(now) - Number(startedAt || now))
   const subject = typeof title === 'string' && title.trim()
     ? `聊天：以“${title.trim()}”为主题（尚未绑定 Conversation）`
-    : '聊天：未命名（尚未绑定 Conversation）'
+    : `聊天：未命名（${shortDevSpaceMetadataAlias(metadataId)}，尚未绑定 Conversation）`
   return {
     title: 'ChatGPT Watchdog 已超时 · 会话未绑定',
     body: [
@@ -1042,6 +1054,7 @@ export function crossedDevSpaceIdleThresholds(previousIdleMs, currentIdleMs) {
 export function buildDevSpaceIdleNotificationPayload({
   conversationId = null,
   title = null,
+  metadataId = null,
   thresholdMs,
 }) {
   const minutes = Math.round(Number(thresholdMs) / 60_000)
@@ -1049,7 +1062,7 @@ export function buildDevSpaceIdleNotificationPayload({
     ? conversationId
       ? `聊天：${title}`
       : `聊天：以“${title}”为主题（尚未绑定 Conversation）`
-    : '聊天：未命名（尚未绑定 Conversation）'
+    : `聊天：未命名（${shortDevSpaceMetadataAlias(metadataId)}，尚未绑定 Conversation）`
   const payload = {
     title: `DevSpace Bug · 工具静默 ${minutes} 分钟`,
     body: [
@@ -1091,6 +1104,7 @@ export function extractDevSpaceConclusion(argsJson) {
 export function buildDevSpaceConclusionNotificationPayload({
   conversationId = null,
   title = null,
+  metadataId = null,
   tool,
   conclusion,
 }) {
@@ -1098,7 +1112,7 @@ export function buildDevSpaceConclusionNotificationPayload({
     ? conversationId
       ? `聊天：${title}`
       : `聊天：以“${title}”为主题（尚未绑定 Conversation）`
-    : '聊天：未命名（尚未绑定 Conversation）'
+    : `聊天：未命名（${shortDevSpaceMetadataAlias(metadataId)}，尚未绑定 Conversation）`
   const payload = {
     title: 'DevSpace Conclusion · 阶段性结论',
     body: [
