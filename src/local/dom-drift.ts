@@ -301,7 +301,16 @@ export class ActorDomDriftLedger {
   pendingChanges(options: { unreportedOnly?: boolean } = {}): ActorDomPendingChange[] {
     const unreportedOnly = options.unreportedOnly ?? true
     return Object.values(this.state.variants)
-      .filter(variant => !variant.baseline && (!unreportedOnly || variant.lastReportedAt === null))
+      .filter(variant => {
+        if (variant.baseline || (unreportedOnly && variant.lastReportedAt !== null)) return false
+        // v2 之前已经落盘的一次性 sidebar 折叠/虚拟化变体，可能再也不会被 observe() 触发从而
+        // 原地升级 baseline。报告阶段同样应用严格的“安全骨架完全一致”规则，避免这种旧噪声
+        // 永久挂在 pending 并被日报反复当成 DOM 漂移。
+        const trustedSidebarOnly = Object.values(this.state.variants).some(candidate => (
+          candidate.baseline && sameStableAutomationSkeleton(candidate.shape, variant.shape)
+        ))
+        return !trustedSidebarOnly
+      })
       .map(variant => ({
         kind: 'dom' as const,
         signature: variant.signature,
