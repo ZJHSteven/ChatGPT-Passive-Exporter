@@ -1,3 +1,17 @@
+## 2026-10-09 DevSpace Recover provisional body overlay ExecPlan
+
+目标：当 ChatGPT Conversation Body 因 cooldown、429、CDP/REST 不可用或异常终止而暂时/永久缺失时，用 DevSpace 已落盘的 tool audit 生成**有来源标记的 provisional 节点**，让 Archive/Bridge 仍能展示真实工具轨迹；一旦 canonical body 后续出现相同 tool call，再自动以第一方节点覆盖/淘汰 provisional。MCP schema 本轮不改。
+
+1. 新增 Archive 本地 `devspace_recovery_nodes`（或等价）持久表，保存 metadata/audit/conversation、tool call/result、可选 conclusion、时间、状态与 superseded 信息；绝不把合成节点伪装成 canonical `messages` 原始行。
+2. DevSpace bridge 扩展只读 recovery audit：读取 args/result/error/start/finish；已有 conversation binding 时，daemon 在 audit start/finish 后机会式刷新该 audit 的 provisional 节点。绑定晚到时补当前 turn/局部窗口，不做全库扫描。
+3. 一个 audit 最多生成两类可见节点：tool-call/result 节点；以及非空 conclusion 的 assistant checkpoint。Conclusion 明确标为 `provisional/recovery-source=devspace-conclusion`，不宣称是模型最终答复。
+4. canonical body 每次 merge 后，用现有 DevSpace `tool + canonical args + 时间容差` 语义匹配 recovery tool-call；匹配到的 provisional tool/result 标记 superseded。与该 audit 绑定的 conclusion 也一并 supersede，避免真实 body 到达后重复显示。
+5. `ArchiveDb.getMessages()` / Bridge messages API 叠加仍 active 的 provisional rows，并附 `provisional=true`、`recoverySource`、`auditId`、`superseded=false` 等字段。canonical message 始终优先；数据库原始 `messages`、mapping、terminal/incident 判定不读取 provisional，因此不会影响 Watchdog/终态分类。
+6. 对 Conversation Body 拉取失败/处于 cooldown 的聊天，不需要再额外打 ChatGPT 网络请求：只要 DevSpace audit 已经绑定 conversation，overlay 会本地持续增长。异常终止且服务器永远没有对应节点时，provisional 继续保留作为 forensic recovery。
+7. 回归覆盖：start→call、finish→result、conclusion checkpoint、绑定晚到回填、canonical exact match supersede、无 match 永久保留、Bridge 输出 provenance、provisional 不影响 terminal/incident。
+
+状态：已确认现有 9 条 Conclusion 中约 3 条是真正阶段 checkpoint、其余多为下一步 action label；因此本轮把 Conclusion 当“可选 provisional assistant checkpoint”，不把它当已验证 canonical 事实，也不修改 MCP schema/强制每次工具填写。
+
 ## 2026-10-09 DevSpace Conclusion 即时 Bark ExecPlan
 
 目标：把 DevSpace 工具参数中的非空 `conclusion` 作为“阶段性结论”即时推送到手机，帮助用户在长工具链中及时掌握模型当前进展；该通知只做旁路可观测性，不改变 Watchdog / idle / turn 终态状态机。
