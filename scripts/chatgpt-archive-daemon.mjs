@@ -6212,6 +6212,9 @@ async function main() {
     // finish 与 start 使用同一 auditId；即使增量 poll 因 seen-id 去重不再进入 handler，
     // 也必须按 signal.metadataId 重读当前 SQLite 状态，才能即时开始 idle 计时。
     refreshDevSpaceIdleCandidate(signal.metadataId)
+    // recovery overlay 同样需要在 finish 门铃时按 auditId 重读最终 result/error；否则 start 阶段
+    // 已经见过该 id 后，seen-id 去重会让 provisional tool-result 永远停留在 running。
+    refreshDevSpaceRecoveryAudit(signal.auditId)
   })
   await log('DevSpace audit wake listener ready', {
     listening: devSpaceWakeListening,
