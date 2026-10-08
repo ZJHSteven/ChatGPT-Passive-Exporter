@@ -9,6 +9,8 @@
 - daemon 重启只恢复最近 6 分钟有 start/finish 活动的 metadata，并把 `lastCheckedIdleMs` 初始化为当前年龄，因此不会一次性补发已经错过的历史 1/3 分钟提醒。
 - 隔离 feature 基线已通过 TypeScript、定向 4 files / 49 tests、全量 25 files / 180 tests 与完整 build。当前-main 合并后仍需重新跑同等级回归后才能重载生产。
 - current production main 集成分支最终验证完成：TypeScript PASS；DevSpace idle 定向 4 files / 49 tests PASS；全量 25 files / 180 tests PASS；Chrome/Edge/Firefox/Userscript 完整 build PASS。最新 Watchdog latch/two-stage notification 与本功能在同一最终代码上共同通过回归，具备 production fast-forward + daemon 正规重载条件。
+- production daemon 已实际运行集成后的静默通知逻辑，无需再次重载：当前 PID=32892，state 已直接暴露 `devspace.idleCandidates=2 / idleNotificationsQueued=3`，WSS activeSockets=3、Bridge listening=true、checkpoint polling=false、passive HTTP429=0、lastError=null。
+- 真机通知链已经出站成功：Archive 日志至少记录三条 `DevSpace idle bug notification sent`，Bark provider HTTP 200；既包含已绑定 conversation（1 分钟阈值约 61s）也包含未绑定 metadata（约 62s）。这证明 DevSpace finish 门铃 -> SQLite idle snapshot -> 1/3/5 threshold -> 独立 `DevSpace Bug` Bark 分组的 production 路径已经真实生效。
 
 ## 2026-10-08 Watchdog 单向闸门 / 通知完整性 / 429 责任重算
 
