@@ -746,7 +746,9 @@ export class ProtocolDriftLedger {
     }
 
     const baselineStatus = unionLists(refs.map(ref => [ref.shape.statusClass]))
-    const baselineContentTypes = unionLists(refs.map(ref => ref.shape.contentType ? [ref.shape.contentType] : []))
+    const baselineContentTypes = sortedUnique(refs
+      .map(ref => ref.shape.contentType)
+      .filter((value): value is string => Boolean(value)))
     const statusChanged = !baselineStatus.includes(shape.statusClass)
     const contentTypeChanged = Boolean(shape.contentType) && baselineContentTypes.length > 0 && !baselineContentTypes.includes(shape.contentType)
     if (statusChanged) details.push(`状态类别变为 ${shape.statusClass}（baseline: ${baselineStatus.join('/') || 'unknown'}）`)
