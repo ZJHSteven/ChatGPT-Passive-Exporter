@@ -1,3 +1,14 @@
+## 2026-10-09 DevSpace Conclusion 即时 Bark / schema 可见性统计
+
+- Conclusion 使用率统计已改为“**确定看到新 MCP schema**”的严格口径：只纳入真实 ChatGPT metadata 中实际出现过 `init(title=...)` 的会话，并且只从该次 init 之后开始计 `exec_command / write_stdin / read`。这样会自动剔除升级前已存在、Host 仍缓存旧 schema 的长 conversation，也剔除测试 metadata 与人工 DB 补 title。
+- 严格样本目前只有 2 个真实 metadata、21 次可统计工具调用：20 次 `exec_command` + 1 次 `write_stdin`；只有 1 次带非空 `conclusion`，使用率约 4.8%。分会话为 `v1/3oWe...` 1/2，`v1/4VU...` 0/19。样本仍很小，但已经足以确认“即使模型确实看得到参数，Conclusion 也尚未形成稳定使用习惯”。
+- 旧口径的 1216 次上线后工具调用被判定为严重受 schema-cache 污染，不再用来评价模型是否愿意填写 Conclusion。生产历史总共只观察到 9 次非空 Conclusion、3 个 metadata，其中大量来自升级前已存在会话，不能与严格样本混算。
+- 关于“Conclusion 是否导致工具段之间的可见 assistant commentary 减少”：当前严格样本不足以做因果判断。`Chrome窗口位置异常` 是确定新-schema、19 次工具调用、0 Conclusion，但仍有 3 条可见 commentary；另一个新-schema metadata 只有 2 次可统计调用。现阶段没有证据支持“模型把原本 commentary 全搬进 conclusion”的假设。
+- Archive 已加入 Conclusion 即时通知：新 `tool_audit` 的 `args_json.conclusion` 非空时，立即走现有 detached/persistent Bark 分支；notification key=`devspace-conclusion:<auditId>`，因此 start/finish UDP、60s durable catch-up、daemon 重启都不会重复成功通知。无 Conclusion 时只做一次本地 JSON 空值判断，不增加网络请求。
+- Conclusion Bark 使用独立 group=`DevSpace Conclusion`，正文包含可读聊天身份、工具名和阶段性结论；已绑定 conversation 时用 canonical title + 聊天 URL，未绑定但有 `init.title` 时用 title，再无 title 时只展示可口述短别名 `meta/XXXXXXXX`。完整 metadata ID 只保留在 SQLite / daemon 日志中。
+- 同一短别名策略同步用于无 title 的 DevSpace idle / unbound Watchdog 手机通知；45min unbound Watchdog 会优先读取 `init.title`，只有 legacy 无 title 才显示 `meta/XXXXXXXX`，不再把整串 metadata ID 塞进通知。
+- 回归当前已通过：`node --check` PASS、TypeScript PASS、Conclusion/DevSpace 定向 45/45 tests PASS、全量 25 files / 183 tests PASS。尚待完成 production build + Archive daemon 重载/真机通知 canary。
+
 ## 2026-10-08 DevSpace 1/3/5 分钟工具静默 Bug 通知
 
 - 本功能现已重新集成到包含最新 Watchdog 单向闸门 / two-stage notification 的 production main 基线上；Git 三方合并中 daemon、类型声明与测试均自动合并，仅 PLANS/PROGRESS 顶部文档发生冲突并按“保留 production 内容 + 追加本功能”处理。
