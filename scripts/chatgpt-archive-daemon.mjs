@@ -2550,6 +2550,12 @@ async function main() {
   const dispatchWatchdogTimeoutNotification = (conversationId, active, now = Date.now()) => {
     if (!notificationConfig || !conversationId || !active) return false
     const startedAt = Number(active.startedAt || now)
+    // 兼容 2026-10-07~10-08 已经发出的旧 provisional 通知：它虽然标题叫
+    // `watchdog-deferred-cooldown`，语义上已经完成“第一阶段：Watchdog 到点”的告知。
+    // 升级两阶段通知后若直接换成新 key，会在 daemon 重启时把同一 generation 再提醒一次。
+    // 因此旧 ledger 已成功落盘时视为第一阶段已经送达；只对未来新 generation 使用新 key。
+    const legacyKey = `watchdog-deferred-cooldown:${conversationId}:${startedAt}`
+    if (archive.hasTurnNotification(legacyKey)) return false
     const turnKey = typeof active.lastDiagnosticTurnKey === 'string' && active.lastDiagnosticTurnKey
       ? active.lastDiagnosticTurnKey
       : `generation:${startedAt}`
