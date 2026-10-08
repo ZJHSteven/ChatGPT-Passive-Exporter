@@ -372,6 +372,43 @@ export function shouldStartCatalogWatchdog({
 }
 
 /**
+ * catalog update_time 前进代表服务端确实出现了新进展。
+ *
+ * 对已经超时诊断过的 catalog generation，不能继续沿用最早 firstSeenAt；否则下一次
+ * 诊断文案会显示数百分钟的陈旧 age，而且首次 watchdog 甚至可能在刚发生进展后立刻触发。
+ * 每次真实 progress 都从该观察时刻重新武装一个完整 watchdog 窗口，同时保留上次 body
+ * 的 turn key，便于下次诊断识别“同 turn 恢复后又卡住”还是已经换到新 turn。
+ */
+export function rearmCatalogWatchdogOnProgress(active, now = Date.now()) {
+  if (!active || typeof active !== 'object') return active
+  if (!String(active.startType || '').startsWith('catalog:')) return active
+  const at = Number(now)
+  if (!Number.isFinite(at) || at <= 0) return active
+  return {
+    ...active,
+    startedAt: at,
+    lastEventAt: at,
+    lastWatchdogAt: null,
+    watchdogPendingAt: null,
+  }
+}
+
+/**
+ * DevSpace audit polling 会故意回看一个短 overlap，避免 cursor 边界丢事件。
+ * 因此 seen-id 只能在对应事件已经落到“下一次查询下界”之外后删除；按 wall-clock 年龄
+ * 清理会让长时间没有新 audit 时的最后一条记录永远留在 overlap 中，并在 seen-id 过期后
+ * 被每轮重新当成新 first-tool 处理。
+ */
+export function shouldRetainSeenDevSpaceAudit(eventAt, pollSinceAt, overlapMs = 10_000) {
+  const event = Number(eventAt)
+  const cursor = Number(pollSinceAt)
+  const overlap = Math.max(0, Number(overlapMs) || 0)
+  if (!Number.isFinite(event) || !Number.isFinite(cursor)) return false
+  const replayFloor = Math.max(0, cursor - overlap)
+  return event >= replayFloor
+}
+
+/**
  * 判断一个 CDP target 是否应该挂“普通页面被动 observer”。
  *
  * 早期实现为了避免 Guardian 与普通页职责混在一起，显式排除了 guardian targetId。
@@ -564,13 +601,20 @@ export function reconcileWatchdogDiagnosticTurn(active, diagnostic, now = Date.n
 /**
  * 一次 watchdog 诊断成功后，这个 generation 是否应该退出 activeTurns。
  *
- * 项目约定 watchdog 是“本轮硬超时并进入异常诊断”的终点，不是 zombie 的周期轮询器：
- * - 诊断的就是当前 generation：完成后关闭；
+ * reliable generation 仍以“一次硬超时诊断”为终点；catalog late-start 则必须留下已诊断
+ * tombstone，否则 unchanged async-active 会在下一次 gap-repair 从旧 firstSeenAt 原地复活：
+ * - reliable：诊断的就是当前 generation，完成后关闭；
+ * - catalog：body 无 terminal 时保留 lastWatchdogAt，等待真正 progress/complete；
  * - 诊断时才发现已经换到新 turn，且新 turn 尚未到 45min：保留新 generation；
  * - 新 turn 自己其实也早已超过 45min：本次诊断直接覆盖它，完成后也关闭。
  */
 export function shouldCloseWatchdogGenerationAfterSync(trigger, result) {
   if (!String(trigger || '').startsWith('watchdog:')) return false
+  // catalog active-zombie 的 body 诊断只是“本 generation 已调查过”，不是新的 catalog
+  // terminal 证据。保留带 lastWatchdogAt 的 active_watchdog tombstone，后续同一个未变化的
+  // async-active observation 就不会从旧 firstSeenAt 重新建代；真实 update_time progress 会
+  // 通过 rearmCatalogWatchdogOnProgress() 开启下一代 45min 窗口。
+  if (String(trigger || '').startsWith('watchdog:catalog-active-timeout')) return false
   if (!result?.watchdogTurnChanged) return true
   return result?.watchdogTurnAlreadyTimedOut === true
 }
@@ -1597,9 +1641,10 @@ async function main() {
   let passiveBodyPagesReused = 0
   let passiveCatalogPagesReused = 0
   let guardianConversationRestBlocked = false
-  // catalogActive 只表示“低频 conversation list 曾看见 async_status=3/5”。
-  // 它不是可靠 turn start，因此绝不能进入 watchdog 的 activeTurns.startedAt。
-  // 这个集合只用于 catalog 自己识别 active→complete 的 gap repair。
+  // catalogActive 只表示“低频 conversation list 曾看见 async_status=3/5”。它不是可靠
+  // turn start；若没有更强证据，activeTurns 可以用“首次观察时刻”作为保守 late-start 下界，
+  // 但必须以 catalog:* 标记，并在一次诊断后保留 tombstone，不能把它伪装成 reliable start。
+  // 这个集合另外用于识别 active→complete 与 update_time progress。
   const catalogActive = new Map()
   const activeTurns = new Map()
   const persistActiveTurn = (conversationId, active) => {
@@ -3627,9 +3672,10 @@ async function main() {
       }
       devSpaceLastPollAt = Date.now()
       devSpaceLastError = null
-      const pruneBefore = Date.now() - 2 * 3600_000
       for (const [auditId, at] of seenDevSpaceAuditIds) {
-        if (at < pruneBefore) seenDevSpaceAuditIds.delete(auditId)
+        if (!shouldRetainSeenDevSpaceAudit(at, devSpacePollSinceAt, DEVSPACE_POLL_OVERLAP_MS)) {
+          seenDevSpaceAuditIds.delete(auditId)
+        }
       }
     }
     catch (error) {
@@ -4579,10 +4625,12 @@ async function main() {
             else if (catalogProgressed) {
               const active = activeTurns.get(id)
               // reconciliation 再次看见同一个 async_status=3 不是“新进展”。只有服务端
-              // update_time 真正变化才推进 lastEventAt，从而重新武装下一次 watchdog。
+              // update_time 真正变化才重新武装下一次 watchdog，并从 progress 时刻重新计时；
+              // 不能继续沿用上一 generation 的陈旧 firstSeenAt。
               if (active && String(active.startType || '').startsWith('catalog:')) {
-                active.lastEventAt = now
-                persistActiveTurn(id, active)
+                const rearmed = rearmCatalogWatchdogOnProgress(active, now)
+                activeTurns.set(id, rearmed)
+                persistActiveTurn(id, rearmed)
               }
             }
             // running 先标 stale；真正 body 诊断仍等 complete 或 watchdog 超时，避免正常长任务

@@ -24,10 +24,12 @@ import {
   restoreCooldownUntil,
   sanitizeCapturedHeaders,
   passiveObservationMatchesReady,
+  rearmCatalogWatchdogOnProgress,
   shouldBlockGuardianConversationRest,
   shouldRebuildGuardianAfterHealthFailures,
   shouldRunDeferredGapRepair,
   shouldQueueWatchdogDiagnostic,
+  shouldRetainSeenDevSpaceAudit,
   shouldCloseWatchdogGenerationAfterSync,
   shouldRepairConversationTransport,
   shouldRetireWssSocketsForFrameNavigation,
@@ -416,6 +418,41 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(incidentKindForTrigger('wss:conversation-turn-complete')).toBe('abnormal-terminal')
   })
 
+  test('catalog generation 已诊断后保持 tombstone；真实 progress 才从新时刻重新武装', () => {
+    expect(shouldCloseWatchdogGenerationAfterSync('watchdog:catalog-active-timeout', {
+      watchdogTurnChanged: false,
+      watchdogTurnAlreadyTimedOut: false,
+    })).toBe(false)
+
+    const diagnosed = {
+      startedAt: 1_000,
+      lastEventAt: 1_000,
+      lastWatchdogAt: 46 * 60_000,
+      watchdogPendingAt: null,
+      startType: 'catalog:async-active:gap-repair',
+      lastDiagnosticTurnKey: 'turn-a',
+    }
+    const rearmed = rearmCatalogWatchdogOnProgress(diagnosed, 100 * 60_000)
+    expect(rearmed).toEqual({
+      ...diagnosed,
+      startedAt: 100 * 60_000,
+      lastEventAt: 100 * 60_000,
+      lastWatchdogAt: null,
+      watchdogPendingAt: null,
+    })
+    expect(shouldQueueWatchdogDiagnostic(rearmed, 100 * 60_000 + 45 * 60_000 - 1, 45 * 60_000)).toBe(false)
+    expect(shouldQueueWatchdogDiagnostic(rearmed, 100 * 60_000 + 45 * 60_000, 45 * 60_000)).toBe(true)
+  })
+
+  test('DevSpace audit overlap 的 seen-id 只在 cursor 已越过查询下界后删除', () => {
+    // 即使这条事件现实中已经过去很多小时，只要 cursor 仍停在它附近，下一轮 overlap
+    // 仍会把它查出来，所以必须继续保留去重。
+    expect(shouldRetainSeenDevSpaceAudit(1_000, 1_001, 10_000)).toBe(true)
+    expect(shouldRetainSeenDevSpaceAudit(10_000, 20_000, 10_000)).toBe(true)
+    // cursor 前进到查询下界已经严格越过该事件后，才可安全释放 seen-id。
+    expect(shouldRetainSeenDevSpaceAudit(9_999, 20_000, 10_000)).toBe(false)
+  })
+
   test('watchdog 首次超时只调查一次；新进展后再次静默满窗口才重新武装', () => {
     const watchdogMs = 30 * 60_000
     const active = { startedAt: 0, lastEventAt: 0, lastWatchdogAt: null }
@@ -533,7 +570,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shouldCloseWatchdogGenerationAfterSync('watchdog:catalog-active-timeout', {
       watchdogTurnChanged: true,
       watchdogTurnAlreadyTimedOut: true,
-    })).toBe(true)
+    })).toBe(false)
     expect(shouldCloseWatchdogGenerationAfterSync('wss:conversation-turn-complete', {
       watchdogTurnChanged: false,
       watchdogTurnAlreadyTimedOut: true,

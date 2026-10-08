@@ -1,3 +1,13 @@
+## 2026-10-08 Watchdog 468min / overnight 429 根因与修复
+
+- `468 分钟` 不是 Watchdog 阈值被改大；生产阈值仍是 45min。09:30 北京时间一次 gap-repair 把三个已诊断过但 catalog 仍为 `async_status=active` 的 conversation 从原始 `firstSeenAt≈01:41:58` 重新建成 watchdog，故到点文案显示的是陈旧 generation 的实际年龄 `≈468min`，并立即再次进入 timeout。根因是 watchdog body 诊断清了 `activeTurns`，却没有为 unchanged catalog generation 留下“已诊断”状态。
+- 同时发现第二条独立复活链：DevSpace poll 有 10s overlap，但 `seenDevSpaceAuditIds` 过去按 wall-clock 2h 清理。若长时间没有新 audit，cursor 停在最后一条事件附近；2h 后该 id 被忘记，而旧事件仍处于 overlap 查询窗，于是每轮都被重新当成 first-tool。`6ac6653c-...` 因此把 01:22:28 的同一 startedAt 重放数小时，形成“diagnostic closed -> 下一轮复活 -> 再拉 body”的循环。
+- 睡眠时段并非零请求。用户约 00:30 后无人工操作，但同 metadata 的真实 DevSpace 工具链仍持续到约 01:22；其后 stale-audit 回放继续制造 Archive watchdog body sync。独立 429 波次在 05:09、07:26、09:30 北京时间再次出现；05:09/07:26 均紧邻 stale watchdog 成功 body sync 后由 native page 请求命中 429，09:30 则同时抓到明确的 `active body HTTP 429`，证明 Archive 自己的 gap-repair body GET 也撞到了限流。
+- cooldown pending 本身没有失效：09:30:52 进入 1h cooldown 后三个 watchdog 写入 deferred pending；10:30:52 cooldown 到期后 daemon 自动恢复 body，同一 generation 随后成功诊断并关闭。旧实现紧接着又被 stale DevSpace/catalog 证据复活，才造成“好像 cooldown 后没重试”的假象。
+- 修复一：DevSpace seen-id 改为按“下一轮 poll 的 replay floor”生命周期清理，只要事件仍可能从 overlap 返回就持续去重，不再按绝对 2h 年龄遗忘。
+- 修复二：`watchdog:catalog-active-timeout` 成功诊断后保留带 `lastWatchdogAt` 的 active-watchdog tombstone；unchanged catalog active 不再原地重建。只有 `update_time` 真正前进时，才从 progress 观察时刻重置 `startedAt/lastEventAt` 并重新武装完整 45min 窗口。
+- 验证：`node --check` PASS，TypeScript typecheck PASS，daemon 定向 37/37 tests，全量 25 files / 172 tests PASS。production daemon 重载为 PID 41224；WSS 3 sockets、Bridge 127.0.0.1:47832 正常、checkpoint polling=false；重启没有绕过限流，原 cooldown `2026-10-08 12:41:50 北京时间` 与 `cooldownRecoveryPending=true` 被完整继承。重载后未再出现陈旧 `1791393748804` / `179139491819x` startedAt 回放。
+
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
 - 2026-10-07 北京时间展示已上线：通知层新增 `formatBeijingTime()`，429 cooldown 与 Watchdog deferred 的起点/解除时间直接显示 `Asia/Shanghai`；底层 SQLite/state 仍保留 epoch/UTC。全量 24 files/164 tests 通过，production daemon PID 59024 已部署并继承现有 cooldown。当前 payload 只读验证：epoch `1791377301865` 显示为 `2026-10-07 20:48:21 北京时间`。

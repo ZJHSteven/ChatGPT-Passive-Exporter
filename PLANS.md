@@ -9,10 +9,10 @@
 
 ## 2026-10-08 Watchdog 468min / overnight 429 回放修复 ExecPlan
 
-- [in_progress] 修复 DevSpace audit overlap 去重：`seenDevSpaceAuditIds` 只能在事件已经落到下一次 `pollSince()` 查询下界之外后删除，不能按事件绝对年龄 2h 清理；否则长时间没有新 audit 时，最后一条旧 first-tool 会被 overlap 每轮重放并复活已关闭 watchdog。
-- [in_progress] 修复 catalog active generation 复活：catalog watchdog 完成一次 body 诊断且 body 仍无 terminal 时，保留“本 generation 已诊断”的持久 active_watchdog 状态；同一未变化的 `async_status=active` 不得在后续 gap-repair 从旧 `firstSeenAt` 重新建代。只有 catalog update_time / strong progress 前进后才重新武装 45min 窗口。
-- [pending] 增加回归：旧 audit 即使已经远超 2h，只要仍位于 overlap 查询窗口就必须继续去重；catalog zombie 诊断后不重复拉 body，真实 progress 后重新从 progress 时刻计 45min。
-- [pending] 跑 node syntax、TypeScript typecheck、Watchdog/daemon 定向测试与全量测试；随后仅重载 Archive daemon，验证生产日志不再每分钟复活同一 `startedAt`，且 cooldown pending 在解除后仍能自动 body retry。
+- [done] 修复 DevSpace audit overlap 去重：`seenDevSpaceAuditIds` 只能在事件已经落到下一次 `pollSince()` 查询下界之外后删除，不能按事件绝对年龄 2h 清理；否则长时间没有新 audit 时，最后一条旧 first-tool 会被 overlap 每轮重放并复活已关闭 watchdog。
+- [done] 修复 catalog active generation 复活：catalog watchdog 完成一次 body 诊断且 body 仍无 terminal 时，保留“本 generation 已诊断”的持久 active_watchdog tombstone；同一未变化的 `async_status=active` 不得在后续 gap-repair 从旧 `firstSeenAt` 重新建代。只有 catalog update_time / strong progress 前进后才重新武装 45min 窗口。
+- [done] 增加回归：旧 audit 即使已经远超 2h，只要仍位于 overlap 查询窗口就必须继续去重；catalog zombie 诊断后不重复拉 body，真实 progress 后重新从 progress 时刻计 45min。
+- [done] `node --check`、TypeScript typecheck、daemon 定向 37 tests 与全量 25 files / 172 tests 全通过；production daemon 已重载为 PID 41224，WSS/Bridge 正常、checkpoint 仍关闭，并原样继承 12:41:50 北京时间的 429 cooldown/pending。重载后的新日志未再出现昨夜 `1791393748804 / 179139491819x` 两组陈旧 startedAt 回放。
 
 ## 2026-10-07 北京时间通知 / 429 波次复盘 ExecPlan
 

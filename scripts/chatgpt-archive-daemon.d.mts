@@ -54,6 +54,19 @@ export function shouldStartCatalogWatchdog(input?: {
   archivedTerminalState?: unknown
 }): boolean
 
+/** catalog 服务端 update_time 真正前进后，从 progress 时刻重新武装 watchdog。 */
+export function rearmCatalogWatchdogOnProgress<T extends Record<string, unknown> | null | undefined>(
+  active: T,
+  now?: number,
+): T
+
+/** DevSpace overlap 中仍可能被下一轮 poll 返回的 audit id 必须继续保留去重。 */
+export function shouldRetainSeenDevSpaceAudit(
+  eventAt: unknown,
+  pollSinceAt: unknown,
+  overlapMs?: number,
+): boolean
+
 /** 根据 active 的 startType 选择普通 watchdog 或 catalog active-zombie watchdog。 */
 export function watchdogTriggerForStartType(startType: unknown): 'watchdog:catalog-active-timeout' | 'watchdog:active-timeout'
 
