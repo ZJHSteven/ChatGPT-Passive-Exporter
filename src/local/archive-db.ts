@@ -156,6 +156,31 @@ export interface DevSpaceMetadataBindingRow {
   lifecycleState: 'unbound' | 'active' | 'closed'
 }
 
+/**
+ * DevSpace tool_audit 的本地 recovery 镜像。
+ *
+ * 这些记录只用于 Conversation Body 暂不可得时的 provisional 展示；它们不是第一方 ChatGPT
+ * message，也绝不参与 terminal / incident / mapping 判定。canonical body 后续出现相同 tool+args
+ * 时会把对应 audit 标记 superseded，而不是删除取证事实。
+ */
+export interface DevSpaceRecoveryAuditRow {
+  auditId: string
+  conversationId: string
+  metadataId: string
+  tool: string
+  toolFingerprint: string
+  argsJson: string
+  resultJson: string | null
+  error: string | null
+  conclusion: string | null
+  startedAt: number
+  finishedAt: number | null
+  firstSeenAt: number
+  lastSeenAt: number
+  supersededAt: number | null
+  supersededByMessageId: string | null
+}
+
 /** daemon 重启后需要原样恢复的 conversation watchdog 计时状态。 */
 export interface ActiveWatchdogStateRow {
   conversationId: string
@@ -610,6 +635,32 @@ export class ChatArchiveDb {
 
       CREATE INDEX IF NOT EXISTS devspace_metadata_bindings_unbound
         ON devspace_metadata_bindings(lifecycle_state, last_seen_at DESC);
+
+      -- DevSpace Recover overlay：只保存本地审计事实，不冒充 first-party messages。
+      -- canonical body 后续出现相同 tool+args 时只打 superseded 标记，保留原始取证链。
+      CREATE TABLE IF NOT EXISTS devspace_recovery_audits (
+        audit_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        metadata_id TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        tool_fingerprint TEXT NOT NULL,
+        args_json TEXT NOT NULL,
+        result_json TEXT,
+        error TEXT,
+        conclusion TEXT,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        superseded_at INTEGER,
+        superseded_by_message_id TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS devspace_recovery_audits_conversation
+        ON devspace_recovery_audits(conversation_id, superseded_at, started_at, audit_id);
+
+      CREATE INDEX IF NOT EXISTS devspace_recovery_audits_fingerprint
+        ON devspace_recovery_audits(conversation_id, tool_fingerprint, superseded_at, started_at);
 
       -- Watchdog 属于 conversation/turn 生命周期，不属于某一个 metadata。
       -- 同一 conversation 可能先后出现多个 openai/session，因此把 active timer 独立持久化。
@@ -3047,6 +3098,224 @@ export class ChatArchiveDb {
       WHERE conversation_id = ?
       ORDER BY bound_at ASC, metadata_id ASC
     `).all(conversationId) as unknown as DevSpaceMetadataBindingRow[]
+  }
+
+  /** 把 DevSpace audit 的当前最新状态幂等镜像到 recovery overlay。 */
+  upsertDevSpaceRecoveryAudit(input: {
+    auditId: string
+    conversationId: string
+    metadataId: string
+    tool: string
+    toolFingerprint: string
+    argsJson: string
+    resultJson?: string | null
+    error?: string | null
+    conclusion?: string | null
+    startedAt: number
+    finishedAt?: number | null
+    observedAt?: number
+  }): void {
+    const observedAt = Math.max(0, Math.trunc(input.observedAt ?? Date.now()))
+    const startedAt = Math.max(0, Math.trunc(input.startedAt))
+    const finishedAt = input.finishedAt === null || input.finishedAt === undefined
+      ? null
+      : Math.max(startedAt, Math.trunc(input.finishedAt))
+    this.db.prepare(`
+      INSERT INTO devspace_recovery_audits (
+        audit_id, conversation_id, metadata_id, tool, tool_fingerprint, args_json,
+        result_json, error, conclusion, started_at, finished_at,
+        first_seen_at, last_seen_at, superseded_at, superseded_by_message_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+      ON CONFLICT(audit_id) DO UPDATE SET
+        conversation_id=excluded.conversation_id,
+        metadata_id=excluded.metadata_id,
+        tool=excluded.tool,
+        tool_fingerprint=excluded.tool_fingerprint,
+        args_json=excluded.args_json,
+        result_json=COALESCE(excluded.result_json, devspace_recovery_audits.result_json),
+        error=COALESCE(excluded.error, devspace_recovery_audits.error),
+        conclusion=COALESCE(excluded.conclusion, devspace_recovery_audits.conclusion),
+        started_at=excluded.started_at,
+        finished_at=COALESCE(excluded.finished_at, devspace_recovery_audits.finished_at),
+        last_seen_at=max(devspace_recovery_audits.last_seen_at, excluded.last_seen_at)
+    `).run(
+      input.auditId,
+      input.conversationId,
+      input.metadataId,
+      input.tool,
+      input.toolFingerprint,
+      input.argsJson,
+      input.resultJson ?? null,
+      input.error ?? null,
+      input.conclusion?.trim() || null,
+      startedAt,
+      finishedAt,
+      observedAt,
+      observedAt,
+    )
+  }
+
+  listDevSpaceRecoveryAudits(conversationId: string, includeSuperseded = false): DevSpaceRecoveryAuditRow[] {
+    const whereSuperseded = includeSuperseded ? '' : 'AND superseded_at IS NULL'
+    return this.db.prepare(`
+      SELECT audit_id AS auditId, conversation_id AS conversationId, metadata_id AS metadataId,
+             tool, tool_fingerprint AS toolFingerprint, args_json AS argsJson,
+             result_json AS resultJson, error, conclusion,
+             started_at AS startedAt, finished_at AS finishedAt,
+             first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
+             superseded_at AS supersededAt, superseded_by_message_id AS supersededByMessageId
+      FROM devspace_recovery_audits
+      WHERE conversation_id = ? ${whereSuperseded}
+      ORDER BY started_at ASC, audit_id ASC
+    `).all(conversationId) as unknown as DevSpaceRecoveryAuditRow[]
+  }
+
+  /**
+   * canonical body 已出现相同 tool+args 时，淘汰最近的一个 provisional audit。
+   * 时间窗与 binding exact matcher 保持同量级，避免同一命令在很久以后重复执行时误匹配。
+   */
+  supersedeDevSpaceRecoveryAudit(input: {
+    conversationId: string
+    toolFingerprint: string
+    canonicalStartedAt: number
+    canonicalMessageId: string
+    observedAt?: number
+    toleranceMs?: number
+  }): string | null {
+    const toleranceMs = Math.max(0, Math.trunc(input.toleranceMs ?? 120_000))
+    const startedAt = Math.max(0, Math.trunc(input.canonicalStartedAt))
+    const candidate = this.db.prepare(`
+      SELECT audit_id AS auditId
+      FROM devspace_recovery_audits
+      WHERE conversation_id = ?
+        AND tool_fingerprint = ?
+        AND superseded_at IS NULL
+        AND started_at BETWEEN ? AND ?
+      ORDER BY abs(started_at - ?) ASC, started_at ASC, audit_id ASC
+      LIMIT 1
+    `).get(
+      input.conversationId,
+      input.toolFingerprint,
+      Math.max(0, startedAt - toleranceMs),
+      startedAt + toleranceMs,
+      startedAt,
+    ) as { auditId?: string } | undefined
+    if (!candidate?.auditId) return null
+    this.db.prepare(`
+      UPDATE devspace_recovery_audits
+      SET superseded_at = COALESCE(superseded_at, ?),
+          superseded_by_message_id = COALESCE(superseded_by_message_id, ?)
+      WHERE audit_id = ?
+    `).run(
+      Math.max(0, Math.trunc(input.observedAt ?? Date.now())),
+      input.canonicalMessageId,
+      candidate.auditId,
+    )
+    return candidate.auditId
+  }
+
+  /**
+   * 给 Reader/Bridge 生成可见的 provisional message overlay。
+   * canonical `messages` 表完全不变；这里仅把 audit 映射成 UI 友好的三类节点。
+   */
+  getDevSpaceRecoveryMessages(conversationId: string): Array<Record<string, unknown>> {
+    const audits = this.listDevSpaceRecoveryAudits(conversationId, false)
+    if (audits.length === 0) return []
+    const canonicalMax = this.db.prepare(
+      'SELECT COALESCE(MAX(ordinal), -1) AS maxOrdinal FROM messages WHERE conversation_id = ?',
+    ).get(conversationId) as { maxOrdinal?: number } | undefined
+    let ordinal = Number(canonicalMax?.maxOrdinal ?? -1) + 1
+    const rows: Array<Record<string, unknown>> = []
+
+    const resultText = (audit: DevSpaceRecoveryAuditRow): string => {
+      if (audit.error) return audit.error
+      if (!audit.resultJson) return ''
+      try {
+        const parsed = JSON.parse(audit.resultJson) as Record<string, unknown>
+        const structured = parsed.structuredContent as Record<string, unknown> | undefined
+        if (typeof structured?.result === 'string') return structured.result
+        const content = Array.isArray(parsed.content) ? parsed.content : []
+        const firstText = content.find(item => item && typeof item === 'object' && typeof (item as Record<string, unknown>).text === 'string') as Record<string, unknown> | undefined
+        if (typeof firstText?.text === 'string') return firstText.text
+        return audit.resultJson
+      }
+      catch {
+        return audit.resultJson
+      }
+    }
+
+    for (const audit of audits) {
+      const base = {
+        provisional: true,
+        recoverySource: 'devspace-audit',
+        auditId: audit.auditId,
+        metadataId: audit.metadataId,
+        superseded: false,
+      }
+      if (audit.conclusion) {
+        rows.push({
+          ...base,
+          messageId: `devspace-recovery:${audit.auditId}:conclusion`,
+          ordinal: ordinal++,
+          role: 'assistant',
+          authorName: 'DevSpace Recover',
+          recipient: 'all',
+          channel: 'commentary',
+          contentType: 'text',
+          text: audit.conclusion,
+          hidden: 0,
+          createTime: audit.startedAt / 1000,
+          status: 'provisional',
+          endTurn: false,
+          recoveryKind: 'assistant-conclusion',
+        })
+      }
+
+      let parsedArgs: unknown = {}
+      try { parsedArgs = JSON.parse(audit.argsJson) }
+      catch { parsedArgs = audit.argsJson }
+      rows.push({
+        ...base,
+        messageId: `devspace-recovery:${audit.auditId}:call`,
+        ordinal: ordinal++,
+        role: 'assistant',
+        authorName: 'DevSpace Recover',
+        recipient: 'api_tool.call_tool',
+        channel: 'commentary',
+        contentType: 'code',
+        text: JSON.stringify({
+          path: `/devspace/recovery/${audit.tool}`,
+          args: parsedArgs,
+        }),
+        hidden: 0,
+        createTime: audit.startedAt / 1000,
+        status: audit.finishedAt ? 'finished' : 'running',
+        endTurn: false,
+        recoveryKind: 'tool-call',
+        tool: audit.tool,
+      })
+
+      if (audit.finishedAt !== null) {
+        rows.push({
+          ...base,
+          messageId: `devspace-recovery:${audit.auditId}:result`,
+          ordinal: ordinal++,
+          role: 'tool',
+          authorName: audit.tool,
+          recipient: 'all',
+          channel: 'commentary',
+          contentType: 'text',
+          text: resultText(audit),
+          hidden: 0,
+          createTime: audit.finishedAt / 1000,
+          status: audit.error ? 'error' : 'finished',
+          endTurn: false,
+          recoveryKind: 'tool-result',
+          tool: audit.tool,
+        })
+      }
+    }
+    return rows
   }
 
   listDevSpaceMetadataBindings(input: {
