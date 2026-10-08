@@ -4233,6 +4233,40 @@ async function main() {
     })
     if (lifecycleState === 'active') activateBoundDevSpaceTurn(binding, input.startAt)
     if (timedOutBeforeBinding) {
+      const provisionalStartedAt = Number(
+        provisional?.startedAt
+        ?? existing?.firstSeenAt
+        ?? input.startAt
+        ?? input.observedAt,
+      )
+      const sourceEventId = unboundWatchdogLifeOpsEventId(input.metadataId, provisionalStartedAt)
+      // metadata-only Incident 现在已经解出了 canonical identity。先用同 key 原地补齐 LifeOps，
+      // 再让下面的 watchdog body diagnosis 给同一事件补 final/incident 细节。
+      enqueueLifeOpsEvent({
+        sourceEventId,
+        metadataId: input.metadataId,
+        conversationId: input.conversationId,
+        turnExchangeId: input.turnExchangeId ?? null,
+        title: conversationTitle(input.conversationId),
+        runState: 'aborted',
+        reviewState: 'unread',
+        url: `https://chatgpt.com/c/${encodeURIComponent(input.conversationId)}`,
+        updatedAt: new Date(input.observedAt ?? Date.now()).toISOString(),
+        inboxKind: 'incident',
+        inboxHealth: 'incident',
+        incidentType: 'active-zombie-unbound',
+        incidentState: 'bound-awaiting-diagnosis',
+        metadata: {
+          bindingEvidence: input.evidence ?? null,
+          bindingConfidence: input.confidence ?? null,
+          provisionalStartedAt,
+        },
+      })
+      lifeOpsEventOverrideByConversation.set(input.conversationId, {
+        sourceEventId,
+        metadataId: input.metadataId,
+        startedAt: provisionalStartedAt,
+      })
       // timeout 只是“强制诊断”的触发器。现在 CID 已经通过 exact body match 解出，
       // 才把真正 conversation 交给现有 watchdog 诊断/incident/Bark 流程。
       markSyncReady(input.conversationId, 'watchdog:devspace-timeout', 0)
