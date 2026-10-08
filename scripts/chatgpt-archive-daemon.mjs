@@ -4742,7 +4742,7 @@ async function main() {
               current
               && nextUpdateTime !== null
               && String(nextUpdateTime) !== String(current.updateTime ?? ''),
-            ) || catalogProgressedAfterWatchdog(activeTurns.get(id), nextUpdateTime)
+            )
             catalogActive.set(id, {
               firstSeenAt: current?.firstSeenAt ?? now,
               lastSeenAt: now,
@@ -4786,9 +4786,9 @@ async function main() {
               // update_time 真正变化才重新武装下一次 watchdog，并从 progress 时刻重新计时；
               // 不能继续沿用上一 generation 的陈旧 firstSeenAt。
               if (active && String(active.startType || '').startsWith('catalog:')) {
-                const rearmed = rearmCatalogWatchdogOnProgress(active, now)
-                activeTurns.set(id, rearmed)
-                persistActiveTurn(id, rearmed)
+                const progressed = recordCatalogWatchdogProgress(active, now)
+                activeTurns.set(id, progressed)
+                persistActiveTurn(id, progressed)
               }
             }
             // running 先标 stale；真正 body 诊断仍等 complete 或 watchdog 超时，避免正常长任务
