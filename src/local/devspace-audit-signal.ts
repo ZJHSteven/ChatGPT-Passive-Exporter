@@ -9,6 +9,8 @@ export interface DevSpaceAuditWakeSignal {
   metadataId: string
   startedAt: string
   tool: string
+  /** 新 DevSpace 会同时在工具 start/finish 发门铃；旧端没有该字段也继续兼容。 */
+  phase?: 'start' | 'finish'
 }
 
 export interface DevSpaceAuditWakeStats {
@@ -133,6 +135,7 @@ export function parseDevSpaceAuditWakeSignal(payload: Buffer): DevSpaceAuditWake
     if (typeof value.metadataId !== 'string' || !value.metadataId) return null
     if (typeof value.startedAt !== 'string' || !Number.isFinite(Date.parse(value.startedAt))) return null
     if (typeof value.tool !== 'string' || !value.tool) return null
+    if (value.phase !== undefined && value.phase !== 'start' && value.phase !== 'finish') return null
     return value as DevSpaceAuditWakeSignal
   }
   catch {

@@ -28,6 +28,21 @@ describe('incident notifier', () => {
     expect(request.url.toString()).not.toContain('device')
   })
 
+  test('单条通知可以覆盖默认 Bark group，供 DevSpace Bug 独立分组', () => {
+    const request = buildBarkIncidentRequest({
+      provider: 'bark',
+      enabled: true,
+      baseUrl: 'https://api.day.app',
+      deviceToken: 'device',
+      group: 'ChatGPT Archive',
+    }, {
+      title: 'DevSpace idle',
+      body: 'soft warning',
+      group: 'DevSpace Bug',
+    })
+    expect(JSON.parse(String(request.init.body)).group).toBe('DevSpace Bug')
+  })
+
   test('未配置通知时完全不发网络请求', async () => {
     await expect(sendIncidentNotification(null, { title: 'x', body: 'y' })).resolves.toEqual({
       attempted: false,

@@ -24,6 +24,8 @@ export interface IncidentNotification {
   body: string
   /** 点击 Bark 通知后打开的地址；通常指向对应 ChatGPT conversation。 */
   url?: string
+  /** 单条通知可覆盖默认分组；用于把软 Bug 提醒与 Archive incident 分开。 */
+  group?: string
 }
 
 export interface IncidentNotificationResult {
@@ -93,7 +95,8 @@ export function buildBarkIncidentRequest(
     title: notification.title,
     body: notification.body,
   }
-  if (config.group) payload.group = config.group
+  const group = notification.group?.trim() || config.group
+  if (group) payload.group = group
   if (notification.url) payload.url = notification.url
   return {
     url,

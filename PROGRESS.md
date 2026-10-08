@@ -1,3 +1,14 @@
+## 2026-10-08 DevSpace 1/3/5 分钟工具静默 Bug 通知
+
+- 本功能现已重新集成到包含最新 Watchdog 单向闸门 / two-stage notification 的 production main 基线上；Git 三方合并中 daemon、类型声明与测试均自动合并，仅 PLANS/PROGRESS 顶部文档发生冲突并按“保留 production 内容 + 追加本功能”处理。
+- 不恢复 ChatGPT REST polling，不新增网络 timer；直接复用 Archive 现有 5s daemon 主循环 + DevSpace 本机 SQLite。DevSpace bridge 读取 `runningTools`、最后 start/finish、last finished audit id，以及 v10 `chatgpt_metadata_contexts.title`。
+- 只有 `runningTools===0` 才进入 idle 候选；计时从最后一次 `finished_at` 开始。历史异常留下的旧 `finished_at=NULL` 不会永久阻断：只把最新 tool batch（距最新 start 60s 内）的未完成调用视为当前 running；单个真实 40+ 分钟长命令仍因自身是最新 start 而持续算 running。
+- UDP listener 兼容可选 `phase=start|finish`。同 auditId 的 finish 门铃即使被增量 audit 去重，也会按 metadata 强制重读 SQLite；60s fallback 会重读少量 tracked metadata，覆盖 finish datagram 丢包。
+- 软提醒只在 1/3/5 分钟阈值穿越时进入 Bark；绑定 CID 时优先 canonical conversation title + 点击链接，未绑定时回退 DevSpace init title。Bark 单条通知覆盖 group=`DevSpace Bug`，与 ChatGPT Archive incident 分组独立。
+- 已绑定 metadata 若 Archive lifecycle 已变成 `closed` 会退出候选。通知文本明确“可能停止 / 准备 Final / 纯思考 / 其它工具”，且声明不代表 turn 已结束、不改变正式 Watchdog/incident。
+- daemon 重启只恢复最近 6 分钟有 start/finish 活动的 metadata，并把 `lastCheckedIdleMs` 初始化为当前年龄，因此不会一次性补发已经错过的历史 1/3 分钟提醒。
+- 隔离 feature 基线已通过 TypeScript、定向 4 files / 49 tests、全量 25 files / 180 tests 与完整 build。当前-main 合并后仍需重新跑同等级回归后才能重载生产。
+
 ## 2026-10-08 Watchdog 单向闸门 / 通知完整性 / 429 责任重算
 
 - 用户重新明确了正确状态机：Watchdog 不是“周期性 inactivity timer”，而是每个 logical turn 的一次性硬边界。45min 到点后该 generation 永久进入 `timed-out / awaiting-diagnosis`；同 turn 后续 DevSpace tool、WSS async progress、catalog update_time 只允许补充诊断证据，绝不能重新武装 Watchdog、延后 deadline 或把 tombstone 重新算作 running。只有明确的新 turn identity / explicit turn-start 才能创建下一代 Watchdog。

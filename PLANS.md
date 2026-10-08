@@ -1,3 +1,16 @@
+## 2026-10-08 DevSpace 工具静默独立 Bug 通知
+
+目标：复用现有 Bark 传输和 DevSpace UDP 门铃，但与 45min Watchdog / incident taxonomy 完全解耦，增加一个只描述“工具活动静默”的轻量提醒通道。
+
+1. 扩展 DevSpace SQLite 只读桥：按 metadata 读取当前 running tool 数、最后 start/finish 时间和 DevSpace 保存的 `init.title`；SQLite 是事实源，UDP 仍只做唤醒。
+2. 每次 DevSpace start/finish 门铃后重算该 metadata 的 idle generation。只在 `runningTools === 0` 时，从最后一次 `finished_at` 开始计时；1/3/5 分钟分别发送一次，任何新 start 都取消旧 generation 并重置。
+3. 已有 canonical binding 时用 Archive conversation title；未绑定时用 DevSpace metadata title，避免依赖猜测 M→C。两者都没有时只显示 metadata 的短标识。
+4. 通知文案只说“可能已经停止，也可能正在准备 Final、纯思考或使用其他工具”，绝不把 1/3/5 分钟当 turn complete 或 incident 证据。
+5. Bark 复用同一设备配置，但允许单条通知覆盖 group 为 `DevSpace Bug`，实现通知中心独立分组；持久 notification key 以 metadata + idle generation + 阈值去重。
+6. 合并必须以当前 production main 的 Watchdog latch/two-stage notification 为底座；本功能只追加独立 idle lane，不允许改变现有 Watchdog 状态机。
+
+状态：代码与隔离分支测试已完成；正进行 current-main 集成回归，尚未重载生产 daemon。
+
 ## 2026-10-08 Watchdog 单向闸门 / 通知完整性 / 官方页面止血 ExecPlan
 
 - [done] 临时止血：通过 CDP 将 16 个普通 `chatgpt.com` 页面置为 `frozen`，仅保留 Archive Guardian 与 daemon 自己的受控主动请求链；不关闭标签页、不杀 Chrome，后续可恢复 `active`。

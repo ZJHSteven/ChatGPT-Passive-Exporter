@@ -82,6 +82,8 @@ const DEFAULT_IMAGE_ASSET_DIR = path.join(PROJECT_ROOT, 'data', 'assets', 'chatg
 const DEVSPACE_POLL_OVERLAP_MS = 10_000
 const DEVSPACE_INITIAL_LOOKBACK_MS = 2 * 60_000
 const DEVSPACE_FALLBACK_POLL_MS = 60_000
+const DEVSPACE_IDLE_ALERT_THRESHOLDS_MS = [60_000, 180_000, 300_000]
+const DEVSPACE_IDLE_STARTUP_LOOKBACK_MS = 6 * 60_000
 const IMAGE_ASSET_HYDRATE_INTERVAL_MS = 30_000
 const SLEEPING_TARGET_RETRY_MS = 5 * 60_000
 const WINDOWS_HIDE_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-hide-window.ps1')
@@ -1024,6 +1026,49 @@ export function shouldNotifyIncidentTransition(before, after) {
 }
 
 /**
+ * 计算本次主循环刚跨过了哪些 DevSpace idle 阈值。
+ *
+ * previousIdleMs 很重要：daemon 重启时会把它初始化为“当前已经 idle 的时长”，
+ * 因此不会把 1/3 分钟的历史提醒一起补轰炸；只有进程在线期间真正跨过阈值才提醒。
+ */
+export function crossedDevSpaceIdleThresholds(previousIdleMs, currentIdleMs) {
+  const before = Math.max(0, Number(previousIdleMs || 0))
+  const after = Math.max(0, Number(currentIdleMs || 0))
+  if (after < before) return []
+  return DEVSPACE_IDLE_ALERT_THRESHOLDS_MS.filter(threshold => before < threshold && after >= threshold)
+}
+
+/** 软 Bug 提醒的文案与正式 incident 明确分离；它不声称 turn 已结束。 */
+export function buildDevSpaceIdleNotificationPayload({
+  conversationId = null,
+  title = null,
+  metadataId,
+  thresholdMs,
+}) {
+  const minutes = Math.round(Number(thresholdMs) / 60_000)
+  const shortMetadata = String(metadataId || '').length > 20
+    ? `${String(metadataId).slice(0, 20)}…`
+    : String(metadataId || '<unknown>')
+  const subject = title
+    ? conversationId
+      ? `聊天：${title}`
+      : `聊天：以“${title}”为主题（尚未绑定 Conversation）`
+    : `metadata：${shortMetadata}（尚未绑定 Conversation）`
+  const payload = {
+    title: `DevSpace Bug · 工具静默 ${minutes} 分钟`,
+    body: [
+      subject,
+      `DevSpace 已连续约 ${minutes} 分钟没有新的工具调用，且当前没有正在运行的 DevSpace 工具。`,
+      '可能是本轮已经停止，也可能正在准备 Final、纯模型思考，或正在使用 DevSpace 之外的工具。',
+      '这是软提醒，不代表 turn 已结束；Archive 的正式 Watchdog / incident 判定不受影响。',
+    ].join('\n'),
+    group: 'DevSpace Bug',
+  }
+  if (conversationId) payload.url = `https://chatgpt.com/c/${conversationId}`
+  return payload
+}
+
+/**
  * historical-turn 的定义本身就是“后面已经出现了更新的 user turn”。
  * 对当前使用方式，这通常意味着用户已经人工发现上一轮异常并继续了；此时再补发 Bark
  * 会让人误以为“刚发的新一轮又异常”。因此 historical incident 永远只落库/统计，不做
@@ -1771,6 +1816,10 @@ async function main() {
   let devSpaceAuditsObserved = 0
   let devSpaceBindingsCreated = 0
   let devSpaceBindingMirrors = 0
+  // 这里只追踪“最近有 DevSpace 活动、并且当前没有 running tool”的 metadata。
+  // 每项保留上一轮观察到的 idle 时长，用于精确识别 1/3/5 分钟阈值穿越。
+  const devSpaceIdleCandidates = new Map()
+  let devSpaceIdleNotificationsQueued = 0
   // daemon 重启不能把一个已经计时几十分钟的 provisional watchdog 重新从 0 开始。
   // 从 Archive 自己的持久 binding 表恢复近期未绑定 metadata；firstSeenAt 仍是原始首个工具时间。
   for (const binding of archive.listDevSpaceMetadataBindings({
@@ -1944,6 +1993,86 @@ async function main() {
       notificationInFlight.delete(notificationKey)
     })
     return true
+  }
+
+  const refreshDevSpaceIdleCandidate = (metadataId, now = Date.now()) => {
+    const state = devSpaceAuditBridge.metadataToolState(metadataId)
+    if (!state || state.runningTools > 0 || !state.latestFinishedAt || !state.lastFinishedAuditId) {
+      devSpaceIdleCandidates.delete(metadataId)
+      return null
+    }
+    const binding = archive.getDevSpaceMetadataBinding(metadataId)
+    if (binding?.lifecycleState === 'closed') {
+      devSpaceIdleCandidates.delete(metadataId)
+      return null
+    }
+    const generationKey = `${state.lastFinishedAuditId}:${state.latestFinishedAt}`
+    const previous = devSpaceIdleCandidates.get(metadataId)
+    const currentIdleMs = Math.max(0, now - state.latestFinishedAt)
+    devSpaceIdleCandidates.set(metadataId, {
+      state,
+      generationKey,
+      // 同 generation 继续累计；新 generation（包括 daemon 启动恢复）从“当前年龄”
+      // 开始观察，避免补发早已错过的历史 1/3 分钟通知。
+      lastCheckedIdleMs: previous?.generationKey === generationKey
+        ? Math.min(previous.lastCheckedIdleMs, currentIdleMs)
+        : currentIdleMs,
+    })
+    return state
+  }
+
+  const refreshTrackedDevSpaceIdleCandidates = () => {
+    for (const metadataId of [...devSpaceIdleCandidates.keys()]) {
+      refreshDevSpaceIdleCandidate(metadataId)
+    }
+  }
+
+  const checkDevSpaceIdleNotifications = (now = Date.now()) => {
+    for (const [metadataId, candidate] of [...devSpaceIdleCandidates.entries()]) {
+      const binding = archive.getDevSpaceMetadataBinding(metadataId)
+      if (binding?.lifecycleState === 'closed') {
+        devSpaceIdleCandidates.delete(metadataId)
+        continue
+      }
+      const currentIdleMs = Math.max(0, now - Number(candidate.state.latestFinishedAt || now))
+      const crossed = crossedDevSpaceIdleThresholds(candidate.lastCheckedIdleMs, currentIdleMs)
+      candidate.lastCheckedIdleMs = currentIdleMs
+      if (crossed.length === 0) continue
+
+      const conversationId = binding?.conversationId || null
+      const title = conversationId
+        ? conversationTitle(conversationId)
+        : candidate.state.title
+      for (const thresholdMs of crossed) {
+        const notificationKey = [
+          'devspace-idle',
+          metadataId,
+          candidate.state.lastFinishedAuditId,
+          thresholdMs,
+        ].join(':')
+        const queued = dispatchPersistentNotification({
+          notificationKey,
+          kind: 'devspace-idle',
+          conversationId,
+          turnKey: binding?.lastTurnExchangeId ?? null,
+          payload: buildDevSpaceIdleNotificationPayload({
+            conversationId,
+            title,
+            metadataId,
+            thresholdMs,
+          }),
+          successLog: 'DevSpace idle bug notification sent',
+          failureLog: 'DevSpace idle bug notification failed',
+          logFields: {
+            metadataId,
+            thresholdMs,
+            idleMs: currentIdleMs,
+            bound: Boolean(conversationId),
+          },
+        })
+        if (queued) devSpaceIdleNotificationsQueued += 1
+      }
+    }
   }
 
   const notifyActorDomDrift = ({ phase, result, details }) => {
@@ -2258,6 +2387,8 @@ async function main() {
       bindingsCreated: devSpaceBindingsCreated,
       bindingMirrors: devSpaceBindingMirrors,
       unboundActive: unboundDevSpaceTurns.size,
+      idleCandidates: devSpaceIdleCandidates.size,
+      idleNotificationsQueued: devSpaceIdleNotificationsQueued,
       bindings: archive.listDevSpaceMetadataBindings({ limit: 100 }).map(binding => ({
         metadataId: binding.metadataId,
         conversationId: binding.conversationId,
@@ -3929,6 +4060,9 @@ async function main() {
       auditId: event.id,
       auditAt: event.startedAtMs,
     })
+    // begin 事件会看到 runningTools>0 并立即取消旧 idle generation。
+    // finish 事件即使 auditId 已经见过，也会由 wake callback 额外按 metadata 重读。
+    refreshDevSpaceIdleCandidate(event.metadataId)
     if (binding.conversationId) {
       activateBoundDevSpaceTurn(binding, event.startedAtMs)
       return
@@ -5692,9 +5826,19 @@ async function main() {
   // 启动时先做一次 durable catch-up；之后以 DevSpace UDP 门铃为主，
   // 每 60 秒才做一次极低频兜底扫描，防止 daemon 重启窗口/UDP 丢包留下最后一条 audit。
   pollDevSpaceAudits()
+  // 重启恢复只看最近 6 分钟本地工具活动；候选的 lastCheckedIdleMs 从当前 idle 年龄
+  // 起步，因此不会补发已经错过的历史 1/3 分钟，但仍可继续命中后续 3/5 分钟。
+  for (const state of devSpaceAuditBridge.recentMetadataToolStates(
+    Date.now() - DEVSPACE_IDLE_STARTUP_LOOKBACK_MS,
+  )) {
+    refreshDevSpaceIdleCandidate(state.metadataId)
+  }
   devSpaceLastFallbackPollAt = Date.now()
-  const devSpaceWakeListening = await devSpaceAuditWakeListener.start(() => {
+  const devSpaceWakeListening = await devSpaceAuditWakeListener.start((signal) => {
     pollDevSpaceAudits()
+    // finish 与 start 使用同一 auditId；即使增量 poll 因 seen-id 去重不再进入 handler，
+    // 也必须按 signal.metadataId 重读当前 SQLite 状态，才能即时开始 idle 计时。
+    refreshDevSpaceIdleCandidate(signal.metadataId)
   })
   await log('DevSpace audit wake listener ready', {
     listening: devSpaceWakeListening,
@@ -5719,8 +5863,12 @@ async function main() {
       // 它不是实时发现路径，成本也从“每 5 秒一次”降到“每 60 秒一次”。
       if (Date.now() - devSpaceLastFallbackPollAt >= DEVSPACE_FALLBACK_POLL_MS) {
         pollDevSpaceAudits()
+        // 若 finish UDP 丢失，started_at 游标本身不会再次看到旧 audit；这里对极少数
+        // 已追踪 metadata 做一次本机状态重读，作为 durable finish catch-up。
+        refreshTrackedDevSpaceIdleCandidates()
         devSpaceLastFallbackPollAt = Date.now()
       }
+      checkDevSpaceIdleNotifications()
       checkUnboundDevSpaceTimeouts()
 
       // 只做健康观测，不主动激活窗口。短暂的 renderer/CDP 抖动先累计失败次数；
