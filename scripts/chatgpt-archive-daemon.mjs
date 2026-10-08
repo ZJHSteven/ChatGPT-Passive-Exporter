@@ -764,15 +764,15 @@ export function buildWatchdogDiagnosisNotificationPayload({ conversationId, titl
 }
 
 /** DevSpace metadata 45 分钟后仍无法绑定 CID 时也必须显式告诉用户，禁止静默。 */
-export function buildUnboundWatchdogNotificationPayload({ metadataId, startedAt, now = Date.now() }) {
+export function buildUnboundWatchdogNotificationPayload({ title = null, startedAt, now = Date.now() }) {
   const activeForMs = Math.max(0, Number(now) - Number(startedAt || now))
-  const shortMetadata = typeof metadataId === 'string' && metadataId.length > 24
-    ? `${metadataId.slice(0, 12)}…${metadataId.slice(-8)}`
-    : String(metadataId || 'unknown')
+  const subject = typeof title === 'string' && title.trim()
+    ? `聊天：以“${title.trim()}”为主题（尚未绑定 Conversation）`
+    : '聊天：未命名（尚未绑定 Conversation）'
   return {
     title: 'ChatGPT Watchdog 已超时 · 会话未绑定',
     body: [
-      `DevSpace 会话键：${shortMetadata}`,
+      subject,
       `Watchdog 已运行 ${Math.floor(activeForMs / 60_000)} 分钟。`,
       '当前还没有足够证据把该 metadata 安全绑定到 canonical ChatGPT conversation，因此不能猜聊天名或 CID。',
       'Archive 已启动 catalog/body 修复；绑定成功后继续正常诊断。',
@@ -1042,18 +1042,14 @@ export function crossedDevSpaceIdleThresholds(previousIdleMs, currentIdleMs) {
 export function buildDevSpaceIdleNotificationPayload({
   conversationId = null,
   title = null,
-  metadataId,
   thresholdMs,
 }) {
   const minutes = Math.round(Number(thresholdMs) / 60_000)
-  const shortMetadata = String(metadataId || '').length > 20
-    ? `${String(metadataId).slice(0, 20)}…`
-    : String(metadataId || '<unknown>')
   const subject = title
     ? conversationId
       ? `聊天：${title}`
       : `聊天：以“${title}”为主题（尚未绑定 Conversation）`
-    : `metadata：${shortMetadata}（尚未绑定 Conversation）`
+    : '聊天：未命名（尚未绑定 Conversation）'
   const payload = {
     title: `DevSpace Bug · 工具静默 ${minutes} 分钟`,
     body: [
@@ -1063,6 +1059,54 @@ export function buildDevSpaceIdleNotificationPayload({
       '这是软提醒，不代表 turn 已结束；Archive 的正式 Watchdog / incident 判定不受影响。',
     ].join('\n'),
     group: 'DevSpace Bug',
+  }
+  if (conversationId) payload.url = `https://chatgpt.com/c/${conversationId}`
+  return payload
+}
+
+/**
+ * 从 DevSpace tool args 中读取阶段性 conclusion。
+ *
+ * conclusion 是一个可选参数，因此解析失败、非字符串或全空白都必须视为“没有结论”，
+ * 不能影响正常 tool audit / Watchdog 流程。这里把正文上限控制在 1800 字符，避免某个模型
+ * 意外塞入超长段落时把 Bark payload 撑得过大；完整原文仍保留在 DevSpace SQLite 的 args_json。
+ */
+export function extractDevSpaceConclusion(argsJson) {
+  try {
+    const parsed = JSON.parse(String(argsJson || ''))
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.conclusion !== 'string') return null
+    const normalized = parsed.conclusion.trim()
+    if (!normalized) return null
+    return normalized.length > 1800 ? `${normalized.slice(0, 1799)}…` : normalized
+  }
+  catch {
+    return null
+  }
+}
+
+/**
+ * Conclusion 是工具链中的“阶段性结论”，不是 turn final，也不改变任何 Archive 生命周期。
+ * 手机展示只需要知道它属于哪个可读聊天；metadata ID 继续留在内部日志，不暴露到通知正文。
+ */
+export function buildDevSpaceConclusionNotificationPayload({
+  conversationId = null,
+  title = null,
+  tool,
+  conclusion,
+}) {
+  const subject = title
+    ? conversationId
+      ? `聊天：${title}`
+      : `聊天：以“${title}”为主题（尚未绑定 Conversation）`
+    : '聊天：未命名（尚未绑定 Conversation）'
+  const payload = {
+    title: 'DevSpace Conclusion · 阶段性结论',
+    body: [
+      subject,
+      `工具：${String(tool || 'unknown')}`,
+      String(conclusion || '').trim(),
+    ].filter(Boolean).join('\n'),
+    group: 'DevSpace Conclusion',
   }
   if (conversationId) payload.url = `https://chatgpt.com/c/${conversationId}`
   return payload
