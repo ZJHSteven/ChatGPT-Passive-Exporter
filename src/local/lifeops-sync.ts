@@ -17,15 +17,31 @@ export interface LifeOpsSyncConfig {
   ingestToken: string
 }
 
+/**
+ * Archive → LifeOps 的最小事件/引用 payload。
+ *
+ * - 正常 canonical Turn：通常同时带 conversationId + turnExchangeId + title；
+ * - Watchdog/cooldown 等早期 Incident：允许一开始只有稳定 sourceEventId + metadataId，
+ *   后续同 sourceEventId 再次 enqueue 时原地覆盖 outbox payload，由 LifeOps reconciler 补齐身份；
+ * - Worksite 粒度在 LifeOps 侧按 Conversation 合并，而 Turn 粒度由 InboxEvent 保留。
+ */
 export interface LifeOpsWorksitePayload {
-  conversationId: string
+  /** Archive 自己生成的稳定事件身份；有值时优先作为 outbox 去重键。 */
+  sourceEventId?: string
+  conversationId?: string | null
   turnExchangeId?: string | null
-  title: string
+  metadataId?: string | null
+  title?: string | null
   summary?: string | null
   runState?: 'running' | 'completed' | 'aborted' | 'superseded' | 'archived'
   reviewState?: 'unread' | 'partial' | 'reviewed' | 'needs_followup'
   url?: string | null
   updatedAt?: string
+  inboxKind?: 'turn' | 'incident' | 'manual' | 'email' | 'wechat' | 'other'
+  inboxHealth?: 'healthy' | 'incident' | 'unknown'
+  finalState?: string | null
+  incidentType?: string | null
+  incidentState?: string | null
   metadata?: Record<string, unknown>
 }
 
@@ -115,8 +131,13 @@ export class LifeOpsSyncClient {
   }
 
   enqueue(payload: LifeOpsWorksitePayload): void {
-    if (!payload.conversationId?.trim() || !payload.title?.trim()) return
-    const key = `${payload.conversationId}:${payload.turnExchangeId || 'conversation'}`
+    const sourceEventId = payload.sourceEventId?.trim()
+    const conversationId = payload.conversationId?.trim()
+    // 正常历史配置没有 sourceEventId，所以保留 conversation+turn 的兼容派生键；
+    // metadata-only incident 则必须由调用方提供 sourceEventId，不能凭易变标题猜身份。
+    const key = sourceEventId
+      || (conversationId ? `${conversationId}:${payload.turnExchangeId || 'conversation'}` : '')
+    if (!key) return
     const previous = this.jobs.get(key)
     this.jobs.set(key, {
       key,
@@ -165,7 +186,8 @@ export class LifeOpsSyncClient {
           this.jobs.delete(next.key)
           await this.persist()
           await this.log('LifeOps sync delivered', {
-            conversationId: next.payload.conversationId,
+            sourceEventId: next.payload.sourceEventId ?? null,
+            conversationId: next.payload.conversationId ?? null,
             turnExchangeId: next.payload.turnExchangeId ?? null,
             attempts: next.attempts + 1,
           })
@@ -180,7 +202,8 @@ export class LifeOpsSyncClient {
         this.jobs.set(next.key, next)
         await this.persist()
         await this.log('LifeOps sync deferred', {
-          conversationId: next.payload.conversationId,
+          sourceEventId: next.payload.sourceEventId ?? null,
+          conversationId: next.payload.conversationId ?? null,
           turnExchangeId: next.payload.turnExchangeId ?? null,
           attempts: next.attempts,
           retryInMs: backoff,
@@ -221,7 +244,8 @@ export class LifeOpsSyncClient {
       const parsed = JSON.parse(await fs.readFile(this.options.pendingPath, 'utf8')) as Partial<PendingFile>
       if (parsed.version !== 1 || !Array.isArray(parsed.jobs)) return
       for (const job of parsed.jobs) {
-        if (!job?.key || !job.payload?.conversationId || !job.payload?.title) continue
+        if (!job?.key || !job.payload) continue
+        if (!job.payload.sourceEventId && !job.payload.conversationId) continue
         this.jobs.set(job.key, job)
       }
     }
