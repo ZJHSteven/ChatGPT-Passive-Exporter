@@ -183,6 +183,7 @@ export function buildWatchdogDiagnosisNotificationPayload(input: {
 
 export function buildUnboundWatchdogNotificationPayload(input: {
   metadataId: string
+  title?: string | null
   startedAt: number
   now?: number
 }): { title: string, body: string }
@@ -203,8 +204,28 @@ export function crossedDevSpaceIdleThresholds(
 export function buildDevSpaceIdleNotificationPayload(input: {
   conversationId?: string | null
   title?: string | null
-  metadataId: unknown
+  metadataId?: unknown
   thresholdMs: unknown
+}): {
+  title: string
+  body: string
+  group: string
+  url?: string
+}
+
+/** 把完整 DevSpace metadata 压缩成可口述、可前缀回查的 meta/XXXXXXXX。 */
+export function shortDevSpaceMetadataAlias(metadataId: unknown): string
+
+/** 从工具 args JSON 中读取非空 conclusion；损坏 JSON / 空字符串均返回 null。 */
+export function extractDevSpaceConclusion(argsJson: unknown): string | null
+
+/** 生成独立 DevSpace Conclusion 分组的阶段性结论通知。 */
+export function buildDevSpaceConclusionNotificationPayload(input: {
+  conversationId?: string | null
+  title?: string | null
+  metadataId?: unknown
+  tool?: unknown
+  conclusion?: unknown
 }): {
   title: string
   body: string
