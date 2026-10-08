@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
+import { devSpaceToolArgsFingerprint } from '../src/local/devspace-audit-bridge.ts'
 
 const tempDirs: string[] = []
 
@@ -59,6 +60,87 @@ function payload() {
 }
 
 describe('ChatArchiveDb', () => {
+  test('DevSpace recovery overlay 保留 provisional tool/conclusion，并被 canonical exact match 淘汰', () => {
+    const db = tempDb()
+    try {
+      db.mergeLiveMessagesPage({
+        title: 'Recovery overlay',
+        conversation_id: 'recovery-overlay',
+        current_node: 'u1',
+        messages: [{
+          id: 'u1',
+          author: { role: 'user' },
+          recipient: 'all',
+          content: { content_type: 'text', parts: ['开始'] },
+          metadata: {},
+          create_time: 1,
+        }],
+      }, {
+        observedAt: 1000,
+        updateCurrentState: true,
+        classifyTerminal: false,
+        updateIncidents: false,
+      })
+
+      const argsJson = JSON.stringify({ cwd: 'D:/Workspace', cmd: 'git status --short' })
+      const fingerprint = devSpaceToolArgsFingerprint('exec_command', argsJson)
+      expect(fingerprint).toBeTruthy()
+      db.upsertDevSpaceRecoveryAudit({
+        auditId: 'audit-recovery-1',
+        conversationId: 'recovery-overlay',
+        metadataId: 'meta-recovery',
+        tool: 'exec_command',
+        toolFingerprint: fingerprint!,
+        argsJson,
+        resultJson: JSON.stringify({ structuredContent: { result: 'clean' } }),
+        conclusion: '已经完成修改，现在核验仓库状态。',
+        startedAt: 10_000,
+        finishedAt: 11_000,
+        observedAt: 12_000,
+      })
+
+      expect(db.getMessages('recovery-overlay')).toHaveLength(1)
+      const overlay = db.getDevSpaceRecoveryMessages('recovery-overlay')
+      expect(overlay).toHaveLength(3)
+      expect(overlay.map(row => row.recoveryKind)).toEqual([
+        'assistant-conclusion',
+        'tool-call',
+        'tool-result',
+      ])
+      expect(overlay[0]).toMatchObject({
+        provisional: true,
+        text: '已经完成修改，现在核验仓库状态。',
+        auditId: 'audit-recovery-1',
+      })
+      expect(overlay[2]).toMatchObject({ text: 'clean', status: 'finished' })
+
+      // 时间太远时即使 fingerprint 相同也不能误吃另一轮重复命令。
+      expect(db.supersedeDevSpaceRecoveryAudit({
+        conversationId: 'recovery-overlay',
+        toolFingerprint: fingerprint!,
+        canonicalStartedAt: 10_000 + 10 * 60_000,
+        canonicalMessageId: 'tool-call-far',
+      })).toBeNull()
+      expect(db.getDevSpaceRecoveryMessages('recovery-overlay')).toHaveLength(3)
+
+      expect(db.supersedeDevSpaceRecoveryAudit({
+        conversationId: 'recovery-overlay',
+        toolFingerprint: fingerprint!,
+        canonicalStartedAt: 10_500,
+        canonicalMessageId: 'tool-call-real',
+        observedAt: 20_000,
+      })).toBe('audit-recovery-1')
+      expect(db.getDevSpaceRecoveryMessages('recovery-overlay')).toHaveLength(0)
+      expect(db.listDevSpaceRecoveryAudits('recovery-overlay', true)[0]).toMatchObject({
+        supersededAt: 20_000,
+        supersededByMessageId: 'tool-call-real',
+      })
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('DevSpace metadata 可先未绑定落盘，再原位绑定并保存 turn 状态', () => {
     const db = tempDb()
     try {
