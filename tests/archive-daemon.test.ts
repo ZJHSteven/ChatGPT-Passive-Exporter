@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   activeApiAllowed,
+  buildDevSpaceConclusionNotificationPayload,
   buildDevSpaceIdleNotificationPayload,
   buildCooldownNotificationPayload,
   buildTurnFinalNotificationPayload,
@@ -19,6 +20,7 @@ import {
   conversationIdFromTargetUrl,
   decodeCdpResponseBodyBytes,
   devSpaceFirstToolWatchdogState,
+  extractDevSpaceConclusion,
   estuaryFileIdFromUrl,
   resolvedEstuaryUrlForFile,
   extractConversationEvents,
@@ -47,12 +49,57 @@ import {
   shouldNotifyTurnFinal,
   shouldRebuildGuardianForMissingWss,
   shouldSupersedeDevSpaceBinding,
+  shortDevSpaceMetadataAlias,
   shouldClassifyTerminalForTrigger,
   shouldDeferConfirmedTerminalIncident,
   watchdogTriggerForStartType,
 } from '../scripts/chatgpt-archive-daemon.mjs'
 
 describe('ChatGPT Archive daemon WSS parser', () => {
+  test('DevSpace metadata 手机别名只保留短前缀，便于口述回查', () => {
+    expect(shortDevSpaceMetadataAlias('v1/31BvfaYkExI0xUrv4HwbKqFytFEJUAop')).toBe('meta/31BvfaYk')
+    expect(shortDevSpaceMetadataAlias('server-handshake-a')).toBe('meta/server-h')
+    expect(shortDevSpaceMetadataAlias('')).toBe('meta/unknown')
+  })
+
+  test('Conclusion 只接受非空字符串，并生成独立 Bark 分组', () => {
+    expect(extractDevSpaceConclusion('{"conclusion":"  已完成受控重启  "}')).toBe('已完成受控重启')
+    expect(extractDevSpaceConclusion('{"conclusion":"   "}')).toBeNull()
+    expect(extractDevSpaceConclusion('{broken')).toBeNull()
+    expect(extractDevSpaceConclusion('{"conclusion":123}')).toBeNull()
+
+    const bound = buildDevSpaceConclusionNotificationPayload({
+      conversationId: 'conversation-a',
+      title: '需求梳理',
+      metadataId: 'v1/abcdefgh12345678',
+      tool: 'exec_command',
+      conclusion: '已经完成阶段一。',
+    })
+    expect(bound.title).toContain('Conclusion')
+    expect(bound.body).toContain('聊天：需求梳理')
+    expect(bound.body).toContain('工具：exec_command')
+    expect(bound.body).toContain('已经完成阶段一。')
+    expect(bound.group).toBe('DevSpace Conclusion')
+    expect(bound.url).toContain('/c/conversation-a')
+
+    const titled = buildDevSpaceConclusionNotificationPayload({
+      title: '排查 Chrome 窗口',
+      metadataId: 'v1/abcdefgh12345678',
+      tool: 'read',
+      conclusion: '已定位窗口坐标。',
+    })
+    expect(titled.body).toContain('以“排查 Chrome 窗口”为主题')
+    expect(titled).not.toHaveProperty('url')
+
+    const unnamed = buildDevSpaceConclusionNotificationPayload({
+      metadataId: 'v1/abcdefgh12345678',
+      tool: 'write_stdin',
+      conclusion: '进程结束。',
+    })
+    expect(unnamed.body).toContain('meta/abcdefgh')
+    expect(unnamed.body).not.toContain('v1/abcdefgh12345678')
+  })
+
   test('DevSpace idle 只在 1/3/5 分钟边界穿越时触发，重启不会补轰炸旧阈值', () => {
     expect(crossedDevSpaceIdleThresholds(59_000, 61_000)).toEqual([60_000])
     expect(crossedDevSpaceIdleThresholds(61_000, 179_000)).toEqual([])
@@ -81,6 +128,13 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     })
     expect(bound.body).toContain('Canonical title')
     expect(bound.url).toContain('/c/conversation-a')
+
+    const unnamed = buildDevSpaceIdleNotificationPayload({
+      metadataId: 'v1/abcdefgh12345678',
+      thresholdMs: 60_000,
+    })
+    expect(unnamed.body).toContain('meta/abcdefgh')
+    expect(unnamed.body).not.toContain('v1/abcdefgh12345678')
   })
   test('当前 exact body 只允许纠正历史 backfill，不覆盖另一个在线 exact binding', () => {
     expect(shouldSupersedeDevSpaceBinding(
