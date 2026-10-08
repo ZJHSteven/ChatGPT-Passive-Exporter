@@ -2539,6 +2539,53 @@ async function main() {
     })
   }
 
+  const dispatchWatchdogTimeoutNotification = (conversationId, active, now = Date.now()) => {
+    if (!notificationConfig || !conversationId || !active) return false
+    const startedAt = Number(active.startedAt || now)
+    const turnKey = typeof active.lastDiagnosticTurnKey === 'string' && active.lastDiagnosticTurnKey
+      ? active.lastDiagnosticTurnKey
+      : `generation:${startedAt}`
+    const payload = buildWatchdogTimeoutNotificationPayload({
+      conversationId,
+      title: conversationTitle(conversationId),
+      startedAt,
+      now,
+    })
+    return dispatchPersistentNotification({
+      notificationKey: `watchdog-timeout:${conversationId}:${startedAt}`,
+      kind: 'watchdog-timeout',
+      conversationId,
+      turnKey,
+      payload,
+      successLog: 'watchdog timeout notification sent',
+      failureLog: 'watchdog timeout notification failed',
+      logFields: { startedAt },
+    })
+  }
+
+  const dispatchWatchdogDiagnosisNotification = (conversationId, generationStartedAt, diagnostic, incident = null) => {
+    if (!notificationConfig || !conversationId || !diagnostic) return false
+    const startedAt = Number(generationStartedAt || 0)
+    const turnKey = watchdogDiagnosticTurnKey(diagnostic)
+      || (startedAt > 0 ? `generation:${startedAt}` : 'unknown-turn')
+    const payload = buildWatchdogDiagnosisNotificationPayload({
+      conversationId,
+      title: conversationTitle(conversationId),
+      diagnostic,
+      incident,
+    })
+    return dispatchPersistentNotification({
+      notificationKey: `watchdog-diagnosis:${conversationId}:${startedAt || turnKey}`,
+      kind: 'watchdog-diagnosis',
+      conversationId,
+      turnKey,
+      payload,
+      successLog: 'watchdog diagnosis notification sent',
+      failureLog: 'watchdog diagnosis notification failed',
+      logFields: { startedAt: startedAt || null },
+    })
+  }
+
   const dispatchUnboundWatchdogNotification = (metadataId, candidate, now = Date.now()) => {
     if (!notificationConfig || !metadataId || !candidate) return false
     const startedAt = Number(candidate.startedAt || now)
@@ -3537,6 +3584,9 @@ async function main() {
       const [conversationId, trigger] = nextReady
       ready.delete(conversationId)
       try {
+        const watchdogGenerationStartedAt = String(trigger || '').startsWith('watchdog:')
+          ? Number(activeTurns.get(conversationId)?.startedAt || 0)
+          : 0
         const result = await syncConversation(conversationId, trigger)
         syncedConversations += 1
         if (String(trigger || '').startsWith('watchdog:')) {
@@ -3646,20 +3696,31 @@ async function main() {
           if (worksite) lifeOpsSync.enqueue(worksite)
         }
         // SQLite/trace 到这里已经完成；通知只从已落库事实分叉出去，不参与 syncInFlight。
-        // 正常 final 与异常 incident 使用互斥条件：body 已经确认 final 时只发“正常完成”；
-        // complete-no-final/interrupted/watchdog-timeout 则继续由下面的 incident 分支发送。
-        if (shouldNotifyTurnFinal(trigger, result.diagnostic)) {
-          dispatchTurnFinalNotification(conversationId, result.diagnostic)
+        // Watchdog 固定是“两阶段”：到点时已经发第一条；body 一旦诊断成功，这里无条件发第二条，
+        // 不再额外叠加 turn-final / incident Bark，确保同一 Watchdog turn 最多恰好两条。
+        if (String(trigger || '').startsWith('watchdog:')) {
+          dispatchWatchdogDiagnosisNotification(
+            conversationId,
+            watchdogGenerationStartedAt,
+            result.diagnostic,
+            result.newIncident || latestOpenIncident(conversationId),
+          )
         }
-        const incidentsToNotify = [
-          result.newIncident,
-          ...(result.newHistoricalIncidents || []),
-        ].filter(Boolean)
-        const notifiedIncidentIds = new Set()
-        for (const incident of incidentsToNotify) {
-          if (notifiedIncidentIds.has(incident.id)) continue
-          notifiedIncidentIds.add(incident.id)
-          dispatchIncidentNotification(conversationId, incident)
+        else {
+          // 非 Watchdog 路径仍保持“一 turn 一个终态通知”：final 与异常 incident 互斥。
+          if (shouldNotifyTurnFinal(trigger, result.diagnostic)) {
+            dispatchTurnFinalNotification(conversationId, result.diagnostic)
+          }
+          const incidentsToNotify = [
+            result.newIncident,
+            ...(result.newHistoricalIncidents || []),
+          ].filter(Boolean)
+          const notifiedIncidentIds = new Set()
+          for (const incident of incidentsToNotify) {
+            if (notifiedIncidentIds.has(incident.id)) continue
+            notifiedIncidentIds.add(incident.id)
+            dispatchIncidentNotification(conversationId, incident)
+          }
         }
         if (result.imageGenerationEvent && !result.imageGenerationEvent.notificationSentAt) {
           // startup 只是认识已有历史，不能在重启后把旧图片节点重新推到手机。
@@ -4706,9 +4767,8 @@ async function main() {
     for (const [conversationId, active] of activeTurns) {
       if (active.watchdogPendingAt) {
         stopCheckpointWatch(conversationId, 'watchdog-pending', now)
-        // daemon 重启后若恢复的是“已经到点但恰逢 cooldown”的 pending generation，
-        // 仍然补发一次 provisional 到点通知；ledger 会自动跳过已经成功发送的那一条。
-        dispatchWatchdogDeferredNotification(conversationId, active, now)
+        // daemon 重启后恢复 timed-out generation 时仍补发一次“到点”事实；持久 ledger 会去重。
+        dispatchWatchdogTimeoutNotification(conversationId, active, now)
         if (!ready.has(conversationId)) {
           const watchdogTrigger = watchdogTriggerForStartType(active.startType)
           markSyncReady(conversationId, watchdogTrigger, 0)
@@ -4729,9 +4789,8 @@ async function main() {
       active.lastWatchdogAt = now
       active.watchdogPendingAt = now
       persistActiveTurn(conversationId, active)
-      // cooldown 只会阻止主动 body，不应该阻止“Watchdog 已到点”这个事实本身通知用户。
-      // 非 cooldown 情况不在这里先发：body 能立即诊断时只发最终结果，避免一轮两条噪音。
-      dispatchWatchdogDeferredNotification(conversationId, active, now)
+      // Watchdog 到点事实与 body 是否可立即拉取无关：第一条通知现在始终立即发送。
+      dispatchWatchdogTimeoutNotification(conversationId, active, now)
       const watchdogTrigger = watchdogTriggerForStartType(active.startType)
       markSyncReady(conversationId, watchdogTrigger, 0)
       void log('active turn exceeded watchdog; queued diagnostic body sync', {
