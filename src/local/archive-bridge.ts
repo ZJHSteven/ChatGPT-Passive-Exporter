@@ -30,6 +30,7 @@ export interface ArchiveBridgeConversationRow {
 export interface ArchiveBridgeDataSource {
   list(limit?: number): ArchiveBridgeConversationRow[]
   getMessages(conversationId: string): Array<Record<string, unknown>>
+  getDevSpaceRecoveryMessages?(conversationId: string): Array<Record<string, unknown>>
   getResources?(conversationId: string): Array<Record<string, unknown>>
   search?(query: string, limit?: number): Array<Record<string, unknown>>
   listIncidents?(options?: { status?: 'open' | 'resolved', limit?: number }): Array<Record<string, unknown>>
@@ -199,6 +200,13 @@ function sanitizeMessages(rows: Array<Record<string, unknown>>): Array<Record<st
           : typeof row.modelSlug === 'string'
             ? row.modelSlug
             : null,
+        provisional: row.provisional === true,
+        recoverySource: typeof row.recoverySource === 'string' ? row.recoverySource : null,
+        recoveryKind: typeof row.recoveryKind === 'string' ? row.recoveryKind : null,
+        auditId: typeof row.auditId === 'string' ? row.auditId : null,
+        metadataId: typeof row.metadataId === 'string' ? row.metadataId : null,
+        tool: typeof row.tool === 'string' ? row.tool : null,
+        superseded: row.superseded === true,
       }
     })
 }
@@ -532,7 +540,11 @@ export class ArchiveBridgeServer {
     const messagesMatch = /^\/v1\/conversations\/([^/]+)\/messages$/u.exec(url.pathname)
     if (messagesMatch && method === 'GET') {
       const conversationId = decodeURIComponent(messagesMatch[1]!)
-      const allMessages = sanitizeMessages(this.options.archive.getMessages(conversationId))
+      // canonical first-party messages 永远是主数据；DevSpace recovery 只在 Reader/Bridge 展示层
+      // 追加仍未被 canonical body supersede 的 provisional 尾部节点。
+      const canonicalMessages = this.options.archive.getMessages(conversationId)
+      const recoveryMessages = this.options.archive.getDevSpaceRecoveryMessages?.(conversationId) ?? []
+      const allMessages = sanitizeMessages([...canonicalMessages, ...recoveryMessages])
       const page = paginateOrdinalRows(
         allMessages,
         parseLimit(url.searchParams.get('limit'), 120),
@@ -541,6 +553,8 @@ export class ArchiveBridgeServer {
       jsonResponse(res, 200, {
         conversationId,
         messages: page.rows,
+        canonicalCount: canonicalMessages.length,
+        provisionalCount: recoveryMessages.length,
         total: page.total,
         hasMore: page.hasMore,
         nextBeforeOrdinal: page.nextBeforeOrdinal,
