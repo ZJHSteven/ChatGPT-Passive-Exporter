@@ -240,14 +240,17 @@ describe('Archive Bridge', () => {
     expect(resolved.status).toBe(200)
     const body = await resolved.json() as { worksite: Record<string, unknown> }
     expect(body.worksite).toMatchObject({
+      sourceEventId: 'turn:cid-1:turn-1',
       conversationId: 'cid-1',
       turnExchangeId: 'turn-1',
       title: '测试会话',
-      summary: '你好！',
       runState: 'completed',
       reviewState: 'unread',
+      inboxKind: 'turn',
+      inboxHealth: 'healthy',
       url: 'https://chatgpt.com/c/cid-1',
     })
+    expect(body.worksite).not.toHaveProperty('summary')
     expect(JSON.stringify(body)).not.toContain('这里是模型内部推理')
 
     const resources = await fetch(`${base}/v1/conversations/cid-1/resources`, { headers })
