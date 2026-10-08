@@ -5716,9 +5716,19 @@ async function main() {
   // 启动时先做一次 durable catch-up；之后以 DevSpace UDP 门铃为主，
   // 每 60 秒才做一次极低频兜底扫描，防止 daemon 重启窗口/UDP 丢包留下最后一条 audit。
   pollDevSpaceAudits()
+  // 重启恢复只看最近 6 分钟本地工具活动；候选的 lastCheckedIdleMs 从当前 idle 年龄
+  // 起步，因此不会补发已经错过的历史 1/3 分钟，但仍可继续命中后续 3/5 分钟。
+  for (const state of devSpaceAuditBridge.recentMetadataToolStates(
+    Date.now() - DEVSPACE_IDLE_STARTUP_LOOKBACK_MS,
+  )) {
+    refreshDevSpaceIdleCandidate(state.metadataId)
+  }
   devSpaceLastFallbackPollAt = Date.now()
-  const devSpaceWakeListening = await devSpaceAuditWakeListener.start(() => {
+  const devSpaceWakeListening = await devSpaceAuditWakeListener.start((signal) => {
     pollDevSpaceAudits()
+    // finish 与 start 使用同一 auditId；即使增量 poll 因 seen-id 去重不再进入 handler，
+    // 也必须按 signal.metadataId 重读当前 SQLite 状态，才能即时开始 idle 计时。
+    refreshDevSpaceIdleCandidate(signal.metadataId)
   })
   await log('DevSpace audit wake listener ready', {
     listening: devSpaceWakeListening,
@@ -5743,8 +5753,12 @@ async function main() {
       // 它不是实时发现路径，成本也从“每 5 秒一次”降到“每 60 秒一次”。
       if (Date.now() - devSpaceLastFallbackPollAt >= DEVSPACE_FALLBACK_POLL_MS) {
         pollDevSpaceAudits()
+        // 若 finish UDP 丢失，started_at 游标本身不会再次看到旧 audit；这里对极少数
+        // 已追踪 metadata 做一次本机状态重读，作为 durable finish catch-up。
+        refreshTrackedDevSpaceIdleCandidates()
         devSpaceLastFallbackPollAt = Date.now()
       }
+      checkDevSpaceIdleNotifications()
       checkUnboundDevSpaceTimeouts()
 
       // 只做健康观测，不主动激活窗口。短暂的 renderer/CDP 抖动先累计失败次数；
