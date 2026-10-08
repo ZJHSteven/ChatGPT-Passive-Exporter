@@ -87,6 +87,7 @@ export interface ProtocolObserveRequestResult {
   baseline: boolean
   pending: boolean
   candidate: ProtocolReplayCandidate
+  assessment: ProtocolDriftAssessment | null
 }
 
 export interface ProtocolPendingChange {
@@ -100,6 +101,33 @@ export interface ProtocolPendingChange {
   count: number
   query: Record<string, string>
   candidate: ProtocolReplayCandidate
+}
+
+export type ProtocolDriftSeverity = 'info' | 'warning' | 'critical'
+
+/**
+ * 人类真正需要看的不是“又多了一个 16 位 hash”，而是：
+ * 1. 这次差异属于内容多态，还是会影响 Archive/Actor 的协议契约；
+ * 2. 具体新增/删除了什么字段；
+ * 3. 是否值得立刻 Bark。
+ *
+ * ledger 仍然保留完整 exact shape，方便取证；assessment 只负责把 exact evidence
+ * 归约成一个可读、可去重、可分级的语义事件。
+ */
+export interface ProtocolDriftAssessment {
+  severity: ProtocolDriftSeverity
+  notify: boolean
+  category: 'request-contract' | 'response-contract' | 'optional-shape' | 'observation'
+  summary: string
+  details: string[]
+  impact: string
+  dedupeKey: string
+  route: string
+  method: string
+  family: string
+  requestSignature: string
+  responseSignature?: string
+  count: number
 }
 
 const UUIDISH = /^[0-9a-f]{8}-[0-9a-f-]{20,}$/iu
@@ -119,6 +147,94 @@ function stableJson(value: unknown): string {
 
 function hashShape(value: unknown): string {
   return createHash('sha256').update(stableJson(value)).digest('hex').slice(0, 16)
+}
+
+function difference(left: string[], right: string[]): string[] {
+  const rightSet = new Set(right)
+  return left.filter(value => !rightSet.has(value))
+}
+
+function unionLists(values: string[][]): string[] {
+  return sortedUnique(values.flat())
+}
+
+function intersectLists(values: string[][]): string[] {
+  if (values.length === 0) return []
+  let output = [...values[0]!]
+  for (const current of values.slice(1)) output = output.filter(value => current.includes(value))
+  return sortedUnique(output)
+}
+
+/** offset/limit/before 的“值”会随正常分页变化，不应升级成协议漂移。key 本身仍会参与契约比较。 */
+function queryValueIsVolatile(key: string): boolean {
+  const normalized = key.toLowerCase()
+  return normalized === 'offset'
+    || normalized === 'limit'
+    || normalized === 'before'
+    || normalized.includes('cursor')
+    || normalized === 'ts'
+    || normalized.includes('timestamp')
+    || normalized === 'sig'
+    || normalized.includes('signature')
+    || normalized === 'id'
+}
+
+/**
+ * 这里的 family 是“兼容性契约家族”，与 replay candidate 不完全相同。
+ * 例如带 TPP filter 的 sidebar list 不能直接拿来 replay，但它仍属于 catalog 协议；
+ * stream_status 不用于普通归档 replay，却是 Watchdog/Phase 3 的关键协议。
+ */
+function protocolContractFamily(shape: ProtocolRequestShape): string {
+  if (shape.route === '/backend-api/conversations') return 'catalog'
+  if (shape.route === '/backend-api/conversations/{conversation_id}') return 'body-latest'
+  if (shape.route === '/backend-api/conversations/{conversation_id}/messages') return 'body-cursor'
+  if (shape.route === '/backend-api/conversation/{conversation_id}/stream_status') return 'stream-status'
+  if (shape.route === '/backend-api/conversation/{conversation_id}' && shape.method === 'GET') return 'mapping'
+  if (shape.route === '/backend-api/conversation/{conversation_id}' && shape.method !== 'GET') return 'conversation-action'
+  if (shape.route === '/backend-api/conversation/init') return 'conversation-init'
+  if (shape.route.startsWith('/backend-api/sentinel/chat-requirements/')) return 'sentinel'
+  if (shape.route === '/backend-api/f/conversation' || shape.route === '/backend-api/f/conversation/{id}') return 'turn-submit'
+  if (shape.route === '/backend-api/estuary/content') return 'asset'
+  if (shape.route === '/backend-api/celsius/ws/user') return 'realtime-bootstrap'
+  if (shape.route.includes('/gizmos/')) return 'gizmo'
+  return 'other'
+}
+
+function familyIsOperationallyImportant(family: string): boolean {
+  return [
+    'catalog',
+    'body-latest',
+    'body-cursor',
+    'mapping',
+    'stream-status',
+    'conversation-action',
+    'conversation-init',
+    'sentinel',
+    'turn-submit',
+  ].includes(family)
+}
+
+function familyLabel(family: string): string {
+  const labels: Record<string, string> = {
+    catalog: 'Conversation List',
+    'body-latest': 'Conversation Body',
+    'body-cursor': 'Conversation Body 分页',
+    mapping: 'Conversation Mapping',
+    'stream-status': 'Stream Status',
+    'conversation-action': 'Conversation Action',
+    'conversation-init': 'Conversation Init',
+    sentinel: 'Sentinel',
+    'turn-submit': 'Turn Submit',
+    asset: '附件/图片资源',
+    'realtime-bootstrap': 'Realtime Bootstrap',
+    gizmo: 'Gizmo',
+    other: '其它 Backend API',
+  }
+  return labels[family] || family
+}
+
+function assessmentDedupeKey(payload: unknown): string {
+  return hashShape(payload)
 }
 
 function protocolHeaderName(name: string): boolean {
