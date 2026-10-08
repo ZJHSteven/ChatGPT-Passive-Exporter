@@ -1,11 +1,12 @@
 ## 2026-10-08 Protocol Drift 实时分级 / 可读告警 ExecPlan
 
-- [in_progress] 复盘 2026-09-28 至今的 HTTP/DOM drift ledger、Bark report-state 与 2026-10-07 Watchdog 协议升级，区分“真实兼容性漂移”“第一方语义变体”“内容/metadata 多态噪声”，解释为什么真漂移被日报噪声淹没。
-- [pending] 将 HTTP drift 从“精确 shape hash 是否新出现”升级为语义分级：稳定 route/method/query/header/response 核心字段变化进入 warning/critical；message metadata 可选字段组合、分页 offset、已知 observation-only 资源等只作为 info evidence，不触发 Bark。
-- [pending] 为每个可通知 drift 生成可读 diff（具体 `+header/-header`、`+query/-query`、核心 response key 增删、route/method 变化及影响的 replay family），Bark 不再只输出不可解释的 hash。
-- [pending] 把重要 HTTP/DOM drift 改为 daemon 事件触发后短 debounce 聚合并立即 Bark；保留 CLI `protocol report` 作为人工审计入口，但卸载每日 12:00 定时通知，避免延迟到次日和一次堆几十项。
-- [pending] 增加 regression：内容型 metadata 变化不报警；稳定 request/header/query 漂移可读且分级；breaking response key 缺失为 critical；同一语义变化去重；实时 notifier 不重复；CLI report 与 daemon 使用同一 classifier/formatter。
-- [pending] 跑 node syntax、TypeScript typecheck、protocol/daemon 定向测试与全量测试；重载 production daemon，卸载 `ChatGPT Archive Protocol Drift` 日任务，并用本地 synthetic ledger 验证 Bark 文本而不主动访问 ChatGPT backend。
+- [done] 复盘 2026-09-28 至今的 HTTP/DOM drift ledger、Bark report-state 与 2026-10-07 Watchdog 协议升级，确认旧机制同时存在“daily 延迟”“exact-shape 噪声”“自己 canary/replay 污染”以及“只比 first-party baseline、不比 production implementation”四类问题。
+- [done] HTTP drift 已升级为语义分级：核心 request header/query/POST schema 与 response transport 契约才进入 warning/critical；`message.metadata`、附件/语音/writing block/search 等内容多态、分页值变化、late first observation、sidebar-only DOM 变化都只保留 forensic/info，不再 Bark。
+- [done] Bark/CLI 共用可读 formatter：直接说明 `新增协议 header`、`新增 POST 字段`、`缺少核心 response 字段`、route/method、影响与观察次数；semantic dedupe 会把 offset/new/continue 等多个 exact hash 合成一个人类事件。
+- [done] 重要 HTTP drift 改成 daemon 事件触发：warning 第二次稳定复现、critical 第一次出现即进入约 10 秒聚合窗口并 Bark；DOM 未知安全骨架由 Actor fail-closed 时立即 Bark。每日 12:00 `ChatGPT Archive Protocol Drift` 计划任务已卸载，CLI `protocol report` 仅保留为人工审计入口。
+- [done] 新增“first-party 当前协议 vs production replay header allowlist”正交检查，不依赖 24h baseline；专门补 2026-10-07 暴露的 bootstrap 漏报。生产当前扫描无未覆盖 header，因此部署没有补发历史假告警。
+- [done] regression 已覆盖：metadata 多态不报警；重复新 header 升 warning；Conversation Body 核心 `messages` 消失首见即 critical；生产 header 覆盖检查可发现 baseline 前已经存在但实现未覆盖的字段；DOM 历史 sidebar-only pending 自动降噪。
+- [done] `node --check`、TypeScript typecheck、全量 25 files / 177 tests 全通过。production daemon 已重载为 PID 14560，Bridge 正常，启动日志确认 WSS 恢复 3 sockets；重启原样继承既有 429 cooldown，没有主动探测/新增 ChatGPT backend 流量。
 
 ## 2026-10-08 Watchdog 468min / overnight 429 回放修复 ExecPlan
 
