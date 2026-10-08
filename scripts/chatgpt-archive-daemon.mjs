@@ -1962,6 +1962,86 @@ async function main() {
     return true
   }
 
+  const refreshDevSpaceIdleCandidate = (metadataId, now = Date.now()) => {
+    const state = devSpaceAuditBridge.metadataToolState(metadataId)
+    if (!state || state.runningTools > 0 || !state.latestFinishedAt || !state.lastFinishedAuditId) {
+      devSpaceIdleCandidates.delete(metadataId)
+      return null
+    }
+    const binding = archive.getDevSpaceMetadataBinding(metadataId)
+    if (binding?.lifecycleState === 'closed') {
+      devSpaceIdleCandidates.delete(metadataId)
+      return null
+    }
+    const generationKey = `${state.lastFinishedAuditId}:${state.latestFinishedAt}`
+    const previous = devSpaceIdleCandidates.get(metadataId)
+    const currentIdleMs = Math.max(0, now - state.latestFinishedAt)
+    devSpaceIdleCandidates.set(metadataId, {
+      state,
+      generationKey,
+      // 同 generation 继续累计；新 generation（包括 daemon 启动恢复）从“当前年龄”
+      // 开始观察，避免补发早已错过的历史 1/3 分钟通知。
+      lastCheckedIdleMs: previous?.generationKey === generationKey
+        ? Math.min(previous.lastCheckedIdleMs, currentIdleMs)
+        : currentIdleMs,
+    })
+    return state
+  }
+
+  const refreshTrackedDevSpaceIdleCandidates = () => {
+    for (const metadataId of [...devSpaceIdleCandidates.keys()]) {
+      refreshDevSpaceIdleCandidate(metadataId)
+    }
+  }
+
+  const checkDevSpaceIdleNotifications = (now = Date.now()) => {
+    for (const [metadataId, candidate] of [...devSpaceIdleCandidates.entries()]) {
+      const binding = archive.getDevSpaceMetadataBinding(metadataId)
+      if (binding?.lifecycleState === 'closed') {
+        devSpaceIdleCandidates.delete(metadataId)
+        continue
+      }
+      const currentIdleMs = Math.max(0, now - Number(candidate.state.latestFinishedAt || now))
+      const crossed = crossedDevSpaceIdleThresholds(candidate.lastCheckedIdleMs, currentIdleMs)
+      candidate.lastCheckedIdleMs = currentIdleMs
+      if (crossed.length === 0) continue
+
+      const conversationId = binding?.conversationId || null
+      const title = conversationId
+        ? conversationTitle(conversationId)
+        : candidate.state.title
+      for (const thresholdMs of crossed) {
+        const notificationKey = [
+          'devspace-idle',
+          metadataId,
+          candidate.state.lastFinishedAuditId,
+          thresholdMs,
+        ].join(':')
+        const queued = dispatchPersistentNotification({
+          notificationKey,
+          kind: 'devspace-idle',
+          conversationId,
+          turnKey: binding?.lastTurnExchangeId ?? null,
+          payload: buildDevSpaceIdleNotificationPayload({
+            conversationId,
+            title,
+            metadataId,
+            thresholdMs,
+          }),
+          successLog: 'DevSpace idle bug notification sent',
+          failureLog: 'DevSpace idle bug notification failed',
+          logFields: {
+            metadataId,
+            thresholdMs,
+            idleMs: currentIdleMs,
+            bound: Boolean(conversationId),
+          },
+        })
+        if (queued) devSpaceIdleNotificationsQueued += 1
+      }
+    }
+  }
+
   const notifyActorDomDrift = ({ phase, result, details }) => {
     if (!result?.signature || !result?.shape) return false
     const body = [
