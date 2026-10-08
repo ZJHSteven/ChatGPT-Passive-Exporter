@@ -7,7 +7,7 @@
 - 修复一：DevSpace seen-id 改为按“下一轮 poll 的 replay floor”生命周期清理，只要事件仍可能从 overlap 返回就持续去重，不再按绝对 2h 年龄遗忘。
 - 修复二：`watchdog:catalog-active-timeout` 成功诊断后保留带 `lastWatchdogAt` 的 active-watchdog tombstone；unchanged catalog active 不再原地重建。只有 `update_time` 真正前进时，才从 progress 观察时刻重置 `startedAt/lastEventAt` 并重新武装完整 45min 窗口。
 - 重启边界也已补齐：persisted catalog tombstone 在 daemon 重启后的首次 catalog scan 若已变 `complete` 会直接清除；若服务端 `update_time` 明确晚于 `lastWatchdogAt`，则视为停机期间的真实新进展并重新武装，避免 tombstone 永久占 active 或漏掉下一次 stall。
-- 验证：`node --check` PASS，TypeScript typecheck PASS，daemon 定向 38/38 tests，全量 25 files / 173 tests PASS。production daemon 重载为 PID 41224；WSS 3 sockets、Bridge 127.0.0.1:47832 正常、checkpoint polling=false；重启没有绕过限流，原 cooldown `2026-10-08 12:41:50 北京时间` 与 `cooldownRecoveryPending=true` 被完整继承。重载后未再出现陈旧 `1791393748804` / `179139491819x` startedAt 回放。
+- 验证：`node --check` PASS，TypeScript typecheck PASS，daemon 定向 38/38 tests，全量 25 files / 173 tests PASS。最终 production daemon 重载为 PID 59440；启动期 passive observer attach 完成后 WSS 恢复 3 sockets，Bridge 127.0.0.1:47832 正常、checkpoint polling=false；重启没有绕过限流，原 cooldown `2026-10-08 12:41:50 北京时间` 与 `cooldownRecoveryPending=true` 被完整继承。重载后未再出现陈旧 `1791393748804` / `179139491819x` startedAt 回放。
 
 ## 2026-09-28 WSS / Phase 3 LiveTurn / Phase 4 Actor 收口
 
