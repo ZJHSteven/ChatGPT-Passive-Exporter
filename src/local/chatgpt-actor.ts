@@ -27,6 +27,8 @@ interface ActorState {
   updatedAt: number
   /** `guardian` 表示借用 daemon 的常驻页；`dedicated` 才是 Actor 自己创建、可由 reset 关闭的页。 */
   source?: 'guardian' | 'dedicated'
+  /** 最近一次真正观察到正式 Actor POST 的时间，用于所有入口共享的 5 秒提交节拍。 */
+  lastSubmittedAt?: number | null
 }
 
 interface ActorLease {
@@ -37,6 +39,20 @@ interface ActorLease {
 }
 
 export type ActorTargetMode = 'guardian' | 'dedicated'
+
+/** 默认主动发送最小间隔，沿用已经稳定运行过的 batch 5 秒保护窗。 */
+export const DEFAULT_ACTOR_MIN_SUBMIT_GAP_MS = 5_000
+
+/** 纯函数计算距离下一次允许主动提交还要等待多久。 */
+export function actorSubmitGapDelayMs(
+  lastSubmittedAt: number | null | undefined,
+  now = Date.now(),
+  minGapMs = DEFAULT_ACTOR_MIN_SUBMIT_GAP_MS,
+): number {
+  const last = Number(lastSubmittedAt || 0)
+  if (!Number.isFinite(last) || last <= 0 || minGapMs <= 0) return 0
+  return Math.max(0, last + minGapMs - now)
+}
 
 /**
  * ChatGPT Web 的“普通新 turn”和“active follow-up steer”不是同一种响应协议：
@@ -328,6 +344,18 @@ async function writeActorState(statePath: string, state: ActorState): Promise<vo
   await fs.writeFile(statePath, JSON.stringify(state, null, 2))
 }
 
+/**
+ * 在拿到跨进程 lease 后等待共享提交间隔。这里只睡本机时钟，不访问 ChatGPT；
+ * 真正的 429 熔断继续由 daemon `cooldownUntil` 负责。
+ */
+async function waitForActorSubmitGap(statePath: string): Promise<number> {
+  const before = Date.now()
+  const state = await readActorState(statePath)
+  const delayMs = actorSubmitGapDelayMs(state?.lastSubmittedAt, before)
+  if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs))
+  return Date.now() - before
+}
+
 async function waitForTarget(cdpHttp: string, targetId: string, timeoutMs: number): Promise<CdpTarget> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -389,6 +417,7 @@ async function acquireActorTarget(
       createdAt: prior && prior.targetId === guardianTargetId ? prior.createdAt : Date.now(),
       updatedAt: Date.now(),
       source: 'guardian',
+      lastSubmittedAt: prior?.lastSubmittedAt ?? null,
     })
     return target
   }
@@ -407,11 +436,13 @@ async function acquireActorTarget(
 
   const created = await createActorTarget(cdpHttp, timeoutMs)
   const targetId = String(created.id ?? created.targetId)
+  const prior = await readActorState(statePath)
   await writeActorState(statePath, {
     targetId,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     source: 'dedicated',
+    lastSubmittedAt: prior?.lastSubmittedAt ?? null,
   })
   return created
 }
@@ -1425,6 +1456,7 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
             createdAt: prior?.createdAt ?? Date.now(),
             updatedAt: Date.now(),
             source: prior?.source ?? targetMode,
+            lastSubmittedAt: submitEvent.at,
           })
           return {
             targetId,
@@ -1499,10 +1531,12 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
   const timeoutMs = options.timeoutMs ?? 20_000
   const lease = await acquireActorLease(options, timeoutMs)
   try {
+    const submitGapWaitMs = await waitForActorSubmitGap(options.statePath)
     const result = await sendActorPromptUnlocked(options)
     return {
       ...result,
       leaseWaitMs: lease.waitMs,
+      submitGapWaitMs,
     }
   }
   finally {
