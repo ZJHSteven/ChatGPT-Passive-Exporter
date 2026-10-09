@@ -1,3 +1,13 @@
+# 2026-10-10 ClassFlow Notes Bridge / Actor 全局串行门 ExecPlan
+
+目标：把已经验证过的 Guardian Actor 正式开放给 ClassFlow Phase 3，同时保持账户级主动请求预算可控、Project 导航不破坏 LiveTurn，并给 N1 一个可恢复的异步黑盒接口。
+
+1. **Project 导航保持第一方 SPA**：`--project <name>` 只点击侧栏“在 <Project> 中开启新聊天”按钮并等待同 document route/composer 变化；不为 Project 创建调用 `Page.navigate()`。既有 2026-10-07 A-active→B-new 真机 canary 已证明同 Guardian SPA 切 conversation 不会中断 A 原始 SSE，也不会重建账户常驻 WSS。
+2. **统一全局发送节拍**：保留现有跨进程 Actor lease，新增共享 `lastSubmittedAt`；任何入口（CLI send、batch、Bridge、ClassFlow）在拿到 lease 后都必须保证距离上一条正式 `/f/conversation` 提交至少 5000ms。`actor batch --min-gap-ms` 仍可提供额外更保守间隔，但不再是唯一限速来源。429 继续服从 daemon `cooldownUntil`，严禁换 target 绕过。
+3. **Bridge 暴露已有 Project 参数**：`POST /v1/turns` 接受 `projectName`，daemon 原样传给 `sendActorPrompt()`；返回 CID 后 N1 通过现有 `GET /v1/conversations/:cid` 与 `/messages` 查询 canonical 生命周期和最终正文，不新增 ChatGPT polling。
+4. **ClassFlow 异步恢复语义**：Windows/Bridge 在提交前不可达时由 N1 保持 pending 并自动稍后再试；一旦 CID 已返回，N1 永久 checkpoint CID，后续只等 Archive canonical body。incident/abnormal terminal 直接失败并等待人工 retry，不自动创建第二个 conversation。
+5. **resume hardening 不阻塞上线**：第一方页面自己发起 `/f/conversation/resume` 时继续被动捕获。主动 resume 只有在完整第一方 request shape 与 capability 语义再次真机确认后才实现；raw resume token 若未来用于主动恢复，只允许活在 daemon 内存，绝不写 SQLite/state/log。当前 canonical body/final 仍是最终保底。
+
 # 2026-10-09 ClassFlow Phase 3：已有 Project 新聊天最小闭环
 
 ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产能力：把“一节完整课程”的 ASR 文本发送到既有 ChatGPT Project `课堂录音→笔记`，一节课一个全新 conversation，并在 Archive canonical body 落盘后把 assistant final 返回给调用方。

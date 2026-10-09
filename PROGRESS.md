@@ -1,3 +1,10 @@
+# 2026-10-10 ClassFlow Phase 3 Bridge 接线决策
+
+- 已重新确认 2026-10-07 production canary：A=`6ac603a3-...` 原始 SSE `58448.1079` 在同 Guardian SPA 创建 B=`6ac603af-...` 后继续收流；Guardian target 不变、WSS generation 1→1、activeSockets=3、HTTP429=0。故 Project 新建无需等待 handoff，也不需要第二个长期 Actor tab。
+- 当前 `--project` 实现就是第一方 SPA：点击 sidebar Project action 后 `waitForProjectRoute()` 等同 document route/composer ready，trace 为 `spa-project`；只有普通 conversation sidebar 找不到目标时才存在 `full-fallback`。
+- 当前 Actor 已有跨进程 lease、batch 默认 5s 与账户级 cooldown，但独立多进程 `actor send` 之间缺统一最小间隔。决定把 5000ms gap 下沉到共享 Actor lease/state，使 CLI/Bridge/ClassFlow 所有入口统一串行限速，不再另造复杂 rate limiter。
+- resume 历史证据再次核对：`/f/conversation/resume` 请求体至少含 `conversation_id + offset`；same-profile 第一方页面可自然发起 resume，而缺失 persisted capability 的 fresh client 实测 404。当前 recorder 只保存 resume token hash/长度，因此主动 resume 暂不猜协议；上线先依赖第一方自然 resume + canonical body/final 兜底。
+
 # 2026-10-09 Project Actor / ClassFlow Phase 3 衔接
 
 - Phase 4 既有主链已再次核实：`actor send` 的正式 `/f/conversation` POST 会立即由页面 passive observer 建立 LiveTurn，SSE 绑定 `conversation_id/turn_exchange_id`，WSS `conversation-turn-complete` 触发即时 body sync；6 小时 reconcile 仅是最终一致性兜底，不是正常结果回收路径。
