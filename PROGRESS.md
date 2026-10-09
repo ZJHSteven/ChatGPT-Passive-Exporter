@@ -4,6 +4,8 @@
 - Project DOM drift `8cb7d72cbe3f8deb` 已人工核对并批准；随后真实阻塞推进为 `ChatGPT actor prompt input not found`。
 - 根因已定位：`readActorPageSnapshot()` / DOM 指纹在 `9c2ec08` 已改为通过 `form[data-chatgpt-composer]` 判断超长 contenteditable，但 `clearAndTypePrompt()` 与 `clickSendHandler()` 仍残留旧 `elementFromPoint(rect 中心)` 判定。32k 级课堂文本会让 contenteditable 高度膨胀到数万像素，中心点落到正文区而产生假阴性。
 - 本轮统一填词与发送阶段的 composer 身份判据：真实可见 textbox + 隶属第一方 `form[data-chatgpt-composer]`。Guardian 当前 Project 页面已实测 `composerPresent=true / composerHydrated=true / sendReady=true`；重试前 Actor 会先 Ctrl+A 清空 Project 草稿，再写入完整 lecture transcript。
+- 真实 smoke 已成功创建 Project conversation `6ac9426f-6124-83e9-9cc8-84f010189e53`；Actor trace 记录正式 `/f/conversation` HTTP 200、`text/event-stream`、`spa-project`、`runningConfirmed=true`。当前页面真实 URL 为 `/g/g-p-...-ke-tang-lu-yin-bi-ji/c/<uuid>`，模型仍处于 `stopVisible=true` 生成中。
+- 同时发现 snapshot/DOM drift 路径识别仍只覆盖普通 `/c/<uuid>`，导致 Project conversation 页面被错误报告为 `conversationId=null / routeKind=project`。本轮把两处 pathname 正则统一扩展为普通 conversation + Project conversation；不在当前生成期间重启 daemon，待该 turn 结束后再加载。
 # 2026-10-10 ClassFlow Phase 3 Bridge 接线决策
 
 - 已重新确认 2026-10-07 production canary：A=`6ac603a3-...` 原始 SSE `58448.1079` 在同 Guardian SPA 创建 B=`6ac603af-...` 后继续收流；Guardian target 不变、WSS generation 1→1、activeSockets=3、HTTP429=0。故 Project 新建无需等待 handoff，也不需要第二个长期 Actor tab。
