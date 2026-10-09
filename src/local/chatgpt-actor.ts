@@ -959,7 +959,7 @@ async function clickProjectNewChatSpa(client: ActorCdpClient, projectName: strin
       // 误报成“Project 不存在”。但如果 Project 行已经在 DOM，只是 action 被旧的交互性
       // 判据过滤掉，就绝不能再点一次分组标题——那会把已经展开的项目区反向折叠。
       if (!projectActionExistsInDom) {
-        const sectionToggle = [...document.querySelectorAll('button')].filter(usable).find((button) => {
+        const sectionToggle = [...document.querySelectorAll('button')].filter(usableExactProjectAction).find((button) => {
           const identity = [button.getAttribute('aria-label') || '', button.innerText || ''].join(' ')
             .replace(/\s+/gu, ' ')
             .trim()
@@ -967,8 +967,13 @@ async function clickProjectNewChatSpa(client: ActorCdpClient, projectName: strin
         })
         if (sectionToggle) {
           sectionToggle.click()
-          await new Promise(resolve => setTimeout(resolve, 250))
-          target = findTarget()
+          // sidebar section 是异步 React hydration：固定 250ms 在后台 Guardian 上偶尔不够。
+          // 这里只等待 DOM 中出现精确 Project action，不发任何网络请求。
+          const deadline = Date.now() + 2_000
+          while (!target && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 100))
+            target = findTarget()
+          }
         }
       }
     }
