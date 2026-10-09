@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   activeApiAllowed,
+  buildDevSpaceCheckpointNotificationPayload,
   buildDevSpaceConclusionNotificationPayload,
   buildDevSpaceIdleNotificationPayload,
   buildCooldownNotificationPayload,
@@ -20,6 +21,7 @@ import {
   conversationIdFromTargetUrl,
   decodeCdpResponseBodyBytes,
   devSpaceFirstToolWatchdogState,
+  extractDevSpaceCheckpoint,
   extractDevSpaceConclusion,
   estuaryFileIdFromUrl,
   resolvedEstuaryUrlForFile,
@@ -98,6 +100,31 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     })
     expect(unnamed.body).toContain('meta/abcdefgh')
     expect(unnamed.body).not.toContain('v1/abcdefgh12345678')
+  })
+
+  test('Checkpoint 解析 summary/next，并使用独立阶段进展 Bark 分组', () => {
+    expect(extractDevSpaceCheckpoint(JSON.stringify({
+      summary: '  已确认虚拟 conversation 可以在 binding 前持续积累。  ',
+      next: '  转入 canonical supersede 验证。  ',
+    }))).toEqual({
+      summary: '已确认虚拟 conversation 可以在 binding 前持续积累。',
+      next: '转入 canonical supersede 验证。',
+    })
+    expect(extractDevSpaceCheckpoint('{"summary":"   "}')).toBeNull()
+    expect(extractDevSpaceCheckpoint('{broken')).toBeNull()
+
+    const payload = buildDevSpaceCheckpointNotificationPayload({
+      title: 'Archive 临时 Conversation',
+      metadataId: 'v1/abcdefgh12345678',
+      summary: '阶段一已经完成。',
+      next: '开始生产 E2E。',
+    })
+    expect(payload.title).toContain('Checkpoint')
+    expect(payload.body).toContain('以“Archive 临时 Conversation”为主题')
+    expect(payload.body).toContain('阶段一已经完成。')
+    expect(payload.body).toContain('下一阶段：开始生产 E2E。')
+    expect(payload.group).toBe('DevSpace Checkpoint')
+    expect(payload).not.toHaveProperty('url')
   })
 
   test('DevSpace idle 只在 1/3/5 分钟边界穿越时触发，重启不会补轰炸旧阈值', () => {
