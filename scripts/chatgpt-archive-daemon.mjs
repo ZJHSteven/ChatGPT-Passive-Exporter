@@ -1099,6 +1099,33 @@ export function extractDevSpaceConclusion(argsJson) {
 }
 
 /**
+ * 新版独立 checkpoint 工具的结构化阶段结论。
+ *
+ * 与 legacy conclusion 不同，checkpoint 自己就是一条独立 audit，因此 summary 必须代表
+ * 已形成的阶段事实；next 只允许宏观下一阶段。解析失败永远降级为“没有 checkpoint”，
+ * 不能影响普通 DevSpace audit / Watchdog 主链。
+ */
+export function extractDevSpaceCheckpoint(argsJson) {
+  try {
+    const parsed = JSON.parse(String(argsJson || ''))
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.summary !== 'string') return null
+    const summary = parsed.summary.trim()
+    if (!summary) return null
+    const next = typeof parsed.next === 'string' && parsed.next.trim()
+      ? parsed.next.trim()
+      : null
+    const clamp = value => value.length > 1800 ? `${value.slice(0, 1799)}…` : value
+    return {
+      summary: clamp(summary),
+      next: next ? clamp(next) : null,
+    }
+  }
+  catch {
+    return null
+  }
+}
+
+/**
  * Conclusion 是工具链中的“阶段性结论”，不是 turn final，也不改变任何 Archive 生命周期。
  * 手机展示优先给可读聊天名；只有 conversation/title 都没有时才给 `meta/XXXXXXXX` 短别名，
  * 完整 metadata ID 始终只留在内部日志与 SQLite。
@@ -1123,6 +1150,31 @@ export function buildDevSpaceConclusionNotificationPayload({
       String(conclusion || '').trim(),
     ].filter(Boolean).join('\n'),
     group: 'DevSpace Conclusion',
+  }
+  if (conversationId) payload.url = `https://chatgpt.com/c/${conversationId}`
+  return payload
+}
+
+export function buildDevSpaceCheckpointNotificationPayload({
+  conversationId = null,
+  title = null,
+  metadataId = null,
+  summary,
+  next = null,
+}) {
+  const subject = title
+    ? conversationId
+      ? `聊天：${title}`
+      : `聊天：以“${title}”为主题（尚未绑定 Conversation）`
+    : `聊天：未命名（${shortDevSpaceMetadataAlias(metadataId)}，尚未绑定 Conversation）`
+  const payload = {
+    title: 'DevSpace Checkpoint · 阶段进展',
+    body: [
+      subject,
+      String(summary || '').trim(),
+      next ? `下一阶段：${String(next).trim()}` : null,
+    ].filter(Boolean).join('\n'),
+    group: 'DevSpace Checkpoint',
   }
   if (conversationId) payload.url = `https://chatgpt.com/c/${conversationId}`
   return payload
