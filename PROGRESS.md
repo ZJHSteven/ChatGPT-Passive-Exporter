@@ -6,6 +6,15 @@
 - Project 分组折叠与后台 hover action 两项 DOM 细节分别修于 `a3e6700`、`016d2be`；Actor targeted tests 10/10、TypeScript typecheck 均通过。
 - 真机 E2E 暂未发出测试 conversation：首次 smoke 发现 Project 分组折叠，修复后进一步发现 Guardian 生命周期正处于既有 CDP/网络故障。独立 browser-harness 新建后台 tab 直接 `Page.navigate(https://chatgpt.com)` 返回 `net::ERR_CONNECTION_CLOSED`，curl 通过 Mihomo mixed-port CONNECT 也在 TLS handshake 被关闭；临时切 `ATT-家宽-0tlpf6x2` 后现象相同，随后已恢复原 `替补-美东1`。Archive daemon 已重新拉起（PID 23752），但当前 Guardian 仍为 `chrome-error://chromewebdata/`、WSS=0，因此不继续假测 Project 功能。
 
+## 2026-10-10 未绑定 DevSpace 虚拟 Conversation / 独立 Checkpoint
+
+- recovery overlay 已从“只有 metadata 绑定后才开始”前移到**任意 DevSpace metadata 第一条 tool audit**：未绑定时使用稳定 synthetic id `devspace-meta/<sha256 前 16 hex>`，并把 `init.title` 持久到 Archive binding 的 `display_title`；无 title 才显示 `meta/XXXXXXXX`。synthetic conversation 只由 Bridge/Reader 动态投影，不向 canonical `conversations/messages`、mapping、FTS、terminal/incident 表插假行。
+- Bridge `/v1/conversations`、`/v1/conversations/:id`、`/messages` 已支持 provisional conversation。Reader 因此可以在 ChatGPT Body 尚未到达、cooldown/429/CDP/REST 不可用甚至服务器最终漏节点时，提前看到 DevSpace tool-call/result 与 checkpoint；生命周期只报告 provisional `running/idle`，不进入正式 Watchdog/incident 判定。
+- metadata 后续通过 exact tool+args 获得可靠 canonical binding 时，同 metadata 的 active recovery audits 直接 `UPDATE conversation_id` 原位迁移到真实 CID；不复制、不删除 forensic audit。synthetic conversation 随后自动从列表消失。canonical body 仍按 `tool + canonical args + ±120s` 逐条 supersede 普通 provisional tool audit，未重合的异常尾部永久保留。
+- 新版独立 `checkpoint(summary,next?)` 已接入 Archive：一个 checkpoint audit 只投影成一条 provisional assistant commentary，不再伪装成普通 tool call/result。canonical body 仅出现 `checkpoint` 工具调用时**不会**把它删掉；只有时间邻近、可见非-analysis assistant 文本明确包含完整 summary 时才高置信 supersede。无法可靠对应时宁可继续保留 provisional，不做模糊语义猜测。
+- Bark 同时兼容两代：新版 `checkpoint` 使用独立 group=`DevSpace Checkpoint`，正文为阶段 summary + 可选宏观 next；历史/旧 Host 缓存的 `args.conclusion` 继续走 legacy `DevSpace Conclusion` 分组。两者均沿用 audit-id 持久去重和 binding > title > short metadata 的身份显示优先级。
+- 当前改造完全旁路，不新增 ChatGPT 请求，不改变 WSS/body sync/cooldown/watchdog/incident 主链。定向回归 `archive-db + archive-bridge + archive-daemon + devspace-audit-bridge` 4 files / 82 tests PASS；最终 current-main `node --check`、TypeScript PASS、全量 **25 files / 189 tests** PASS，Chrome/Edge/Firefox/Userscript 四套 build 全 PASS。待 production daemon 受控重载与自然真机 canary。
+
 ## 2026-10-09 DevSpace Recover provisional Conversation Body overlay
 
 - 已把“Conversation Body 因 cooldown/429/CDP 不可用而暂时拉不下来”与“本地 DevSpace 工具事实已经存在”正式拆成两层：新增 `devspace_recovery_audits` 本地持久表，保存已绑定 metadata 的 audit id、tool、canonical args fingerprint、result/error、Conclusion、start/finish 时间，以及后续 canonical supersede 证据。它不是 ChatGPT first-party `messages`，不参与 mapping、terminal、incident 或 Watchdog 判定。
