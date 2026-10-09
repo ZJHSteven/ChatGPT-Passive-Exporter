@@ -25,7 +25,7 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 7. 新 schema 不再在 `read/exec_command/write_stdin` 暴露 `conclusion`；旧 Host 缓存继续传多余字段时保持兼容、不让工具调用报错。Archive 同时兼容历史 `args.conclusion` 与新 `checkpoint` audit，Bark/overlay 均优先识别 checkpoint。
 8. 所有更改保持旁路：不新增 ChatGPT 网络请求、不改变 active/watchdog/cooldown 状态机。回归必须覆盖 unbound->virtual、title fallback、late binding migrate、canonical supersede、orphan tail 保留、checkpoint 单节点展示、旧 conclusion 兼容，以及 Bridge 分页/列表行为。
 
-状态：设计已确认，开始实现；canonical Archive 主表与 Watchdog/incident 主链保持不动。
+状态：已完成并部署 production。canonical Archive 主表与 Watchdog/incident 主链保持不动；定向 82/82、全量 25 files / 189 tests 与四套 build 全通过。production daemon PID 22584，WSS=3、Bridge/LifeOps/DevSpace listener 正常、`lastError=null`；`display_title` migration 已生效。当前暂无部署后新产生的未绑定 metadata，因此 synthetic recovery rows 仍为 0；不为 canary 伪造 audit，等待下一条真实未绑定 metadata 自然验证。
 
 ## 2026-10-09 DevSpace Recover provisional body overlay ExecPlan
 

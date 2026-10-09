@@ -14,6 +14,7 @@
 - 新版独立 `checkpoint(summary,next?)` 已接入 Archive：一个 checkpoint audit 只投影成一条 provisional assistant commentary，不再伪装成普通 tool call/result。canonical body 仅出现 `checkpoint` 工具调用时**不会**把它删掉；只有时间邻近、可见非-analysis assistant 文本明确包含完整 summary 时才高置信 supersede。无法可靠对应时宁可继续保留 provisional，不做模糊语义猜测。
 - Bark 同时兼容两代：新版 `checkpoint` 使用独立 group=`DevSpace Checkpoint`，正文为阶段 summary + 可选宏观 next；历史/旧 Host 缓存的 `args.conclusion` 继续走 legacy `DevSpace Conclusion` 分组。两者均沿用 audit-id 持久去重和 binding > title > short metadata 的身份显示优先级。
 - 当前改造完全旁路，不新增 ChatGPT 请求，不改变 WSS/body sync/cooldown/watchdog/incident 主链。定向回归 `archive-db + archive-bridge + archive-daemon + devspace-audit-bridge` 4 files / 82 tests PASS；最终 current-main `node --check`、TypeScript PASS、全量 **25 files / 189 tests** PASS，Chrome/Edge/Firefox/Userscript 四套 build 全 PASS。待 production daemon 受控重载与自然真机 canary。
+- production Archive 已由 PID 34976 受控重载到 PID 22584。启动 grace 后 WSS 自然恢复到 3 sockets 且 `gapStartedAt=null`；Bridge listening=true、LifeOps enabled=true、DevSpace UDP listener=true、`lastError=null`。SQLite 已确认 `devspace_metadata_bindings.display_title` migration 存在，当前真实绑定 title 已开始落盘。部署时 `devspace_recovery_audits` 共 1724 条、active 1448 条；部署后尚无新的未绑定 metadata audit，所以 `conversation_id LIKE 'devspace-meta/%'` 仍为 0。该线上缺口只代表还没有自然 canary，unbound→virtual→binding migrate→canonical supersede 已由回归覆盖，不人工污染真实审计库。
 
 ## 2026-10-09 DevSpace Recover provisional Conversation Body overlay
 
