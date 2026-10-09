@@ -2325,6 +2325,9 @@ async function main() {
     for (const row of rows) {
       const call = parseDevSpaceBodyToolCall(String(row.text || ''), Number(row.createTime) * 1000)
       if (!call) continue
+      // checkpoint 的 provisional assistant 语义不能仅因为 canonical tool-call 到达就消失；
+      // 它要等真正 assistant commentary 明确复述 summary 才覆盖。
+      if (call.tool === 'checkpoint') continue
       const toolFingerprint = devSpaceToolArgsFingerprint(call.tool, call.argsJson)
       if (!toolFingerprint) continue
       const matchedAuditId = archive.supersedeDevSpaceRecoveryAudit({
@@ -2335,6 +2338,29 @@ async function main() {
         observedAt: Date.now(),
       })
       if (matchedAuditId) superseded += 1
+    }
+
+    const assistantRows = archive.db.prepare(`
+      SELECT message_id AS messageId, create_time AS createTime, text
+      FROM messages
+      WHERE conversation_id = ?
+        AND role = 'assistant'
+        AND hidden = 0
+        AND create_time IS NOT NULL
+        AND create_time BETWEEN ? AND ?
+        AND text <> ''
+        AND COALESCE(channel, '') <> 'analysis'
+      ORDER BY create_time ASC, row_id ASC
+    `).all(conversationId, minAt / 1000, maxAt / 1000)
+    for (const row of assistantRows) {
+      const matchedCheckpointId = archive.supersedeDevSpaceCheckpointFromAssistant({
+        conversationId,
+        assistantText: String(row.text || ''),
+        assistantStartedAt: Number(row.createTime) * 1000,
+        canonicalMessageId: String(row.messageId || ''),
+        observedAt: Date.now(),
+      })
+      if (matchedCheckpointId) superseded += 1
     }
     return superseded
   }
