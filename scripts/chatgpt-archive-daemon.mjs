@@ -2193,43 +2193,56 @@ async function main() {
   }
 
   /**
-   * DevSpace audit 一旦携带 conclusion 就立即旁路 Bark。
-   *
-   * 这里故意先解析 conclusion、确认非空后才额外读取 metadata title / binding，避免给绝大多数
-   * 普通工具调用增加 SQLite 查询。通知 key 直接使用 append-only audit id，因此 begin/finish UDP、
-   * 60 秒 durable catch-up、daemon 重启重放都只能成功发送一次。
+   * 阶段 checkpoint / legacy conclusion 都立即旁路 Bark，但二者语义分开：
+   * - checkpoint：新版独立工具，应该代表真正阶段进展；
+   * - conclusion：旧 schema 兼容，仅为历史/缓存会话继续可见，不再鼓励新模型使用。
    */
-  const dispatchDevSpaceConclusionNotification = (event) => {
+  const dispatchDevSpaceProgressNotification = (event) => {
     if (!notificationConfig || !event?.id || !event?.metadataId) return false
-    const conclusion = extractDevSpaceConclusion(event.argsJson)
-    if (!conclusion) return false
+    const checkpoint = event.tool === 'checkpoint' ? extractDevSpaceCheckpoint(event.argsJson) : null
+    const legacyConclusion = checkpoint ? null : extractDevSpaceConclusion(event.argsJson)
+    if (!checkpoint && !legacyConclusion) return false
 
     const binding = archive.getDevSpaceMetadataBinding(event.metadataId)
     const conversationId = binding?.conversationId || null
     const metadataState = conversationId ? null : devSpaceAuditBridge.metadataToolState(event.metadataId)
     const title = conversationId
       ? conversationTitle(conversationId)
-      : metadataState?.title ?? null
+      : binding?.displayTitle ?? metadataState?.title ?? null
+    const isCheckpoint = Boolean(checkpoint)
 
     return dispatchPersistentNotification({
-      notificationKey: `devspace-conclusion:${event.id}`,
-      kind: 'devspace-conclusion',
+      notificationKey: `${isCheckpoint ? 'devspace-checkpoint' : 'devspace-conclusion'}:${event.id}`,
+      kind: isCheckpoint ? 'devspace-checkpoint' : 'devspace-conclusion',
       conversationId,
       turnKey: binding?.lastTurnExchangeId ?? null,
-      payload: buildDevSpaceConclusionNotificationPayload({
-        conversationId,
-        title,
-        metadataId: event.metadataId,
-        tool: event.tool,
-        conclusion,
-      }),
-      successLog: 'DevSpace conclusion notification sent',
-      failureLog: 'DevSpace conclusion notification failed',
+      payload: isCheckpoint
+        ? buildDevSpaceCheckpointNotificationPayload({
+            conversationId,
+            title,
+            metadataId: event.metadataId,
+            summary: checkpoint.summary,
+            next: checkpoint.next,
+          })
+        : buildDevSpaceConclusionNotificationPayload({
+            conversationId,
+            title,
+            metadataId: event.metadataId,
+            tool: event.tool,
+            conclusion: legacyConclusion,
+          }),
+      successLog: isCheckpoint
+        ? 'DevSpace checkpoint notification sent'
+        : 'DevSpace conclusion notification sent',
+      failureLog: isCheckpoint
+        ? 'DevSpace checkpoint notification failed'
+        : 'DevSpace conclusion notification failed',
       logFields: {
         metadataId: event.metadataId,
         auditId: event.id,
         tool: event.tool,
         bound: Boolean(conversationId),
+        checkpoint: isCheckpoint,
       },
     })
   }
