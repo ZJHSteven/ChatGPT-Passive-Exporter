@@ -146,6 +146,86 @@ afterEach(async () => {
 })
 
 describe('Archive Bridge', () => {
+  test('未绑定 DevSpace metadata 作为 provisional conversation 出现在列表、详情和消息 API', async () => {
+    const archive = mockArchive()
+    archive.listDevSpaceRecoveryVirtualConversations = () => [{
+      id: 'devspace-meta/abc123',
+      title: '尚未绑定的工作流',
+      sourceFormat: 'devspace-provisional',
+      currentNode: null,
+      capturedAt: 300,
+      importedAt: 300,
+      messageCount: 1,
+      resourceCount: 0,
+      terminalState: null,
+      incidentState: null,
+      lastFinishType: null,
+      lastFinishReason: null,
+      lastReasoningStatus: null,
+      provisional: true,
+      metadataId: 'v1/abc123456789',
+      provisionalState: 'running',
+    }]
+    archive.getDevSpaceRecoveryMessages = (conversationId: string) => conversationId === 'devspace-meta/abc123'
+      ? [{
+          messageId: 'devspace-recovery:checkpoint-1:checkpoint',
+          ordinal: 0,
+          role: 'assistant',
+          authorName: 'DevSpace Checkpoint',
+          recipient: 'all',
+          channel: 'commentary',
+          contentType: 'text',
+          text: '阶段一已完成。',
+          hidden: 0,
+          createTime: 4,
+          status: 'provisional',
+          provisional: true,
+          recoverySource: 'devspace-checkpoint',
+          recoveryKind: 'assistant-checkpoint',
+          auditId: 'checkpoint-1',
+          metadataId: 'v1/abc123456789',
+          superseded: false,
+        }]
+      : []
+
+    const { base, headers } = await startBridge(undefined, archive)
+    const listResponse = await fetch(`${base}/v1/conversations?limit=10`, { headers })
+    expect(listResponse.status).toBe(200)
+    const listBody = await listResponse.json() as { conversations: Array<Record<string, unknown>> }
+    expect(listBody.conversations[0]).toMatchObject({
+      id: 'devspace-meta/abc123',
+      title: '尚未绑定的工作流',
+      provisional: true,
+      metadataId: 'v1/abc123456789',
+      lifecycleState: 'running',
+    })
+
+    const encoded = encodeURIComponent('devspace-meta/abc123')
+    const detailResponse = await fetch(`${base}/v1/conversations/${encoded}`, { headers })
+    expect(detailResponse.status).toBe(200)
+    expect(await detailResponse.json()).toMatchObject({
+      conversation: {
+        id: 'devspace-meta/abc123',
+        provisional: true,
+        lifecycleState: 'running',
+      },
+      active: null,
+      incidents: [],
+    })
+
+    const messagesResponse = await fetch(`${base}/v1/conversations/${encoded}/messages`, { headers })
+    expect(messagesResponse.status).toBe(200)
+    expect(await messagesResponse.json()).toMatchObject({
+      canonicalCount: 0,
+      provisionalCount: 1,
+      messages: [{
+        recoveryKind: 'assistant-checkpoint',
+        recoverySource: 'devspace-checkpoint',
+        text: '阶段一已完成。',
+      }],
+    })
+  })
+
   test('messages API 在 canonical 尾部追加带 provenance 的 DevSpace provisional recovery', async () => {
     const archive = mockArchive()
     archive.getDevSpaceRecoveryMessages = (conversationId: string) => conversationId === 'cid-1'
