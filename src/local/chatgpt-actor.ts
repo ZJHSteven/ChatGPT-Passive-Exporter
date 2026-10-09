@@ -925,14 +925,16 @@ async function clickProjectNewChatSpa(client: ActorCdpClient, projectName: strin
       // 这是 Actor 自己通过 HTMLElement.click() 触发的一方按钮，不依赖鼠标命中测试。
       // 2026-10-10 当前 Web 会在 sidebar 图标按钮上临时/常驻设置 pointer-events:none，
       // 但元素本身仍是 React 绑定的真实 button，程序化 click 能正常进入 Project composer。
-      // 因此这里不能再把 pointer-events 当成“Project 不存在”的判据；仍保留尺寸和祖先
-      // hidden/inert/display/visibility/opacity 约束，防止误点隐藏副本。
+      // 因此这里不能再把 pointer-events 当成“Project 不存在”的判据。当前 Web 还会把
+      // Project 行尾 hover action 包在 opacity=0 的 SPAN/DIV 里：元素仍有真实 20x20 rect，
+      // React click handler 也仍挂载，只是等待鼠标 hover 才视觉显示。HTMLElement.click() 不受
+      // CSS opacity 影响，所以这里同样不能用 opacity 过滤。仍保留尺寸、hidden/inert、
+      // display:none 与 visibility:hidden/collapse，避免点击真正不可达的隐藏副本。
       for (let node = element; node; node = node.parentElement) {
         if (!(node instanceof HTMLElement)) continue
         if (node.hidden || node.hasAttribute('inert')) return false
         const style = window.getComputedStyle(node)
         if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false
-        if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
         if (node === document.documentElement) break
       }
       return true
