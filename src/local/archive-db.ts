@@ -3047,16 +3047,18 @@ export class ChatArchiveDb {
     metadataId: string
     auditId: string
     auditAt: number
+    displayTitle?: string | null
   }): DevSpaceMetadataBindingRow {
     const metadataId = input.metadataId.trim()
     if (!metadataId) throw new Error('metadataId must not be empty')
     const auditAt = Math.max(0, Math.trunc(input.auditAt))
     this.db.prepare(`
       INSERT INTO devspace_metadata_bindings (
-        metadata_id, conversation_id, first_seen_at, last_seen_at,
+        metadata_id, conversation_id, display_title, first_seen_at, last_seen_at,
         last_audit_id, last_audit_at, lifecycle_state
-      ) VALUES (?, NULL, ?, ?, ?, ?, 'unbound')
+      ) VALUES (?, NULL, ?, ?, ?, ?, ?, 'unbound')
       ON CONFLICT(metadata_id) DO UPDATE SET
+        display_title=COALESCE(NULLIF(excluded.display_title, ''), devspace_metadata_bindings.display_title),
         first_seen_at=CASE
           WHEN devspace_metadata_bindings.conversation_id IS NULL
             AND devspace_metadata_bindings.unbound_watchdog_at IS NOT NULL
@@ -3076,7 +3078,14 @@ export class ChatArchiveDb {
           THEN NULL
           ELSE devspace_metadata_bindings.unbound_watchdog_at
         END
-    `).run(metadataId, auditAt, auditAt, input.auditId, auditAt)
+    `).run(
+      metadataId,
+      input.displayTitle?.trim() || null,
+      auditAt,
+      auditAt,
+      input.auditId,
+      auditAt,
+    )
     return this.getDevSpaceMetadataBinding(metadataId)!
   }
 
@@ -3114,6 +3123,7 @@ export class ChatArchiveDb {
   getDevSpaceMetadataBinding(metadataId: string): DevSpaceMetadataBindingRow | null {
     const row = this.db.prepare(`
       SELECT metadata_id AS metadataId, conversation_id AS conversationId,
+             display_title AS displayTitle,
              first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
              bound_at AS boundAt, last_verified_at AS lastVerifiedAt,
              evidence, confidence,
@@ -3132,6 +3142,7 @@ export class ChatArchiveDb {
   getDevSpaceMetadataBindingsForConversation(conversationId: string): DevSpaceMetadataBindingRow[] {
     return this.db.prepare(`
       SELECT metadata_id AS metadataId, conversation_id AS conversationId,
+             display_title AS displayTitle,
              first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
              bound_at AS boundAt, last_verified_at AS lastVerifiedAt,
              evidence, confidence,
@@ -3380,6 +3391,7 @@ export class ChatArchiveDb {
     params.push(Math.max(1, Math.trunc(input.limit ?? 100)))
     return this.db.prepare(`
       SELECT metadata_id AS metadataId, conversation_id AS conversationId,
+             display_title AS displayTitle,
              first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
              bound_at AS boundAt, last_verified_at AS lastVerifiedAt,
              evidence, confidence,
@@ -3399,6 +3411,7 @@ export class ChatArchiveDb {
   bindDevSpaceMetadata(input: {
     metadataId: string
     conversationId: string
+    displayTitle?: string | null
     evidence: string
     confidence: string
     observedAt: number
@@ -3411,12 +3424,13 @@ export class ChatArchiveDb {
     const firstSeenAt = existing?.firstSeenAt ?? observedAt
     this.db.prepare(`
       INSERT INTO devspace_metadata_bindings (
-        metadata_id, conversation_id, first_seen_at, last_seen_at,
+        metadata_id, conversation_id, display_title, first_seen_at, last_seen_at,
         bound_at, last_verified_at, evidence, confidence,
         last_turn_exchange_id, last_request_id, lifecycle_state
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(metadata_id) DO UPDATE SET
         conversation_id=excluded.conversation_id,
+        display_title=COALESCE(NULLIF(excluded.display_title, ''), devspace_metadata_bindings.display_title),
         bound_at=CASE
           WHEN devspace_metadata_bindings.conversation_id IS NULL
             OR devspace_metadata_bindings.conversation_id <> excluded.conversation_id
@@ -3433,6 +3447,7 @@ export class ChatArchiveDb {
     `).run(
       input.metadataId,
       input.conversationId,
+      input.displayTitle?.trim() || null,
       firstSeenAt,
       Math.max(existing?.lastSeenAt ?? 0, observedAt),
       observedAt,
