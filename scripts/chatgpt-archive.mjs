@@ -56,7 +56,7 @@ Usage:
   chatgpt-archive reindex [--all] [--db <path>]
   chatgpt-archive incidents [--status open|resolved] [--limit N] [--db <path>]
   chatgpt-archive turn-trace [--limit N] [--trace <path>] [--cluster-ms N]
-  chatgpt-archive actor send --prompt-file <path> [--mode auto|new|continue|steer] [--target guardian|dedicated] [--conversation <UUID>] [--cdp URL] [--trace <path>] [--state <path>] [--dom-ledger <path>]
+  chatgpt-archive actor send --prompt-file <path> [--mode auto|new|continue|steer] [--project <name>] [--wait-final] [--final-timeout-ms N] [--target guardian|dedicated] [--conversation <UUID>] [--cdp URL] [--trace <path>] [--state <path>] [--dom-ledger <path>]
   chatgpt-archive actor batch --jobs-file <json> [--target guardian|dedicated] [--min-gap-ms N] [--cdp URL] [--trace <path>] [--state <path>] [--dom-ledger <path>]
   chatgpt-archive actor inspect [--target guardian|dedicated] [--cdp URL] [--state <path>]
   chatgpt-archive actor status [--cdp URL] [--state <path>]
@@ -117,6 +117,65 @@ function parseArgs(argv) {
 function dbPath(flags) {
   const explicit = flags.get('db') ?? process.env.CHATGPT_ARCHIVE_DB
   return explicit === undefined ? DEFAULT_DB_PATH : path.resolve(String(explicit))
+}
+
+/**
+ * 从 Archive 已经归一化的消息里寻找“本次 Actor 提交之后”的 assistant final。
+ *
+ * 这里不能简单取 conversation 最后一条 assistant：同一个 CID 可能已经有很多历史 turn。
+ * `submittedAt` 来自 Actor 观察到正式 `/f/conversation` POST 的 requestWillBeSent 时刻，
+ * 因而是本机最可靠的新 turn 下界；给 5 秒容差只为覆盖服务端 create_time 与本机时钟差。
+ */
+export function latestAssistantFinal(messages, submittedAtMs) {
+  const floorSeconds = Math.max(0, Number(submittedAtMs || 0) / 1000 - 5)
+  const candidates = messages.filter((row) => {
+    if (String(row?.role || '').toLowerCase() !== 'assistant') return false
+    if (Number(row?.hidden || 0) !== 0) return false
+    if (!String(row?.text || '').trim()) return false
+    const created = Number(row?.createTime || 0)
+    if (Number.isFinite(created) && created > 0 && created < floorSeconds) return false
+    const channel = String(row?.channel || '').toLowerCase()
+    return channel === 'final' || row?.endTurn === true || Number(row?.endTurn || 0) === 1
+  })
+  return candidates.length > 0 ? candidates[candidates.length - 1] : null
+}
+
+/**
+ * 等待 daemon 把 Actor 新 turn 的 canonical final 写入**本地 SQLite**。
+ *
+ * 这段等待不会调用 ChatGPT REST/list/body，也不会创建额外 WSS；真正的在线数据流仍是：
+ * 页面原始 SSE -> Phase 3 LiveTurn -> conversations WSS complete -> daemon body sync。
+ * CLI 这里只是把异步 daemon 的最终结果变成一个方便 ClassFlow 调用的阻塞接口。
+ */
+export async function waitForCanonicalActorFinal({ databasePath, conversationId, submittedAt, timeoutMs }) {
+  const archive = new ChatArchiveDb(databasePath)
+  try {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const summary = archive.getConversationSummary(conversationId)
+      if (
+        summary?.terminalState === 'final'
+        && Number(summary.capturedAt || 0) >= Number(submittedAt || 0)
+      ) {
+        const finalMessage = latestAssistantFinal(archive.getMessages(conversationId), submittedAt)
+        if (finalMessage) {
+          return {
+            conversationId,
+            title: summary.title,
+            capturedAt: summary.capturedAt,
+            messageId: finalMessage.messageId ?? null,
+            modelSlug: finalMessage.resolvedModelSlug ?? finalMessage.modelSlug ?? null,
+            text: String(finalMessage.text || ''),
+          }
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
+    throw new Error(`actor final wait timed out after ${timeoutMs}ms for conversation ${conversationId}`)
+  }
+  finally {
+    archive.close()
+  }
 }
 
 function daemonStatePath(flags) {
@@ -681,7 +740,8 @@ async function main() {
         : DEFAULT_DOM_LEDGER_PATH
       const timeoutMs = Number(flags.get('timeout-ms') ?? 20_000)
       if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) throw new Error('--timeout-ms must be >= 1000')
-      console.log(JSON.stringify(await sendActorPrompt({
+      const projectName = typeof flags.get('project') === 'string' ? String(flags.get('project')).trim() : null
+      const sendResult = await sendActorPrompt({
         cdpHttp,
         statePath: actorStatePath,
         daemonStatePath: DEFAULT_DAEMON_STATE_PATH,
@@ -689,10 +749,26 @@ async function main() {
         tracePath,
         prompt,
         conversationId: typeof flags.get('conversation') === 'string' ? String(flags.get('conversation')) : null,
+        projectName,
         mode: actorMode,
         targetMode: actorTarget,
         timeoutMs,
-      }), null, 2))
+      })
+      if (!flags.has('wait-final')) {
+        console.log(JSON.stringify(sendResult, null, 2))
+        return
+      }
+      const finalTimeoutMs = Number(flags.get('final-timeout-ms') ?? 30 * 60_000)
+      if (!Number.isFinite(finalTimeoutMs) || finalTimeoutMs < 1000) {
+        throw new Error('--final-timeout-ms must be >= 1000')
+      }
+      const final = await waitForCanonicalActorFinal({
+        databasePath: dbPath(flags),
+        conversationId: String(sendResult.conversationId),
+        submittedAt: Number(sendResult.submittedAt || Date.now()),
+        timeoutMs: finalTimeoutMs,
+      })
+      console.log(JSON.stringify({ ...sendResult, final }, null, 2))
       return
     }
     if (action === 'batch') {
@@ -732,6 +808,9 @@ async function main() {
           : typeof raw.conversationId === 'string' && raw.conversationId.trim()
             ? raw.conversationId.trim()
             : null
+        const projectName = typeof raw.project === 'string' && raw.project.trim()
+          ? raw.project.trim()
+          : null
         const promptFile = typeof raw.promptFile === 'string' && raw.promptFile.trim()
           ? path.resolve(path.dirname(path.resolve(jobsFile)), raw.promptFile.trim())
           : null
@@ -755,6 +834,7 @@ async function main() {
           tracePath,
           prompt,
           conversationId,
+          projectName,
           mode,
           targetMode: actorTarget,
           timeoutMs,
@@ -766,6 +846,7 @@ async function main() {
           finishedAt: previousFinishedAt,
           mode,
           conversationId,
+          projectName,
           result,
         })
       }
