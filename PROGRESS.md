@@ -7,6 +7,7 @@
 - 真实 smoke 已成功创建 Project conversation `6ac9426f-6124-83e9-9cc8-84f010189e53`；Actor trace 记录正式 `/f/conversation` HTTP 200、`text/event-stream`、`spa-project`、`runningConfirmed=true`。当前页面真实 URL 为 `/g/g-p-...-ke-tang-lu-yin-bi-ji/c/<uuid>`，模型仍处于 `stopVisible=true` 生成中。
 - 同时发现 snapshot/DOM drift 路径识别仍只覆盖普通 `/c/<uuid>`，导致 Project conversation 页面被错误报告为 `conversationId=null / routeKind=project`。本轮把两处 pathname 正则统一扩展为普通 conversation + Project conversation；不在当前生成期间重启 daemon，待该 turn 结束后再加载。
 - 路由兼容改动对应的 DOM expression 回归断言也已同步改为接受 Project conversation canonical pattern，避免测试继续锁死旧 `/c/<uuid>` 单一路径。
+- TypeScript 首轮检查发现浏览器内嵌 template literal 的新增注释含反引号，导致外层字符串被提前终止；已改为普通注释文本，不改变运行时逻辑。
 # 2026-10-10 ClassFlow Phase 3 Bridge 接线决策
 
 - 已重新确认 2026-10-07 production canary：A=`6ac603a3-...` 原始 SSE `58448.1079` 在同 Guardian SPA 创建 B=`6ac603af-...` 后继续收流；Guardian target 不变、WSS generation 1→1、activeSockets=3、HTTP429=0。故 Project 新建无需等待 handoff，也不需要第二个长期 Actor tab。

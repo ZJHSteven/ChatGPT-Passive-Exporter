@@ -609,7 +609,7 @@ async function readActorPageSnapshot(client: ActorCdpClient): Promise<ActorPageS
     })()
     // Project 内部 conversation 的 2026 Web 路径是：
     //   /g/g-p-<project-id>-<slug>/c/<conversation-uuid>
-    // 它和普通 `/c/<uuid>` 是同一个 canonical conversation，只是多了一层 Project 路由。
+    // 它和普通 /c/<uuid> 是同一个 canonical conversation，只是多了一层 Project 路由。
     // 这里必须与 conversationIdFromUrl() 保持同一语义，否则 Actor 明明已经绑定 CID，
     // inspect / continue 阶段却会再次把当前页误判成“没有 conversation”。
     const match = new RegExp('^/(?:c/|g/g-p-[^/?#]+/c/)([0-9a-f-]{36})(?:/|$)', 'iu').exec(pathname)
