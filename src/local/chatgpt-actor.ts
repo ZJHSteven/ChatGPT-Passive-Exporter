@@ -556,11 +556,10 @@ async function readActorPageSnapshot(client: ActorCdpClient): Promise<ActorPageS
         if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
         if (node === document.documentElement) break
       }
-      const x = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
-      const y = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
-      const hit = document.elementFromPoint(x, y)
-      if (hit && !element.contains(hit)) return false
-      return true
+      // ChatGPT 的 contenteditable 在长文本时会产生远大于真实 composer 外壳的几何 rect
+      // （真机 32k 字课堂转写达到约 25k px 高），pixel hit-test 会落到页面正文区并产生假阴性。
+      // 对 composer 输入更可靠的语义是：真实可见 textbox + 隶属于第一方 data-chatgpt-composer form。
+      return Boolean(element.closest('form[data-chatgpt-composer]'))
     }
 
     const input = [
@@ -662,11 +661,7 @@ export function buildActorDomObservationExpression(): string {
         if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
         if (node === document.documentElement) break
       }
-      const x = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
-      const y = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
-      const hit = document.elementFromPoint(x, y)
-      if (hit && !element.contains(hit)) return false
-      return true
+      return Boolean(element.closest('form[data-chatgpt-composer]'))
     }
 
     // 这段源码还要经过外层 template literal 再交给浏览器执行。直接在这里写
@@ -861,11 +856,7 @@ async function clickNewChatSpa(client: ActorCdpClient): Promise<boolean> {
         if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
         if (node === document.documentElement) break
       }
-      const x = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
-      const y = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
-      const hit = document.elementFromPoint(x, y)
-      if (hit && !element.contains(hit)) return false
-      return true
+      return Boolean(element.closest('form[data-chatgpt-composer]'))
     }
     const candidates = [
       ...document.querySelectorAll('[data-testid="create-new-chat-button"]'),
