@@ -607,11 +607,15 @@ export class ArchiveBridgeServer {
     if (conversationMatch && method === 'GET') {
       const conversationId = decodeURIComponent(conversationMatch[1]!)
       const conversation = this.options.archive.list(1000).find(row => row.id === conversationId)
+        ?? this.options.archive.listDevSpaceRecoveryVirtualConversations?.(1000)
+          .find(row => row.id === conversationId)
       if (!conversation) {
         jsonResponse(res, 404, { error: 'conversation_not_found' })
         return
       }
-      const lifecycle = conversationLifecycle(conversationId, this.options.archive)
+      const lifecycle = conversation.provisional
+        ? { state: conversation.provisionalState ?? 'idle', active: null, incident: null }
+        : conversationLifecycle(conversationId, this.options.archive)
       jsonResponse(res, 200, {
         conversation: { ...conversation, lifecycleState: lifecycle.state },
         active: lifecycle.active,
