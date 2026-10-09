@@ -20,7 +20,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { execFileSync, spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { ChatArchiveDb } from '../src/local/archive-db.ts'
+import { ChatArchiveDb, devSpaceVirtualConversationId } from '../src/local/archive-db.ts'
 import {
   ActiveTurnRecorder,
   buildBodySnapshotTrace,
