@@ -46,6 +46,7 @@ export interface ArchiveConversationRow {
   /** 仅 Bridge/Reader 展示层使用；canonical conversations 永远不设置该标记。 */
   provisional?: boolean
   metadataId?: string | null
+  provisionalState?: 'running' | 'idle'
 }
 
 /** 一份外部数据源（官方 ZIP、被动 capture、在线 sync）在数据库中的登记信息。 */
@@ -3268,6 +3269,7 @@ export class ChatArchiveDb {
         lastReasoningStatus: null,
         provisional: true,
         metadataId: binding.metadataId,
+        provisionalState: recoveryMessages.some(message => message.status === 'running') ? 'running' : 'idle',
       })
     }
     return rows
