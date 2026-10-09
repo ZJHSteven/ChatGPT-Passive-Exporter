@@ -882,11 +882,34 @@ async function clickProjectNewChatSpa(client: ActorCdpClient, projectName: strin
       if (hit && !element.contains(hit)) return false
       return true
     }
+    // Project 行尾的“开启新聊天”动作在当前 Web DOM 中是 20px 图标按钮；真机观察到它
+    // 本身 display/visibility/pointer-events 全部正常，但中心点会被同一 sidebar 行的包装 DIV
+    // 命中。因此不能复用普通导航的 elementFromPoint 门，否则精确 aria action 会被误杀。
+    // 这里仍严格检查尺寸、祖先 hidden/inert、display/visibility/opacity/pointer-events；并且只
+    // 用于下面按**完整 aria-label**命中的 Project action，不放宽普通按钮。
+    const usableExactProjectAction = (element) => {
+      if (!element || !element.isConnected) return false
+      const rect = element.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return false
+      const ownStyle = window.getComputedStyle(element)
+      if (ownStyle.pointerEvents === 'none') return false
+      for (let node = element; node; node = node.parentElement) {
+        if (!(node instanceof HTMLElement)) continue
+        if (node.hidden || node.hasAttribute('inert')) return false
+        const style = window.getComputedStyle(node)
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false
+        if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
+        if (node === document.documentElement) break
+      }
+      return true
+    }
     const exactZh = '在 ' + projectName + ' 中开启新聊天'
     const findTarget = () => {
-      const candidates = [...document.querySelectorAll('button')].filter(usable)
-      return candidates.find((button) => button.getAttribute('aria-label') === exactZh)
-        || candidates.find((button) => {
+      const buttons = [...document.querySelectorAll('button')]
+      return buttons.find((button) => (
+        button.getAttribute('aria-label') === exactZh && usableExactProjectAction(button)
+      ))
+        || buttons.filter(usableExactProjectAction).find((button) => {
           const identity = [button.getAttribute('aria-label') || '', button.innerText || ''].join(' ')
           return identity.includes(projectName) && /开启新聊天|new chat/iu.test(identity)
         })
