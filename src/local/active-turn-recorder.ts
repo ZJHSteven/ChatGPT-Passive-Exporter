@@ -39,7 +39,7 @@ export interface ActorSubmitTrace extends ActiveTurnTraceBase {
   actorTargetId: string
   mode?: 'new' | 'continue' | 'steer'
   targetMode?: 'guardian' | 'dedicated'
-  navigationMode?: 'already-there' | 'spa-new' | 'spa-conversation' | 'full-fallback'
+  navigationMode?: 'already-there' | 'spa-new' | 'spa-project' | 'spa-conversation' | 'full-fallback'
   prepareRequestId: string | null
   prepareStatus: number | null
   sendHandlerAttempts: number
@@ -219,7 +219,7 @@ export function buildActorSubmitTrace(input: {
   actorTargetId: string
   mode?: 'new' | 'continue' | 'steer'
   targetMode?: 'guardian' | 'dedicated'
-  navigationMode?: 'already-there' | 'spa-new' | 'spa-conversation' | 'full-fallback'
+  navigationMode?: 'already-there' | 'spa-new' | 'spa-project' | 'spa-conversation' | 'full-fallback'
   cdpRequestId: string
   prepareRequestId?: string | null
   prepareStatus?: number | null

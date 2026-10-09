@@ -89,6 +89,11 @@ interface ActorSendOptions {
   tracePath: string
   prompt: string
   conversationId?: string | null
+  /**
+   * 仅用于 `new`：点击 ChatGPT 侧栏里“在 <project> 中开启新聊天”的第一方入口，
+   * 再复用现有 composer/send/SSE 链。这里只选择已有 Project，不实现 Project CRUD。
+   */
+  projectName?: string | null
   mode?: ActorSendMode
   targetMode?: ActorTargetMode
   timeoutMs?: number
@@ -452,8 +457,17 @@ async function waitForComposer(client: ActorCdpClient, timeoutMs: number): Promi
 
 /** 只接受真正服务端 UUID；Branch 临时的 `WEB:` id 不算绑定完成。 */
 export function conversationIdFromUrl(url: string): string | null {
-  const match = /^https:\/\/chatgpt\.com\/c\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/?#]|$)/iu.exec(url)
+  const match = /^https:\/\/chatgpt\.com\/(?:c\/|g\/g-p-[^/?#]+\/c\/)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/?#]|$)/iu.exec(url)
   return match?.[1] ?? null
+}
+
+/** 统一校验 CLI/Bridge 传入的已有 Project 名称。 */
+export function normalizeActorProjectName(value?: string | null): string | null {
+  if (value === undefined || value === null) return null
+  const normalized = String(value).trim()
+  if (!normalized) throw new Error('actor --project must not be empty')
+  if (/\r|\n/u.test(normalized)) throw new Error('actor --project must be a single-line project name')
+  return normalized
 }
 
 /** Actor 只接受 canonical UUID conversation；project/branch 临时 URL 不在这个入口里猜。 */
@@ -839,6 +853,73 @@ async function clickNewChatSpa(client: ActorCdpClient): Promise<boolean> {
 }
 
 /**
+ * 点击 ChatGPT 自己渲染的 Project 新聊天入口。
+ *
+ * 2026-10-09 真机 DOM 证据：侧栏按钮 aria-label 形如
+ * `在 课堂录音→笔记 中开启新聊天`。这里不读取/伪造 gizmo_id，也不调用猜测的私有 API；
+ * Project instructions 注入和提交 payload 全部交给官方 React 页面完成。
+ */
+async function clickProjectNewChatSpa(client: ActorCdpClient, projectName: string): Promise<boolean> {
+  return await evaluateValue(client, `(() => {
+    const projectName = ${JSON.stringify(projectName)}
+    const usable = (element) => {
+      if (!element || !element.isConnected) return false
+      const rect = element.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return false
+      const ownStyle = window.getComputedStyle(element)
+      if (ownStyle.pointerEvents === 'none') return false
+      for (let node = element; node; node = node.parentElement) {
+        if (!(node instanceof HTMLElement)) continue
+        if (node.hidden || node.hasAttribute('inert')) return false
+        const style = window.getComputedStyle(node)
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false
+        if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
+        if (node === document.documentElement) break
+      }
+      const x = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
+      const y = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
+      const hit = document.elementFromPoint(x, y)
+      if (hit && !element.contains(hit)) return false
+      return true
+    }
+    const candidates = [...document.querySelectorAll('button')].filter(usable)
+    const exactZh = '在 ' + projectName + ' 中开启新聊天'
+    const target = candidates.find((button) => button.getAttribute('aria-label') === exactZh)
+      || candidates.find((button) => {
+        const identity = [button.getAttribute('aria-label') || '', button.innerText || ''].join(' ')
+        return identity.includes(projectName) && /开启新聊天|new chat/iu.test(identity)
+      })
+    if (!target) return false
+    target.click()
+    return true
+  })()`) === true
+}
+
+function isProjectRouteUrl(href: string): boolean {
+  try {
+    const pathname = new URL(href).pathname
+    return /^\/(?:g\/g-p-[^/]+(?:\/project)?|projects?(?:\/|$))/iu.test(pathname)
+  }
+  catch {
+    return false
+  }
+}
+
+async function waitForProjectRoute(client: ActorCdpClient, timeoutMs: number): Promise<ActorPageSnapshot> {
+  const deadline = Date.now() + timeoutMs
+  let lastSnapshot: ActorPageSnapshot | null = null
+  while (Date.now() < deadline) {
+    const snapshot = await readActorPageSnapshot(client)
+    lastSnapshot = snapshot
+    if (snapshot.conversationId === null && isProjectRouteUrl(snapshot.href) && snapshot.composerHydrated) {
+      return snapshot
+    }
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  throw new Error(`ChatGPT actor project route did not become ready before timeout: lastSnapshot=${JSON.stringify(lastSnapshot)}`)
+}
+
+/**
  * 优先点击 sidebar 中已经存在的 canonical conversation 链接，让 ChatGPT 自己的 React Router
  * 完成 same-document/SPA 切换；只有目标不在当前 sidebar DOM 时才允许 full-navigation fallback。
  */
@@ -919,12 +1000,22 @@ async function ensureActorRoute(
   client: ActorCdpClient,
   conversationId: string | null,
   timeoutMs: number,
-): Promise<{ snapshot: ActorPageSnapshot; navigationMode: 'already-there' | 'spa-new' | 'spa-conversation' | 'full-fallback' }> {
+  projectName: string | null = null,
+): Promise<{ snapshot: ActorPageSnapshot; navigationMode: 'already-there' | 'spa-new' | 'spa-project' | 'spa-conversation' | 'full-fallback' }> {
   const before = await readActorPageSnapshot(client)
   const hadGuardianMarker = (() => {
     try { return new URL(before.href).searchParams.get('chatgpt-archive-guardian') === '1' }
     catch { return false }
   })()
+
+  if (projectName) {
+    if (conversationId) throw new Error('actor project new-chat cannot be combined with --conversation')
+    const clickedProject = await clickProjectNewChatSpa(client, projectName)
+    if (!clickedProject) throw new Error(`ChatGPT actor project not found or not visible in sidebar: ${projectName}`)
+    const snapshot = await waitForProjectRoute(client, timeoutMs)
+    await preserveGuardianMarker(client, hadGuardianMarker)
+    return { snapshot, navigationMode: 'spa-project' }
+  }
   const alreadyThere = conversationId
     ? before.conversationId === conversationId
     : before.conversationId === null && new URL(before.href).pathname === '/'
@@ -1092,7 +1183,12 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
   const requestedMode = options.mode ?? 'auto'
   const targetMode = options.targetMode ?? 'guardian'
   const expectedConversationId = options.conversationId ? String(options.conversationId).trim() : null
+  const projectName = normalizeActorProjectName(options.projectName)
   if (expectedConversationId) actorConversationUrl(expectedConversationId)
+  if (projectName && expectedConversationId) throw new Error('actor --project cannot be combined with --conversation')
+  if (projectName && requestedMode !== 'auto' && requestedMode !== 'new') {
+    throw new Error('actor --project is only valid with --mode new|auto')
+  }
   await assertActorCooldownClear(options.daemonStatePath)
   const target = await acquireActorTarget(
     options.cdpHttp,
@@ -1186,7 +1282,7 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
     })
 
     try {
-      const route = await ensureActorRoute(client, expectedConversationId, timeoutMs)
+      const route = await ensureActorRoute(client, expectedConversationId, timeoutMs, projectName)
       await waitForComposer(client, timeoutMs)
 
       // 旧 conversation 只有“路由已到位”还不够。至少要看到真实 message DOM；若本次切换产生了
@@ -1302,6 +1398,7 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
             responseMimeType: responseState.mimeType,
             pageUrlBefore,
             mode,
+            projectName,
             navigationMode: route.navigationMode,
             contextReadyAt,
             contextBodyResponseAt,

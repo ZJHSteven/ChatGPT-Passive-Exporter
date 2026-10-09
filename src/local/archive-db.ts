@@ -2991,6 +2991,29 @@ export class ChatArchiveDb {
     `).all(Math.max(1, Math.min(1000, limit))) as unknown as ArchiveConversationRow[]
   }
 
+  getConversationSummary(conversationId: string): ArchiveConversationRow | null {
+    const row = this.db.prepare(`
+      SELECT
+        id,
+        title,
+        source_format AS sourceFormat,
+        current_node AS currentNode,
+        captured_at AS capturedAt,
+        imported_at AS importedAt,
+        message_count AS messageCount,
+        resource_count AS resourceCount,
+        terminal_state AS terminalState,
+        incident_state AS incidentState,
+        last_finish_type AS lastFinishType,
+        last_finish_reason AS lastFinishReason,
+        last_reasoning_status AS lastReasoningStatus
+      FROM conversations
+      WHERE id = ?
+      LIMIT 1
+    `).get(conversationId) as unknown as ArchiveConversationRow | undefined
+    return row ?? null
+  }
+
   getMarkdown(conversationId: string): string | null {
     const row = this.db.prepare('SELECT markdown FROM conversations WHERE id = ?').get(conversationId) as { markdown?: string } | undefined
     return typeof row?.markdown === 'string' ? row.markdown : null

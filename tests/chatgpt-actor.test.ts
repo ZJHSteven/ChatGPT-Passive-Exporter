@@ -8,6 +8,7 @@ import {
   actorResponseMimeAccepted,
   buildActorDomObservationExpression,
   conversationIdFromUrl,
+  normalizeActorProjectName,
   resolveActorSendMode,
   sendActorPrompt,
 } from '../src/local/chatgpt-actor.ts'
@@ -20,6 +21,16 @@ describe('ChatGPT single actor helpers', () => {
     expect(conversationIdFromUrl('https://chatgpt.com/c/6aae3805-792c-83ea-8ad7-ebe9d0c083b1')).toBe(
       '6aae3805-792c-83ea-8ad7-ebe9d0c083b1',
     )
+    expect(conversationIdFromUrl('https://chatgpt.com/g/g-p-demo-project/c/6aae3805-792c-83ea-8ad7-ebe9d0c083b1')).toBe(
+      '6aae3805-792c-83ea-8ad7-ebe9d0c083b1',
+    )
+  })
+
+  test('Project 名称只接受单行非空文本', () => {
+    expect(normalizeActorProjectName('  课堂录音→笔记  ')).toBe('课堂录音→笔记')
+    expect(normalizeActorProjectName(null)).toBeNull()
+    expect(() => normalizeActorProjectName('  ')).toThrow(/must not be empty/u)
+    expect(() => normalizeActorProjectName('课堂\n笔记')).toThrow(/single-line/u)
   })
 
   test('Actor 新聊天与续聊 URL 都只接受 canonical UUID', () => {
