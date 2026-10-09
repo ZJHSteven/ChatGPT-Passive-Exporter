@@ -30,6 +30,7 @@ import {
   incidentKindForTrigger,
   isConfirmedTerminalTrigger,
   restoreCooldownUntil,
+  resumeRetryDelayMs,
   sanitizeCapturedHeaders,
   passiveObservationMatchesReady,
   recordCatalogWatchdogProgress,
@@ -58,6 +59,15 @@ import {
 } from '../scripts/chatgpt-archive-daemon.mjs'
 
 describe('ChatGPT Archive daemon WSS parser', () => {
+  test('SSE resume 使用有限退避，不会无限加速重试', () => {
+    expect(resumeRetryDelayMs(1)).toBe(2_000)
+    expect(resumeRetryDelayMs(2)).toBe(5_000)
+    expect(resumeRetryDelayMs(3)).toBe(15_000)
+    expect(resumeRetryDelayMs(4)).toBe(30_000)
+    expect(resumeRetryDelayMs(5)).toBe(60_000)
+    expect(resumeRetryDelayMs(99)).toBe(60_000)
+  })
+
   test('DevSpace metadata 手机别名只保留短前缀，便于口述回查', () => {
     expect(shortDevSpaceMetadataAlias('v1/31BvfaYkExI0xUrv4HwbKqFytFEJUAop')).toBe('meta/31BvfaYk')
     expect(shortDevSpaceMetadataAlias('server-handshake-a')).toBe('meta/server-h')

@@ -216,6 +216,30 @@ export interface ActiveWatchdogStateRow {
 }
 
 /**
+ * ChatGPT `/f/conversation` SSE 下发的恢复 capability。
+ *
+ * token 只用于同一 turn 的 `/f/conversation/resume`，不是账户级长期认证凭据；
+ * 这里持久化 raw token 是为了 daemon 重启/瞬时断网后仍能恢复同一条流。
+ */
+export interface LiveResumeCredentialRow {
+  turnKey: string
+  conversationId: string
+  turnExchangeId: string | null
+  token: string
+  resumeOffset: string | null
+  tokenSha256: string
+  tokenLength: number
+  sourceTransport: string
+  firstSeenAt: number
+  lastSeenAt: number
+  lastResumeAttemptAt: number | null
+  resumeAttemptCount: number
+  nextResumeAt: number | null
+  lastResumeStatus: number | null
+  lastResumeError: string | null
+}
+
+/**
  * Bark/其它旁路通知的持久去重记录。
  *
  * 这里只在远端 provider 已确认成功后写入，因此：
@@ -698,6 +722,30 @@ export class ChatArchiveDb {
         last_diagnostic_turn_key TEXT,
         updated_at INTEGER NOT NULL
       );
+
+      -- SSE resume capability：只属于本地控制面，不通过 Bridge/Reader 下发。
+      -- turn_exchange_id 尚未出现时先以 conversation id 作为临时 turn_key；后续收到更强 turn id
+      -- 时以新 key 覆盖/并存，恢复器始终优先取最近一条。
+      CREATE TABLE IF NOT EXISTS live_resume_credentials (
+        turn_key TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        turn_exchange_id TEXT,
+        token TEXT NOT NULL,
+        resume_offset TEXT,
+        token_sha256 TEXT NOT NULL,
+        token_length INTEGER NOT NULL,
+        source_transport TEXT NOT NULL,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        last_resume_attempt_at INTEGER,
+        resume_attempt_count INTEGER NOT NULL DEFAULT 0,
+        next_resume_at INTEGER,
+        last_resume_status INTEGER,
+        last_resume_error TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS live_resume_credentials_conversation
+        ON live_resume_credentials(conversation_id, last_seen_at DESC);
 
       -- 通知本身是旁路副作用，但用户明确要求“每个 turn 的终态都有可见结果”。
       -- 因此成功发送后持久记账，避免 WSS 重复 complete、settle recheck、daemon restart
@@ -3684,6 +3732,109 @@ export class ChatArchiveDb {
       ORDER BY started_at ASC
       LIMIT ?
     `).all(Math.max(1, Math.trunc(limit))) as unknown as ActiveWatchdogStateRow[]
+  }
+
+  upsertLiveResumeCredential(input: {
+    conversationId: string
+    turnExchangeId?: string | null
+    token: string
+    resumeOffset?: string | null
+    tokenSha256: string
+    tokenLength: number
+    sourceTransport: string
+    seenAt?: number
+  }): LiveResumeCredentialRow {
+    const seenAt = Math.max(0, Math.trunc(input.seenAt ?? Date.now()))
+    const turnExchangeId = input.turnExchangeId?.trim() || null
+    const turnKey = turnExchangeId || input.conversationId
+    this.db.prepare(`
+      INSERT INTO live_resume_credentials (
+        turn_key, conversation_id, turn_exchange_id, token, resume_offset, token_sha256, token_length,
+        source_transport, first_seen_at, last_seen_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(turn_key) DO UPDATE SET
+        conversation_id=excluded.conversation_id,
+        turn_exchange_id=excluded.turn_exchange_id,
+        token=excluded.token,
+        resume_offset=excluded.resume_offset,
+        token_sha256=excluded.token_sha256,
+        token_length=excluded.token_length,
+        source_transport=excluded.source_transport,
+        last_seen_at=excluded.last_seen_at
+    `).run(
+      turnKey,
+      input.conversationId,
+      turnExchangeId,
+      input.token,
+      input.resumeOffset ?? null,
+      input.tokenSha256,
+      Math.max(0, Math.trunc(input.tokenLength)),
+      input.sourceTransport,
+      seenAt,
+      seenAt,
+    )
+    return this.getLiveResumeCredential(input.conversationId, turnExchangeId)!
+  }
+
+  getLiveResumeCredential(
+    conversationId: string,
+    turnExchangeId?: string | null,
+  ): LiveResumeCredentialRow | null {
+    const turnKey = turnExchangeId?.trim() || null
+    const row = turnKey
+      ? this.db.prepare(`
+          SELECT turn_key AS turnKey, conversation_id AS conversationId,
+                 turn_exchange_id AS turnExchangeId, token, resume_offset AS resumeOffset,
+                 token_sha256 AS tokenSha256, token_length AS tokenLength,
+                 source_transport AS sourceTransport, first_seen_at AS firstSeenAt,
+                 last_seen_at AS lastSeenAt, last_resume_attempt_at AS lastResumeAttemptAt,
+                 resume_attempt_count AS resumeAttemptCount, next_resume_at AS nextResumeAt,
+                 last_resume_status AS lastResumeStatus, last_resume_error AS lastResumeError
+          FROM live_resume_credentials WHERE turn_key = ? LIMIT 1
+        `).get(turnKey)
+      : this.db.prepare(`
+          SELECT turn_key AS turnKey, conversation_id AS conversationId,
+                 turn_exchange_id AS turnExchangeId, token, resume_offset AS resumeOffset,
+                 token_sha256 AS tokenSha256, token_length AS tokenLength,
+                 source_transport AS sourceTransport, first_seen_at AS firstSeenAt,
+                 last_seen_at AS lastSeenAt, last_resume_attempt_at AS lastResumeAttemptAt,
+                 resume_attempt_count AS resumeAttemptCount, next_resume_at AS nextResumeAt,
+                 last_resume_status AS lastResumeStatus, last_resume_error AS lastResumeError
+          FROM live_resume_credentials
+          WHERE conversation_id = ?
+          ORDER BY last_seen_at DESC
+          LIMIT 1
+        `).get(conversationId)
+    return (row as LiveResumeCredentialRow | undefined) ?? null
+  }
+
+  markLiveResumeAttempt(input: {
+    conversationId: string
+    turnExchangeId?: string | null
+    attemptedAt?: number
+    nextResumeAt?: number | null
+    status?: number | null
+    error?: string | null
+  }): void {
+    const credential = this.getLiveResumeCredential(input.conversationId, input.turnExchangeId)
+    if (!credential) return
+    this.db.prepare(`
+      UPDATE live_resume_credentials
+      SET last_resume_attempt_at=?,
+          resume_attempt_count=resume_attempt_count+1,
+          next_resume_at=?,
+          last_resume_status=?,
+          last_resume_error=?
+      WHERE turn_key=?
+    `).run(
+      Math.max(0, Math.trunc(input.attemptedAt ?? Date.now())),
+      input.nextResumeAt === null || input.nextResumeAt === undefined
+        ? null
+        : Math.max(0, Math.trunc(input.nextResumeAt)),
+      input.status ?? null,
+      input.error ?? null,
+      credential.turnKey,
+    )
   }
 
   hasTurnNotification(notificationKey: string): boolean {

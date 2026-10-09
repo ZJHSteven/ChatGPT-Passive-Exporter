@@ -1534,6 +1534,76 @@ async function pageFetchJson(page, { url, targetPath, targetRoute, headers }) {
   }
 }
 
+/**
+ * 在 Guardian 自己的页面上下文里发起 SSE resume，并把 body 持续 drain 掉。
+ *
+ * 请求仍走真实 ChatGPT 页面网络栈；Archive 只补充当前 turn 已保存的 resume capability。
+ * CDP passive observer 会把这条 `/f/conversation/resume` 当普通原生流继续接入 LiveTurn，
+ * 因此这里不解析 assistant 正文，也不会产生第二套流状态机。
+ */
+async function pageResumeConversation(page, { conversationId, offset, token, headers }) {
+  const url = '/backend-api/f/conversation/resume'
+  const expression = `(${async function resumeConversation(url, headers, conversationId, offset, token) {
+    const requestHeaders = {
+      ...headers,
+      'content-type': 'application/json',
+      'x-conduit-token': token,
+      'x-openai-web-sse-compression': '1',
+    }
+    const response = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: requestHeaders,
+      body: JSON.stringify({ conversation_id: conversationId, offset }),
+    })
+    const responseHeaders = {}
+    for (const name of ['retry-after', 'x-request-id', 'cf-ray', 'content-type']) {
+      const value = response.headers.get(name)
+      if (value) responseHeaders[name] = value
+    }
+    if (response.ok && response.body) {
+      const key = conversationId + ':' + String(Date.now())
+      const pumps = globalThis.__chatgptArchiveResumePumps ||= new Map()
+      const reader = response.body.getReader()
+      const pump = (async () => {
+        try {
+          while (true) {
+            const next = await reader.read()
+            if (next.done) break
+          }
+        }
+        catch {
+          // CDP observer owns lifecycle evidence; page-side drain failure is not authoritative.
+        }
+        finally {
+          pumps.delete(key)
+          try { reader.releaseLock() }
+          catch { /* ignore */ }
+        }
+      })()
+      pumps.set(key, pump)
+    }
+    return { status: response.status, headers: responseHeaders }
+  }.toString()})(${JSON.stringify(url)}, ${JSON.stringify(headers)}, ${JSON.stringify(conversationId)}, ${JSON.stringify(offset)}, ${JSON.stringify(token)})`
+  const result = await page.send('Runtime.evaluate', {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+  })
+  const value = result?.result?.value
+  if (!value || typeof value.status !== 'number') throw new Error(`No resume result for ${conversationId}`)
+  return {
+    status: value.status,
+    headers: value.headers && typeof value.headers === 'object' ? value.headers : {},
+  }
+}
+
+export function resumeRetryDelayMs(attemptNumber) {
+  const attempt = Math.max(1, Math.trunc(Number(attemptNumber) || 1))
+  const schedule = [2_000, 5_000, 15_000, 30_000, 60_000]
+  return schedule[Math.min(schedule.length - 1, attempt - 1)]
+}
+
 function listPath(offset, limit) {
   return `/backend-api/conversations?offset=${offset}&limit=${limit}&order=updated&is_archived=false&is_starred=false`
 }
@@ -1837,6 +1907,8 @@ async function main() {
   // 第一方 late-open 的 x-oai-turn-trace-id 已真机确认是每个 polling session 独立生成的 UUID。
   // raw trace 只驻留内存，不写 state/log；同一 Guardian 可以同时承载多个 CID 的独立 polling session。
   const checkpointTurnContexts = new Map()
+  const resumeRetryTimers = new Map()
+  const resumeMaxAttempts = 5
   let checkpointInFlight = false
   let checkpointProbes = 0
   let checkpointBodyRefreshes = 0
@@ -3526,7 +3598,138 @@ async function main() {
    // 其它分页/cursor/mapping 仍会重新经过全局 gate，因此不会把这个选项变成绕过节流的后门。
    if (options.skipRequestSlot !== true) {
      await waitForRequestSlot(request.kind === 'catalog' ? 'catalog' : 'body')
-   }
+ }
+
+  const clearResumeRetry = (conversationId, turnExchangeId = null) => {
+    const credential = archive.getLiveResumeCredential(conversationId, turnExchangeId)
+    const key = credential?.turnKey ?? turnExchangeId ?? conversationId
+    const timer = resumeRetryTimers.get(key)
+    if (timer) clearTimeout(timer)
+    resumeRetryTimers.delete(key)
+  }
+
+  const scheduleResumeRetry = (conversationId, turnExchangeId = null, reason = 'stream-failed') => {
+    const credential = archive.getLiveResumeCredential(conversationId, turnExchangeId)
+    if (!credential) {
+      void log('live turn resume skipped: no persisted resume token', {
+        conversationId,
+        turnExchangeId,
+        reason,
+      }).catch(() => {})
+      return false
+    }
+    const key = credential.turnKey
+    if (resumeRetryTimers.has(key)) return true
+    const nextAttemptNumber = Number(credential.resumeAttemptCount || 0) + 1
+    if (nextAttemptNumber > resumeMaxAttempts) {
+      void log('live turn resume exhausted; canonical body remains fallback', {
+        conversationId,
+        turnExchangeId: credential.turnExchangeId,
+        attempts: credential.resumeAttemptCount,
+        reason,
+      }).catch(() => {})
+      return false
+    }
+    const now = Date.now()
+    const normalDueAt = now + resumeRetryDelayMs(nextAttemptNumber)
+    const dueAt = Math.max(normalDueAt, Number(cooldownUntil || 0) > now ? Number(cooldownUntil) + 1000 : 0)
+    const timer = setTimeout(() => {
+      resumeRetryTimers.delete(key)
+      void (async () => {
+        const current = archive.getLiveResumeCredential(conversationId, credential.turnExchangeId)
+        if (!current) return
+        const row = archive.db.prepare(`
+          SELECT terminal_state AS terminalState
+          FROM conversations
+          WHERE id = ?
+          LIMIT 1
+        `).get(conversationId)
+        if (row?.terminalState === 'final') return
+
+        if (!guardian?.page || guardian.page.closed || !authHeaders) {
+          // 本机 Chrome/Guardian 临时离线不消耗 resume 尝试额度；等待 daemon 自愈后再试。
+          const retryTimer = setTimeout(() => {
+            resumeRetryTimers.delete(key)
+            scheduleResumeRetry(conversationId, current.turnExchangeId, 'guardian-or-auth-unavailable')
+          }, 10_000)
+          resumeRetryTimers.set(key, retryTimer)
+          return
+        }
+        if (!activeApiAllowed(cooldownUntil)) {
+          scheduleResumeRetry(conversationId, current.turnExchangeId, 'cooldown-active')
+          return
+        }
+
+        const rawOffset = current.resumeOffset ?? '0'
+        const numericOffset = Number(rawOffset)
+        const offset = Number.isFinite(numericOffset) && String(numericOffset) === String(rawOffset).trim()
+          ? numericOffset
+          : rawOffset
+        let status = null
+        let errorMessage = null
+        try {
+          const response = await pageResumeConversation(guardian.page, {
+            conversationId,
+            offset,
+            token: current.token,
+            headers: authHeaders,
+          })
+          status = Number(response.status || 0) || null
+          if (status === 429) {
+            await tripCooldown('live turn resume HTTP 429', {
+              route: '/backend-api/f/conversation/resume',
+              retryAfter: response.headers?.['retry-after'] ?? null,
+              requestId: response.headers?.['x-request-id'] ?? null,
+              cfRay: response.headers?.['cf-ray'] ?? null,
+            })
+          }
+          if (status === 401 || status === 403) authHeaders = null
+          if (status === null || status < 200 || status >= 300) {
+            errorMessage = `resume HTTP ${status ?? 'unknown'}`
+          }
+        }
+        catch (error) {
+          errorMessage = error instanceof Error ? error.message : String(error)
+        }
+
+        const attemptNumber = Number(current.resumeAttemptCount || 0) + 1
+        const succeeded = status !== null && status >= 200 && status < 300
+        const nextResumeAt = succeeded || attemptNumber >= resumeMaxAttempts
+          ? null
+          : Math.max(
+              Date.now() + resumeRetryDelayMs(attemptNumber + 1),
+              Number(cooldownUntil || 0) > Date.now() ? Number(cooldownUntil) + 1000 : 0,
+            )
+        archive.markLiveResumeAttempt({
+          conversationId,
+          turnExchangeId: current.turnExchangeId,
+          attemptedAt: Date.now(),
+          nextResumeAt,
+          status,
+          error: errorMessage,
+        })
+        await log(succeeded ? 'live turn resume accepted' : 'live turn resume attempt failed', {
+          conversationId,
+          turnExchangeId: current.turnExchangeId,
+          attempt: attemptNumber,
+          status,
+          nextResumeAt,
+          error: errorMessage,
+        })
+        if (!succeeded && attemptNumber < resumeMaxAttempts) {
+          scheduleResumeRetry(conversationId, current.turnExchangeId, errorMessage || 'resume-failed')
+        }
+      })().catch(async (error) => {
+        await log('live turn resume scheduler failed', {
+          conversationId,
+          turnExchangeId,
+          error: error instanceof Error ? error.message : String(error),
+        }).catch(() => {})
+      })
+    }, Math.max(0, dueAt - now))
+    resumeRetryTimers.set(key, timer)
+    return true
+  }
     activeReplayRequestUrl = relativeBackendUrl(request.url)
     let response
     try {
@@ -4911,6 +5114,43 @@ async function main() {
         state.bytesObserved = event?.bytesObserved ?? state.bytesObserved ?? 0
         state.pingCount = event?.pingCount ?? state.pingCount ?? 0
       }
+      if (
+        event?.event === 'resume-token'
+        && typeof event?.conversationId === 'string'
+        && event.conversationId
+        && typeof event?.resumeToken === 'string'
+        && event.resumeToken
+      ) {
+        archive.upsertLiveResumeCredential({
+          conversationId: event.conversationId,
+          turnExchangeId: typeof event?.turnExchangeId === 'string' ? event.turnExchangeId : null,
+          token: event.resumeToken,
+          resumeOffset: event.resumeOffset ?? null,
+          tokenSha256: String(event.resumeTokenSha256 || ''),
+          tokenLength: Number(event.resumeTokenLength || event.resumeToken.length),
+          sourceTransport: String(event.transport || 'conversation'),
+          seenAt: Number(event.at || Date.now()),
+        })
+        clearResumeRetry(event.conversationId, event.turnExchangeId ?? null)
+      }
+      if (
+        (event?.event === 'done' || event?.event === 'message-stream-complete')
+        && typeof event?.conversationId === 'string'
+        && event.conversationId
+      ) {
+        clearResumeRetry(event.conversationId, event.turnExchangeId ?? null)
+      }
+      if (
+        event?.event === 'stream-failed'
+        && typeof event?.conversationId === 'string'
+        && event.conversationId
+      ) {
+        scheduleResumeRetry(
+          event.conversationId,
+          event.turnExchangeId ?? null,
+          event.loadingFailedReason ?? 'stream-failed',
+        )
+      }
       void turnRecorder.append(event).catch(async (error) => {
         await log('live turn transport trace write failed', {
           targetId: target.id,
@@ -6237,6 +6477,7 @@ async function main() {
           tracePath: turnTracePath,
           prompt: input.text,
           conversationId: input.conversationId,
+          projectName: input.projectName,
           mode: input.mode,
           targetMode: input.targetMode,
           onDomDrift: notifyActorDomDrift,

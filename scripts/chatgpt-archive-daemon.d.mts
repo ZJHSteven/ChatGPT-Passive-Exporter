@@ -141,6 +141,7 @@ export function incidentKindForTrigger(trigger: unknown): 'active-zombie' | 'wat
 
 /** 重启 daemon 时只继承仍未过期的 HTTP 429 circuit breaker。 */
 export function restoreCooldownUntil(previousState: unknown, now?: number): number
+export function resumeRetryDelayMs(attemptNumber: unknown): number
 
 /** cooldown 只冻结主动 API；返回 false 时 Guardian/WSS 仍应继续工作。 */
 export function activeApiAllowed(cooldownUntil: unknown, now?: number): boolean

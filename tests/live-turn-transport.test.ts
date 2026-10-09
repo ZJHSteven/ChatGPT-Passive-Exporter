@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { LiveTurnTransportTracker } from '../src/local/live-turn-transport.ts'
 
 describe('LiveTurn transport control-plane recorder', () => {
-  test('只记录 resume token 指纹、安全审核、handoff 与完成信号，不落 token 正文', () => {
+  test('记录可持久化 resume token、安全审核、handoff 与完成信号', () => {
     const events: any[] = []
     const tracker = new LiveTurnTransportTracker({
       cdpRequestId: '1.2', transport: 'conversation', requestStartedAt: 1000, emit: event => events.push(event),
@@ -20,10 +20,10 @@ describe('LiveTurn transport control-plane recorder', () => {
     ])
     const resume = events.find(event => event.event === 'resume-token')
     expect(resume).toMatchObject({
-      conversationId: 'c1', turnExchangeId: 't1', resumeTokenSeen: true, resumeTokenLength: 18, pingCount: 1,
+      conversationId: 'c1', turnExchangeId: 't1', resumeTokenSeen: true,
+      resumeToken: 'super-secret-token', resumeOffset: null, resumeTokenLength: 18, pingCount: 1,
     })
     expect(resume.resumeTokenSha256).toMatch(/^[0-9a-f]{64}$/u)
-    expect(JSON.stringify(events)).not.toContain('super-secret-token')
     expect(JSON.stringify(events)).not.toContain('do not persist me')
     expect(events.find(event => event.event === 'safety-review')).toMatchObject({
       safetyReviewActive: true, protectionType: 'cyber',

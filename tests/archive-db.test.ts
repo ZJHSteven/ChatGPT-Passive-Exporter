@@ -60,6 +60,46 @@ function payload() {
 }
 
 describe('ChatArchiveDb', () => {
+  test('持久化 resume token 与自动恢复退避状态', () => {
+    const db = tempDb()
+    try {
+      const saved = db.upsertLiveResumeCredential({
+        conversationId: 'cid-resume',
+        turnExchangeId: 'turn-resume',
+        token: 'resume-capability-value',
+        resumeOffset: '42',
+        tokenSha256: 'abc123',
+        tokenLength: 23,
+        sourceTransport: 'conversation',
+        seenAt: 1000,
+      })
+      expect(saved).toMatchObject({
+        conversationId: 'cid-resume',
+        turnExchangeId: 'turn-resume',
+        token: 'resume-capability-value',
+        resumeOffset: '42',
+        resumeAttemptCount: 0,
+      })
+      db.markLiveResumeAttempt({
+        conversationId: 'cid-resume',
+        turnExchangeId: 'turn-resume',
+        attemptedAt: 2000,
+        nextResumeAt: 7000,
+        status: 503,
+        error: 'temporary network failure',
+      })
+      expect(db.getLiveResumeCredential('cid-resume', 'turn-resume')).toMatchObject({
+        resumeAttemptCount: 1,
+        lastResumeAttemptAt: 2000,
+        nextResumeAt: 7000,
+        lastResumeStatus: 503,
+        lastResumeError: 'temporary network failure',
+      })
+    }
+    finally {
+      db.close()
+    }
+  })
   test('未绑定 metadata 先形成虚拟 conversation，checkpoint/工具尾部在 binding 后原位迁移', () => {
     const db = tempDb()
     try {

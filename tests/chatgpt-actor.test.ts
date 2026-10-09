@@ -4,6 +4,8 @@ import path from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { buildActorSubmitTrace } from '../src/local/active-turn-recorder.ts'
 import {
+  DEFAULT_ACTOR_MIN_SUBMIT_GAP_MS,
+  actorSubmitGapDelayMs,
   actorConversationUrl,
   actorResponseMimeAccepted,
   buildActorDomObservationExpression,
@@ -14,6 +16,14 @@ import {
 } from '../src/local/chatgpt-actor.ts'
 
 describe('ChatGPT single actor helpers', () => {
+  test('全局主动提交至少间隔 5 秒，并且等待不会出现负数', () => {
+    expect(DEFAULT_ACTOR_MIN_SUBMIT_GAP_MS).toBe(5_000)
+    expect(actorSubmitGapDelayMs(null, 10_000)).toBe(0)
+    expect(actorSubmitGapDelayMs(10_000, 12_000)).toBe(3_000)
+    expect(actorSubmitGapDelayMs(10_000, 15_000)).toBe(0)
+    expect(actorSubmitGapDelayMs(10_000, 16_000)).toBe(0)
+  })
+
   test('只把真实 /c/<uuid> 视为 conversation 绑定完成', () => {
     expect(conversationIdFromUrl('https://chatgpt.com/')).toBeNull()
     expect(conversationIdFromUrl('https://chatgpt.com/c/WEB:temporary-id')).toBeNull()

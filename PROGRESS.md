@@ -3,7 +3,7 @@
 - 已重新确认 2026-10-07 production canary：A=`6ac603a3-...` 原始 SSE `58448.1079` 在同 Guardian SPA 创建 B=`6ac603af-...` 后继续收流；Guardian target 不变、WSS generation 1→1、activeSockets=3、HTTP429=0。故 Project 新建无需等待 handoff，也不需要第二个长期 Actor tab。
 - 当前 `--project` 实现就是第一方 SPA：点击 sidebar Project action 后 `waitForProjectRoute()` 等同 document route/composer ready，trace 为 `spa-project`；只有普通 conversation sidebar 找不到目标时才存在 `full-fallback`。
 - 当前 Actor 已有跨进程 lease、batch 默认 5s 与账户级 cooldown，但独立多进程 `actor send` 之间缺统一最小间隔。决定把 5000ms gap 下沉到共享 Actor lease/state，使 CLI/Bridge/ClassFlow 所有入口统一串行限速，不再另造复杂 rate limiter。
-- resume 历史证据再次核对：`/f/conversation/resume` 请求体至少含 `conversation_id + offset`；same-profile 第一方页面可自然发起 resume，而缺失 persisted capability 的 fresh client 实测 404。当前 recorder 只保存 resume token hash/长度，因此主动 resume 暂不猜协议；上线先依赖第一方自然 resume + canonical body/final 兜底。
+- resume 策略按用户最终要求调整：raw `resume_conversation_token` 允许写入 Archive 本地 trace/state/SQLite，作为同一 turn SSE 重建 capability；Bridge/API 不向远端返回它。初始 SSE 异常断开后优先自动 resume，并加有限指数退避；若持续失败再退到 canonical body/final。历史自然请求已确认 `/f/conversation/resume` 至少包含 `conversation_id + offset`，早期 Web 还曾把 resume capability 作为 conduit token 使用，因此恢复器需要兼容当前第一方请求形状，不能只保留 hash。
 
 # 2026-10-09 Project Actor / ClassFlow Phase 3 衔接
 

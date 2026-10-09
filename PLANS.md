@@ -6,7 +6,7 @@
 2. **统一全局发送节拍**：保留现有跨进程 Actor lease，新增共享 `lastSubmittedAt`；任何入口（CLI send、batch、Bridge、ClassFlow）在拿到 lease 后都必须保证距离上一条正式 `/f/conversation` 提交至少 5000ms。`actor batch --min-gap-ms` 仍可提供额外更保守间隔，但不再是唯一限速来源。429 继续服从 daemon `cooldownUntil`，严禁换 target 绕过。
 3. **Bridge 暴露已有 Project 参数**：`POST /v1/turns` 接受 `projectName`，daemon 原样传给 `sendActorPrompt()`；返回 CID 后 N1 通过现有 `GET /v1/conversations/:cid` 与 `/messages` 查询 canonical 生命周期和最终正文，不新增 ChatGPT polling。
 4. **ClassFlow 异步恢复语义**：Windows/Bridge 在提交前不可达时由 N1 保持 pending 并自动稍后再试；一旦 CID 已返回，N1 永久 checkpoint CID，后续只等 Archive canonical body。incident/abnormal terminal 直接失败并等待人工 retry，不自动创建第二个 conversation。
-5. **resume hardening 不阻塞上线**：第一方页面自己发起 `/f/conversation/resume` 时继续被动捕获。主动 resume 只有在完整第一方 request shape 与 capability 语义再次真机确认后才实现；raw resume token 若未来用于主动恢复，只允许活在 daemon 内存，绝不写 SQLite/state/log。当前 canonical body/final 仍是最终保底。
+5. **resume 作为正式恢复路径**：`resume_conversation_token` 可以持久化在 Archive 本地 state / trace / SQLite，用于同一 turn 的 SSE 重建；它不是账户级长期认证凭据。初始 SSE 异常断开且 turn 尚未终止时，优先用保存的 resume capability 自动恢复，并采用有上限的指数退避，避免网络异常时形成请求风暴。持续失败后停止主动 resume，退到 canonical body/final 保底。Bridge/前端不对外暴露 raw token。
 
 # 2026-10-09 ClassFlow Phase 3：已有 Project 新聊天最小闭环
 

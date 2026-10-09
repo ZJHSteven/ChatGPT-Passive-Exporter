@@ -438,9 +438,36 @@ describe('Archive Bridge', () => {
     expect(calls.at(-1)).toEqual({
       text: '继续',
       conversationId: 'cid-1',
+      projectName: null,
       mode: 'continue',
       targetMode: 'guardian',
     })
+
+    const projectAccepted = await fetch(`${base}/v1/turns`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'new', projectName: '课堂录音→笔记', text: '完整课堂转写' }),
+    })
+    expect(projectAccepted.status).toBe(202)
+    expect(calls.at(-1)).toEqual({
+      text: '完整课堂转写',
+      conversationId: null,
+      projectName: '课堂录音→笔记',
+      mode: 'new',
+      targetMode: 'guardian',
+    })
+
+    const invalidProject = await fetch(`${base}/v1/turns`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'continue',
+        conversationId: 'cid-1',
+        projectName: '课堂录音→笔记',
+        text: '不能混用',
+      }),
+    })
+    expect(invalidProject.status).toBe(400)
 
     const limited = await fetch(`${base}/v1/turns`, {
       method: 'POST',

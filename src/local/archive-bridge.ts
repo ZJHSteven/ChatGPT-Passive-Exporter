@@ -47,6 +47,7 @@ export type ArchiveBridgeActorTarget = 'guardian' | 'dedicated'
 export interface ArchiveBridgeTurnInput {
   text: string
   conversationId: string | null
+  projectName: string | null
   mode: ArchiveBridgeActorMode
   targetMode: ArchiveBridgeActorTarget
 }
@@ -323,9 +324,22 @@ function validateTurnInput(body: Record<string, unknown>): ArchiveBridgeTurnInpu
   if ((mode === 'continue' || mode === 'steer') && !conversationId) {
     throw new Error(`mode=${mode} requires conversationId`)
   }
+  const projectName = body.projectName === null || body.projectName === undefined
+    ? null
+    : typeof body.projectName === 'string' && body.projectName.trim()
+      ? body.projectName.trim()
+      : null
+  if (body.projectName !== null && body.projectName !== undefined && !projectName) {
+    throw new Error('projectName must be a non-empty string')
+  }
+  if (projectName && conversationId) throw new Error('projectName must not include conversationId')
+  if (projectName && mode !== 'new' && mode !== 'auto') {
+    throw new Error('projectName requires mode=new|auto')
+  }
   return {
     text,
     conversationId,
+    projectName,
     mode: mode as ArchiveBridgeActorMode,
     targetMode: targetMode as ArchiveBridgeActorTarget,
   }

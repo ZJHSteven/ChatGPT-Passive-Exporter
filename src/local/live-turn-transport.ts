@@ -24,6 +24,12 @@ export interface LiveTransportEvent {
   bytesObserved: number
   pingCount: number
   resumeTokenSeen?: boolean
+  /**
+   * 同一 turn 的 SSE resume capability。用户已明确允许 Archive 本地持久化；
+   * Bridge/前端仍不得把它作为产品数据面向外暴露。
+   */
+  resumeToken?: string
+  resumeOffset?: string | null
   resumeTokenLength?: number
   resumeTokenSha256?: string
   safetyReviewActive?: boolean | null
@@ -192,6 +198,10 @@ export class LiveTurnTransportTracker {
       this.seenResumeHashes.add(hash)
       this.emitEvent('resume-token', at, {
         resumeTokenSeen: true,
+        resumeToken: token,
+        resumeOffset: value.offset === null || value.offset === undefined
+          ? null
+          : String(value.offset),
         resumeTokenLength: token.length,
         resumeTokenSha256: hash,
       })
