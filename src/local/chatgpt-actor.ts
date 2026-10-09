@@ -860,7 +860,7 @@ async function clickNewChatSpa(client: ActorCdpClient): Promise<boolean> {
  * Project instructions 注入和提交 payload 全部交给官方 React 页面完成。
  */
 async function clickProjectNewChatSpa(client: ActorCdpClient, projectName: string): Promise<boolean> {
-  return await evaluateValue(client, `(() => {
+  return await evaluateValue(client, `(async () => {
     const projectName = ${JSON.stringify(projectName)}
     const usable = (element) => {
       if (!element || !element.isConnected) return false
@@ -882,13 +882,32 @@ async function clickProjectNewChatSpa(client: ActorCdpClient, projectName: strin
       if (hit && !element.contains(hit)) return false
       return true
     }
-    const candidates = [...document.querySelectorAll('button')].filter(usable)
     const exactZh = '在 ' + projectName + ' 中开启新聊天'
-    const target = candidates.find((button) => button.getAttribute('aria-label') === exactZh)
-      || candidates.find((button) => {
+    const findTarget = () => {
+      const candidates = [...document.querySelectorAll('button')].filter(usable)
+      return candidates.find((button) => button.getAttribute('aria-label') === exactZh)
+        || candidates.find((button) => {
+          const identity = [button.getAttribute('aria-label') || '', button.innerText || ''].join(' ')
+          return identity.includes(projectName) && /开启新聊天|new chat/iu.test(identity)
+        })
+        || null
+    }
+    let target = findTarget()
+    if (!target) {
+      // ChatGPT 会把“项目”分组折叠起来；此时具体 Project 按钮根本不在 DOM，不能把它
+      // 误报成“Project 不存在”。只点击可见的一方分组标题展开，绝不猜 gizmo/project API。
+      const sectionToggle = [...document.querySelectorAll('button')].filter(usable).find((button) => {
         const identity = [button.getAttribute('aria-label') || '', button.innerText || ''].join(' ')
-        return identity.includes(projectName) && /开启新聊天|new chat/iu.test(identity)
+          .replace(/\s+/gu, ' ')
+          .trim()
+        return identity === '项目' || /^projects?$/iu.test(identity)
       })
+      if (sectionToggle) {
+        sectionToggle.click()
+        await new Promise(resolve => setTimeout(resolve, 250))
+        target = findTarget()
+      }
+    }
     if (!target) return false
     target.click()
     return true
