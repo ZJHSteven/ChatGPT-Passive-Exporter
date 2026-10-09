@@ -1,3 +1,11 @@
+# 2026-10-09 Project Actor / ClassFlow Phase 3 衔接
+
+- Phase 4 既有主链已再次核实：`actor send` 的正式 `/f/conversation` POST 会立即由页面 passive observer 建立 LiveTurn，SSE 绑定 `conversation_id/turn_exchange_id`，WSS `conversation-turn-complete` 触发即时 body sync；6 小时 reconcile 仅是最终一致性兜底，不是正常结果回收路径。
+- 新增 `--project <name>` 最小能力（commit `dc16ca2`）：支持已有 Project 内 `new`，不猜 gizmo/project 私有 API；Project route/CID 解析与 trace 增加 `spa-project`。
+- 新增 `--wait-final`（commit `8aaae8e`）：把异步 daemon canonical final 暴露成 CLI 阻塞结果，只轮询本地 SQLite，不增加 ChatGPT 网络请求。
+- Project 分组折叠与后台 hover action 两项 DOM 细节分别修于 `a3e6700`、`016d2be`；Actor targeted tests 10/10、TypeScript typecheck 均通过。
+- 真机 E2E 暂未发出测试 conversation：首次 smoke 发现 Project 分组折叠，修复后进一步发现 Guardian 生命周期正处于既有 CDP/网络故障。独立 browser-harness 新建后台 tab 直接 `Page.navigate(https://chatgpt.com)` 返回 `net::ERR_CONNECTION_CLOSED`，curl 通过 Mihomo mixed-port CONNECT 也在 TLS handshake 被关闭；临时切 `ATT-家宽-0tlpf6x2` 后现象相同，随后已恢复原 `替补-美东1`。Archive daemon 已重新拉起（PID 23752），但当前 Guardian 仍为 `chrome-error://chromewebdata/`、WSS=0，因此不继续假测 Project 功能。
+
 ## 2026-10-09 DevSpace Recover provisional Conversation Body overlay
 
 - 已把“Conversation Body 因 cooldown/429/CDP 不可用而暂时拉不下来”与“本地 DevSpace 工具事实已经存在”正式拆成两层：新增 `devspace_recovery_audits` 本地持久表，保存已绑定 metadata 的 audit id、tool、canonical args fingerprint、result/error、Conclusion、start/finish 时间，以及后续 canonical supersede 证据。它不是 ChatGPT first-party `messages`，不参与 mapping、terminal、incident 或 Watchdog 判定。

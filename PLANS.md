@@ -1,3 +1,17 @@
+# 2026-10-09 ClassFlow Phase 3：已有 Project 新聊天最小闭环
+
+ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产能力：把“一节完整课程”的 ASR 文本发送到既有 ChatGPT Project `课堂录音→笔记`，一节课一个全新 conversation，并在 Archive canonical body 落盘后把 assistant final 返回给调用方。
+
+已实现：
+
+1. `actor send --project <已有项目名> --mode new`：只使用 ChatGPT 一方侧栏 Project action（真机 aria-label：`在 课堂录音→笔记 中开启新聊天`）进入 Project composer，再复用现有正式 `/f/conversation` 发送链；不实现 Project create/rename/move/delete。
+2. Project 分组折叠时会先展开“一方项目分组”；Project 行尾 action 是 hover 图标按钮，保留尺寸/祖先可见性/pointer 门控，但不再用对后台 Guardian 不可靠的 `elementFromPoint` 中心点判定。
+3. Project conversation URL 的 canonical UUID 解析兼容普通 `/c/<uuid>` 与 `/g/g-p-.../c/<uuid>` 两种形态。
+4. `actor send --wait-final --final-timeout-ms N`：发送后仅轮询**本地 Archive SQLite**，等待 daemon 通过现有 SSE/WSS/body-sync 链写入本次提交之后的 `terminal_state=final`，再返回 assistant final 正文。此等待不会向 ChatGPT 增加 REST/body/catalog 轮询。
+5. `actor batch` job 也可携带 `project` 字段；ClassFlow 初版仍优先使用单条 `send --wait-final`，便于一课一 manifest checkpoint。
+
+当前生产 E2E 阻塞项不是上述功能本身，而是 Windows ChatGPT 网络路径：2026-10-09 14:08 起 Archive Guardian 与独立 browser-harness 临时 tab 均无法新导航 `https://chatgpt.com`，Chrome 返回 `net::ERR_CONNECTION_CLOSED`；同一时段 Guardian 降为 `chrome-error://chromewebdata/`、WSS=0。Mihomo `ChatGPT` 规则仍命中 `🚀 节点选择`，原选择器已恢复为 `替补-美东1`；ATT 家宽临时 A/B 后真实 TLS 也同样失败，已恢复原运行态。网络恢复后再做一次真正 `Project -> CID -> LiveTurn/WSS -> canonical final` smoke；此前两次 Project smoke 都在导航门前失败，没有发出 ChatGPT conversation POST。
+
 ## 2026-10-09 DevSpace Recover provisional body overlay ExecPlan
 
 目标：当 ChatGPT Conversation Body 因 cooldown、429、CDP/REST 不可用或异常终止而暂时/永久缺失时，用 DevSpace 已落盘的 tool audit 生成**有来源标记的 provisional 节点**，让 Archive/Bridge 仍能展示真实工具轨迹；一旦 canonical body 后续出现相同 tool call，再自动以第一方节点覆盖/淘汰 provisional。MCP schema 本轮不改。
