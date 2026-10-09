@@ -219,6 +219,12 @@ export function shortDevSpaceMetadataAlias(metadataId: unknown): string
 /** 从工具 args JSON 中读取非空 conclusion；损坏 JSON / 空字符串均返回 null。 */
 export function extractDevSpaceConclusion(argsJson: unknown): string | null
 
+/** 从独立 checkpoint 工具 args 中读取 summary/next；损坏 JSON / 空 summary 返回 null。 */
+export function extractDevSpaceCheckpoint(argsJson: unknown): {
+  summary: string
+  next: string | null
+} | null
+
 /** 生成独立 DevSpace Conclusion 分组的阶段性结论通知。 */
 export function buildDevSpaceConclusionNotificationPayload(input: {
   conversationId?: string | null
@@ -226,6 +232,20 @@ export function buildDevSpaceConclusionNotificationPayload(input: {
   metadataId?: unknown
   tool?: unknown
   conclusion?: unknown
+}): {
+  title: string
+  body: string
+  group: string
+  url?: string
+}
+
+/** 生成独立 DevSpace Checkpoint 分组的阶段进展通知。 */
+export function buildDevSpaceCheckpointNotificationPayload(input: {
+  conversationId?: string | null
+  title?: string | null
+  metadataId?: unknown
+  summary?: unknown
+  next?: unknown
 }): {
   title: string
   body: string
