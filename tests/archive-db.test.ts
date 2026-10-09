@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
-import { ChatArchiveDb } from '../src/local/archive-db.ts'
+import { ChatArchiveDb, devSpaceVirtualConversationId } from '../src/local/archive-db.ts'
 import { devSpaceToolArgsFingerprint } from '../src/local/devspace-audit-bridge.ts'
 
 const tempDirs: string[] = []
@@ -60,6 +60,109 @@ function payload() {
 }
 
 describe('ChatArchiveDb', () => {
+  test('未绑定 metadata 先形成虚拟 conversation，checkpoint/工具尾部在 binding 后原位迁移', () => {
+    const db = tempDb()
+    try {
+      const metadataId = 'v1/virtual-meta-12345678'
+      const virtualId = devSpaceVirtualConversationId(metadataId)
+      const observed = db.observeDevSpaceMetadata({
+        metadataId,
+        auditId: 'audit-checkpoint',
+        auditAt: 10_000,
+        displayTitle: '虚拟会话标题',
+      })
+      expect(observed).toMatchObject({
+        conversationId: null,
+        displayTitle: '虚拟会话标题',
+      })
+
+      const checkpointArgs = JSON.stringify({
+        summary: '已经确认 provisional overlay 不会污染 canonical messages。',
+        next: '转入 binding E2E。',
+      })
+      db.upsertDevSpaceRecoveryAudit({
+        auditId: 'audit-checkpoint',
+        conversationId: virtualId,
+        metadataId,
+        tool: 'checkpoint',
+        toolFingerprint: devSpaceToolArgsFingerprint('checkpoint', checkpointArgs)!,
+        argsJson: checkpointArgs,
+        resultJson: JSON.stringify({ structuredContent: { result: 'recorded' } }),
+        startedAt: 10_000,
+        finishedAt: 10_100,
+        observedAt: 10_100,
+      })
+
+      const execArgs = JSON.stringify({ cmd: 'echo tail', cwd: 'D:/Workspace' })
+      db.upsertDevSpaceRecoveryAudit({
+        auditId: 'audit-tail',
+        conversationId: virtualId,
+        metadataId,
+        tool: 'exec_command',
+        toolFingerprint: devSpaceToolArgsFingerprint('exec_command', execArgs)!,
+        argsJson: execArgs,
+        startedAt: 11_000,
+        observedAt: 11_000,
+      })
+
+      expect(db.listDevSpaceRecoveryVirtualConversations()).toEqual([
+        expect.objectContaining({
+          id: virtualId,
+          title: '虚拟会话标题',
+          sourceFormat: 'devspace-provisional',
+          provisional: true,
+          metadataId,
+          provisionalState: 'running',
+        }),
+      ])
+      const virtualMessages = db.getDevSpaceRecoveryMessages(virtualId)
+      expect(virtualMessages.map(row => row.recoveryKind)).toEqual([
+        'assistant-checkpoint',
+        'tool-call',
+      ])
+      expect(virtualMessages[0]).toMatchObject({
+        recoverySource: 'devspace-checkpoint',
+        text: '已经确认 provisional overlay 不会污染 canonical messages。\n\n下一阶段：转入 binding E2E。',
+      })
+
+      db.bindDevSpaceMetadata({
+        metadataId,
+        conversationId: 'canonical-cid',
+        displayTitle: '虚拟会话标题',
+        evidence: 'body:exact-tool-args',
+        confidence: 'high',
+        observedAt: 12_000,
+      })
+      expect(db.rebindDevSpaceRecoveryAudits(metadataId, 'canonical-cid')).toBe(2)
+      expect(db.listDevSpaceRecoveryVirtualConversations()).toHaveLength(0)
+      expect(db.getDevSpaceRecoveryMessages('canonical-cid').map(row => row.recoveryKind)).toEqual([
+        'assistant-checkpoint',
+        'tool-call',
+      ])
+
+      // checkpoint 不做模糊覆盖：只有 canonical assistant 明确包含完整 summary 才 supersede。
+      expect(db.supersedeDevSpaceCheckpointFromAssistant({
+        conversationId: 'canonical-cid',
+        assistantText: '阶段完成，可以继续。',
+        assistantStartedAt: 10_300,
+        canonicalMessageId: 'assistant-vague',
+      })).toBeNull()
+      expect(db.supersedeDevSpaceCheckpointFromAssistant({
+        conversationId: 'canonical-cid',
+        assistantText: '进展：已经确认 provisional overlay 不会污染 canonical messages。接下来继续。',
+        assistantStartedAt: 10_300,
+        canonicalMessageId: 'assistant-exact',
+        observedAt: 13_000,
+      })).toBe('audit-checkpoint')
+      expect(db.getDevSpaceRecoveryMessages('canonical-cid').map(row => row.recoveryKind)).toEqual([
+        'tool-call',
+      ])
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('DevSpace recovery overlay 保留 provisional tool/conclusion，并被 canonical exact match 淘汰', () => {
     const db = tempDb()
     try {
