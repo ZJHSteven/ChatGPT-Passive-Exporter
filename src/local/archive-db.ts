@@ -637,6 +637,7 @@ export class ChatArchiveDb {
       CREATE TABLE IF NOT EXISTS devspace_metadata_bindings (
         metadata_id TEXT PRIMARY KEY,
         conversation_id TEXT,
+        display_title TEXT,
         first_seen_at INTEGER NOT NULL,
         last_seen_at INTEGER NOT NULL,
         bound_at INTEGER,
@@ -739,6 +740,7 @@ export class ChatArchiveDb {
     this.ensureColumn('conversations', 'last_finish_reason', 'TEXT')
     this.ensureColumn('conversations', 'last_reasoning_status', 'TEXT')
     this.ensureColumn('conversations', 'last_monitor_checked_at', 'INTEGER')
+    this.ensureColumn('devspace_metadata_bindings', 'display_title', 'TEXT')
 
     this.ensureColumn('messages', 'node_id', 'TEXT')
     this.ensureColumn('messages', 'role_raw', 'TEXT')
