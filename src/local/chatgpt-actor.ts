@@ -1141,11 +1141,12 @@ async function clearAndTypePrompt(client: ActorCdpClient, prompt: string): Promi
         if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
         if (node === document.documentElement) break
       }
-      const x = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
-      const y = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
-      const hit = document.elementFromPoint(x, y)
-      if (hit && !element.contains(hit)) return false
-      return true
+      // 与 readActorPageSnapshot() 使用同一套 composer 语义。
+      // 长课堂文本会让 contenteditable 的几何高度膨胀到数万像素；此时取 rect 中心点再做
+      // elementFromPoint() 会命中正文/背景层，导致“页面状态说 composer 已就绪，但真正填词时
+      // 又说 input not found”的自相矛盾。输入框是否属于第一方 data-chatgpt-composer form
+      // 才是这里稳定且已经过真机验证的判据。
+      return Boolean(element.closest('form[data-chatgpt-composer]'))
     }
     const input = [
       ...document.querySelectorAll('textarea[aria-label="与 ChatGPT 聊天"]'),
@@ -1191,11 +1192,10 @@ async function clickSendHandler(client: ActorCdpClient): Promise<void> {
         if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
         if (node === document.documentElement) break
       }
-      const x = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
-      const y = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
-      const hit = document.elementFromPoint(x, y)
-      if (hit && !element.contains(hit)) return false
-      return true
+      // 发送阶段必须与 hydration / 填词阶段共享同一 composer 身份判定；否则超长课堂
+      // 转写虽然已经成功填入，也可能因为 contenteditable 的超大 rect 再次被 pixel hit-test
+      // 误判成“send button unavailable”。
+      return Boolean(element.closest('form[data-chatgpt-composer]'))
     }
     const input = [
       ...document.querySelectorAll('#prompt-textarea'),

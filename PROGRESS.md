@@ -1,3 +1,9 @@
+# 2026-10-10 Phase 3 Project composer 最后一层兼容
+
+- 单堂 `2026-10-08 泌尿生殖系统` smoke 已确认 N1 -> Archive Bridge -> Guardian Project 路由均可达；此前所有失败都发生在正式 `/f/conversation` POST 之前，因此没有创建重复 conversation，也没有触发 429。
+- Project DOM drift `8cb7d72cbe3f8deb` 已人工核对并批准；随后真实阻塞推进为 `ChatGPT actor prompt input not found`。
+- 根因已定位：`readActorPageSnapshot()` / DOM 指纹在 `9c2ec08` 已改为通过 `form[data-chatgpt-composer]` 判断超长 contenteditable，但 `clearAndTypePrompt()` 与 `clickSendHandler()` 仍残留旧 `elementFromPoint(rect 中心)` 判定。32k 级课堂文本会让 contenteditable 高度膨胀到数万像素，中心点落到正文区而产生假阴性。
+- 本轮统一填词与发送阶段的 composer 身份判据：真实可见 textbox + 隶属第一方 `form[data-chatgpt-composer]`。Guardian 当前 Project 页面已实测 `composerPresent=true / composerHydrated=true / sendReady=true`；重试前 Actor 会先 Ctrl+A 清空 Project 草稿，再写入完整 lecture transcript。
 # 2026-10-10 ClassFlow Phase 3 Bridge 接线决策
 
 - 已重新确认 2026-10-07 production canary：A=`6ac603a3-...` 原始 SSE `58448.1079` 在同 Guardian SPA 创建 B=`6ac603af-...` 后继续收流；Guardian target 不变、WSS generation 1→1、activeSockets=3、HTTP429=0。故 Project 新建无需等待 handoff，也不需要第二个长期 Actor tab。
