@@ -2248,21 +2248,22 @@ async function main() {
   }
 
   /**
-   * 把已经绑定到 canonical conversation 的 DevSpace audit 镜像为 provisional recovery 事实。
+   * 把 DevSpace audit 镜像为 provisional recovery 事实。
    *
-   * 这一步只写 Archive 本地 SQLite，不访问 ChatGPT 网络，也不会改 canonical messages。
-   * start/finish 两次看到同一个 auditId 时由 ArchiveDb upsert 合并，finish 会补齐 result/error。
+   * 已绑定 metadata 直接写 canonical CID；未绑定 metadata 立即写稳定 synthetic conversation，
+   * 这样 DevSpace 的先发事实不需要等 Body/WSS/Watchdog。后续可靠 binding 到达时会原位迁移。
    */
   const persistDevSpaceRecoveryAudit = (event, bindingOverride = null) => {
     if (!event?.id || !event?.metadataId || !event?.tool) return false
     const binding = bindingOverride ?? archive.getDevSpaceMetadataBinding(event.metadataId)
-    if (!binding?.conversationId) return false
     const toolFingerprint = devSpaceToolArgsFingerprint(event.tool, event.argsJson)
     if (!toolFingerprint) return false
     const finishedAt = event.finishedAt ? Date.parse(event.finishedAt) : null
+    const conversationId = binding?.conversationId
+      || devSpaceVirtualConversationId(event.metadataId)
     archive.upsertDevSpaceRecoveryAudit({
       auditId: event.id,
-      conversationId: binding.conversationId,
+      conversationId,
       metadataId: event.metadataId,
       tool: event.tool,
       toolFingerprint,
