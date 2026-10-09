@@ -43,6 +43,9 @@ export interface ArchiveConversationRow {
   lastFinishType: string | null
   lastFinishReason: string | null
   lastReasoningStatus: string | null
+  /** 仅 Bridge/Reader 展示层使用；canonical conversations 永远不设置该标记。 */
+  provisional?: boolean
+  metadataId?: string | null
 }
 
 /** 一份外部数据源（官方 ZIP、被动 capture、在线 sync）在数据库中的登记信息。 */
@@ -142,6 +145,7 @@ export interface ArchiveIncidentRow {
 export interface DevSpaceMetadataBindingRow {
   metadataId: string
   conversationId: string | null
+  displayTitle: string | null
   firstSeenAt: number
   lastSeenAt: number
   boundAt: number | null
@@ -154,6 +158,23 @@ export interface DevSpaceMetadataBindingRow {
   lastAuditAt: number | null
   unboundWatchdogAt: number | null
   lifecycleState: 'unbound' | 'active' | 'closed'
+}
+
+/**
+ * 未绑定 metadata 的稳定 synthetic conversation id。
+ *
+ * 内部使用 SHA-256 的 16 hex 前缀，避免把超长 openai/session 直接塞进 URL；完整 metadata ID
+ * 仍保存在 binding/recovery 表中用于精确定位。synthetic id 只存在于 provisional 展示层。
+ */
+export function devSpaceVirtualConversationId(metadataId: string): string {
+  const normalized = metadataId.trim()
+  const digest = createHash('sha256').update(normalized || 'unknown').digest('hex').slice(0, 16)
+  return `devspace-meta/${digest}`
+}
+
+export function shortDevSpaceMetadataAlias(metadataId: string): string {
+  const normalized = metadataId.trim().replace(/^v1\//u, '')
+  return normalized ? `meta/${normalized.slice(0, 8)}` : 'meta/unknown'
 }
 
 /**
