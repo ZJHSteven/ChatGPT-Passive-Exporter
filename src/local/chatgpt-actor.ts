@@ -922,8 +922,11 @@ async function clickProjectNewChatSpa(client: ActorCdpClient, projectName: strin
       if (!element || !element.isConnected) return false
       const rect = element.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) return false
-      const ownStyle = window.getComputedStyle(element)
-      if (ownStyle.pointerEvents === 'none') return false
+      // 这是 Actor 自己通过 HTMLElement.click() 触发的一方按钮，不依赖鼠标命中测试。
+      // 2026-10-10 当前 Web 会在 sidebar 图标按钮上临时/常驻设置 pointer-events:none，
+      // 但元素本身仍是 React 绑定的真实 button，程序化 click 能正常进入 Project composer。
+      // 因此这里不能再把 pointer-events 当成“Project 不存在”的判据；仍保留尺寸和祖先
+      // hidden/inert/display/visibility/opacity 约束，防止误点隐藏副本。
       for (let node = element; node; node = node.parentElement) {
         if (!(node instanceof HTMLElement)) continue
         if (node.hidden || node.hasAttribute('inert')) return false
@@ -948,18 +951,25 @@ async function clickProjectNewChatSpa(client: ActorCdpClient, projectName: strin
     }
     let target = findTarget()
     if (!target) {
-      // ChatGPT 会把“项目”分组折叠起来；此时具体 Project 按钮根本不在 DOM，不能把它
-      // 误报成“Project 不存在”。只点击可见的一方分组标题展开，绝不猜 gizmo/project API。
-      const sectionToggle = [...document.querySelectorAll('button')].filter(usable).find((button) => {
-        const identity = [button.getAttribute('aria-label') || '', button.innerText || ''].join(' ')
-          .replace(/\s+/gu, ' ')
-          .trim()
-        return identity === '项目' || /^projects?$/iu.test(identity)
+      const projectActionExistsInDom = [...document.querySelectorAll('button')].some((button) => {
+        const aria = button.getAttribute('aria-label') || ''
+        return aria === exactZh || (aria.includes(projectName) && /项目操作|project|开启新聊天|new chat/iu.test(aria))
       })
-      if (sectionToggle) {
-        sectionToggle.click()
-        await new Promise(resolve => setTimeout(resolve, 250))
-        target = findTarget()
+      // ChatGPT 会把“项目”分组折叠起来；此时具体 Project 按钮根本不在 DOM，不能把它
+      // 误报成“Project 不存在”。但如果 Project 行已经在 DOM，只是 action 被旧的交互性
+      // 判据过滤掉，就绝不能再点一次分组标题——那会把已经展开的项目区反向折叠。
+      if (!projectActionExistsInDom) {
+        const sectionToggle = [...document.querySelectorAll('button')].filter(usable).find((button) => {
+          const identity = [button.getAttribute('aria-label') || '', button.innerText || ''].join(' ')
+            .replace(/\s+/gu, ' ')
+            .trim()
+          return identity === '项目' || /^projects?$/iu.test(identity)
+        })
+        if (sectionToggle) {
+          sectionToggle.click()
+          await new Promise(resolve => setTimeout(resolve, 250))
+          target = findTarget()
+        }
       }
     }
     if (!target) return false
