@@ -3228,6 +3228,52 @@ export class ChatArchiveDb {
   }
 
   /**
+   * metadata 从 synthetic provisional conversation 绑定到真实 CID 时原位迁移 recovery 事实。
+   * 不复制、不删除 audit；forensic identity 仍由 audit_id + metadata_id 保持稳定。
+   */
+  rebindDevSpaceRecoveryAudits(metadataId: string, conversationId: string): number {
+    const result = this.db.prepare(`
+      UPDATE devspace_recovery_audits
+      SET conversation_id = ?
+      WHERE metadata_id = ? AND conversation_id <> ?
+    `).run(conversationId, metadataId, conversationId)
+    return Number(result.changes)
+  }
+
+  /**
+   * Reader/Bridge 专用的 provisional conversation 列表。
+   * canonical `conversations` 表完全不插 synthetic 行；这里只把未绑定 metadata + active recovery
+   * 动态投影成可浏览的虚拟会话。
+   */
+  listDevSpaceRecoveryVirtualConversations(limit = 100): ArchiveConversationRow[] {
+    const bindings = this.listDevSpaceMetadataBindings({ onlyUnbound: true, limit: Math.max(1, Math.trunc(limit)) })
+    const rows: ArchiveConversationRow[] = []
+    for (const binding of bindings) {
+      const id = devSpaceVirtualConversationId(binding.metadataId)
+      const recoveryMessages = this.getDevSpaceRecoveryMessages(id)
+      if (recoveryMessages.length === 0) continue
+      rows.push({
+        id,
+        title: binding.displayTitle?.trim() || shortDevSpaceMetadataAlias(binding.metadataId),
+        sourceFormat: 'devspace-provisional',
+        currentNode: null,
+        capturedAt: binding.lastSeenAt,
+        importedAt: binding.lastSeenAt,
+        messageCount: recoveryMessages.length,
+        resourceCount: 0,
+        terminalState: null,
+        incidentState: null,
+        lastFinishType: null,
+        lastFinishReason: null,
+        lastReasoningStatus: null,
+        provisional: true,
+        metadataId: binding.metadataId,
+      })
+    }
+    return rows
+  }
+
+  /**
    * canonical body 已出现相同 tool+args 时，淘汰最近的一个 provisional audit。
    * 时间窗与 binding exact matcher 保持同量级，避免同一命令在很久以后重复执行时误匹配。
    */
@@ -3272,6 +3318,62 @@ export class ChatArchiveDb {
   }
 
   /**
+   * checkpoint 的 provisional assistant 节点不应仅因为 canonical tool-call 到达就消失。
+   * 只有 canonical assistant commentary 明确复述完整 summary，且时间足够接近时才视为覆盖。
+   * 这里使用“完整 summary 是 assistant 文本子串”的高置信规则，不做向量/模糊语义猜测。
+   */
+  supersedeDevSpaceCheckpointFromAssistant(input: {
+    conversationId: string
+    assistantText: string
+    assistantStartedAt: number
+    canonicalMessageId: string
+    observedAt?: number
+    toleranceMs?: number
+  }): string | null {
+    const assistantText = input.assistantText.trim().replace(/\s+/gu, ' ')
+    if (!assistantText) return null
+    const toleranceMs = Math.max(0, Math.trunc(input.toleranceMs ?? 120_000))
+    const startedAt = Math.max(0, Math.trunc(input.assistantStartedAt))
+    const candidates = this.db.prepare(`
+      SELECT audit_id AS auditId, args_json AS argsJson, started_at AS startedAt
+      FROM devspace_recovery_audits
+      WHERE conversation_id = ?
+        AND tool = 'checkpoint'
+        AND superseded_at IS NULL
+        AND started_at BETWEEN ? AND ?
+      ORDER BY abs(started_at - ?) ASC, started_at ASC, audit_id ASC
+    `).all(
+      input.conversationId,
+      Math.max(0, startedAt - toleranceMs),
+      startedAt + toleranceMs,
+      startedAt,
+    ) as Array<{ auditId: string, argsJson: string, startedAt: number }>
+    for (const candidate of candidates) {
+      let summary = ''
+      try {
+        const parsed = JSON.parse(candidate.argsJson) as Record<string, unknown>
+        summary = typeof parsed.summary === 'string' ? parsed.summary.trim().replace(/\s+/gu, ' ') : ''
+      }
+      catch {
+        summary = ''
+      }
+      if (summary.length < 8 || !assistantText.includes(summary)) continue
+      this.db.prepare(`
+        UPDATE devspace_recovery_audits
+        SET superseded_at = COALESCE(superseded_at, ?),
+            superseded_by_message_id = COALESCE(superseded_by_message_id, ?)
+        WHERE audit_id = ?
+      `).run(
+        Math.max(0, Math.trunc(input.observedAt ?? Date.now())),
+        input.canonicalMessageId,
+        candidate.auditId,
+      )
+      return candidate.auditId
+    }
+    return null
+  }
+
+  /**
    * 给 Reader/Bridge 生成可见的 provisional message overlay。
    * canonical `messages` 表完全不变；这里仅把 audit 映射成 UI 友好的三类节点。
    */
@@ -3308,6 +3410,37 @@ export class ChatArchiveDb {
         auditId: audit.auditId,
         metadataId: audit.metadataId,
         superseded: false,
+      }
+
+      if (audit.tool === 'checkpoint') {
+        try {
+          const parsed = JSON.parse(audit.argsJson) as Record<string, unknown>
+          const summary = typeof parsed.summary === 'string' ? parsed.summary.trim() : ''
+          const next = typeof parsed.next === 'string' ? parsed.next.trim() : ''
+          if (summary) {
+            rows.push({
+              ...base,
+              recoverySource: 'devspace-checkpoint',
+              messageId: `devspace-recovery:${audit.auditId}:checkpoint`,
+              ordinal: ordinal++,
+              role: 'assistant',
+              authorName: 'DevSpace Checkpoint',
+              recipient: 'all',
+              channel: 'commentary',
+              contentType: 'text',
+              text: next ? `${summary}\n\n下一阶段：${next}` : summary,
+              hidden: 0,
+              createTime: audit.startedAt / 1000,
+              status: 'provisional',
+              endTurn: false,
+              recoveryKind: 'assistant-checkpoint',
+            })
+            continue
+          }
+        }
+        catch {
+          // malformed checkpoint 仍按普通 tool audit 展示，避免 recovery 数据静默丢失。
+        }
       }
       if (audit.conclusion) {
         rows.push({
