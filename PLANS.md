@@ -12,6 +12,21 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 
 当前生产 E2E 阻塞项不是上述功能本身，而是 Windows ChatGPT 网络路径：2026-10-09 14:08 起 Archive Guardian 与独立 browser-harness 临时 tab 均无法新导航 `https://chatgpt.com`，Chrome 返回 `net::ERR_CONNECTION_CLOSED`；同一时段 Guardian 降为 `chrome-error://chromewebdata/`、WSS=0。Mihomo `ChatGPT` 规则仍命中 `🚀 节点选择`，原选择器已恢复为 `替补-美东1`；ATT 家宽临时 A/B 后真实 TLS 也同样失败，已恢复原运行态。网络恢复后再做一次真正 `Project -> CID -> LiveTurn/WSS -> canonical final` smoke；此前两次 Project smoke 都在导航门前失败，没有发出 ChatGPT conversation POST。
 
+## 2026-10-10 DevSpace provisional 虚拟 Conversation / Checkpoint 工具 ExecPlan
+
+目标：继续保持 Archive canonical `conversations/messages` 为第一方事实源，同时把 DevSpace `tool_audit` 的先发优势扩展到**尚未可靠绑定 CID 的 metadata**；并把容易被模型误用成“命令注释”的 `conclusion` 字段迁移为独立阶段 checkpoint 工具。
+
+1. 未绑定 metadata 也立即镜像 recovery audit，不再等待 canonical binding。内部使用稳定 synthetic id `devspace-meta/<hash>` 作为 provisional conversation key；display title 优先 `init.title`，否则回退 `meta/XXXXXXXX`。
+2. synthetic conversation 只存在于 recovery/Bridge 展示层，不写 canonical `conversations/messages`，不参与 Watchdog terminal/incident、mapping、FTS 或 canonical source 统计。
+3. Bridge `/v1/conversations` 追加 active provisional conversations；`/v1/conversations/:id/messages` 可直接读取其 provisional tool/checkpoint 尾部。这样即使 ChatGPT Body 尚未到、429/cooldown、CDP/REST 不可用或服务器最终漏节点，Archive Reader 仍可提前看到本地事实。
+4. metadata 后续获得高置信 binding 时，把该 metadata 的 active recovery audits 从 synthetic id 原位迁移到 canonical CID；synthetic conversation 自动从 Bridge 列表消失，不复制、不重放、不改 canonical messages。
+5. canonical body 到达后仍按现有 `tool + canonical args + 时间窗` supersede 对应 provisional tool audit；未被 body 覆盖的异常尾部继续保留。Checkpoint 则只在能找到语义对应的 canonical assistant commentary 时再覆盖；无法可靠对应时宁可保留 provisional，不做文本模糊猜测。
+6. DevSpace 新增独立 `checkpoint(summary, next?)` 工具：只记录“阶段完成 / 新事实确认 / 重要决策 / 阻塞变化 / 值得 Recover 保存的中间结论”。`next` 只允许宏观下一阶段，可省略。明确禁止记录下一条命令、git status、一次 read/exec 是否完成之类微观工具注释。
+7. 新 schema 不再在 `read/exec_command/write_stdin` 暴露 `conclusion`；旧 Host 缓存继续传多余字段时保持兼容、不让工具调用报错。Archive 同时兼容历史 `args.conclusion` 与新 `checkpoint` audit，Bark/overlay 均优先识别 checkpoint。
+8. 所有更改保持旁路：不新增 ChatGPT 网络请求、不改变 active/watchdog/cooldown 状态机。回归必须覆盖 unbound->virtual、title fallback、late binding migrate、canonical supersede、orphan tail 保留、checkpoint 单节点展示、旧 conclusion 兼容，以及 Bridge 分页/列表行为。
+
+状态：设计已确认，开始实现；canonical Archive 主表与 Watchdog/incident 主链保持不动。
+
 ## 2026-10-09 DevSpace Recover provisional body overlay ExecPlan
 
 目标：当 ChatGPT Conversation Body 因 cooldown、429、CDP/REST 不可用或异常终止而暂时/永久缺失时，用 DevSpace 已落盘的 tool audit 生成**有来源标记的 provisional 节点**，让 Archive/Bridge 仍能展示真实工具轨迹；一旦 canonical body 后续出现相同 tool call，再自动以第一方节点覆盖/淘汰 provisional。MCP schema 本轮不改。
