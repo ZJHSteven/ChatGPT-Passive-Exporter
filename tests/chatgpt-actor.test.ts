@@ -107,7 +107,7 @@ describe('ChatGPT single actor helpers', () => {
     // 这里只编译、不执行。document / location 等浏览器全局只有运行时才会解析，
     // 因此可以精准覆盖“外层 template literal 吃掉正则转义导致 SyntaxError”这一类回归。
     expect(() => new Function(`return ${expression}`)).not.toThrow()
-    expect(expression).toContain("new RegExp('^/c/[0-9a-f-]{20,}(?:/|$)', 'iu')")
+    expect(expression).toContain("'^/(?:c/|g/g-p-[^/?#]+/c/)[0-9a-f-]{20,}(?:/|$)'")
     expect(expression).toContain('(^|\\s)(send|发送)(\\s|$)')
   })
 
