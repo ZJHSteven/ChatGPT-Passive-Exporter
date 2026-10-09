@@ -25,10 +25,14 @@ export interface ArchiveBridgeConversationRow {
   lastFinishType?: string | null
   lastFinishReason?: string | null
   lastReasoningStatus?: string | null
+  provisional?: boolean
+  metadataId?: string | null
+  provisionalState?: 'running' | 'idle'
 }
 
 export interface ArchiveBridgeDataSource {
   list(limit?: number): ArchiveBridgeConversationRow[]
+  listDevSpaceRecoveryVirtualConversations?(limit?: number): ArchiveBridgeConversationRow[]
   getMessages(conversationId: string): Array<Record<string, unknown>>
   getDevSpaceRecoveryMessages?(conversationId: string): Array<Record<string, unknown>>
   getResources?(conversationId: string): Array<Record<string, unknown>>
@@ -499,6 +503,7 @@ export class ArchiveBridgeServer {
     }
 
     if (url.pathname === '/v1/conversations' && method === 'GET') {
+      const limit = parseLimit(url.searchParams.get('limit'))
       const activeIds = new Set(
         (this.options.archive.listActiveWatchdogs?.(1000) ?? [])
           .map(row => typeof row.conversationId === 'string' ? row.conversationId : '')
@@ -509,10 +514,17 @@ export class ArchiveBridgeServer {
           .map(row => typeof row.conversationId === 'string' ? row.conversationId : '')
           .filter(Boolean),
       )
+      const canonical = this.options.archive.list(limit)
+      const provisional = this.options.archive.listDevSpaceRecoveryVirtualConversations?.(limit) ?? []
+      const combined = [...canonical, ...provisional]
+        .sort((a, b) => Number(b.capturedAt || 0) - Number(a.capturedAt || 0) || a.id.localeCompare(b.id))
+        .slice(0, limit)
       jsonResponse(res, 200, {
-        conversations: this.options.archive.list(parseLimit(url.searchParams.get('limit'))).map(row => ({
+        conversations: combined.map(row => ({
           ...row,
-          lifecycleState: openIncidentIds.has(row.id)
+          lifecycleState: row.provisional
+            ? row.provisionalState ?? 'idle'
+            : openIncidentIds.has(row.id)
             ? 'aborted'
             : activeIds.has(row.id)
               ? 'running'
