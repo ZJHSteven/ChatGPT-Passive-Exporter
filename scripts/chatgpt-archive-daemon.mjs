@@ -4404,6 +4404,7 @@ async function main() {
     const binding = archive.bindDevSpaceMetadata({
       metadataId: input.metadataId,
       conversationId: input.conversationId,
+      displayTitle: existing?.displayTitle ?? null,
       evidence: input.evidence,
       confidence: input.confidence,
       observedAt: input.observedAt,
@@ -4414,6 +4415,10 @@ async function main() {
     unboundDevSpaceTurns.delete(input.metadataId)
     if (!existing?.conversationId) devSpaceBindingsCreated += 1
     mirrorDevSpaceBinding(binding)
+    const recoveryRebound = archive.rebindDevSpaceRecoveryAudits(
+      input.metadataId,
+      input.conversationId,
+    )
     const recoveryMirrored = backfillDevSpaceRecoveryForBinding(
       binding,
       input.startAt,
@@ -4445,6 +4450,7 @@ async function main() {
       confidence: input.confidence,
       lifecycleState,
       startAt: input.startAt,
+      recoveryRebound,
       recoveryMirrored,
     })
     if (lifecycleState === 'active') activateBoundDevSpaceTurn(binding, input.startAt)
@@ -4499,17 +4505,20 @@ async function main() {
     seenDevSpaceAuditIds.set(event.id, event.startedAtMs)
     devSpaceAuditsObserved += 1
     devSpaceLastAuditAt = Math.max(Number(devSpaceLastAuditAt || 0), event.startedAtMs)
+    const metadataState = devSpaceAuditBridge.metadataToolState(event.metadataId)
     const binding = archive.observeDevSpaceMetadata({
       metadataId: event.metadataId,
       auditId: event.id,
       auditAt: event.startedAtMs,
+      displayTitle: metadataState?.title ?? null,
     })
     // begin 事件会看到 runningTools>0 并立即取消旧 idle generation。
     // finish 事件即使 auditId 已经见过，也会由 wake callback 额外按 metadata 重读。
     refreshDevSpaceIdleCandidate(event.metadataId)
-    dispatchDevSpaceConclusionNotification(event)
+    dispatchDevSpaceProgressNotification(event)
+    // binding 尚未建立时也立即写 synthetic provisional conversation；一旦绑定再原位迁移。
+    persistDevSpaceRecoveryAudit(event, binding)
     if (binding.conversationId) {
-      persistDevSpaceRecoveryAudit(event, binding)
       activateBoundDevSpaceTurn(binding, event.startedAtMs)
       return
     }
