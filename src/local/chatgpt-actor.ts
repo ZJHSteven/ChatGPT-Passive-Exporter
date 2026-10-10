@@ -879,7 +879,7 @@ async function clickNewChatSpa(client: ActorCdpClient): Promise<boolean> {
         if (Number.parseFloat(style.opacity || '1') <= 0.01) return false
         if (node === document.documentElement) break
       }
-      return Boolean(element.closest('form[data-chatgpt-composer]'))
+      return true
     }
     const candidates = [
       ...document.querySelectorAll('[data-testid="create-new-chat-button"]'),
@@ -888,8 +888,11 @@ async function clickNewChatSpa(client: ActorCdpClient): Promise<boolean> {
     const target = candidates.find((element) => {
       if (!usable(element)) return false
       if (element.getAttribute('data-testid') === 'create-new-chat-button') return true
-      const identity = [element.getAttribute('aria-label') || '', element.innerText || ''].join(' ')
-      return /新聊天|new chat/iu.test(identity)
+      // Project 行也有“在 <Project> 中开启新聊天”按钮；这里必须只认全局 new-chat，
+      // 否则从任意 conversation 归位时可能误进侧栏中第一个 Project composer。
+      const aria = String(element.getAttribute('aria-label') || '').trim()
+      const text = String(element.innerText || '').trim()
+      return /^(?:新聊天|new chat)$/iu.test(aria) || /^(?:新聊天|new chat)$/iu.test(text)
     })
     if (!target) return false
     target.click()
