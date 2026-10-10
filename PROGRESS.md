@@ -6,6 +6,7 @@
 - resume scheduler 的终态短路已改成 turn 新鲜度判断：`terminal_state=final` 还必须满足 `conversations.last_seen_at >= credential.lastSeenAt` 才能跳过；因此上一轮 Notes 的 final 不会再阻止同 CID 的标题 turn 恢复。
 - 增加 startup orphan 恢复查询：从 SQLite 取最近 24h、`resume_attempt_count < 5` 的 credential；若该 CID 当前没有 live transport，就交给同一个 `scheduleResumeRetry()`，不另写第二套请求实现。
 - 增加全局 idle retire 扫描器：只处理 passive observer 注入了 `retireIdle()` 的 conversation/resume SSE；达到 45s idle 后调用原 tracker `fail('idle-timeout')`，由既有 `stream-failed` 事件自动调度 resume。
+- passive observer 创建 conversation/resume tracker 时现在同时注入一个内存态 `retireIdle()` 回调；它不会进入 daemon JSON state，只负责原子地 `tracker.fail -> 删除旧 request tracker -> 删除 activeLiveTransport`，防止旧挂死 SSE 和新 resume stream 双重计数。
 
 # 2026-10-10 Phase 3 Project composer 最后一层兼容
 

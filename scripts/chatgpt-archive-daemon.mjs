@@ -5371,7 +5371,7 @@ async function main() {
         emit: appendLiveTransport,
       })
       const liveKey = `${target.id}:${requestId}`
-      activeLiveTransports.set(liveKey, {
+      const liveState = {
         targetId: target.id,
         cdpRequestId: String(requestId),
         transport,
@@ -5385,14 +5385,25 @@ async function main() {
         lastControlEvent: null,
         bytesObserved: 0,
         pingCount: 0,
-      })
-      liveTransports.set(requestId, {
+      }
+      const live = {
         tracker,
         liveKey,
         ready: false,
         pending: [],
         enablePromise: null,
-      })
+      }
+      // 这个函数只存在于 daemon 内存；JSON.stringify 会自然忽略函数属性，因此不会污染 state。
+      // idle scanner 通过它把旧 SSE 送回 tracker.fail()，从而复用标准 stream-failed -> resume 链。
+      liveState.retireIdle = (reason, at = Date.now()) => {
+        if (!liveTransports.has(requestId)) return false
+        tracker.fail(reason, at)
+        liveTransports.delete(requestId)
+        activeLiveTransports.delete(liveKey)
+        return true
+      }
+      activeLiveTransports.set(liveKey, liveState)
+      liveTransports.set(requestId, live)
     }
 
     client.on('Network.requestWillBeSent', ({ requestId, request }) => {
