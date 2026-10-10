@@ -523,6 +523,15 @@ describe('Archive Bridge', () => {
     const firstBody = await first.json() as { submission: { id: string, status: string } }
     const firstId = firstBody.submission.id
 
+    const lookup = await fetch(
+      started.base + '/v1/submissions?key=' + encodeURIComponent(body.idempotencyKey),
+      { headers: started.headers },
+    )
+    expect(lookup.status).toBe(200)
+    const lookupBody = await lookup.json() as { submission: { id: string } }
+    expect(lookupBody.submission.id).toBe(firstId)
+    expect(JSON.stringify(lookupBody)).not.toContain('queued-note')
+
     type SubmissionResponse = {
       submission: {
         id: string
