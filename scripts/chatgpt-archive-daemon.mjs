@@ -645,6 +645,61 @@ export function activeApiAllowed(cooldownUntil, now = Date.now()) {
   const value = Number(cooldownUntil ?? 0)
   return !Number.isFinite(value) || value <= 0 || now >= value
 }
+/**
+ * 把服务端 Retry-After 转成绝对 cooldown 截止时间。
+ *
+ * ChatGPT 明确给出 Retry-After 时，以服务端为主要真相源，不再无条件放大成 60 分钟；
+ * 同时保留短安全下限与 buffer，避免刚到边界就立刻重新撞限流。只有没有或无法解析
+ * Retry-After 时，才回退到保守的本地 cooldown。Retry-After 支持 delta-seconds 和 HTTP-date。
+ */
+export function cooldownDeadlineFromRetryAfter(
+  retryAfter,
+  {
+    now = Date.now(),
+    fallbackMs = 60 * 60_000,
+    minimumMs = 30_000,
+    safetyMs = 5_000,
+  } = {},
+) {
+  const current = Number(now)
+  const fallback = Math.max(1_000, Number(fallbackMs) || 60 * 60_000)
+  const minimum = Math.max(1_000, Number(minimumMs) || 30_000)
+  const safety = Math.max(0, Number(safetyMs) || 0)
+  const raw = String(retryAfter ?? '').trim()
+  if (!raw) return current + fallback
+
+  let serverDeadline = null
+  if (/^\d+(?:\.\d+)?$/u.test(raw)) {
+    const seconds = Number(raw)
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      serverDeadline = current + Math.ceil(seconds * 1000)
+    }
+  }
+  else {
+    const parsed = Date.parse(raw)
+    if (Number.isFinite(parsed)) serverDeadline = parsed
+  }
+
+  if (!Number.isFinite(serverDeadline)) return current + fallback
+  return Math.max(current + minimum, Number(serverDeadline) + safety)
+}
+
+/**
+ * 被动 CDP observer 也会看见 daemon 自己通过 Guardian page 发出的 active replay。
+ * 同一个 429 不能在 observer 与 fetchChecked 两边各 trip 一次；active replay 由
+ * fetchChecked 负责熔断，observer 只处理真正来自页面自身的 native 请求。
+ */
+export function shouldTripObserved429(requestUrl, activeReplayRequestUrl, base = 'https://chatgpt.com') {
+  if (!activeReplayRequestUrl) return true
+  try {
+    const observed = new URL(String(requestUrl || ''), base)
+    const active = new URL(String(activeReplayRequestUrl || ''), base)
+    return (observed.pathname + observed.search) !== (active.pathname + active.search)
+  }
+  catch {
+    return true
+  }
+}
 
 /**
  * 人类可见时间统一使用北京时间（Asia/Shanghai, UTC+8）。
@@ -3887,7 +3942,15 @@ async function main() {
     const now = Date.now()
     const previousCooldownUntil = Number(cooldownUntil || 0)
     const wasAlreadyCooling = previousCooldownUntil > now
-    cooldownUntil = now + cooldownMinutes * 60_000
+    const requestedCooldownUntil = cooldownDeadlineFromRetryAfter(details.retryAfter, {
+      now,
+      fallbackMs: cooldownMinutes * 60_000,
+    })
+    // 已经在 cooldown 时只允许向后延长；后续较短的 Retry-After 不能反向缩短已有熔断。
+    cooldownUntil = Math.max(
+      wasAlreadyCooling ? previousCooldownUntil : 0,
+      requestedCooldownUntil,
+    )
     cooldownRecoveryPending = true
     recoveryProbeRemaining = 0
     // 429 本身就是“现在不适合做主动扫描”的强证据。把 periodic 基准推进到本次 429，
@@ -3899,6 +3962,7 @@ async function main() {
       wasAlreadyCooling,
       previousCooldownUntil: previousCooldownUntil > 0 ? previousCooldownUntil : null,
       extensionMs: wasAlreadyCooling ? Math.max(0, cooldownUntil - previousCooldownUntil) : null,
+      retryAfterDriven: String(details.retryAfter ?? '').trim().length > 0,
       ...details,
     })
     if (!wasAlreadyCooling) {
@@ -5802,6 +5866,11 @@ async function main() {
       if (!route) return
       if (status === 429) {
         passive429Responses += 1
+        if (!shouldTripObserved429(requestUrl, activeReplayRequestUrl)) {
+          // 这是 fetchChecked 自己发出的 active replay；同一响应稍后会由 fetchChecked
+          // 同步 tripCooldown。这里只保留观测计数，不重复修改 cooldown 或发送 Bark。
+          return
+        }
         void tripCooldown(`observed native ${route.kind} HTTP 429`, {
           route: relativeBackendUrl(requestUrl),
           retryAfter: response?.headers?.['retry-after'] ?? response?.headers?.['Retry-After'] ?? null,
@@ -7234,4 +7303,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     process.exitCode = 1
   })
 }
+
 
