@@ -20,6 +20,7 @@ import {
   classifyConversationEvent,
   conversationIdFromTargetUrl,
   decodeCdpResponseBodyBytes,
+  devSpaceIdleRepairMode,
   devSpaceFirstToolWatchdogState,
   extractDevSpaceCheckpoint,
   extractDevSpaceConclusion,
@@ -193,6 +194,18 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(crossedDevSpaceIdleThresholds(179_000, 181_000)).toEqual([180_000])
     expect(crossedDevSpaceIdleThresholds(181_000, 301_000)).toEqual([300_000])
     expect(crossedDevSpaceIdleThresholds(240_000, 241_000)).toEqual([])
+  })
+
+  test('只有 5 分钟 DevSpace idle 会升级为提前核验；bound 直读 body，unbound 才扫 catalog', () => {
+    expect(devSpaceIdleRepairMode(60_000, 'conversation-a')).toBe('none')
+    expect(devSpaceIdleRepairMode(180_000, 'conversation-a')).toBe('none')
+    expect(devSpaceIdleRepairMode(300_000, 'conversation-a')).toBe('bound-body')
+    expect(devSpaceIdleRepairMode(300_000, null)).toBe('unbound-catalog')
+  })
+
+  test('5 分钟 bound body probe 可识别显式异常，但本身不是 confirmed complete 证据', () => {
+    expect(shouldClassifyTerminalForTrigger('devspace-idle:bound-probe')).toBe(true)
+    expect(isConfirmedTerminalTrigger('devspace-idle:bound-probe')).toBe(false)
   })
 
   test('DevSpace idle 通知是独立 Bug 分组，并明确不是 turn 终止证据', () => {
