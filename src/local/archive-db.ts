@@ -3602,8 +3602,9 @@ export class ChatArchiveDb {
         FROM messages
         WHERE conversation_id=? AND role='user' AND create_time>?
       `).get(incident.conversationId, tailSec + 0.001) as { nextUserSec?: number | null } | undefined
-      const beforeAt = Number.isFinite(Number(nextUser?.nextUserSec))
-        ? Math.trunc(Number(nextUser?.nextUserSec) * 1000)
+      const nextUserSec = Number(nextUser?.nextUserSec)
+      const beforeAt = Number.isFinite(nextUserSec) && nextUserSec > 0
+        ? Math.trunc(nextUserSec * 1000)
         : null
       const summary = this.describeDevSpaceTailGap({
         conversationId: incident.conversationId,
