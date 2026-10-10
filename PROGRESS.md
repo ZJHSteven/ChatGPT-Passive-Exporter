@@ -4,6 +4,7 @@
 - 计划补强为：已收到 bytes + 已持久化 resume token 的 conversation/resume SSE，连续 45s 连 ping/data 都没有时走标准 `stream-failed(idle-timeout)`；同时修正“上一轮 conversation final 错挡下一轮 resume”的 turn 新鲜度判断，并增加 daemon 重启后的近期 orphan resume 恢复。
 - 运行参数固定：idle 阈值 45s；resume 最大尝试仍沿用 5 次指数退避；daemon startup orphan credential 只回看最近 24h，避免把很久以前的异常 turn 在每次启动时重新唤醒。
 - resume scheduler 的终态短路已改成 turn 新鲜度判断：`terminal_state=final` 还必须满足 `conversations.last_seen_at >= credential.lastSeenAt` 才能跳过；因此上一轮 Notes 的 final 不会再阻止同 CID 的标题 turn 恢复。
+- 增加 startup orphan 恢复查询：从 SQLite 取最近 24h、`resume_attempt_count < 5` 的 credential；若该 CID 当前没有 live transport，就交给同一个 `scheduleResumeRetry()`，不另写第二套请求实现。
 
 # 2026-10-10 Phase 3 Project composer 最后一层兼容
 

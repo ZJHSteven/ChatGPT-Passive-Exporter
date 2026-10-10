@@ -3811,6 +3811,31 @@ async function main() {
     .some(stream => String(stream?.conversationId || '') === String(conversationId || ''))
 
   /**
+   * daemon 重启会丢失内存 tracker，但 resume capability 已经持久化在 SQLite。
+   * 这里只恢复近期、尝试次数未耗尽、且当前没有本机 live transport 的 credential；
+   * 真正发请求前统一 scheduler 仍会再次检查 auth/cooldown/当前 turn 是否已有新鲜 final。
+   */
+  const recoverRecentOrphanedResumeCredentials = () => {
+    const cutoff = Date.now() - resumeStartupLookbackMs
+    const rows = archive.db.prepare(`
+      SELECT conversation_id AS conversationId, turn_exchange_id AS turnExchangeId,
+             last_seen_at AS lastSeenAt, resume_attempt_count AS resumeAttemptCount
+      FROM live_resume_credentials
+      WHERE last_seen_at >= ? AND resume_attempt_count < ?
+      ORDER BY last_seen_at DESC
+      LIMIT 32
+    `).all(cutoff, resumeMaxAttempts)
+    let scheduled = 0
+    for (const row of rows) {
+      if (!row?.conversationId || hasLiveTransportForConversation(row.conversationId)) continue
+      if (scheduleResumeRetry(row.conversationId, row.turnExchangeId ?? null, 'daemon-startup-orphan')) {
+        scheduled += 1
+      }
+    }
+    return scheduled
+  }
+
+  /**
    * 给一个明确 active 的 conversation 建 checkpoint fallback。
    *
    * 这里的 startedAt 只是“Archive 开始追踪”的时间；绝不能冒充真实 turn start。
