@@ -8,6 +8,7 @@
 - 增加全局 idle retire 扫描器：只处理 passive observer 注入了 `retireIdle()` 的 conversation/resume SSE；达到 45s idle 后调用原 tracker `fail('idle-timeout')`，由既有 `stream-failed` 事件自动调度 resume。
 - passive observer 创建 conversation/resume tracker 时现在同时注入一个内存态 `retireIdle()` 回调；它不会进入 daemon JSON state，只负责原子地 `tracker.fail -> 删除旧 request tracker -> 删除 activeLiveTransport`，防止旧挂死 SSE 和新 resume stream 双重计数。
 - daemon 5s 主循环在刷新 passive observer 后执行 idle retire；首次拿到 auth context 后仅执行一次 startup orphan credential 扫描并记录 scheduled 数量。后续正常运行不反复扫 SQLite orphan，避免把它变成新的主动轮询器。
+- 新增回归测试覆盖 45s 边界、无 token / 无 data / turn-WSS 不触发，以及“旧 final 时间早于新 resume token 时不得短路”的 continue-turn 场景。
 
 # 2026-10-10 Phase 3 Project composer 最后一层兼容
 

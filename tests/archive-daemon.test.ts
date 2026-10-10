@@ -31,6 +31,8 @@ import {
   isConfirmedTerminalTrigger,
   restoreCooldownUntil,
   resumeRetryDelayMs,
+  shouldRetireIdleLiveTransport,
+  terminalStateSupersedesResumeCredential,
   sanitizeCapturedHeaders,
   passiveObservationMatchesReady,
   recordCatalogWatchdogProgress,
@@ -57,6 +59,54 @@ import {
   shouldDeferConfirmedTerminalIncident,
   watchdogTriggerForStartType,
 } from '../scripts/chatgpt-archive-daemon.mjs'
+
+test('SSE 只有拿到 resume capability 且持续无任何 bytes 才判为 idle hang', () => {
+  const state = {
+    transport: 'conversation',
+    conversationId: 'cid-1',
+    lastDataAt: 10_000,
+  }
+  expect(shouldRetireIdleLiveTransport(state, {
+    now: 55_000,
+    idleMs: 45_000,
+    hasResumeCredential: true,
+  })).toBe(true)
+  expect(shouldRetireIdleLiveTransport(state, {
+    now: 54_999,
+    idleMs: 45_000,
+    hasResumeCredential: true,
+  })).toBe(false)
+  expect(shouldRetireIdleLiveTransport(state, {
+    now: 60_000,
+    idleMs: 45_000,
+    hasResumeCredential: false,
+  })).toBe(false)
+  expect(shouldRetireIdleLiveTransport({ ...state, transport: 'turn-wss' }, {
+    now: 60_000,
+    idleMs: 45_000,
+    hasResumeCredential: true,
+  })).toBe(false)
+  expect(shouldRetireIdleLiveTransport({ ...state, lastDataAt: null }, {
+    now: 60_000,
+    idleMs: 45_000,
+    hasResumeCredential: true,
+  })).toBe(false)
+})
+
+test('上一轮 conversation final 不能挡住更新的 resume token', () => {
+  expect(terminalStateSupersedesResumeCredential({
+    terminalState: 'final',
+    lastSeenAt: 10_000,
+  }, 12_000)).toBe(false)
+  expect(terminalStateSupersedesResumeCredential({
+    terminalState: 'final',
+    lastSeenAt: 12_000,
+  }, 12_000)).toBe(true)
+  expect(terminalStateSupersedesResumeCredential({
+    terminalState: 'none',
+    lastSeenAt: 20_000,
+  }, 12_000)).toBe(false)
+})
 
 describe('ChatGPT Archive daemon WSS parser', () => {
   test('SSE resume 使用有限退避，不会无限加速重试', () => {
