@@ -73,6 +73,7 @@ const DEFAULT_TURN_TRACE = path.join(PROJECT_ROOT, 'data', 'active-turn-trace.js
 const DEFAULT_NOTIFICATION_CONFIG = path.join(PROJECT_ROOT, 'data', 'archive-notification.local.json')
 const DEFAULT_PROTOCOL_LEDGER = path.join(PROJECT_ROOT, 'data', 'protocol-fingerprints.json')
 const DEFAULT_ACTOR_STATE = path.join(PROJECT_ROOT, 'data', 'archive-actor-state.json')
+const DEFAULT_ACTOR_SUBMISSION_QUEUE = path.join(PROJECT_ROOT, 'data', 'archive-actor-submissions.json')
 const DEFAULT_DOM_LEDGER = path.join(PROJECT_ROOT, 'data', 'dom-fingerprints.json')
 const DEFAULT_BRIDGE_AUTH = path.join(PROJECT_ROOT, 'data', 'archive-bridge-auth.local.json')
 const DEFAULT_LIFEOPS_SYNC_CONFIG = path.join(PROJECT_ROOT, 'data', 'lifeops-sync.local.json')
@@ -1897,6 +1898,9 @@ async function main() {
   const actorStatePath = flags.has('actor-state')
     ? path.resolve(String(flags.get('actor-state')))
     : DEFAULT_ACTOR_STATE
+  const actorSubmissionQueuePath = flags.has('actor-submission-queue')
+    ? path.resolve(String(flags.get('actor-submission-queue')))
+    : DEFAULT_ACTOR_SUBMISSION_QUEUE
   const domLedgerPath = flags.has('dom-ledger')
     ? path.resolve(String(flags.get('dom-ledger')))
     : DEFAULT_DOM_LEDGER
@@ -3910,6 +3914,10 @@ async function main() {
         error: error instanceof Error ? error.message : String(error),
       })
     })
+    // Actor/Bridge 也会直接读取 daemon state 判断 cooldown；因此 429 熔断一旦建立，
+    // 必须立即落盘，不能等到 5 秒主循环末尾才让其它入口看见。
+    await fs.writeFile(statePath, JSON.stringify(state(), null, 2)).catch(() => {})
+    return cooldownUntil
   }
 
   const requireRequestWindow = () => {
@@ -6895,6 +6903,7 @@ async function main() {
         authToken: bridgeAuthToken,
         host: bridgeHost,
         port: bridgePort,
+        submissionQueuePath: actorSubmissionQueuePath,
         submitTurn: async (input) => await sendActorPrompt({
           cdpHttp,
           statePath: actorStatePath,
@@ -6907,6 +6916,10 @@ async function main() {
           mode: input.mode,
           targetMode: input.targetMode,
           onDomDrift: notifyActorDomDrift,
+          onRateLimit: async details => await tripCooldown('actor turn submit HTTP 429', {
+            route: details.requestUrl,
+            requestId: details.requestId,
+          }),
         }),
       })
       await archiveBridge.start()
