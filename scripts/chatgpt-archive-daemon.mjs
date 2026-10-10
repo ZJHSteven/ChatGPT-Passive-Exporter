@@ -2308,6 +2308,37 @@ async function main() {
           },
         })
         if (queued) devSpaceIdleNotificationsQueued += 1
+
+        // 5 分钟软提醒同时触发一次“提前核验”，但它本身仍不是 turn complete 证据。
+        // 已绑定 metadata 只读对应 conversation 的 latest body；未绑定 metadata 则复用现有
+        // deferred catalog gap-repair，让 list 找近期新增/变化 conversation，再交给 exact
+        // tool+args matching 建立 binding。两条路径都继续服从 cooldown / request gate。
+        const repairMode = devSpaceIdleRepairMode(thresholdMs, conversationId)
+        if (repairMode === 'bound-body') {
+          // 如果 WSS complete / Watchdog 等更强 trigger 已经排队，不能让这个弱 probe 覆盖它。
+          if (!ready.has(conversationId)) {
+            markSyncReady(conversationId, 'devspace-idle:bound-probe', 0)
+            void log('DevSpace 5m idle queued bound body probe', {
+              metadataId,
+              conversationId,
+              idleMs: currentIdleMs,
+            })
+          }
+          else {
+            void log('DevSpace 5m idle bound probe skipped because sync is already queued', {
+              metadataId,
+              conversationId,
+              existingTrigger: ready.get(conversationId),
+            })
+          }
+        }
+        else if (repairMode === 'unbound-catalog') {
+          void scheduleGapRepair('devspace-idle-unbound-5m')
+          void log('DevSpace 5m idle queued unbound catalog gap repair', {
+            metadataId,
+            idleMs: currentIdleMs,
+          })
+        }
       }
     }
   }
