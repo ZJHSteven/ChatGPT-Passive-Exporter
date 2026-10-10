@@ -19,6 +19,7 @@
 3. **Bridge 暴露已有 Project 参数**：`POST /v1/turns` 接受 `projectName`，daemon 原样传给 `sendActorPrompt()`；返回 CID 后 N1 通过现有 `GET /v1/conversations/:cid` 与 `/messages` 查询 canonical 生命周期和最终正文，不新增 ChatGPT polling。
 4. **ClassFlow 异步恢复语义**：Windows/Bridge 在提交前不可达时由 N1 保持 pending 并自动稍后再试；一旦 CID 已返回，N1 永久 checkpoint CID，后续只等 Archive canonical body。incident/abnormal terminal 直接失败并等待人工 retry，不自动创建第二个 conversation。
 5. **resume 作为正式恢复路径**：`resume_conversation_token` 可以持久化在 Archive 本地 state / trace / SQLite，用于同一 turn 的 SSE 重建；它不是账户级长期认证凭据。初始 SSE 异常断开且 turn 尚未终止时，优先用保存的 resume capability 自动恢复，并采用有上限的指数退避，避免网络异常时形成请求风暴。持续失败后停止主动 resume，退到 canonical body/final 保底。Bridge/前端不对外暴露 raw token。
+6. **Guardian 发送后回 neutral new-chat**：`new/continue` 只有在正式 `/f/conversation` 2xx、CID 已绑定且已经观察到首个 SSE data 后，才允许通过第一方 SPA“新聊天”回到 `/`；`steer` 已由发送前 live-context 门控，可在 2xx 后直接 SPA 归位。归位失败不得把已成功发送改判失败，也绝不能用 `Page.navigate()`/reload 作为 cleanup fallback。这样 Guardian 的 idle route 与正在运行的 LiveTurn 解耦，下一笔 Actor 操作再按目标上下文重新 SPA 导航。
 
 # 2026-10-09 ClassFlow Phase 3：已有 Project 新聊天最小闭环
 
