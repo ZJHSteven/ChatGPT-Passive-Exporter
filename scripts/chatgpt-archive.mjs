@@ -697,7 +697,7 @@ async function main() {
       ? path.resolve(String(flags.get('state')))
       : DEFAULT_ACTOR_STATE_PATH
     if (action === 'status') {
-      console.log(JSON.stringify(await actorStatus(cdpHttp, actorStatePath), null, 2))
+      console.log(JSON.stringify(await actorStatus(cdpHttp, actorStatePath, DEFAULT_DAEMON_STATE_PATH), null, 2))
       return
     }
     if (action === 'inspect') {
