@@ -1,3 +1,12 @@
+# 2026-10-10 ClassFlow Phase 3 首堂生产链完成
+
+- ClassFlow 首堂完整 lecture 已成功通过 Archive Bridge 创建 Project conversation `6ac9426f-6124-83e9-9cc8-84f010189e53`，同 CID 后续标题 turn 也已 canonical final；标题=`宫颈子宫与卵巢肿瘤、滋养层疾病及乳腺癌`。
+- 标题 turn canonical 证据：user ordinal 30、assistant reasoning ordinal 31、assistant final ordinal 32；turn_exchange_id=`7a15b436-82a7-4378-b656-6e222b7b0137`，assistant final `finished_successfully / end_turn=1`。
+- 标题 SSE 曾出现“拿到 resume token 后静默悬挂、UI 已结束但 tracker 未收到 DONE/loadingFailed”的边界；新增 45s idle retire、turn 新鲜度 final gate、daemon startup orphan credential recovery。全套 Vitest 在改动后为 194/194 通过，后续 typecheck 与针对性 49/49 测试通过。
+- 真实 title credential `lastSeenAt=1791605651773`，canonical conversation final `last_seen_at=1791605657999`，后者更新。因此最新 daemon 启动后 resume attempt count 保持 0，证明 startup recovery 正确识别“已有更新 final”，没有发送多余 `/resume`。
+- 旧 daemon PID `64872` 在无正常 `daemon stopping` 日志的情况下退出，直接造成本地 47832 无监听、Cloudflare Bridge 502；手工启动最新代码后现 PID=`44064`，WSS=3、Bridge 正常、HTTP429=0、cooldown=null，N1 公网 `/health` 已恢复 HTTP 200。
+- Windows 计划任务 `ChatGPT Archive Daemon` 仍存在且为 Ready，但历史 `LastTaskResult=1`。普通用户重新注册被 Windows Access Denied；按本机 `adminreq` 流程申请提升后又被安全审批拒绝（无法仅从命令验证 startup scope/executable behavior），未绕过审批。当前运行 daemon 不受影响；自动登录启动任务的可靠性仍列为后续独立修复项。
+
 # 2026-10-10 LiveTurn 静默挂死 resume 补强
 
 - Phase 3 标题续写真机暴露新边界：`/f/conversation` 已 HTTP 200 并收到 `resume_conversation_token`，随后只收到约 2KB SSE bytes；浏览器 UI 已不再显示 Stop，但 CDP 既没有 `loadingFailed`，也没有 `[DONE] / stream_handoff`，导致 `liveTransport.active=1` 永久悬挂。旧自动 resume 只在明确 `stream-failed` 时触发，因此无法覆盖这种 silent hang。
