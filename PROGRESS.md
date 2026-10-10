@@ -1,3 +1,5 @@
+- 2026-10-11 Archive 提交服务已部署到生产 daemon：新实例 PID=51804，启动时成功继承旧 cooldown，未通过重启绕过限流；随后 cooldown 正常到期。Bridge /v1/submissions 经 N1 真实鉴权链 smoke 返回预期 404，WSS=3、Guardian healthFailures=0、rebuilds=0、lastError=null。
+- 2026-10-11 ClassFlow 新版上线后的真实 backfill 验收：Archive submission queue 共 15 条均已 accepted；其中 lecture 22b577... 首次内部可重试失败后 attemptCount=2 自动 accepted，错误未泄漏为 ClassFlow manual_review。上线观察期未出现新的 ClassFlow 本地 429 cooldown、DOM drift、submission_unknown 或 safe_resubmit。
 - 2026-10-11 Archive 提交职责收口完整门禁通过：TypeScript PASS，Vitest 25 files / 203 tests PASS，Chrome/Edge/Firefox/Userscript production build 全 PASS。幂等 submission queue、Actor POST 429 同步熔断、Guardian target 真相源与 Bridge 查询接口均已进入可部署状态。
 - 2026-10-11 submission 查询接口已补回归：同 idempotencyKey 可直接 GET 到同一 submission ID，并验证响应不包含原始 prompt 文本。
 - 2026-10-11 Archive Bridge 新增 GET /v1/submissions?key=...：上层可按 idempotencyKey 只读查询 queued/retry_waiting/accepted/failed，不必为了查状态重复上传完整 prompt；队列关闭或 key 不存在均明确 404。
@@ -707,4 +709,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - iPhone push 由 Companion daemon 转发；不把 push token 放进 Userscript。
 - 继续做本地轻量 Reader：历史 DevSpace tool/widget 默认静态折叠渲染，不创建真实 Apps SDK iframe。
 - 开发期模块继续分离；最终合并为单一 ChatGPT Companion runtime，Exporter / Run Watch / Fleet / Reader / Bookmark / Notification 共享状态与网络层。
+
 
