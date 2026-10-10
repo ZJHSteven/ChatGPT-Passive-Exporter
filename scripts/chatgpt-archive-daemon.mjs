@@ -3677,12 +3677,14 @@ async function main() {
         const current = archive.getLiveResumeCredential(conversationId, credential.turnExchangeId)
         if (!current) return
         const row = archive.db.prepare(`
-          SELECT terminal_state AS terminalState
+          SELECT terminal_state AS terminalState, last_seen_at AS lastSeenAt
           FROM conversations
           WHERE id = ?
           LIMIT 1
         `).get(conversationId)
-        if (row?.terminalState === 'final') return
+        // 同一个 conversation 可以继续发送下一轮。只有比当前 resume token 更新的 canonical
+        // final 才证明“这一轮已经结束”；上一轮遗留的 final 不能把新 turn 的 resume 短路。
+        if (terminalStateSupersedesResumeCredential(row, current.lastSeenAt)) return
 
         if (!guardian?.page || guardian.page.closed || !authHeaders) {
           // 本机 Chrome/Guardian 临时离线不消耗 resume 尝试额度；等待 daemon 自愈后再试。
