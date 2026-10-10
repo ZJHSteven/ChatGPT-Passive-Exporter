@@ -1,3 +1,12 @@
+# 2026-10-11 Archive 429 请求合并与 Retry-After 收口 ExecPlan
+
+生产实证：WSS complete 后同一 conversation 的 body-latest 在 52ms 内先出现页面原生 GET 429、随后 daemon active GET 429；服务端 Retry-After=16s，但现有 tripCooldown 固定转换为 60min。目标是不牺牲 fail-closed 的前提下消除重复主动 body，并让明确的服务端冷却时间成为主要真相源。
+
+1. 追踪 WSS complete → readyNotBefore/nativeBodyGrace → passive cache → syncConversation/fetchChecked 路径，确认原生 body 已在飞时 daemon 为什么仍主动 GET。
+2. 为 conversation REST 增加 in-flight/coalescing 观测或门控：页面自然请求已经发出时，active sync 应等待其完成/短 grace；成功则复用 passive body，429 则直接服从同一 cooldown，不再补第二次 GET。
+3. tripCooldown 解析 Retry-After（delta-seconds 与 HTTP-date）。有明确值时采用服务端 deadline + 小安全缓冲，并设置合理下限；无值/不可解析才使用保守本地 cooldown。重复 429 只向后延长，不把短 Retry-After 每次重置成 60min。
+4. 增加 Retry-After、重复 429 延长、native in-flight coalescing 的单测，跑 Archive 全量 check。
+5. 部署 daemon；由于当前 04:35 cooldown 是旧 60min 策略产物且原始 Retry-After=16s 已过期，部署时显式迁移该旧 runtime cooldown，随后验证 retry_waiting title 自动恢复、ClassFlow 不感知 429。
 # 2026-10-11 Archive Actor 提交服务职责收口 ExecPlan
 
 目标：把 ClassFlow 等上层调用方从 ChatGPT 网页发送细节中彻底解耦。Archive Bridge 对外只暴露幂等的“提交任务”，内部统一负责 Actor lease、最小提交间隔、Guardian 生命周期、429 cooldown、提交结果不确定与重启恢复；上层只观察 queued / accepted / failed。
@@ -676,4 +685,5 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 - Rich manifest 能识别 Web Search、Trip.com、image_group、map widget 和 7 个生成文件链接。
 - Chrome/Edge/Firefox 扩展均可构建；userscript 可构建。
 - 单元/fixture 测试全部通过。
+
 
