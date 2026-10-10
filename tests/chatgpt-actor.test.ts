@@ -13,6 +13,7 @@ import {
   normalizeActorProjectName,
   resolveActorSendMode,
   sendActorPrompt,
+  shouldNeutralizeGuardianAfterSubmit,
 } from '../src/local/chatgpt-actor.ts'
 
 describe('ChatGPT single actor helpers', () => {
@@ -125,6 +126,21 @@ describe('ChatGPT single actor helpers', () => {
     // 继续闭环，不能因为一个可选字段缺失把已接受请求误判成协议漂移。
     expect(actorResponseMimeAccepted('new', null)).toBe(true)
     expect(actorResponseMimeAccepted('steer', null)).toBe(true)
+  })
+
+  test('Guardian 只有 transport 已接管后才允许发送后回 neutral new-chat', () => {
+    expect(shouldNeutralizeGuardianAfterSubmit({
+      mode: 'new', targetMode: 'guardian', firstDataAt: null,
+    })).toBe(false)
+    expect(shouldNeutralizeGuardianAfterSubmit({
+      mode: 'continue', targetMode: 'guardian', firstDataAt: 1234,
+    })).toBe(true)
+    expect(shouldNeutralizeGuardianAfterSubmit({
+      mode: 'steer', targetMode: 'guardian', firstDataAt: null,
+    })).toBe(true)
+    expect(shouldNeutralizeGuardianAfterSubmit({
+      mode: 'new', targetMode: 'dedicated', firstDataAt: 1234,
+    })).toBe(false)
   })
 
   test('actor-submit 使用 requestWillBeSent 时刻作为可靠本地 start', () => {

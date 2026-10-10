@@ -70,6 +70,21 @@ export function actorResponseMimeAccepted(mode: ActorSendMode, mimeType: string 
 }
 
 /**
+ * Guardian 只在“发送 transport 已经不再依赖当前 conversation UI route”时回到 neutral new-chat。
+ * new/continue 必须至少看到一段真实 SSE data；只看到 200 + event-stream header 还不足以证明
+ * React 切 route 后不会把一个尚未真正开始读取的 response 提前 abort。steer 则复用发送前已验证的
+ * live conversation transport，因此 2xx 后即可归位。
+ */
+export function shouldNeutralizeGuardianAfterSubmit(input: {
+  mode: ActorSendMode
+  targetMode: ActorTargetMode
+  firstDataAt: number | null
+}): boolean {
+  if (input.targetMode !== 'guardian') return false
+  return input.mode === 'steer' || input.firstDataAt !== null
+}
+
+/**
  * Phase 4 的发送语义必须显式区分三类第一方行为：
  *
  * - `new`：从新聊天页创建 conversation，正式请求是 `/f/conversation`；
@@ -1133,6 +1148,65 @@ async function ensureActorRoute(
   return { snapshot, navigationMode: 'full-fallback' }
 }
 
+async function neutralizeGuardianAfterSubmit(
+  client: ActorCdpClient,
+  input: {
+    mode: ActorSendMode
+    targetMode: ActorTargetMode
+    firstDataAt: number | null
+    timeoutMs: number
+  },
+): Promise<{ neutralized: boolean; reason: string; href: string | null }> {
+  if (input.targetMode !== 'guardian') {
+    return { neutralized: false, reason: 'not-guardian', href: null }
+  }
+  if (!shouldNeutralizeGuardianAfterSubmit(input)) {
+    return { neutralized: false, reason: 'sse-first-data-not-observed', href: null }
+  }
+
+  let before: ActorPageSnapshot
+  try {
+    before = await readActorPageSnapshot(client)
+  }
+  catch (error) {
+    return {
+      neutralized: false,
+      reason: `snapshot-failed:${error instanceof Error ? error.message : String(error)}`,
+      href: null,
+    }
+  }
+  const hadGuardianMarker = (() => {
+    try { return new URL(before.href).searchParams.get('chatgpt-archive-guardian') === '1' }
+    catch { return false }
+  })()
+  try {
+    const currentUrl = new URL(before.href)
+    if (before.conversationId === null && currentUrl.pathname === '/') {
+      await preserveGuardianMarker(client, hadGuardianMarker)
+      return { neutralized: true, reason: 'already-neutral', href: before.href }
+    }
+  }
+  catch { /* 非标准 URL 继续尝试第一方 SPA new-chat，不做 full navigation fallback。 */ }
+
+  try {
+    const clicked = await clickNewChatSpa(client)
+    if (!clicked) return { neutralized: false, reason: 'spa-new-unavailable', href: before.href }
+    const snapshot = await waitForRoute(client, null, Math.min(input.timeoutMs, 5_000))
+    await preserveGuardianMarker(client, hadGuardianMarker)
+    const href = String(await evaluateValue(client, 'location.href') || snapshot.href || '') || null
+    return { neutralized: true, reason: 'spa-new-ready', href }
+  }
+  catch (error) {
+    // cleanup 失败不能把已经 2xx + CID bind 成功的发送反判失败。下一笔 Actor 仍会通过
+    // ensureActorRoute() 从当前 route 恢复；这里只保留可观察结果。
+    return {
+      neutralized: false,
+      reason: `spa-new-failed:${error instanceof Error ? error.message : String(error)}`,
+      href: before.href,
+    }
+  }
+}
+
 async function clearAndTypePrompt(client: ActorCdpClient, prompt: string): Promise<void> {
   const focused = await evaluateValue(client, `(() => {
     const usable = (element) => {
@@ -1441,11 +1515,25 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
             throw new Error(`ChatGPT actor ${mode} response drifted from ${expectedMime}: ${responseState.mimeType}`)
           }
           boundAt = Date.now()
+          // 对 new/continue，给真实 SSE 首个 data 一个很短的接管窗口。若没看到首包，发送本身仍然
+          // 成功，但 Guardian 保留在当前 conversation，避免 cleanup 过早 abort 一个尚未稳定的流。
+          if (mode !== 'steer' && firstDataAt === null) {
+            const attachDeadline = Math.min(deadline, Date.now() + 2_000)
+            while (firstDataAt === null && Date.now() < attachDeadline) {
+              await new Promise(resolve => setTimeout(resolve, 25))
+            }
+          }
           const runningConfirmed = Boolean(
             firstDataAt
             || responseState.mimeType?.includes('event-stream')
             || (await readActorPageSnapshot(client)).stopVisible,
           )
+          const postSubmit = await neutralizeGuardianAfterSubmit(client, {
+            mode,
+            targetMode,
+            firstDataAt,
+            timeoutMs,
+          })
           const recorder = new ActiveTurnRecorder(options.tracePath)
           await recorder.append(buildActorSubmitTrace({
             submittedAt: submitEvent.at,
@@ -1465,6 +1553,9 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
             contextReadyAt,
             firstDataAt,
             runningConfirmed,
+            postSubmitNeutralized: postSubmit.neutralized,
+            postSubmitNeutralizeReason: postSubmit.reason,
+            pageUrlAfter: postSubmit.href,
           }))
           const prior = await readActorState(options.statePath)
           await writeActorState(options.statePath, {
@@ -1495,6 +1586,9 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
             contextBodyStatus,
             firstDataAt,
             runningConfirmed,
+            postSubmitNeutralized: postSubmit.neutralized,
+            postSubmitNeutralizeReason: postSubmit.reason,
+            pageUrlAfter: postSubmit.href,
             targetMode,
             domSignatureBefore,
             domSignatureReady,

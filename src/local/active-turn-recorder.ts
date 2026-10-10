@@ -52,6 +52,9 @@ export interface ActorSubmitTrace extends ActiveTurnTraceBase {
   contextReadyAt?: number | null
   firstDataAt?: number | null
   runningConfirmed?: boolean
+  postSubmitNeutralized?: boolean
+  postSubmitNeutralizeReason?: string
+  pageUrlAfter?: string | null
 }
 
 export interface WssLifecycleTrace extends ActiveTurnTraceBase {
@@ -230,6 +233,9 @@ export function buildActorSubmitTrace(input: {
   contextReadyAt?: number | null
   firstDataAt?: number | null
   runningConfirmed?: boolean
+  postSubmitNeutralized?: boolean
+  postSubmitNeutralizeReason?: string
+  pageUrlAfter?: string | null
 }): ActorSubmitTrace {
   return {
     version: 1,
@@ -252,6 +258,9 @@ export function buildActorSubmitTrace(input: {
     ...(input.contextReadyAt !== undefined ? { contextReadyAt: input.contextReadyAt } : {}),
     ...(input.firstDataAt !== undefined ? { firstDataAt: input.firstDataAt } : {}),
     ...(input.runningConfirmed !== undefined ? { runningConfirmed: input.runningConfirmed } : {}),
+    ...(input.postSubmitNeutralized !== undefined ? { postSubmitNeutralized: input.postSubmitNeutralized } : {}),
+    ...(input.postSubmitNeutralizeReason !== undefined ? { postSubmitNeutralizeReason: input.postSubmitNeutralizeReason } : {}),
+    ...(input.pageUrlAfter !== undefined ? { pageUrlAfter: input.pageUrlAfter } : {}),
   }
 }
 
