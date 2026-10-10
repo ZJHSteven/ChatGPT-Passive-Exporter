@@ -399,6 +399,24 @@ export function sanitizeArchiveBridgeTurnResult(
 }
 
 /**
+ * submission queue 的内部记录包含 requestHash 和完整 prompt，用于幂等校验与重启恢复。
+ * 这些内容没有必要在 Bridge 响应里来回传输；ClassFlow 只需要状态与最终净化结果。
+ */
+function sanitizeActorSubmissionRecord(record: ActorSubmissionRecord): Record<string, unknown> {
+  return {
+    id: record.id,
+    idempotencyKey: record.idempotencyKey,
+    status: record.status,
+    attemptCount: record.attemptCount,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    nextAttemptAt: record.nextAttemptAt,
+    lastError: record.lastError,
+    result: record.result,
+  }
+}
+
+/**
  * Bridge token 独立于 ChatGPT 登录态。首次启动自动生成 256-bit 随机 token 并写入 data/*.local.json；
  * 后续 daemon 重启原样复用。调用方只能拿到 token 字符串用于内存校验，daemon state / log 不记录它。
  */
@@ -700,7 +718,10 @@ export class ArchiveBridgeServer {
             mode: input.mode,
             targetMode: input.targetMode,
           })
-          jsonResponse(res, 202, { accepted: true, submission })
+          jsonResponse(res, 202, {
+            accepted: true,
+            submission: sanitizeActorSubmissionRecord(submission),
+          })
           return
         }
         const result = await this.options.submitTurn(input)

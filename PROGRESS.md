@@ -1,3 +1,4 @@
+- 2026-10-11 Bridge submission 响应已收缩：队列内部仍保存完整 prompt/requestHash 供幂等与重启恢复，但对 N1 只返回 submission ID、状态、attemptCount、nextAttemptAt、lastError 和净化后的 result，避免每次轮询重复搬运整堂 ASR。
 - 2026-10-11 daemon 已完成 submission queue/429 接线：默认持久化 data/archive-actor-submissions.json；正式 Actor turn POST 429 直接调用同一个 tripCooldown，熔断状态立即写入 daemon state 并把绝对截止返回队列；Bridge 后续任务在该截止前不会继续试探 ChatGPT。
 - 2026-10-11 chatgpt-archive actor status 已改为同时读取 daemon state，因此 Guardian rebuild 后会立刻报告新 target；旧 actor-state target 仅作为 staleCachedTargetId 诊断证据。
 - 2026-10-11 正式 Actor turn POST 的 429 已在发送闭环内接入 onRateLimit：一旦 Network response 确认 429，先调用上层 daemon 熔断回调，再抛出带绝对 until 的规范化 cooldown 错误；后续 submission queue 可精确暂停而不是继续试探。
