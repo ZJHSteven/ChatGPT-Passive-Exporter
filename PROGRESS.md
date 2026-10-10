@@ -1,3 +1,4 @@
+- 2026-10-11 submission queue 首轮 typecheck 已开始，修正 cooldown 截止时间正则捕获在严格 TypeScript 下的 undefined 边界；继续进行 Bridge/Actor 回归。
 - 2026-10-11 Archive Bridge 已接入持久化 submission queue：POST /v1/turns 可携带 idempotencyKey，带键调用返回 submission 状态并由后台单消费者发送；同键不同 payload 返回 409。无 idempotencyKey 的旧同步调用保持兼容，便于 ClassFlow 分阶段迁移。
 - 2026-10-11 Archive Actor 提交职责收口开始：已新增持久化单消费者 submission queue 基础模块，支持 idempotencyKey 去重、processing 崩溃恢复、429/cooldown 全队列暂停、基础设施错误自动退避与 accepted/failed 持久状态。下一步接入 Bridge 与 daemon，再切 ClassFlow。
 - 2026-10-10 DevSpace 5 分钟 probe 的“扫完必须通知”闭环已完成并上线：300s 阈值会登记 pending diagnosis；若同 CID 已有 WSS complete / Watchdog 等更强 body sync，则直接复用，不重复 GET；否则才排 `devspace-idle:bound-probe`。任意成功 canonical body sync 后都会发送第二条 Bark 诊断结果，明确给出 `terminal/tail`、当前累计 canonical 节点数、Body 当前 turn 最后节点时间，以及该 tail 之后仍存在的 DevSpace audit/tool/checkpoint 数、最后 audit 时间与落后时长。未绑定 metadata 则先走 deferred catalog gap-repair，等其产生的 body 队列真正排空后仍无法 binding，才发“扫描完成但无法定位 canonical conversation”，禁止把 list 扫完冒充完整诊断。

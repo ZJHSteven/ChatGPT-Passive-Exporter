@@ -80,8 +80,9 @@ function cloneRecord(record: ActorSubmissionRecord): ActorSubmissionRecord {
 
 function parseCooldownUntil(message: string): number | null {
   const match = /\buntil\s+([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+Z?)\b/iu.exec(message)
-  if (!match) return null
-  const parsed = Date.parse(match[1])
+  const value = match?.[1]
+  if (!value) return null
+  const parsed = Date.parse(value)
   return Number.isFinite(parsed) ? parsed : null
 }
 
