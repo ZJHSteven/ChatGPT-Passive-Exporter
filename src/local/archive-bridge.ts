@@ -2,6 +2,11 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import fs from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import path from 'node:path'
+import {
+  ActorSubmissionConflictError,
+  ActorSubmissionQueue,
+  type ActorSubmissionRecord,
+} from './actor-submission-queue.ts'
 
 /**
  * Phase 5 本地 Bridge 只暴露 Archive 自己的、安全收缩后的数据面。
@@ -50,6 +55,7 @@ export interface ArchiveBridgeTurnInput {
   projectName: string | null
   mode: ArchiveBridgeActorMode
   targetMode: ArchiveBridgeActorTarget
+  idempotencyKey: string | null
 }
 
 export interface ArchiveBridgeEvent {
@@ -72,6 +78,8 @@ export interface ArchiveBridgeOptions {
   host?: string
   port?: number
   maxBodyBytes?: number
+  submissionQueuePath?: string | null
+  submissionQueuePollIntervalMs?: number
 }
 
 export interface ArchiveBridgeAuthState {
@@ -336,12 +344,21 @@ function validateTurnInput(body: Record<string, unknown>): ArchiveBridgeTurnInpu
   if (projectName && mode !== 'new' && mode !== 'auto') {
     throw new Error('projectName requires mode=new|auto')
   }
+  const idempotencyKey = body.idempotencyKey === null || body.idempotencyKey === undefined
+    ? null
+    : typeof body.idempotencyKey === 'string' && body.idempotencyKey.trim()
+      ? body.idempotencyKey.trim()
+      : null
+  if (body.idempotencyKey !== null && body.idempotencyKey !== undefined && !idempotencyKey) {
+    throw new Error('idempotencyKey must be a non-empty string')
+  }
   return {
     text,
     conversationId,
     projectName,
     mode: mode as ArchiveBridgeActorMode,
     targetMode: targetMode as ArchiveBridgeActorTarget,
+    idempotencyKey,
   }
 }
 
@@ -411,6 +428,7 @@ export class ArchiveBridgeServer {
 
   private readonly options: Required<Pick<ArchiveBridgeOptions, 'archive' | 'authToken' | 'submitTurn' | 'maxBodyBytes'>>
   private readonly sseClients = new Set<ServerResponse>()
+  private readonly submissionQueue: ActorSubmissionQueue | null
   private server: Server | null = null
   private heartbeat: NodeJS.Timeout | null = null
 
@@ -426,6 +444,20 @@ export class ArchiveBridgeServer {
       submitTurn: options.submitTurn,
       maxBodyBytes: options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
     }
+    this.submissionQueue = options.submissionQueuePath
+      ? new ActorSubmissionQueue({
+          filePath: options.submissionQueuePath,
+          pollIntervalMs: options.submissionQueuePollIntervalMs,
+          submitTurn: async input => sanitizeArchiveBridgeTurnResult(
+            input as ArchiveBridgeTurnInput,
+            await this.options.submitTurn({
+              ...input,
+              idempotencyKey: null,
+            }),
+          ),
+          onAccepted: async record => this.publishAcceptedSubmission(record),
+        })
+      : null
   }
 
   get listening(): boolean {
@@ -443,6 +475,7 @@ export class ArchiveBridgeServer {
 
   async start(): Promise<void> {
     if (this.server) return
+    await this.submissionQueue?.start()
     const server = createServer((req, res) => {
       void this.handle(req, res).catch((error) => {
         if (res.headersSent) {
@@ -485,6 +518,7 @@ export class ArchiveBridgeServer {
   }
 
   async stop(): Promise<void> {
+    await this.submissionQueue?.stop()
     if (this.heartbeat) clearInterval(this.heartbeat)
     this.heartbeat = null
     for (const client of this.sseClients) client.end()
@@ -658,6 +692,17 @@ export class ArchiveBridgeServer {
     if (url.pathname === '/v1/turns' && method === 'POST') {
       try {
         const input = validateTurnInput(await readJsonBody(req, this.options.maxBodyBytes))
+        if (input.idempotencyKey && this.submissionQueue) {
+          const submission = await this.submissionQueue.enqueue(input.idempotencyKey, {
+            text: input.text,
+            conversationId: input.conversationId,
+            projectName: input.projectName,
+            mode: input.mode,
+            targetMode: input.targetMode,
+          })
+          jsonResponse(res, 202, { accepted: true, submission })
+          return
+        }
         const result = await this.options.submitTurn(input)
         const safeResult = sanitizeArchiveBridgeTurnResult(input, result)
         const event: ArchiveBridgeEvent = {
@@ -671,6 +716,10 @@ export class ArchiveBridgeServer {
         jsonResponse(res, 202, { accepted: true, result: safeResult })
       }
       catch (error) {
+        if (error instanceof ActorSubmissionConflictError) {
+          jsonResponse(res, 409, { error: error.message })
+          return
+        }
         const message = error instanceof Error ? error.message : String(error)
         jsonResponse(res, actorErrorStatus(error), { error: message })
       }
@@ -697,6 +746,19 @@ export class ArchiveBridgeServer {
     }
 
     jsonResponse(res, 404, { error: 'not_found' })
+  }
+
+  private publishAcceptedSubmission(record: ActorSubmissionRecord): void {
+    const result = record.result ?? {}
+    this.publish({
+      version: 1,
+      at: Date.now(),
+      kind: 'actor-accepted',
+      conversationId: typeof result.conversationId === 'string'
+        ? result.conversationId
+        : record.input.conversationId,
+      event: typeof result.mode === 'string' ? result.mode : record.input.mode,
+    })
   }
 }
 
