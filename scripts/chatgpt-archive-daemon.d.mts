@@ -161,6 +161,23 @@ export function terminalStateSupersedesResumeCredential(
 
 /** cooldown 只冻结主动 API；返回 false 时 Guardian/WSS 仍应继续工作。 */
 export function activeApiAllowed(cooldownUntil: unknown, now?: number): boolean
+/** 将 Retry-After（秒或 HTTP-date）换算成带安全缓冲的绝对 cooldown 截止时间。 */
+export function cooldownDeadlineFromRetryAfter(
+  retryAfter: unknown,
+  options?: {
+    now?: number
+    fallbackMs?: number
+    minimumMs?: number
+    safetyMs?: number
+  },
+): number
+
+/** passive observer 是否应为该 429 独立 trip；daemon 自己的 active replay 返回 false。 */
+export function shouldTripObserved429(
+  requestUrl: unknown,
+  activeReplayRequestUrl: unknown,
+  base?: string,
+): boolean
 
 /** 将绝对时间戳格式化为人类可读的北京时间字符串；内部存储仍保持 epoch/UTC。 */
 export function formatBeijingTime(value: unknown): string
@@ -427,4 +444,5 @@ export function shouldNotifyIncidentTransition(
 
 /** startup 只补历史事实，不发送历史 incident 手机通知；其它实时/恢复触发允许。 */
 export function shouldNotifyHistoricalIncidentForTrigger(trigger: unknown): boolean
+
 

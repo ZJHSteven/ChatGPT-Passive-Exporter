@@ -1,3 +1,4 @@
+- 2026-10-11 Retry-After 新 helper 已同步到 chatgpt-archive-daemon.d.mts，保证测试/CLI 的 TypeScript 导入契约与 runtime export 一致。
 - 2026-10-11 已补 429 策略回归：生产真实 Retry-After=16s 预期仅进入 30s 安全 cooldown；120s 变为 125s；HTTP-date 正确加 5s buffer；无/坏值才走 fallback。另锁定 passive observer 对同一 active replay URL 不重复 trip，其他真实页面 native 请求仍可触发熔断。
 - 2026-10-11 生产 429 根因进一步收敛：19:35:31 的 observed native body-latest 429 与 52ms 后 active body 429 是同一次 Guardian page active replay 被被动 CDP observer 与 fetchChecked 双重观察，不是两次 GET。代码已让 observer 对当前 activeReplayRequestUrl 只观察不重复 trip；cooldown 现优先解析 Retry-After，明确值采用服务端截止 + 5s buffer 且至少 30s，无/坏值才回退原保守 60min，已有 cooldown 只延长不缩短。
 - 2026-10-11 Archive 提交服务已部署到生产 daemon：新实例 PID=51804，启动时成功继承旧 cooldown，未通过重启绕过限流；随后 cooldown 正常到期。Bridge /v1/submissions 经 N1 真实鉴权链 smoke 返回预期 404，WSS=3、Guardian healthFailures=0、rebuilds=0、lastError=null。
@@ -711,6 +712,7 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - iPhone push 由 Companion daemon 转发；不把 push token 放进 Userscript。
 - 继续做本地轻量 Reader：历史 DevSpace tool/widget 默认静态折叠渲染，不创建真实 Apps SDK iframe。
 - 开发期模块继续分离；最终合并为单一 ChatGPT Companion runtime，Exporter / Run Watch / Fleet / Reader / Bookmark / Notification 共享状态与网络层。
+
 
 
 
