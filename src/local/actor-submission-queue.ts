@@ -173,6 +173,13 @@ export class ActorSubmissionQueue {
     return cloneRecord(record)
   }
 
+  get(idempotencyKey: string): ActorSubmissionRecord | null {
+    const key = idempotencyKey.trim()
+    if (!key) return null
+    const record = this.recordsByKey.get(key)
+    return record ? cloneRecord(record) : null
+  }
+
   private schedule(delayMs: number): void {
     if (!this.started) return
     if (this.timer) clearTimeout(this.timer)

@@ -1,3 +1,4 @@
+- 2026-10-11 Archive Bridge 新增 GET /v1/submissions?key=...：上层可按 idempotencyKey 只读查询 queued/retry_waiting/accepted/failed，不必为了查状态重复上传完整 prompt；队列关闭或 key 不存在均明确 404。
 - 2026-10-11 Bridge submission 响应已收缩：队列内部仍保存完整 prompt/requestHash 供幂等与重启恢复，但对 N1 只返回 submission ID、状态、attemptCount、nextAttemptAt、lastError 和净化后的 result，避免每次轮询重复搬运整堂 ASR。
 - 2026-10-11 daemon 已完成 submission queue/429 接线：默认持久化 data/archive-actor-submissions.json；正式 Actor turn POST 429 直接调用同一个 tripCooldown，熔断状态立即写入 daemon state 并把绝对截止返回队列；Bridge 后续任务在该截止前不会继续试探 ChatGPT。
 - 2026-10-11 chatgpt-archive actor status 已改为同时读取 daemon state，因此 Guardian rebuild 后会立刻报告新 target；旧 actor-state target 仅作为 staleCachedTargetId 诊断证据。

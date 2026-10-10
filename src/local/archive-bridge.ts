@@ -707,6 +707,27 @@ export class ArchiveBridgeServer {
       return
     }
 
+    if (url.pathname === '/v1/submissions' && method === 'GET') {
+      if (!this.submissionQueue) {
+        jsonResponse(res, 404, { error: 'submission_queue_disabled' })
+        return
+      }
+      const idempotencyKey = (url.searchParams.get('key') ?? '').trim()
+      if (!idempotencyKey) {
+        jsonResponse(res, 400, { error: 'key_required' })
+        return
+      }
+      const submission = this.submissionQueue.get(idempotencyKey)
+      if (!submission) {
+        jsonResponse(res, 404, { error: 'submission_not_found' })
+        return
+      }
+      jsonResponse(res, 200, {
+        submission: sanitizeActorSubmissionRecord(submission),
+      })
+      return
+    }
+
     if (url.pathname === '/v1/turns' && method === 'POST') {
       try {
         const input = validateTurnInput(await readJsonBody(req, this.options.maxBodyBytes))
