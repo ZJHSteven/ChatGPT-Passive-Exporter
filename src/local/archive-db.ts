@@ -142,6 +142,15 @@ export interface ArchiveIncidentRow {
   diagnosticJson: string
 }
 
+/** Incident 的正交证据维度；同一 incident 可以同时拥有多个 evidence type。 */
+export interface ArchiveIncidentEvidenceRow {
+  incidentId: string
+  evidenceType: string
+  firstObservedAt: number
+  lastObservedAt: number
+  evidenceJson: string
+}
+
 /** DevSpace 聊天级 metadata 与 canonical ChatGPT conversation 的持久 binding。 */
 export interface DevSpaceMetadataBindingRow {
   metadataId: string
@@ -201,6 +210,20 @@ export interface DevSpaceRecoveryAuditRow {
   lastSeenAt: number
   supersededAt: number | null
   supersededByMessageId: string | null
+}
+
+/** canonical Body 与 DevSpace recovery overlay 的尾部差异摘要。 */
+export interface DevSpaceTailGapSummary {
+  conversationId: string
+  turnExchangeId: string | null
+  metadataId: string | null
+  canonicalTailAt: number | null
+  recoveryLastAt: number | null
+  gapMs: number
+  recoveryAuditCount: number
+  recoveryToolCount: number
+  checkpointCount: number
+  hasTailGap: boolean
 }
 
 /** daemon 重启后需要原样恢复的 conversation watchdog 计时状态。 */
@@ -655,6 +678,20 @@ export class ChatArchiveDb {
 
       CREATE INDEX IF NOT EXISTS incidents_conversation_status
         ON incidents(conversation_id, status, detected_at DESC);
+
+      -- Incident 主类回答生命周期问题；这里保存可并存的正交证据维度。
+      -- 例如同一 turn 可以同时是 active-zombie，并且存在 canonical-tail-gap。
+      CREATE TABLE IF NOT EXISTS incident_evidence (
+        incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+        evidence_type TEXT NOT NULL,
+        first_observed_at INTEGER NOT NULL,
+        last_observed_at INTEGER NOT NULL,
+        evidence_json TEXT NOT NULL,
+        PRIMARY KEY (incident_id, evidence_type)
+      );
+
+      CREATE INDEX IF NOT EXISTS incident_evidence_type_time
+        ON incident_evidence(evidence_type, last_observed_at DESC);
 
       -- DevSpace 的 openai/session 是 conversation 级匿名键，不是 turn key。
       -- 未绑定 metadata 也必须先落盘：第一次 remote tool call 就是我们想保留的 start 下界；
@@ -3274,6 +3311,230 @@ export class ChatArchiveDb {
       WHERE conversation_id = ? ${whereSuperseded}
       ORDER BY started_at ASC, audit_id ASC
     `).all(conversationId) as unknown as DevSpaceRecoveryAuditRow[]
+  }
+
+  /**
+   * 计算 canonical turn 尾部与 DevSpace recovery audit 尾部的差异。
+   * metadataId 已知时严格限定该 metadata；否则只按 conversation + 时间窗统计。
+   */
+  describeDevSpaceTailGap(input: {
+    conversationId: string
+    turnExchangeId?: string | null
+    lastMessageId?: string | null
+    metadataId?: string | null
+    terminalEvidence?: string | null
+    minGapMs?: number
+    beforeAt?: number | null
+  }): DevSpaceTailGapSummary {
+    const conversationId = input.conversationId
+    const turnExchangeId = input.turnExchangeId?.trim() || null
+    const metadataId = input.metadataId?.trim() || null
+    const minGapMs = Math.max(0, Math.trunc(input.minGapMs ?? 5_000))
+
+    let canonicalTailAt: number | null = null
+    if (turnExchangeId) {
+      const row = this.db.prepare(`
+        SELECT MAX(CAST(create_time * 1000 AS INTEGER)) AS tailAt
+        FROM messages
+        WHERE conversation_id = ?
+          AND turn_exchange_id = ?
+          AND create_time IS NOT NULL
+      `).get(conversationId, turnExchangeId) as { tailAt?: number | null } | undefined
+      const value = Number(row?.tailAt)
+      if (Number.isFinite(value) && value > 0) canonicalTailAt = value
+    }
+    if (canonicalTailAt === null && input.lastMessageId) {
+      const row = this.db.prepare(`
+        SELECT CAST(create_time * 1000 AS INTEGER) AS tailAt
+        FROM messages
+        WHERE conversation_id = ? AND message_id = ? AND create_time IS NOT NULL
+        LIMIT 1
+      `).get(conversationId, input.lastMessageId) as { tailAt?: number | null } | undefined
+      const value = Number(row?.tailAt)
+      if (Number.isFinite(value) && value > 0) canonicalTailAt = value
+    }
+
+    if (canonicalTailAt === null) {
+      return {
+        conversationId, turnExchangeId, metadataId,
+        canonicalTailAt: null, recoveryLastAt: null, gapMs: 0,
+        recoveryAuditCount: 0, recoveryToolCount: 0, checkpointCount: 0,
+        hasTailGap: false,
+      }
+    }
+
+    const clauses = [
+      'conversation_id = ?',
+      'superseded_at IS NULL',
+      'COALESCE(finished_at, started_at) > ?',
+    ]
+    const params: Array<string | number> = [conversationId, canonicalTailAt]
+    if (metadataId) {
+      clauses.push('metadata_id = ?')
+      params.push(metadataId)
+    }
+    if (Number.isFinite(Number(input.beforeAt)) && Number(input.beforeAt) > canonicalTailAt) {
+      clauses.push('started_at < ?')
+      params.push(Math.trunc(Number(input.beforeAt)))
+    }
+
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS recoveryAuditCount,
+             SUM(CASE WHEN tool = 'checkpoint' THEN 1 ELSE 0 END) AS checkpointCount,
+             MAX(COALESCE(finished_at, started_at)) AS recoveryLastAt
+      FROM devspace_recovery_audits
+      WHERE ${clauses.join(' AND ')}
+    `).get(...params) as {
+      recoveryAuditCount?: number | null
+      checkpointCount?: number | null
+      recoveryLastAt?: number | null
+    } | undefined
+
+    const recoveryAuditCount = Math.max(0, Number(row?.recoveryAuditCount || 0))
+    const checkpointCount = Math.max(0, Number(row?.checkpointCount || 0))
+    const recoveryToolCount = Math.max(0, recoveryAuditCount - checkpointCount)
+    const rawLast = Number(row?.recoveryLastAt)
+    const recoveryLastAt = Number.isFinite(rawLast) && rawLast > 0 ? rawLast : null
+    const gapMs = recoveryLastAt === null ? 0 : Math.max(0, recoveryLastAt - canonicalTailAt)
+    return {
+      conversationId,
+      turnExchangeId,
+      metadataId,
+      canonicalTailAt,
+      recoveryLastAt,
+      gapMs,
+      recoveryAuditCount,
+      recoveryToolCount,
+      checkpointCount,
+      hasTailGap: String(input.terminalEvidence || 'none') !== 'final'
+        && recoveryAuditCount > 0
+        && gapMs >= minGapMs,
+    }
+  }
+
+  upsertIncidentEvidence(input: {
+    incidentId: string
+    evidenceType: string
+    observedAt?: number
+    evidence: unknown
+  }): ArchiveIncidentEvidenceRow {
+    const observedAt = Math.max(0, Math.trunc(input.observedAt ?? Date.now()))
+    const evidenceJson = json(input.evidence)
+    this.db.prepare(`
+      INSERT INTO incident_evidence (
+        incident_id, evidence_type, first_observed_at, last_observed_at, evidence_json
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(incident_id, evidence_type) DO UPDATE SET
+        last_observed_at=excluded.last_observed_at,
+        evidence_json=excluded.evidence_json
+    `).run(input.incidentId, input.evidenceType, observedAt, observedAt, evidenceJson)
+    return this.db.prepare(`
+      SELECT incident_id AS incidentId, evidence_type AS evidenceType,
+             first_observed_at AS firstObservedAt, last_observed_at AS lastObservedAt,
+             evidence_json AS evidenceJson
+      FROM incident_evidence
+      WHERE incident_id = ? AND evidence_type = ?
+    `).get(input.incidentId, input.evidenceType) as unknown as ArchiveIncidentEvidenceRow
+  }
+
+  listIncidentEvidence(incidentId: string): ArchiveIncidentEvidenceRow[] {
+    return this.db.prepare(`
+      SELECT incident_id AS incidentId, evidence_type AS evidenceType,
+             first_observed_at AS firstObservedAt, last_observed_at AS lastObservedAt,
+             evidence_json AS evidenceJson
+      FROM incident_evidence
+      WHERE incident_id = ?
+      ORDER BY first_observed_at ASC, evidence_type ASC
+    `).all(incidentId) as unknown as ArchiveIncidentEvidenceRow[]
+  }
+
+  /**
+   * 将当前 turn 的 canonical-tail-gap 证据附着到已有 incident。
+   * 如果当前 turn 尚无 incident，只返回 gap 摘要；是否立案由 daemon 的 5 分钟诊断语义决定。
+   */
+  attachCanonicalTailGapEvidence(input: {
+    conversationId: string
+    turnExchangeId?: string | null
+    turnKey?: string | null
+    lastMessageId?: string | null
+    metadataId?: string | null
+    terminalEvidence?: string | null
+    observedAt?: number
+    beforeAt?: number | null
+  }): { summary: DevSpaceTailGapSummary, incidentId: string | null } {
+    const summary = this.describeDevSpaceTailGap(input)
+    if (!summary.hasTailGap) return { summary, incidentId: null }
+    const turnKey = input.turnKey?.trim() || input.turnExchangeId?.trim() || input.lastMessageId?.trim() || null
+    if (!turnKey) return { summary, incidentId: null }
+    const incident = this.db.prepare(`
+      SELECT id FROM incidents
+      WHERE conversation_id = ? AND turn_key = ?
+      LIMIT 1
+    `).get(input.conversationId, turnKey) as { id?: string } | undefined
+    if (!incident?.id) return { summary, incidentId: null }
+    this.upsertIncidentEvidence({
+      incidentId: incident.id,
+      evidenceType: 'canonical-tail-gap',
+      observedAt: input.observedAt,
+      evidence: summary,
+    })
+    return { summary, incidentId: incident.id }
+  }
+
+  /** 历史回填：只看 incident 对应 turn 的 canonical tail 到下一条 user 之前的 recovery audit。 */
+  backfillCanonicalTailGapEvidence(minGapMs = 5_000, observedAt = Date.now()): number {
+    const incidents = this.db.prepare(`
+      SELECT id, conversation_id AS conversationId,
+             turn_exchange_id AS turnExchangeId, turn_key AS turnKey,
+             terminal_evidence AS terminalEvidence
+      FROM incidents
+    `).all() as unknown as Array<{
+      id: string
+      conversationId: string
+      turnExchangeId: string | null
+      turnKey: string
+      terminalEvidence: string
+    }>
+    let changed = 0
+    for (const incident of incidents) {
+      if (incident.terminalEvidence === 'final') continue
+      const tailRow = incident.turnExchangeId
+        ? this.db.prepare(`
+            SELECT MAX(create_time) AS tailSec
+            FROM messages WHERE conversation_id=? AND turn_exchange_id=? AND create_time IS NOT NULL
+          `).get(incident.conversationId, incident.turnExchangeId) as { tailSec?: number | null } | undefined
+        : this.db.prepare(`
+            SELECT create_time AS tailSec
+            FROM messages WHERE conversation_id=? AND message_id=? AND create_time IS NOT NULL LIMIT 1
+          `).get(incident.conversationId, incident.turnKey) as { tailSec?: number | null } | undefined
+      const tailSec = Number(tailRow?.tailSec)
+      if (!Number.isFinite(tailSec) || tailSec <= 0) continue
+      const nextUser = this.db.prepare(`
+        SELECT MIN(create_time) AS nextUserSec
+        FROM messages
+        WHERE conversation_id=? AND role='user' AND create_time>?
+      `).get(incident.conversationId, tailSec + 0.001) as { nextUserSec?: number | null } | undefined
+      const beforeAt = Number.isFinite(Number(nextUser?.nextUserSec))
+        ? Math.trunc(Number(nextUser?.nextUserSec) * 1000)
+        : null
+      const summary = this.describeDevSpaceTailGap({
+        conversationId: incident.conversationId,
+        turnExchangeId: incident.turnExchangeId,
+        lastMessageId: incident.turnExchangeId ? null : incident.turnKey,
+        terminalEvidence: incident.terminalEvidence,
+        minGapMs,
+        beforeAt,
+      })
+      if (!summary.hasTailGap) continue
+      this.upsertIncidentEvidence({
+        incidentId: incident.id,
+        evidenceType: 'canonical-tail-gap',
+        observedAt,
+        evidence: { ...summary, historicalBackfill: true, beforeAt },
+      })
+      changed += 1
+    }
+    return changed
   }
 
   /**
