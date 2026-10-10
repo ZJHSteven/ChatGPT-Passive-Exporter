@@ -668,6 +668,85 @@ export function formatBeijingTime(value) {
   return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}:${pick('second')} 北京时间`
 }
 
+export function formatDurationMs(value) {
+  const ms = Math.max(0, Number(value || 0))
+  if (!Number.isFinite(ms) || ms <= 0) return '0 秒'
+  const totalSeconds = Math.floor(ms / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const parts = []
+  if (hours > 0) parts.push(`${hours} 小时`)
+  if (minutes > 0) parts.push(`${minutes} 分钟`)
+  if (seconds > 0 || parts.length === 0) parts.push(`${seconds} 秒`)
+  return parts.join(' ')
+}
+
+/** 5 分钟 DevSpace 静默 probe 的最终诊断通知：扫完必须给结果。 */
+export function buildDevSpaceIdleDiagnosisNotificationPayload({
+  conversationId,
+  title,
+  diagnostic,
+  tailGap,
+  canonicalMessageCount = null,
+}) {
+  const terminal = String(diagnostic?.terminalEvidence || 'none')
+  const tail = String(diagnostic?.tailShape || 'unknown')
+  const lines = [
+    title || conversationId,
+    `canonical：terminal=${terminal}；tail=${tail}`,
+    Number.isFinite(Number(canonicalMessageCount))
+      ? `Archive 当前累计 canonical 节点：${Number(canonicalMessageCount)}`
+      : null,
+  ]
+  if (tailGap?.canonicalTailAt) lines.push(`Body 当前 turn 最后节点：${formatBeijingTime(tailGap.canonicalTailAt)}`)
+  if (tailGap?.recoveryAuditCount > 0) {
+    lines.push(
+      `Body 尾部之后仍有 DevSpace 审计：${tailGap.recoveryAuditCount} 条（tool ${tailGap.recoveryToolCount}；checkpoint ${tailGap.checkpointCount}）`,
+      `DevSpace 最后审计：${formatBeijingTime(tailGap.recoveryLastAt)}`,
+      `canonical Body 落后执行事实：${formatDurationMs(tailGap.gapMs)}`,
+    )
+  }
+  else {
+    lines.push('当前没有发现 canonical Body 尾部之后仍未被吸收的 DevSpace recovery audit。')
+  }
+  lines.push(
+    tailGap?.hasTailGap
+      ? '判定：已记录 canonical-tail-gap 证据；它描述 Body/持久化尾部缺失，可与 Active Zombie 等生命周期状态同时存在。'
+      : terminal === 'final'
+        ? '判定：本次 5 分钟核验已看到 Final，没有 canonical-tail-gap。'
+        : '判定：本次核验未发现 canonical-tail-gap；5 分钟静默本身仍不等于 turn 已结束。',
+  )
+  return {
+    title: tailGap?.hasTailGap
+      ? 'DevSpace 5 分钟诊断 · Body 尾部缺失'
+      : 'DevSpace 5 分钟诊断完成',
+    body: lines.filter(Boolean).join('\n'),
+    url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
+  }
+}
+
+export function buildDevSpaceIdleUnboundDiagnosisNotificationPayload({
+  metadataId,
+  title = null,
+  recoveryAuditCount = 0,
+  recoveryToolCount = 0,
+  checkpointCount = 0,
+}) {
+  const subject = title
+    ? `聊天：以“${title}”为主题（仍未绑定 canonical Conversation）`
+    : `聊天：${shortDevSpaceMetadataAlias(metadataId)}（仍未绑定 canonical Conversation）`
+  return {
+    title: 'DevSpace 5 分钟诊断 · 会话仍未绑定',
+    body: [
+      subject,
+      'Archive 已完成本轮 catalog gap-repair，但仍没有足够证据把该 metadata 安全绑定到一个 canonical conversation。',
+      `DevSpace recovery 审计：${Number(recoveryAuditCount || 0)} 条（tool ${Number(recoveryToolCount || 0)}；checkpoint ${Number(checkpointCount || 0)}）`,
+      '因此本轮无法做 Body vs DevSpace 尾部对账；不会猜 CID，也不会把“未绑定”误报成 canonical-tail-gap。',
+    ].join('\n'),
+  }
+}
+
 /**
  * 429 cooldown 是 Archive 自己的运行状态通知，不属于 conversation incident taxonomy。
  *
@@ -2061,6 +2140,10 @@ async function main() {
   // 每项保留上一轮观察到的 idle 时长，用于精确识别 1/3/5 分钟阈值穿越。
   const devSpaceIdleCandidates = new Map()
   let devSpaceIdleNotificationsQueued = 0
+  // 5 分钟 probe 的“扫完必须给结果”状态。key=metadataId；绑定前后都沿用同一个 generation。
+  // 只有 body sync 成功或 unbound gap-repair 明确结束后才消费，避免发“已扫描”但其实没拿到结果。
+  const pendingDevSpaceIdleDiagnoses = new Map()
+  let devSpaceIdleDiagnosisNotificationsQueued = 0
   // daemon 重启不能把一个已经计时几十分钟的 provisional watchdog 重新从 0 开始。
   // 从 Archive 自己的持久 binding 表恢复近期未绑定 metadata；firstSeenAt 仍是原始首个工具时间。
   for (const binding of archive.listDevSpaceMetadataBindings({
@@ -2323,6 +2406,17 @@ async function main() {
         // deferred catalog gap-repair，让 list 找近期新增/变化 conversation，再交给 exact
         // tool+args matching 建立 binding。两条路径都继续服从 cooldown / request gate。
         const repairMode = devSpaceIdleRepairMode(thresholdMs, conversationId)
+        if (repairMode !== 'none') {
+          pendingDevSpaceIdleDiagnoses.set(metadataId, {
+            metadataId,
+            conversationId,
+            title,
+            generationKey: candidate.generationKey,
+            lastFinishedAuditId: candidate.state.lastFinishedAuditId,
+            requestedAt: now,
+            repairMode,
+          })
+        }
         if (repairMode === 'bound-body') {
           // 如果 WSS complete / Watchdog 等更强 trigger 已经排队，不能让这个弱 probe 覆盖它。
           if (!ready.has(conversationId)) {
@@ -2349,6 +2443,159 @@ async function main() {
           })
         }
       }
+    }
+  }
+
+  const devSpaceRecoveryCountsForMetadata = (metadataId) => {
+    const row = archive.db.prepare(`
+      SELECT COUNT(*) AS n,
+             SUM(CASE WHEN tool='checkpoint' THEN 1 ELSE 0 END) AS checkpoints
+      FROM devspace_recovery_audits
+      WHERE metadata_id=? AND superseded_at IS NULL
+    `).get(metadataId)
+    const recoveryAuditCount = Math.max(0, Number(row?.n || 0))
+    const checkpointCount = Math.max(0, Number(row?.checkpoints || 0))
+    return {
+      recoveryAuditCount,
+      checkpointCount,
+      recoveryToolCount: Math.max(0, recoveryAuditCount - checkpointCount),
+    }
+  }
+
+  /**
+   * 一个 canonical body sync 成功后，消费所有已经绑定到该 conversation 的 5 分钟诊断。
+   * 这里故意不要求 trigger 必须是 devspace-idle：如果 WSS complete / Watchdog 已经排了更强 sync，
+   * 直接复用那次 body 结果即可，既保证“扫完必报”，也避免重复请求。
+   */
+  const completePendingDevSpaceIdleDiagnoses = (conversationId, result, now = Date.now()) => {
+    const matches = []
+    for (const [metadataId, pending] of pendingDevSpaceIdleDiagnoses) {
+      const binding = archive.getDevSpaceMetadataBinding(metadataId)
+      const boundConversationId = binding?.conversationId || pending.conversationId || null
+      if (boundConversationId !== conversationId) continue
+      matches.push([metadataId, pending])
+    }
+    if (matches.length === 0) return []
+
+    const completed = []
+    for (const [metadataId, pending] of matches) {
+      const diagnostic = result.diagnostic
+      const tailGap = archive.describeDevSpaceTailGap({
+        conversationId,
+        turnExchangeId: diagnostic.turnExchangeId ?? null,
+        lastMessageId: diagnostic.lastMessageId ?? null,
+        metadataId,
+        terminalEvidence: diagnostic.terminalEvidence ?? null,
+        minGapMs: 5_000,
+      })
+
+      let evidenceIncident = null
+      if (tailGap.hasTailGap) {
+        const reason = [
+          `canonical Body 尾部落后于 DevSpace 执行事实 ${formatDurationMs(tailGap.gapMs)}`,
+          `Body tail=${diagnostic.tailShape || 'unknown'} / terminal=${diagnostic.terminalEvidence || 'none'}`,
+          `尾部之后仍有 ${tailGap.recoveryAuditCount} 条 recovery audit（tool ${tailGap.recoveryToolCount} / checkpoint ${tailGap.checkpointCount}）`,
+        ].join('；')
+        evidenceIncident = archive.ensureIncidentForEvidence({
+          conversationId,
+          diagnostic,
+          observedAt: now,
+          source: 'devspace-idle:canonical-tail-gap',
+          reason,
+        })
+        if (evidenceIncident) {
+          archive.attachCanonicalTailGapEvidence({
+            conversationId,
+            turnExchangeId: diagnostic.turnExchangeId ?? null,
+            turnKey: evidenceIncident.turnKey,
+            lastMessageId: diagnostic.lastMessageId ?? null,
+            metadataId,
+            terminalEvidence: diagnostic.terminalEvidence ?? null,
+            observedAt: now,
+          })
+        }
+      }
+
+      const conversation = archive.db.prepare(
+        'SELECT title, message_count AS messageCount FROM conversations WHERE id=?',
+      ).get(conversationId)
+      const queued = dispatchPersistentNotification({
+        notificationKey: `devspace-idle-diagnosis:${metadataId}:${pending.lastFinishedAuditId}`,
+        kind: tailGap.hasTailGap ? 'devspace-idle-diagnosis:canonical-tail-gap' : 'devspace-idle-diagnosis',
+        conversationId,
+        turnKey: diagnostic.turnExchangeId ?? diagnostic.userMessageId ?? diagnostic.lastMessageId ?? null,
+        payload: buildDevSpaceIdleDiagnosisNotificationPayload({
+          conversationId,
+          title: conversation?.title || pending.title || conversationId,
+          diagnostic,
+          tailGap,
+          canonicalMessageCount: conversation?.messageCount ?? null,
+        }),
+        successLog: 'DevSpace 5m idle diagnosis notification sent',
+        failureLog: 'DevSpace 5m idle diagnosis notification failed',
+        logFields: {
+          metadataId,
+          canonicalTailGap: tailGap.hasTailGap,
+          gapMs: tailGap.gapMs,
+          recoveryAuditCount: tailGap.recoveryAuditCount,
+          incidentId: evidenceIncident?.id ?? null,
+        },
+      })
+      if (queued) devSpaceIdleDiagnosisNotificationsQueued += 1
+      pendingDevSpaceIdleDiagnoses.delete(metadataId)
+      completed.push({ metadataId, tailGap, incident: evidenceIncident })
+      void log('DevSpace 5m idle diagnosis completed', {
+        metadataId,
+        conversationId,
+        terminal: diagnostic.terminalEvidence,
+        tail: diagnostic.tailShape,
+        canonicalTailGap: tailGap.hasTailGap,
+        gapMs: tailGap.gapMs,
+        recoveryAuditCount: tailGap.recoveryAuditCount,
+        notificationQueued: queued,
+      })
+    }
+    return completed
+  }
+
+  /** gap-repair 结束后仍未绑定时也必须给一条“扫描完成但无法对账”的结果。 */
+  const completeUnboundDevSpaceIdleDiagnoses = () => {
+    if (syncInFlight || reconcileInFlight || ready.size > 0) return
+    for (const [metadataId, pending] of [...pendingDevSpaceIdleDiagnoses.entries()]) {
+      if (pending.repairMode !== 'unbound-catalog') continue
+      if (!pending.catalogRepairCompletedAt) continue
+      const binding = archive.getDevSpaceMetadataBinding(metadataId)
+      if (binding?.conversationId) {
+        pending.conversationId = binding.conversationId
+        pending.repairMode = 'bound-body'
+        // catalog repair 可能已经为同一 conversation 排了更强 sync；有就复用，没有才补 body probe。
+        if (!ready.has(binding.conversationId)) {
+          markSyncReady(binding.conversationId, 'devspace-idle:bound-probe', 0)
+        }
+        continue
+      }
+      const counts = devSpaceRecoveryCountsForMetadata(metadataId)
+      const queued = dispatchPersistentNotification({
+        notificationKey: `devspace-idle-diagnosis:${metadataId}:${pending.lastFinishedAuditId}`,
+        kind: 'devspace-idle-diagnosis:unbound',
+        conversationId: null,
+        turnKey: null,
+        payload: buildDevSpaceIdleUnboundDiagnosisNotificationPayload({
+          metadataId,
+          title: pending.title,
+          ...counts,
+        }),
+        successLog: 'DevSpace 5m unbound diagnosis notification sent',
+        failureLog: 'DevSpace 5m unbound diagnosis notification failed',
+        logFields: { metadataId, ...counts },
+      })
+      if (queued) devSpaceIdleDiagnosisNotificationsQueued += 1
+      pendingDevSpaceIdleDiagnoses.delete(metadataId)
+      void log('DevSpace 5m idle diagnosis completed without canonical binding', {
+        metadataId,
+        notificationQueued: queued,
+        ...counts,
+      })
     }
   }
 
@@ -2841,6 +3088,8 @@ async function main() {
       unboundActive: unboundDevSpaceTurns.size,
       idleCandidates: devSpaceIdleCandidates.size,
       idleNotificationsQueued: devSpaceIdleNotificationsQueued,
+      idleDiagnosesPending: pendingDevSpaceIdleDiagnoses.size,
+      idleDiagnosisNotificationsQueued: devSpaceIdleDiagnosisNotificationsQueued,
       bindings: archive.listDevSpaceMetadataBindings({ limit: 100 }).map(binding => ({
         metadataId: binding.metadataId,
         conversationId: binding.conversationId,
@@ -4490,6 +4739,9 @@ async function main() {
         // body 一旦给出 turn_exchange_id，就可以把 earlier provisional metadata 做后验校验；
         // 该步骤只读局部时间窗，不扫描整库。
         reconcileDevSpaceBindingFromBody(conversationId, result.diagnostic)
+        // 5 分钟静默 probe 的结果必须在这次成功 body sync 后显式收口。即使真正拉 body 的
+        // trigger 是 WSS complete / Watchdog，也复用同一个结果，不再额外请求。
+        const idleDiagnoses = completePendingDevSpaceIdleDiagnoses(conversationId, result)
         const watchdogGenerationDone = shouldCloseWatchdogGenerationAfterSync(trigger, result)
         if (watchdogGenerationDone && activeTurns.has(conversationId)) {
           clearActiveTurn(conversationId)
@@ -6150,6 +6402,12 @@ async function main() {
     if (activeWindowAvailable) lastGapRepairAttemptAt = now
     try {
       await reconcileCatalog('gap-repair')
+      if (repair.reasons.has('devspace-idle-unbound-5m')) {
+        const completedAt = Date.now()
+        for (const pending of pendingDevSpaceIdleDiagnoses.values()) {
+          if (pending.repairMode === 'unbound-catalog') pending.catalogRepairCompletedAt = completedAt
+        }
+      }
       pendingGapRepair = null
       lastGapRepairGate = null
       lastGapRepairGateSignature = null
@@ -6895,6 +7153,7 @@ async function main() {
      await drainDirty()
      await drainCheckpointWatches()
      await maybeRunGapRepair()
+     completeUnboundDevSpaceIdleDiagnoses()
      await hydratePendingGeneratedImageAssets()
       if (protocolLedger?.refreshBaselineLock()) scheduleProtocolLedgerFlush()
      // 运行态错误已经写入日志；完整健康迭代成功后清掉 state 里的 transient lastError，

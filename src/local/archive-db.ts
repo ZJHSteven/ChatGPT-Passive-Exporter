@@ -3449,6 +3449,94 @@ export class ChatArchiveDb {
   }
 
   /**
+   * 为“已经有独立异常证据、但尚无 lifecycle 终止证据”的当前 turn 建一个通用 incident 壳。
+   * 典型用途是 canonical-tail-gap：它证明 persistence/body 已落后于真实执行，但并不声称已经
+   * 收到 conversation-turn-complete，也不声称 catalog 一定是 active-zombie。
+   */
+  ensureIncidentForEvidence(input: {
+    conversationId: string
+    diagnostic: RunDiagnostic
+    observedAt?: number
+    source: string
+    reason: string
+  }): ArchiveIncidentRow | null {
+    const diagnostic = input.diagnostic
+    if (diagnostic.terminalEvidence === 'final') return null
+    const observedAt = Math.max(0, Math.trunc(input.observedAt ?? Date.now()))
+    const turnKey = diagnostic.turnExchangeId
+      ?? diagnostic.userMessageId
+      ?? diagnostic.lastMessageId
+      ?? diagnostic.currentNode
+      ?? null
+    if (!turnKey) return null
+
+    const existing = this.db.prepare(`
+      SELECT id, conversation_id AS conversationId, turn_exchange_id AS turnExchangeId,
+             turn_key AS turnKey, incident_kind AS incidentKind, lifecycle_class AS lifecycleClass,
+             detected_at AS detectedAt, last_observed_at AS lastObservedAt,
+             resolved_at AS resolvedAt, status, reason,
+             terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
+             head_state AS headState, head_rollback AS headRollbackObserved,
+             off_head_same_turn_count AS offHeadSameTurnCount,
+             source, diagnostic_json AS diagnosticJson
+      FROM incidents
+      WHERE conversation_id=? AND turn_key=?
+      LIMIT 1
+    `).get(input.conversationId, turnKey) as Record<string, unknown> | undefined
+    if (existing) return normalizeIncidentRow(existing)
+
+    const headRollbackObserved = diagnostic.currentNode
+      ? Number((this.db.prepare(`
+          SELECT count(*) AS n
+          FROM conversation_head_history
+          WHERE conversation_id = ? AND current_node = ?
+        `).get(input.conversationId, diagnostic.currentNode) as { n: number }).n) >= 2
+      : false
+    const incidentId = sha256Text(`${input.conversationId}:${turnKey}`).slice(0, 24)
+    this.db.prepare(`
+      INSERT INTO incidents (
+        id, conversation_id, turn_exchange_id, turn_key, incident_kind, lifecycle_class,
+        detected_at, last_observed_at, resolved_at, status,
+        reason, terminal_evidence, tail_shape,
+        head_state, head_rollback, off_head_same_turn_count,
+        source, diagnostic_json
+      ) VALUES (?, ?, ?, ?, 'abnormal-terminal', 'abnormal-terminal', ?, ?, NULL, 'open', ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      incidentId,
+      input.conversationId,
+      diagnostic.turnExchangeId ?? null,
+      turnKey,
+      observedAt,
+      observedAt,
+      input.reason,
+      diagnostic.terminalEvidence,
+      diagnostic.tailShape,
+      diagnostic.headState,
+      headRollbackObserved ? 1 : 0,
+      diagnostic.offHeadSameTurnMessageCount,
+      input.source,
+      json(diagnostic),
+    )
+    this.db.prepare(`
+      UPDATE conversations
+      SET incident_state='open', last_monitor_checked_at=?
+      WHERE id=?
+    `).run(observedAt, input.conversationId)
+    const created = this.db.prepare(`
+      SELECT id, conversation_id AS conversationId, turn_exchange_id AS turnExchangeId,
+             turn_key AS turnKey, incident_kind AS incidentKind, lifecycle_class AS lifecycleClass,
+             detected_at AS detectedAt, last_observed_at AS lastObservedAt,
+             resolved_at AS resolvedAt, status, reason,
+             terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
+             head_state AS headState, head_rollback AS headRollbackObserved,
+             off_head_same_turn_count AS offHeadSameTurnCount,
+             source, diagnostic_json AS diagnosticJson
+      FROM incidents WHERE id=?
+    `).get(incidentId) as Record<string, unknown>
+    return normalizeIncidentRow(created)
+  }
+
+  /**
    * 将当前 turn 的 canonical-tail-gap 证据附着到已有 incident。
    * 如果当前 turn 尚无 incident，只返回 gap 摘要；是否立案由 daemon 的 5 分钟诊断语义决定。
    */

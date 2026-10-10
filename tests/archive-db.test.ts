@@ -284,6 +284,125 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('canonical-tail-gap 作为正交 incident evidence，可与 active-zombie lifecycle 并存', () => {
+    const db = tempDb()
+    try {
+      const merged = db.mergeLiveMessagesPage({
+        title: 'Tail gap evidence',
+        conversation_id: 'tail-gap-cid',
+        current_node: 'a-gap',
+        messages: [
+          {
+            id: 'u-gap',
+            author: { role: 'user' },
+            recipient: 'all',
+            content: { content_type: 'text', parts: ['开始'] },
+            metadata: { turn_exchange_id: 'turn-gap' },
+            create_time: 1,
+          },
+          {
+            id: 'a-gap',
+            author: { role: 'assistant' },
+            recipient: 'all',
+            channel: 'commentary',
+            content: { content_type: 'text', parts: ['处理中'] },
+            metadata: { turn_exchange_id: 'turn-gap' },
+            create_time: 2,
+          },
+        ],
+      }, {
+        observedAt: 2_000,
+        updateCurrentState: true,
+        classifyTerminal: false,
+        updateIncidents: false,
+      })
+
+      const argsJson = JSON.stringify({ cmd: 'echo later' })
+      db.upsertDevSpaceRecoveryAudit({
+        auditId: 'audit-later-tool',
+        conversationId: 'tail-gap-cid',
+        metadataId: 'meta-tail-gap',
+        tool: 'exec_command',
+        toolFingerprint: devSpaceToolArgsFingerprint('exec_command', argsJson)!,
+        argsJson,
+        startedAt: 12_000,
+        finishedAt: 13_000,
+        observedAt: 13_000,
+      })
+      const checkpointArgs = JSON.stringify({ summary: '后续 checkpoint' })
+      db.upsertDevSpaceRecoveryAudit({
+        auditId: 'audit-later-checkpoint',
+        conversationId: 'tail-gap-cid',
+        metadataId: 'meta-tail-gap',
+        tool: 'checkpoint',
+        toolFingerprint: devSpaceToolArgsFingerprint('checkpoint', checkpointArgs)!,
+        argsJson: checkpointArgs,
+        startedAt: 14_000,
+        finishedAt: 15_000,
+        observedAt: 15_000,
+      })
+
+      const summary = db.describeDevSpaceTailGap({
+        conversationId: 'tail-gap-cid',
+        turnExchangeId: merged.diagnostic.turnExchangeId,
+        lastMessageId: merged.diagnostic.lastMessageId,
+        metadataId: 'meta-tail-gap',
+        terminalEvidence: merged.diagnostic.terminalEvidence,
+      })
+      expect(summary).toMatchObject({
+        hasTailGap: true,
+        recoveryAuditCount: 2,
+        recoveryToolCount: 1,
+        checkpointCount: 1,
+      })
+      expect(summary.gapMs).toBeGreaterThanOrEqual(13_000)
+
+      const incident = db.ensureIncidentForEvidence({
+        conversationId: 'tail-gap-cid',
+        diagnostic: merged.diagnostic,
+        observedAt: 16_000,
+        source: 'test:tail-gap',
+        reason: 'canonical body 明显落后于本地执行事实',
+      })
+      expect(incident).toMatchObject({
+        lifecycleClass: 'abnormal-terminal',
+        status: 'open',
+      })
+      const attached = db.attachCanonicalTailGapEvidence({
+        conversationId: 'tail-gap-cid',
+        turnExchangeId: merged.diagnostic.turnExchangeId,
+        turnKey: incident!.turnKey,
+        lastMessageId: merged.diagnostic.lastMessageId,
+        metadataId: 'meta-tail-gap',
+        terminalEvidence: merged.diagnostic.terminalEvidence,
+        observedAt: 16_000,
+      })
+      expect(attached.incidentId).toBe(incident!.id)
+      expect(db.listIncidentEvidence(incident!.id)).toEqual([
+        expect.objectContaining({ evidenceType: 'canonical-tail-gap' }),
+      ])
+
+      // 后续 catalog 证据把同一 incident 升级为 active-zombie；正交 tail-gap evidence 不被覆盖。
+      db.updateIncidentFromDiagnostic(
+        'tail-gap-cid',
+        merged.diagnostic,
+        20_000,
+        true,
+        true,
+        'active-zombie',
+        'test:catalog-active',
+      )
+      const updated = db.listIncidents({ status: 'open' })[0]!
+      expect(updated).toMatchObject({ lifecycleClass: 'active-zombie' })
+      expect(db.listIncidentEvidence(updated.id)).toEqual([
+        expect.objectContaining({ evidenceType: 'canonical-tail-gap' }),
+      ])
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('DevSpace metadata 可先未绑定落盘，再原位绑定并保存 turn 状态', () => {
     const db = tempDb()
     try {

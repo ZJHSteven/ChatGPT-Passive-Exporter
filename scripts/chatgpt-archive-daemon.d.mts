@@ -164,6 +164,7 @@ export function activeApiAllowed(cooldownUntil: unknown, now?: number): boolean
 
 /** 将绝对时间戳格式化为人类可读的北京时间字符串；内部存储仍保持 epoch/UTC。 */
 export function formatBeijingTime(value: unknown): string
+export function formatDurationMs(value: unknown): string
 
 /** 生成一次“首次进入 429 cooldown”的独立运行状态通知文案。 */
 export function buildCooldownNotificationPayload(input: {
@@ -235,6 +236,30 @@ export function buildDevSpaceIdleNotificationPayload(input: {
   group: string
   url?: string
 }
+
+export function buildDevSpaceIdleDiagnosisNotificationPayload(input: {
+  conversationId: string
+  title?: string | null
+  diagnostic?: { terminalEvidence?: unknown, tailShape?: unknown } | null
+  tailGap?: {
+    canonicalTailAt?: number | null
+    recoveryLastAt?: number | null
+    gapMs?: number
+    recoveryAuditCount?: number
+    recoveryToolCount?: number
+    checkpointCount?: number
+    hasTailGap?: boolean
+  } | null
+  canonicalMessageCount?: number | null
+}): { title: string, body: string, url?: string }
+
+export function buildDevSpaceIdleUnboundDiagnosisNotificationPayload(input: {
+  metadataId: string
+  title?: string | null
+  recoveryAuditCount?: number
+  recoveryToolCount?: number
+  checkpointCount?: number
+}): { title: string, body: string }
 
 /** 把完整 DevSpace metadata 压缩成可口述、可前缀回查的 meta/XXXXXXXX。 */
 export function shortDevSpaceMetadataAlias(metadataId: unknown): string

@@ -3,7 +3,9 @@ import {
   activeApiAllowed,
   buildDevSpaceCheckpointNotificationPayload,
   buildDevSpaceConclusionNotificationPayload,
+  buildDevSpaceIdleDiagnosisNotificationPayload,
   buildDevSpaceIdleNotificationPayload,
+  buildDevSpaceIdleUnboundDiagnosisNotificationPayload,
   buildCooldownNotificationPayload,
   buildTurnFinalNotificationPayload,
   buildUnboundWatchdogNotificationPayload,
@@ -236,6 +238,47 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     })
     expect(unnamed.body).toContain('meta/abcdefgh')
     expect(unnamed.body).not.toContain('v1/abcdefgh12345678')
+  })
+
+  test('5 分钟诊断通知明确报告 Body 与 DevSpace audit 的 tail gap', () => {
+    const payload = buildDevSpaceIdleDiagnosisNotificationPayload({
+      conversationId: 'conversation-a',
+      title: '恢复并继续 ClassFlow',
+      diagnostic: { terminalEvidence: 'none', tailShape: 'tool-result-returned' },
+      canonicalMessageCount: 5317,
+      tailGap: {
+        canonicalTailAt: Date.UTC(2026, 9, 10, 10, 0, 0),
+        recoveryLastAt: Date.UTC(2026, 9, 10, 10, 21, 0),
+        gapMs: 21 * 60_000,
+        recoveryAuditCount: 67,
+        recoveryToolCount: 66,
+        checkpointCount: 1,
+        hasTailGap: true,
+      },
+    })
+    expect(payload.title).toContain('Body 尾部缺失')
+    expect(payload.body).toContain('canonical：terminal=none；tail=tool-result-returned')
+    expect(payload.body).toContain('累计 canonical 节点：5317')
+    expect(payload.body).toContain('67 条')
+    expect(payload.body).toContain('tool 66；checkpoint 1')
+    expect(payload.body).toContain('21 分钟')
+    expect(payload.body).toContain('canonical-tail-gap')
+    expect(payload.url).toContain('/c/conversation-a')
+  })
+
+  test('未绑定 5 分钟 gap-repair 也必须返回明确扫描结果', () => {
+    const payload = buildDevSpaceIdleUnboundDiagnosisNotificationPayload({
+      metadataId: 'v1/abcdefgh12345678',
+      title: '未知聊天',
+      recoveryAuditCount: 12,
+      recoveryToolCount: 10,
+      checkpointCount: 2,
+    })
+    expect(payload.title).toContain('会话仍未绑定')
+    expect(payload.body).toContain('已完成本轮 catalog gap-repair')
+    expect(payload.body).toContain('12 条')
+    expect(payload.body).toContain('tool 10；checkpoint 2')
+    expect(payload.body).toContain('不会猜 CID')
   })
   test('当前 exact body 只允许纠正历史 backfill，不覆盖另一个在线 exact binding', () => {
     expect(shouldSupersedeDevSpaceBinding(
