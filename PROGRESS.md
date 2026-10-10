@@ -1,3 +1,4 @@
+- 2026-10-11 队列回归发现并修正一处 cooldown 调度细节：若 Archive 已给出绝对 until，submission 现在直接按该截止恢复，不再错误叠加普通 5s 指数退避；只有没有明确截止的一般基础设施错误才使用指数退避。
 - 2026-10-11 Bridge 队列回归已补：覆盖 submission ID 幂等不变、cooldown 后自动二次尝试并 accepted、accepted conversationId 回传、同键不同 payload 409；该测试不触碰真实 ChatGPT。
 - 2026-10-11 Archive Bridge 测试辅助器已支持临时 submission queue 文件与短轮询间隔，用于验证持久化幂等提交而不影响既有同步测试。
 - 2026-10-11 Bridge 的 idempotencyKey 保持向后兼容：未提供幂等键时不向旧 submitTurn 调用注入额外字段，现有同步调用契约不变；只有新队列路径携带并消费幂等键。

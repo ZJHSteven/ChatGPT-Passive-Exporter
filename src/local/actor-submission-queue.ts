@@ -256,7 +256,9 @@ export class ActorSubmissionQueue {
           else {
             const explicitUntil = parseCooldownUntil(message)
             const fallback = Date.now() + this.retryDelay(record.attemptCount)
-            const nextAttemptAt = Math.max(fallback, explicitUntil ?? 0)
+            const nextAttemptAt = explicitUntil !== null
+              ? Math.max(Date.now() + this.options.pollIntervalMs, explicitUntil)
+              : fallback
             record.status = 'retry_waiting'
             record.nextAttemptAt = nextAttemptAt
             if (isCooldownError(message)) {
