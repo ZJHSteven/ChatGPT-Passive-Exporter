@@ -1,3 +1,16 @@
+# 2026-10-10 5 分钟诊断通知 / Canonical Tail Gap 多维 Incident ExecPlan
+
+目标：补齐 DevSpace 5 分钟静默 probe 的“扫完必须通知”闭环，并把 canonical Body 明显落后于 DevSpace audit/recovery overlay 的现象从 Watchdog/Active Zombie 中拆成一个可并存的独立证据维度。
+
+1. **5 分钟 bound probe 必须有诊断结果通知**：阈值触发时登记 pending diagnosis；若当前已有 WSS complete / Watchdog 等更强 sync，则复用它的 body 结果，不额外请求；否则沿用 `devspace-idle:bound-probe` 抓一次 latest body。任意成功 sync 完成后都消费 pending diagnosis 并发送 Bark。
+2. **通知重点改为 Body vs DevSpace Recovery**：正文展示 canonical terminal/tail、当前 turn canonical 最后节点时间；同 conversation 在该 canonical tail 之后的 DevSpace audit 数、普通 tool 数、checkpoint 数、最后 audit 时间以及 tail gap 时长。明确告诉用户 Body 是否已追平、是否存在 provisional recovery 节点需要依赖 Recover overlay。
+3. **新增正交异常标签 `canonical-tail-gap`**：定义为当前 turn `terminalEvidence != final`，且 canonical 最后节点之后仍存在真实 DevSpace tool audit，gap >= 5s。它描述“正文完整性/尾部缺失”，不推断根因，更不直接命名为“审查异常”。
+4. **不合并 Active Zombie**：`active-zombie` 继续表示 conversation list/catalog 长时间仍 active；`canonical-tail-gap` 表示 body 尾部落后。二者是独立维度，可同时存在。`watchdog-timeout` 视为发现/触发维度，保留兼容字段但不再把它当唯一错误类型。
+5. **Incident 表增加多维证据列**：保留现有 `incident_kind/lifecycle_class` 兼容行为，同时增加 canonical-tail-gap flag 与 gapMs、missing tool/checkpoint counts、recovery last audit time。5 分钟 probe 若首次发现 tail-gap，可为当前 turn 建立 incident；后续 Watchdog/Active Zombie/complete 信号只更新其它维度，不抹掉 tail-gap 证据。
+6. **历史 backfill**：仅按“同 turn canonical tail → 下一 user turn 之前”的时间窗回填，避免同 conversation 后续 turn 污染。当前生产库初步统计：215 条 incident 中 14 条满足保守 tail-gap；14 条中 0 条 active-zombie。9 条 active-zombie 中 7 条缺 recovery audit 历史覆盖，剩余 2 条有 audit 但均不满足 tail-gap，因此现有数据不支持把二者视为同一种异常。
+7. **unbound 5 分钟**：仍先跑 deferred catalog gap-repair；扫描结束若仍无可靠 binding，发送“扫描完成但无法定位 canonical conversation”的诊断通知，列出该 metadata 的 recovery audit/checkpoint 数；若随后建立 binding，则按 bound 路径做 body 对照。
+8. **回归与生产验证**：覆盖 pending diagnosis 不重复请求、强 trigger 复用、tail-gap 判定、final 不误报、incident 多维字段持久化、历史 backfill 幂等、unbound scan-result 通知，以及既有 Watchdog/Active Zombie/complete-no-final 行为。
+
 # 2026-10-10 DevSpace 5 分钟静默提前 Gap Repair ExecPlan
 
 目标：复用 Archive 现有 1/3/5 分钟 DevSpace idle lane，在 5 分钟阈值把“软提醒”升级为一次低成本主动核验，从而比 45 分钟 Watchdog 更早识别异常结束；DevSpace 发信端和 tool_audit 协议保持不变。
