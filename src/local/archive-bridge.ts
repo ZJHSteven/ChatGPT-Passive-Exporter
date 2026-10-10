@@ -55,7 +55,7 @@ export interface ArchiveBridgeTurnInput {
   projectName: string | null
   mode: ArchiveBridgeActorMode
   targetMode: ArchiveBridgeActorTarget
-  idempotencyKey: string | null
+  idempotencyKey?: string | null
 }
 
 export interface ArchiveBridgeEvent {
@@ -358,7 +358,7 @@ function validateTurnInput(body: Record<string, unknown>): ArchiveBridgeTurnInpu
     projectName,
     mode: mode as ArchiveBridgeActorMode,
     targetMode: targetMode as ArchiveBridgeActorTarget,
-    idempotencyKey,
+    ...(idempotencyKey ? { idempotencyKey } : {}),
   }
 }
 
