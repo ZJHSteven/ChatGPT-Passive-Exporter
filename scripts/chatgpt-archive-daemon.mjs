@@ -1052,6 +1052,15 @@ export function crossedDevSpaceIdleThresholds(previousIdleMs, currentIdleMs) {
   return DEVSPACE_IDLE_ALERT_THRESHOLDS_MS.filter(threshold => before < threshold && after >= threshold)
 }
 
+/**
+ * 只有 5 分钟静默这一档才升级成“主动核验”。
+ * 1/3 分钟仍然只是提醒，避免正常长思考或 Final 组织阶段额外制造 ChatGPT 请求。
+ */
+export function devSpaceIdleRepairMode(thresholdMs, conversationId = null) {
+  if (Number(thresholdMs) !== 300_000) return 'none'
+  return conversationId ? 'bound-body' : 'unbound-catalog'
+}
+
 /** 软 Bug 提醒的文案与正式 incident 明确分离；它不声称 turn 已结束。 */
 export function buildDevSpaceIdleNotificationPayload({
   conversationId = null,
