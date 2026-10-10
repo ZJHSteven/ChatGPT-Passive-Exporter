@@ -217,6 +217,12 @@ export function crossedDevSpaceIdleThresholds(
   currentIdleMs: unknown,
 ): number[]
 
+/** 5 分钟 DevSpace 静默提前核验模式：已绑定直读 body，未绑定复用 catalog gap-repair。 */
+export function devSpaceIdleRepairMode(
+  thresholdMs: unknown,
+  conversationId?: string | null,
+): 'none' | 'bound-body' | 'unbound-catalog'
+
 /** 生成独立 DevSpace Bug 分组的软提醒；它不表示 ChatGPT turn 已终止。 */
 export function buildDevSpaceIdleNotificationPayload(input: {
   conversationId?: string | null
