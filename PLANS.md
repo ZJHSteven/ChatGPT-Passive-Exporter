@@ -1,3 +1,13 @@
+# 2026-10-10 DevSpace 5 分钟静默提前 Gap Repair ExecPlan
+
+目标：复用 Archive 现有 1/3/5 分钟 DevSpace idle lane，在 5 分钟阈值把“软提醒”升级为一次低成本主动核验，从而比 45 分钟 Watchdog 更早识别异常结束；DevSpace 发信端和 tool_audit 协议保持不变。
+
+1. **已绑定 metadata**：5 分钟阈值穿越时直接把对应 canonical conversation 放入现有 body sync 队列，只抓一次 latest body；若 body 已 final / explicit interrupted，则沿用现有 terminal/incident 分析并关闭该 generation 的 active/watchdog；若仍无 terminal，则只保留事实，不把静默本身判成异常。
+2. **未绑定 metadata**：5 分钟阈值穿越时复用现有 deferred catalog gap-repair。由 conversation list 找出新增/变化且本地尚未追平的 conversation，再按既有 body exact tool+args matching 尝试建立 metadata→conversation binding；不凭标题/时间窗猜 CID。
+3. **请求预算不扩散**：5 分钟 probe 只在 idle generation 第一次跨过 300s 时触发；bound 只排一条 body，unbound 只合并进已有去抖 gap-repair 队列。429 cooldown、主动请求串行门、passive cache 与 gap-repair min interval 全部继续生效。
+4. **语义隔离**：1/3/5 分钟 Bark 仍是 DevSpace Bug 软提醒；5 分钟 probe 不是 confirmed complete 证据，因此只允许 body 中显式 final/interrupted/client_stopped 等事实改变终态，不能把 reasoning/tool/in_progress 尾巴升级成 complete-no-final。
+5. **回归**：覆盖 5 分钟阈值识别、bound probe 可进入 terminal classifier 但不属于 confirmed-terminal trigger、1/3 分钟不触发 probe，以及既有 Watchdog/notification 行为不回归。
+
 # 2026-10-10 ClassFlow Notes Bridge / Actor 全局串行门 ExecPlan
 
 目标：把已经验证过的 Guardian Actor 正式开放给 ClassFlow Phase 3，同时保持账户级主动请求预算可控、Project 导航不破坏 LiveTurn，并给 N1 一个可恢复的异步黑盒接口。
