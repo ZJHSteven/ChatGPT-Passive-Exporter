@@ -1520,6 +1520,20 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
         const href = String(await evaluateValue(client, 'location.href') || '')
         conversationId = expectedConversationId || conversationIdFromUrl(href)
         const submitEvent = submitState.event
+        if (submitEvent && responseState.status === 429 && options.onRateLimit) {
+          const cooldownUntil = await options.onRateLimit({
+            mode,
+            requestUrl: formalRequestUrl,
+            requestId: submitEvent.requestId,
+            status: responseState.status,
+          })
+          if (Number.isFinite(Number(cooldownUntil)) && Number(cooldownUntil) > Date.now()) {
+            throw new Error(
+              'ChatGPT actor blocked by active API cooldown until '
+              + new Date(Number(cooldownUntil)).toISOString(),
+            )
+          }
+        }
         if (submitEvent && responseState.status !== null && responseState.status >= 400) {
           throw new Error(`ChatGPT actor ${mode} request failed with HTTP ${responseState.status}`)
         }
