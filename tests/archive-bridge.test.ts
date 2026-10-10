@@ -483,6 +483,79 @@ describe('Archive Bridge', () => {
     expect(limited.status).toBe(429)
   })
 
+  test('带 idempotencyKey 的 turn 会排队去重并在 cooldown 后自动继续', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-bridge-queue-'))
+    const queuePath = path.join(dir, 'actor-submissions.json')
+    let attempts = 0
+    const cooldownUntil = Date.now() + 80
+    const started = await startBridge(async input => {
+      attempts += 1
+      if (attempts === 1) {
+        throw new Error(
+          'ChatGPT actor blocked by active API cooldown until '
+          + new Date(cooldownUntil).toISOString(),
+        )
+      }
+      return {
+        conversationId: input.conversationId ?? 'queued-cid',
+        mode: input.mode,
+        submittedAt: Date.now(),
+        boundAt: Date.now(),
+        runningConfirmed: true,
+      }
+    }, mockArchive(), {
+      submissionQueuePath: queuePath,
+      submissionQueuePollIntervalMs: 10,
+    })
+
+    const body = {
+      mode: 'new',
+      projectName: '课堂录音→笔记',
+      text: 'queued-note',
+      idempotencyKey: 'classflow:lecture:test:notes',
+    }
+    const first = await fetch(started.base + '/v1/turns', {
+      method: 'POST',
+      headers: { ...started.headers, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    expect(first.status).toBe(202)
+    const firstBody = await first.json() as { submission: { id: string, status: string } }
+    const firstId = firstBody.submission.id
+
+    let finalBody: {
+      submission: {
+        id: string
+        status: string
+        result?: Record<string, unknown>
+      }
+    } | null = null
+    const deadline = Date.now() + 1500
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      const response = await fetch(started.base + '/v1/turns', {
+        method: 'POST',
+        headers: { ...started.headers, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      finalBody = await response.json() as typeof finalBody
+      if (finalBody?.submission.status === 'accepted') break
+    }
+
+    expect(finalBody?.submission.id).toBe(firstId)
+    expect(finalBody?.submission.status).toBe('accepted')
+    expect(finalBody?.submission.result?.conversationId).toBe('queued-cid')
+    expect(attempts).toBe(2)
+
+    const conflict = await fetch(started.base + '/v1/turns', {
+      method: 'POST',
+      headers: { ...started.headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...body, text: 'different-payload' }),
+    })
+    expect(conflict.status).toBe(409)
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
   test('SSE 先发 bridge-ready，再广播脱敏 lifecycle 事件', async () => {
     const { bridge, base, headers } = await startBridge()
     const controller = new AbortController()
