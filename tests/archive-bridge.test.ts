@@ -121,6 +121,10 @@ async function startBridge(
     cdpRequestId: '123.45',
   }),
   archive: ArchiveBridgeDataSource = mockArchive(),
+  options: {
+    submissionQueuePath?: string
+    submissionQueuePollIntervalMs?: number
+  } = {},
 ) {
   const bridge = new ArchiveBridgeServer({
     archive,
@@ -128,6 +132,8 @@ async function startBridge(
     submitTurn,
     host: '127.0.0.1',
     port: 0,
+    submissionQueuePath: options.submissionQueuePath,
+    submissionQueuePollIntervalMs: options.submissionQueuePollIntervalMs,
   })
   servers.push(bridge)
   await bridge.start()

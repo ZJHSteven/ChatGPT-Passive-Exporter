@@ -1,3 +1,4 @@
+- 2026-10-11 Archive Bridge 测试辅助器已支持临时 submission queue 文件与短轮询间隔，用于验证持久化幂等提交而不影响既有同步测试。
 - 2026-10-11 Bridge 的 idempotencyKey 保持向后兼容：未提供幂等键时不向旧 submitTurn 调用注入额外字段，现有同步调用契约不变；只有新队列路径携带并消费幂等键。
 - 2026-10-11 submission queue 首轮 typecheck 已开始，修正 cooldown 截止时间正则捕获在严格 TypeScript 下的 undefined 边界；继续进行 Bridge/Actor 回归。
 - 2026-10-11 Archive Bridge 已接入持久化 submission queue：POST /v1/turns 可携带 idempotencyKey，带键调用返回 submission 状态并由后台单消费者发送；同键不同 payload 返回 409。无 idempotencyKey 的旧同步调用保持兼容，便于 ClassFlow 分阶段迁移。
