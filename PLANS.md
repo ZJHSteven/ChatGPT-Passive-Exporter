@@ -8,6 +8,8 @@
 4. **语义隔离**：1/3/5 分钟 Bark 仍是 DevSpace Bug 软提醒；5 分钟 probe 不是 confirmed complete 证据，因此只允许 body 中显式 final/interrupted/client_stopped 等事实改变终态，不能把 reasoning/tool/in_progress 尾巴升级成 complete-no-final。
 5. **回归**：覆盖 5 分钟阈值识别、bound probe 可进入 terminal classifier 但不属于 confirmed-terminal trigger、1/3 分钟不触发 probe，以及既有 Watchdog/notification 行为不回归。
 
+状态：已完成并部署 production。DevSpace 端未改协议；Archive 5 分钟阈值现在按 binding 分流为 `bound-body` / `unbound-catalog`，且不会覆盖已经排队的 WSS complete / Watchdog 等更强 trigger。`npm run check` 全绿：TypeScript、25 files / 196 tests、Chrome/Edge/Firefox/Userscript 四套 build 均通过。production daemon 已由 PID 53356 受控重载为 PID 29448，WSS 已恢复 3 sockets，Bridge / LifeOps / DevSpace UDP listener 均在线。重启期间出现的 `Inspected target navigated or closed` / CDP timeout 属于 startup 页面导航抖动，与本功能无关；等待下一次自然 5 分钟 idle canary，不人为伪造 audit。
+
 # 2026-10-10 ClassFlow Notes Bridge / Actor 全局串行门 ExecPlan
 
 目标：把已经验证过的 Guardian Actor 正式开放给 ClassFlow Phase 3，同时保持账户级主动请求预算可控、Project 导航不破坏 LiveTurn，并给 N1 一个可恢复的异步黑盒接口。

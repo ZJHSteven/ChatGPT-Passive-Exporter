@@ -1,3 +1,14 @@
+# 2026-10-10 DevSpace 5 分钟静默提前核验上线
+
+- Archive 原有 1/3/5 分钟 DevSpace idle Bark 保持不变；本轮只把 **5 分钟**阈值额外接成一次低成本主动核验，DevSpace tool_audit / UDP 发信端完全不改。
+- 已绑定 metadata：若当前没有更强的 ready sync，直接排 `devspace-idle:bound-probe`，只抓该 canonical conversation 的 latest body；body 中若已经有 final / interrupted / client_stopped 等显式终态，复用现有 terminal/incident 分析和 active generation 收口。
+- `devspace-idle:bound-probe` 被允许进入 terminal classifier，但明确**不是 confirmed complete trigger**。因此普通 reasoning/tool/in_progress 尾巴不会因为“5 分钟没工具调用”被误升级成 complete-no-final incident。
+- 未绑定 metadata：5 分钟阈值只调用既有 `scheduleGapRepair('devspace-idle-unbound-5m')`；后续继续由 conversation list 找近期新增/变化项，并用 body exact tool+args matching 建 binding，不按标题或时间邻近猜 CID。
+- 为避免弱证据覆盖强证据，若同一 conversation 已经有 WSS complete / Watchdog / 其它 ready sync 排队，5 分钟 bound probe 直接跳过；已有同步本身就会拿 body，无需重复请求。
+- 请求预算仍受既有 active request gate、429 cooldown、passive cache、gap-repair debounce 与 10min min interval 约束；1/3 分钟只通知、不主动探测，每个 idle generation 只在首次跨 300s 时触发一次 5 分钟逻辑。
+- 新增 `devSpaceIdleRepairMode()` 纯 helper 与 `.d.mts` 声明；回归覆盖 1/3/5 阈值、bound/unbound 分流、terminal classifier/confirmed-trigger 边界。最终 `npm run check`：TypeScript PASS、25 files / 196 tests PASS、Chrome/Edge/Firefox/Userscript 四套 build PASS。
+- production daemon 已从 PID 53356 受控重载到 PID 29448；WSS 已恢复 3 sockets、`gapStartedAt=null`，Bridge listening=true、LifeOps enabled=true、DevSpace wake listener=true、cooldown=null。启动 reconcile 期间有页面导航/CDP timeout 造成的短暂 sync error，这是既有 startup/target churn，不是本次 5 分钟逻辑触发；不为 canary 伪造审计，等待下一次真实 5 分钟 idle 自然验证日志。
+
 # 2026-10-10 ClassFlow Phase 3 首堂生产链完成
 
 - ClassFlow 首堂完整 lecture 已成功通过 Archive Bridge 创建 Project conversation `6ac9426f-6124-83e9-9cc8-84f010189e53`，同 CID 后续标题 turn 也已 canonical final；标题=`宫颈子宫与卵巢肿瘤、滋养层疾病及乳腺癌`。
