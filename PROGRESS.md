@@ -1,3 +1,8 @@
+# 2026-10-10 LiveTurn 静默挂死 resume 补强
+
+- Phase 3 标题续写真机暴露新边界：`/f/conversation` 已 HTTP 200 并收到 `resume_conversation_token`，随后只收到约 2KB SSE bytes；浏览器 UI 已不再显示 Stop，但 CDP 既没有 `loadingFailed`，也没有 `[DONE] / stream_handoff`，导致 `liveTransport.active=1` 永久悬挂。旧自动 resume 只在明确 `stream-failed` 时触发，因此无法覆盖这种 silent hang。
+- 计划补强为：已收到 bytes + 已持久化 resume token 的 conversation/resume SSE，连续 45s 连 ping/data 都没有时走标准 `stream-failed(idle-timeout)`；同时修正“上一轮 conversation final 错挡下一轮 resume”的 turn 新鲜度判断，并增加 daemon 重启后的近期 orphan resume 恢复。
+
 # 2026-10-10 Phase 3 Project composer 最后一层兼容
 
 - 单堂 `2026-10-08 泌尿生殖系统` smoke 已确认 N1 -> Archive Bridge -> Guardian Project 路由均可达；此前所有失败都发生在正式 `/f/conversation` POST 之前，因此没有创建重复 conversation，也没有触发 429。

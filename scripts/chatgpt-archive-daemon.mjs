@@ -1604,6 +1604,41 @@ export function resumeRetryDelayMs(attemptNumber) {
   return schedule[Math.min(schedule.length - 1, attempt - 1)]
 }
 
+/**
+ * 判断一条本机 SSE 是否已经进入“静默挂死、应该交给 resume”的状态。
+ *
+ * 不能只看 startedAt：模型首 token 本来就可能等很久。只有已经真正收到过 SSE bytes，
+ * 并且当前 turn 已经拿到可持久化的 resume capability，之后连续一段时间连 ping/data 都没有，
+ * 才把旧流视为失活。turn-WSS 不走这个判定，它有自己的 socket lifecycle。
+ */
+export function shouldRetireIdleLiveTransport(
+  state,
+  {
+    now = Date.now(),
+    idleMs = 45_000,
+    hasResumeCredential = false,
+  } = {},
+) {
+  if (!state || !hasResumeCredential) return false
+  if (state.transport !== 'conversation' && state.transport !== 'resume') return false
+  if (!String(state.conversationId || '').trim()) return false
+  const lastDataAt = Number(state.lastDataAt)
+  if (!Number.isFinite(lastDataAt) || lastDataAt <= 0) return false
+  return Number(now) - lastDataAt >= Math.max(1_000, Number(idleMs) || 45_000)
+}
+
+/**
+ * conversation 级 terminal_state 只能在“它比当前 resume token 更新”时证明当前 turn 已经结束。
+ * 同一个 CID 可以连续发送多个 turn；上一轮的 final 不能阻止下一轮恢复。
+ */
+export function terminalStateSupersedesResumeCredential(row, credentialSeenAt) {
+  if (row?.terminalState !== 'final') return false
+  const terminalSeenAt = Number(row?.lastSeenAt)
+  const tokenSeenAt = Number(credentialSeenAt)
+  if (!Number.isFinite(terminalSeenAt) || !Number.isFinite(tokenSeenAt)) return false
+  return terminalSeenAt >= tokenSeenAt
+}
+
 function listPath(offset, limit) {
   return `/backend-api/conversations?offset=${offset}&limit=${limit}&order=updated&is_archived=false&is_starred=false`
 }
