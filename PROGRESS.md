@@ -6,6 +6,7 @@
 - 真实 title credential `lastSeenAt=1791605651773`，canonical conversation final `last_seen_at=1791605657999`，后者更新。因此最新 daemon 启动后 resume attempt count 保持 0，证明 startup recovery 正确识别“已有更新 final”，没有发送多余 `/resume`。
 - 旧 daemon PID `64872` 在无正常 `daemon stopping` 日志的情况下退出，直接造成本地 47832 无监听、Cloudflare Bridge 502；手工启动最新代码后现 PID=`44064`，WSS=3、Bridge 正常、HTTP429=0、cooldown=null，N1 公网 `/health` 已恢复 HTTP 200。
 - Windows 计划任务 `ChatGPT Archive Daemon` 仍存在且为 Ready，但历史 `LastTaskResult=1`。普通用户重新注册被 Windows Access Denied；按本机 `adminreq` 流程申请提升后又被安全审批拒绝（无法仅从命令验证 startup scope/executable behavior），未绕过审批。当前运行 daemon 不受影响；自动登录启动任务的可靠性仍列为后续独立修复项。
+- 后续没有绕过管理员审批，而是直接验证**现有任务本身**：先正常停止手工 daemon，再 `schtasks /Run /TN "ChatGPT Archive Daemon"`。任务成功进入 `Running`，新 daemon PID=`53356`，WSS 自然恢复到 3、Bridge 正常、HTTP429=0、cooldown=null，N1 公网 `/health`=HTTP 200。故当前任务配置实际可用且已经接管生产监督；“无法重新注册”仅表示现有任务 ACL 暂不能由普通用户覆盖，不再是今晚运行阻塞。
 - 最终验收时新 startup recovery 首次真实执行暴露作用域错误：旧 `clearResumeRetry / scheduleResumeRetry` 实际一直嵌在 `fetchChecked()` 内，因此 passive observer / daemon 主循环看不到 scheduler，报 `scheduleResumeRetry is not defined`。本轮把完整 scheduler 提升到 daemon 主作用域，协议、退避、429 cooldown 与 token 语义不变；这也修复了此前“明确 stream-failed 自动 resume”潜在同类问题。
 
 # 2026-10-10 LiveTurn 静默挂死 resume 补强
