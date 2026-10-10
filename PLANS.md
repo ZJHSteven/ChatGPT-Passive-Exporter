@@ -6,10 +6,20 @@
 2. **通知重点改为 Body vs DevSpace Recovery**：正文展示 canonical terminal/tail、当前 turn canonical 最后节点时间；同 conversation 在该 canonical tail 之后的 DevSpace audit 数、普通 tool 数、checkpoint 数、最后 audit 时间以及 tail gap 时长。明确告诉用户 Body 是否已追平、是否存在 provisional recovery 节点需要依赖 Recover overlay。
 3. **新增正交异常标签 `canonical-tail-gap`**：定义为当前 turn `terminalEvidence != final`，且 canonical 最后节点之后仍存在真实 DevSpace tool audit，gap >= 5s。它描述“正文完整性/尾部缺失”，不推断根因，更不直接命名为“审查异常”。
 4. **不合并 Active Zombie**：`active-zombie` 继续表示 conversation list/catalog 长时间仍 active；`canonical-tail-gap` 表示 body 尾部落后。二者是独立维度，可同时存在。`watchdog-timeout` 视为发现/触发维度，保留兼容字段但不再把它当唯一错误类型。
-5. **Incident 表增加多维证据列**：保留现有 `incident_kind/lifecycle_class` 兼容行为，同时增加 canonical-tail-gap flag 与 gapMs、missing tool/checkpoint counts、recovery last audit time。5 分钟 probe 若首次发现 tail-gap，可为当前 turn 建立 incident；后续 Watchdog/Active Zombie/complete 信号只更新其它维度，不抹掉 tail-gap 证据。
+5. **Incident 多维证据表**：保留现有 `incident_kind/lifecycle_class` 兼容行为，新建 `incident_evidence(incident_id, evidence_type, evidence_json)` 保存正交标签；`canonical-tail-gap` 的 JSON 包含 gapMs、audit/tool/checkpoint counts、canonical/recovery tail time。5 分钟 probe 若首次发现 tail-gap，可为当前 turn 建一个 generic `abnormal-terminal` incident 壳；后续 Watchdog/Active Zombie/complete 信号更新 lifecycle 时不抹掉 evidence。
 6. **历史 backfill**：仅按“同 turn canonical tail → 下一 user turn 之前”的时间窗回填，避免同 conversation 后续 turn 污染。当前生产库初步统计：215 条 incident 中 14 条满足保守 tail-gap；14 条中 0 条 active-zombie。9 条 active-zombie 中 7 条缺 recovery audit 历史覆盖，剩余 2 条有 audit 但均不满足 tail-gap，因此现有数据不支持把二者视为同一种异常。
 7. **unbound 5 分钟**：仍先跑 deferred catalog gap-repair；扫描结束若仍无可靠 binding，发送“扫描完成但无法定位 canonical conversation”的诊断通知，列出该 metadata 的 recovery audit/checkpoint 数；若随后建立 binding，则按 bound 路径做 body 对照。
 8. **回归与生产验证**：覆盖 pending diagnosis 不重复请求、强 trigger 复用、tail-gap 判定、final 不误报、incident 多维字段持久化、历史 backfill 幂等、unbound scan-result 通知，以及既有 Watchdog/Active Zombie/complete-no-final 行为。
+
+状态：已完成并部署。5 分钟诊断结果通知、bound/unbound 两路结果收口、`incident_evidence`、`canonical-tail-gap`、CLI/Bridge `evidenceTypes` 暴露、历史 backfill 均已实现。生产库回填 14 条 tail-gap：abnormal-terminal=9、watchdog-timeout=3、complete-no-final=2、active-zombie overlap=0。主要改造全量回归为 25 files / 201 tests + TypeScript + 四套 build 全绿；生产 daemon 恢复 WSS=3、Bridge/LifeOps/DevSpace listener 在线。
+
+# 2026-10-10 Conversation Length-Cap / 吞回复异常研究
+
+当前只做证据研究，不自动分类。已确认两个 UI Ground Truth：`迁移刷机方案` 与 `探讨 Sidebery 重构方案` 曾出现“你已达到此对话的长度上限，你可以开始新聊天以继续对话”，且对应 UI-only assistant error card 的 message id 不存在于 canonical body。用户现场进一步说明：该状态可能只在**原发送设备、原 SSE/render 未刷新**时短暂可见；同设备刷新、另一设备、单独 body 请求都会丢失，因此“事后 Guardian 扫 DOM”不是可靠捕获方案。
+
+现有描述性统计：两个直接阳性 messageCount≈4895/4189，均处于全库约 99.9 百分位；但累计字符量差异很大（约 90 万 vs 364 万），说明固定字符阈值不足。`恢复并继续classflow` 当前 5317 messages（全库最高）、32 turns≈99.97 百分位、272 万字符≈99.62 百分位，且尾部出现连续 user-only Recover / 0 Final，属于高风险候选，但没有直接 length-cap 证据，禁止回填确定标签。
+
+下一步研究方向：优先分析原发送 `/f/conversation` SSE 在“曾生成内容但 canonical body 后续回缩/完全缺失”时是否留有稳定 control/error 字段；若大部分非 Actor 会话拿不到原始 SSE，则建立后验风险模型，候选特征包括 message/node count、turn count、连续无 Final 次数、连续 Recover/继续文本、canonical-tail-gap 重复次数、conversation 尾部是否长期只有 user/context。该模型只能输出 `length-cap-suspected` 风险分，不自动升级为确定 incident；只有未来拿到直接 SSE/UI/第一方错误信号时才记录 `conversation-length-cap` evidence。
 
 # 2026-10-10 DevSpace 5 分钟静默提前 Gap Repair ExecPlan
 
