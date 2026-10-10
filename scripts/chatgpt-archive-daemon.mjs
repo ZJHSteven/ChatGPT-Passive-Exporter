@@ -6700,6 +6700,14 @@ async function main() {
         continue
       }
       await refreshPassivePageObservers(targets)
+      retireIdleLiveTransports()
+      if (!resumeStartupRecoveryDone && authHeaders) {
+        const scheduled = recoverRecentOrphanedResumeCredentials()
+        resumeStartupRecoveryDone = true
+        if (scheduled > 0) {
+          await log('recent orphaned live turn resumes scheduled after daemon startup', { scheduled })
+        }
+      }
       // 稳态由 DevSpace 事件立即唤醒；这里只保留一分钟一次的 durable catch-up，
       // 它不是实时发现路径，成本也从“每 5 秒一次”降到“每 60 秒一次”。
       if (Date.now() - devSpaceLastFallbackPollAt >= DEVSPACE_FALLBACK_POLL_MS) {
