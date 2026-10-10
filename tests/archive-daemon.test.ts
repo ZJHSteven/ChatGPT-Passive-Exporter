@@ -14,6 +14,7 @@ import {
   buildWatchdogTimeoutNotificationPayload,
   catalogStableOverlapTarget,
   classifyConversationBackendUrl,
+  cooldownDeadlineFromRetryAfter,
   crossedDevSpaceIdleThresholds,
   classifyCatalogAsyncStatus,
   effectiveActiveRequestGap,
@@ -35,6 +36,7 @@ import {
   restoreCooldownUntil,
   resumeRetryDelayMs,
   shouldRetireIdleLiveTransport,
+  shouldTripObserved429,
   terminalStateSupersedesResumeCredential,
   sanitizeCapturedHeaders,
   passiveObservationMatchesReady,
@@ -813,6 +815,32 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(activeApiAllowed(2000, 1000)).toBe(false)
     expect(activeApiAllowed(1000, 1000)).toBe(true)
     expect(activeApiAllowed(0, 1000)).toBe(true)
+  })
+
+  test('429 cooldown 优先服从 Retry-After，并保留短安全下限与 fallback', () => {
+    const now = Date.parse('2026-10-10T19:35:31.000Z')
+    expect(cooldownDeadlineFromRetryAfter('16', { now })).toBe(now + 30_000)
+    expect(cooldownDeadlineFromRetryAfter('120', { now })).toBe(now + 125_000)
+    expect(cooldownDeadlineFromRetryAfter('Fri, 10 Oct 2026 19:36:31 GMT', { now }))
+      .toBe(Date.parse('2026-10-10T19:36:36.000Z'))
+    expect(cooldownDeadlineFromRetryAfter(null, { now, fallbackMs: 90_000 })).toBe(now + 90_000)
+    expect(cooldownDeadlineFromRetryAfter('garbled', { now, fallbackMs: 90_000 })).toBe(now + 90_000)
+  })
+
+  test('passive observer 不重复熔断 daemon 自己的 active replay 429', () => {
+    const active = '/backend-api/conversations/c1?include_has_versions=true&num_turns=10'
+    expect(shouldTripObserved429(
+      'https://chatgpt.com/backend-api/conversations/c1?include_has_versions=true&num_turns=10',
+      active,
+    )).toBe(false)
+    expect(shouldTripObserved429(
+      'https://chatgpt.com/backend-api/conversations/c2?include_has_versions=true&num_turns=10',
+      active,
+    )).toBe(true)
+    expect(shouldTripObserved429(
+      'https://chatgpt.com/backend-api/conversations/c1?include_has_versions=true&num_turns=20',
+      active,
+    )).toBe(true)
   })
 
   test('Watchdog cooldown deferred 通知明确“已到点但尚未归因”并带聊天链接', () => {
