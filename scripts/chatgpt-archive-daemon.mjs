@@ -297,6 +297,7 @@ export function classifyConversationEvent(type, updateType = null) {
 export function shouldClassifyTerminalForTrigger(trigger) {
   const normalized = String(trigger || '').trim().toLowerCase()
   if (normalized.startsWith('watchdog:')) return true
+  if (normalized.startsWith('devspace-idle:bound-probe')) return true
   if (normalized.startsWith('wss:') && normalized.includes('complete')) return true
   // startup 是“把停机期间甚至更久以前的历史补回来”，不能因为今天重启就把旧异常重新报警。
   // periodic / WSS reconnect / Guardian recover 则是在线系统的 gap repair：它们发现的较新变化
