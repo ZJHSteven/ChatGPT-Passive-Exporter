@@ -1944,6 +1944,9 @@ async function main() {
   const checkpointTurnContexts = new Map()
   const resumeRetryTimers = new Map()
   const resumeMaxAttempts = 5
+  const liveTransportIdleResumeMs = 45_000
+  const resumeStartupLookbackMs = 24 * 60 * 60_000
+  let resumeStartupRecoveryDone = false
   let checkpointInFlight = false
   let checkpointProbes = 0
   let checkpointBodyRefreshes = 0
