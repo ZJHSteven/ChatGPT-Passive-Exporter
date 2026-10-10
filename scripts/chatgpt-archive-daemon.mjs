@@ -3628,16 +3628,13 @@ async function main() {
     lastActiveRequestAt = Date.now()
   }
 
- const fetchChecked = async (request, options = {}) => {
-   requireRequestWindow()
-   // checkpoint fallback 的第一方行为是“先 stream_status，再几乎立即拉 latest body”。
-   // 为了复刻这个**配对请求**而不是把两次请求都强行隔开 6 秒，调用方可以在已经
-   // 占用过一次全局 request slot 后，仅对紧接着的 latest body 跳过第二次 wait。
-   // 其它分页/cursor/mapping 仍会重新经过全局 gate，因此不会把这个选项变成绕过节流的后门。
-   if (options.skipRequestSlot !== true) {
-     await waitForRequestSlot(request.kind === 'catalog' ? 'catalog' : 'body')
- }
-
+  /**
+   * Resume scheduler 必须和 fetchChecked() 处于同一 daemon 主作用域。
+   *
+   * 旧实现误把这一整块放在 fetchChecked() 函数体内部：普通 body/catalog fetch 执行时看起来
+   * 一切正常，但 passive SSE observer 与 daemon startup recovery 都无法访问
+   * scheduleResumeRetry()，真正进入恢复路径时就会 ReferenceError。
+   */
   const clearResumeRetry = (conversationId, turnExchangeId = null) => {
     const credential = archive.getLiveResumeCredential(conversationId, turnExchangeId)
     const key = credential?.turnKey ?? turnExchangeId ?? conversationId
@@ -3770,6 +3767,17 @@ async function main() {
     resumeRetryTimers.set(key, timer)
     return true
   }
+
+ const fetchChecked = async (request, options = {}) => {
+   requireRequestWindow()
+   // checkpoint fallback 的第一方行为是“先 stream_status，再几乎立即拉 latest body”。
+   // 为了复刻这个**配对请求**而不是把两次请求都强行隔开 6 秒，调用方可以在已经
+   // 占用过一次全局 request slot 后，仅对紧接着的 latest body 跳过第二次 wait。
+   // 其它分页/cursor/mapping 仍会重新经过全局 gate，因此不会把这个选项变成绕过节流的后门。
+   if (options.skipRequestSlot !== true) {
+     await waitForRequestSlot(request.kind === 'catalog' ? 'catalog' : 'body')
+ }
+
     activeReplayRequestUrl = relativeBackendUrl(request.url)
     let response
     try {
