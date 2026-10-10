@@ -140,6 +140,8 @@ export interface ArchiveIncidentRow {
   offHeadSameTurnCount: number
   source: string
   diagnosticJson: string
+  /** 正交证据标签，例如 canonical-tail-gap；可与 lifecycleClass 同时存在。 */
+  evidenceTypes: string[]
 }
 
 /** Incident 的正交证据维度；同一 incident 可以同时拥有多个 evidence type。 */
@@ -312,9 +314,14 @@ export interface ImageAssetRow {
 }
 
 function normalizeIncidentRow(row: Record<string, unknown>): ArchiveIncidentRow {
+  const rawEvidenceTypes = typeof row.evidenceTypesRaw === 'string'
+    ? row.evidenceTypesRaw
+    : ''
+  const { evidenceTypesRaw: _evidenceTypesRaw, ...rest } = row
   return {
-    ...row,
+    ...rest,
     headRollbackObserved: Number(row.headRollbackObserved) === 1,
+    evidenceTypes: rawEvidenceTypes ? rawEvidenceTypes.split('\u001f').filter(Boolean) : [],
   } as unknown as ArchiveIncidentRow
 }
 
@@ -2710,7 +2717,9 @@ export class ChatArchiveDb {
                terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
                head_state AS headState, head_rollback AS headRollbackObserved,
                off_head_same_turn_count AS offHeadSameTurnCount,
-               source, diagnostic_json AS diagnosticJson
+               source, diagnostic_json AS diagnosticJson,
+               (SELECT group_concat(evidence_type, char(31))
+                FROM incident_evidence e WHERE e.incident_id=incidents.id) AS evidenceTypesRaw
         FROM incidents WHERE status = ? ORDER BY detected_at DESC LIMIT ?
       `).all(options.status, limit) as unknown as Array<Record<string, unknown>>
       return rows.map(normalizeIncidentRow)
@@ -2724,7 +2733,9 @@ export class ChatArchiveDb {
              terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
              head_state AS headState, head_rollback AS headRollbackObserved,
              off_head_same_turn_count AS offHeadSameTurnCount,
-             source, diagnostic_json AS diagnosticJson
+             source, diagnostic_json AS diagnosticJson,
+             (SELECT group_concat(evidence_type, char(31))
+              FROM incident_evidence e WHERE e.incident_id=incidents.id) AS evidenceTypesRaw
       FROM incidents ORDER BY detected_at DESC LIMIT ?
     `).all(limit) as unknown as Array<Record<string, unknown>>
     return rows.map(normalizeIncidentRow)

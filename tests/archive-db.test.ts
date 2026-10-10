@@ -394,6 +394,7 @@ describe('ChatArchiveDb', () => {
       )
       const updated = db.listIncidents({ status: 'open' })[0]!
       expect(updated).toMatchObject({ lifecycleClass: 'active-zombie' })
+      expect(updated.evidenceTypes).toContain('canonical-tail-gap')
       expect(db.listIncidentEvidence(updated.id)).toEqual([
         expect.objectContaining({ evidenceType: 'canonical-tail-gap' }),
       ])
