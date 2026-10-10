@@ -137,6 +137,17 @@ interface ActorSendOptions {
     result: ActorDomObserveResult
     details: string[]
   }) => void | Promise<void>) | null
+  /**
+   * 正式 turn POST 自己命中 429 时，daemon 可以在这里立即建立账号级 cooldown。
+   * 返回未来的绝对截止时间后，Actor 会把错误规范化为带 until 的 cooldown 错误，
+   * 方便持久化 submission queue 精确休眠，而不是继续拿后续任务试探 429。
+   */
+  onRateLimit?: ((input: {
+    mode: ActorResolvedMode
+    requestUrl: string
+    requestId: string
+    status: number
+  }) => number | null | void | Promise<number | null | void>) | null
 }
 
 function actorLeasePath(options: Pick<ActorSendOptions, 'statePath' | 'daemonStatePath' | 'targetMode'>): string {
@@ -1657,14 +1668,57 @@ export async function sendActorPrompt(options: ActorSendOptions): Promise<Record
   }
 }
 
-export async function actorStatus(cdpHttp: string, statePath: string): Promise<Record<string, unknown>> {
+export function resolveActorStatusTarget(
+  actorState: { targetId: string, source?: 'guardian' | 'dedicated' },
+  daemonState: any,
+): {
+  targetId: string
+  sourceOfTruth: 'actor-state' | 'daemon-guardian'
+  staleCachedTargetId: string | null
+} {
+  if (actorState.source !== 'guardian') {
+    return {
+      targetId: actorState.targetId,
+      sourceOfTruth: 'actor-state',
+      staleCachedTargetId: null,
+    }
+  }
+  const guardianTargetId = typeof daemonState?.guardian?.targetId === 'string'
+    ? daemonState.guardian.targetId
+    : null
+  if (!guardianTargetId) {
+    return {
+      targetId: actorState.targetId,
+      sourceOfTruth: 'actor-state',
+      staleCachedTargetId: null,
+    }
+  }
+  return {
+    targetId: guardianTargetId,
+    sourceOfTruth: 'daemon-guardian',
+    staleCachedTargetId: guardianTargetId === actorState.targetId ? null : actorState.targetId,
+  }
+}
+
+export async function actorStatus(
+  cdpHttp: string,
+  statePath: string,
+  daemonStatePath?: string | null,
+): Promise<Record<string, unknown>> {
   const state = await readActorState(statePath)
   if (!state) return { available: false, statePath, reason: 'no actor state' }
-  const target = (await listTargets(cdpHttp)).find(item => (item.id ?? item.targetId) === state.targetId)
+  const daemonState = await readJsonFile(daemonStatePath)
+  const resolved = resolveActorStatusTarget(state, daemonState)
+  const target = (await listTargets(cdpHttp)).find(item => (item.id ?? item.targetId) === resolved.targetId)
   return {
     available: Boolean(target?.webSocketDebuggerUrl),
     statePath,
-    state,
+    state: {
+      ...state,
+      targetId: resolved.targetId,
+    },
+    sourceOfTruth: resolved.sourceOfTruth,
+    staleCachedTargetId: resolved.staleCachedTargetId,
     target: target ? {
       id: target.id ?? target.targetId,
       title: target.title ?? null,

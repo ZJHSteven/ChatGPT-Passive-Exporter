@@ -11,12 +11,32 @@ import {
   buildActorDomObservationExpression,
   conversationIdFromUrl,
   normalizeActorProjectName,
+  resolveActorStatusTarget,
   resolveActorSendMode,
   sendActorPrompt,
   shouldNeutralizeGuardianAfterSubmit,
 } from '../src/local/chatgpt-actor.ts'
 
 describe('ChatGPT single actor helpers', () => {
+  test('Guardian actor status 以 daemon target 为真相源并标出旧缓存 target', () => {
+    expect(resolveActorStatusTarget(
+      { targetId: 'old-target', source: 'guardian' },
+      { guardian: { targetId: 'new-target' } },
+    )).toEqual({
+      targetId: 'new-target',
+      sourceOfTruth: 'daemon-guardian',
+      staleCachedTargetId: 'old-target',
+    })
+    expect(resolveActorStatusTarget(
+      { targetId: 'dedicated-target', source: 'dedicated' },
+      { guardian: { targetId: 'new-target' } },
+    )).toEqual({
+      targetId: 'dedicated-target',
+      sourceOfTruth: 'actor-state',
+      staleCachedTargetId: null,
+    })
+  })
+
   test('全局主动提交至少间隔 5 秒，并且等待不会出现负数', () => {
     expect(DEFAULT_ACTOR_MIN_SUBMIT_GAP_MS).toBe(5_000)
     expect(actorSubmitGapDelayMs(null, 10_000)).toBe(0)

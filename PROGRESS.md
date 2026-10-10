@@ -1,3 +1,4 @@
+- 2026-10-11 Actor 状态真相源已开始收口：source=guardian 的 actor status 现在优先解析 daemon 当前 Guardian target，并显式返回 staleCachedTargetId；同时 Actor send options 已预留正式 turn 429 的 onRateLimit 回调，下一提交把它接到 daemon tripCooldown。
 - 2026-10-11 Bridge 队列测试本身已通过；随后 TypeScript 严格检查发现测试里的自引用 typeof 推断为 never，已改为显式 SubmissionResponse 类型，不影响生产逻辑。
 - 2026-10-11 队列回归发现并修正一处 cooldown 调度细节：若 Archive 已给出绝对 until，submission 现在直接按该截止恢复，不再错误叠加普通 5s 指数退避；只有没有明确截止的一般基础设施错误才使用指数退避。
 - 2026-10-11 Bridge 队列回归已补：覆盖 submission ID 幂等不变、cooldown 后自动二次尝试并 accepted、accepted conversationId 回传、同键不同 payload 409；该测试不触碰真实 ChatGPT。
