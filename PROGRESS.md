@@ -5,6 +5,7 @@
 - 运行参数固定：idle 阈值 45s；resume 最大尝试仍沿用 5 次指数退避；daemon startup orphan credential 只回看最近 24h，避免把很久以前的异常 turn 在每次启动时重新唤醒。
 - resume scheduler 的终态短路已改成 turn 新鲜度判断：`terminal_state=final` 还必须满足 `conversations.last_seen_at >= credential.lastSeenAt` 才能跳过；因此上一轮 Notes 的 final 不会再阻止同 CID 的标题 turn 恢复。
 - 增加 startup orphan 恢复查询：从 SQLite 取最近 24h、`resume_attempt_count < 5` 的 credential；若该 CID 当前没有 live transport，就交给同一个 `scheduleResumeRetry()`，不另写第二套请求实现。
+- 增加全局 idle retire 扫描器：只处理 passive observer 注入了 `retireIdle()` 的 conversation/resume SSE；达到 45s idle 后调用原 tracker `fail('idle-timeout')`，由既有 `stream-failed` 事件自动调度 resume。
 
 # 2026-10-10 Phase 3 Project composer 最后一层兼容
 

@@ -3836,6 +3836,36 @@ async function main() {
   }
 
   /**
+   * 把“HTTP 连接仍存在，但已经长期没有任何 SSE bytes”的半死流转换成标准 stream-failed。
+   * `retireIdle()` 由对应 passive observer 注入；它内部仍调用原 LiveTurn tracker.fail()，
+   * 所以后续自动进入既有 resume backoff，不会产生第三套状态机。
+   */
+  const retireIdleLiveTransports = () => {
+    const now = Date.now()
+    for (const state of [...activeLiveTransports.values()]) {
+      if (typeof state?.retireIdle !== 'function') continue
+      const conversationId = String(state?.conversationId || '').trim()
+      if (!conversationId) continue
+      const credential = archive.getLiveResumeCredential(conversationId, state.turnExchangeId ?? null)
+      if (!shouldRetireIdleLiveTransport(state, {
+        now,
+        idleMs: liveTransportIdleResumeMs,
+        hasResumeCredential: Boolean(credential),
+      })) continue
+      const idleForMs = now - Number(state.lastDataAt || now)
+      if (state.retireIdle('idle-timeout', now)) {
+        void log('live turn SSE idle timeout; resume scheduled', {
+          conversationId,
+          turnExchangeId: state.turnExchangeId ?? null,
+          transport: state.transport,
+          idleForMs,
+          requestId: state.cdpRequestId,
+        }).catch(() => {})
+      }
+    }
+  }
+
+  /**
    * 给一个明确 active 的 conversation 建 checkpoint fallback。
    *
    * 这里的 startedAt 只是“Archive 开始追踪”的时间；绝不能冒充真实 turn start。
