@@ -1,3 +1,13 @@
+# 2026-10-11 Archive Actor 提交服务职责收口 ExecPlan
+
+目标：把 ClassFlow 等上层调用方从 ChatGPT 网页发送细节中彻底解耦。Archive Bridge 对外只暴露幂等的“提交任务”，内部统一负责 Actor lease、最小提交间隔、Guardian 生命周期、429 cooldown、提交结果不确定与重启恢复；上层只观察 queued / accepted / failed。
+
+1. POST /v1/turns 新增可选 idempotencyKey。带键请求进入 Archive 持久化提交队列；相同键+相同请求重复调用只返回同一提交记录，不重复发送；相同键+不同请求返回冲突。
+2. 提交队列单消费者执行 sendActorPrompt()。429/cooldown/暂时性 Guardian 或 CDP 不可用保持 queued/retry_waiting，按明确 cooldown 截止或有界退避自动继续；只有确定不可恢复的输入/协议错误才进入 failed。
+3. Actor 正式 /f/conversation / /f/steer_turn 返回 429 时立即回调 daemon tripCooldown()，不再依赖随后 catalog/body 碰巧再遇到 429 才建立全局熔断。
+4. Guardian target 的 source of truth 统一为 daemon state。actor status 在 source=guardian 时实时读取 daemon guardian，不再把旧 archive-actor-state.json.targetId 当权威值。
+5. 保留无 idempotencyKey 的旧 /v1/turns 同步兼容路径，避免现有 CLI/其它调用方瞬间破坏；ClassFlow 切换完成后再评估是否彻底移除。
+6. 增加队列重启恢复、幂等去重、429 retry、冲突、Guardian stale-status 与现有 Bridge 行为的回归测试；通过 TypeScript、Vitest 与 production build 后再重启 daemon。
 # 2026-10-10 5 分钟诊断通知 / Canonical Tail Gap 多维 Incident ExecPlan
 
 目标：补齐 DevSpace 5 分钟静默 probe 的“扫完必须通知”闭环，并把 canonical Body 明显落后于 DevSpace audit/recovery overlay 的现象从 Watchdog/Active Zombie 中拆成一个可并存的独立证据维度。
@@ -666,3 +676,4 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 - Rich manifest 能识别 Web Search、Trip.com、image_group、map widget 和 7 个生成文件链接。
 - Chrome/Edge/Firefox 扩展均可构建；userscript 可构建。
 - 单元/fixture 测试全部通过。
+
