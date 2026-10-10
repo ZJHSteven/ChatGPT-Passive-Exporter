@@ -39,6 +39,7 @@ import {
   recordCatalogWatchdogProgress,
   shouldBlockGuardianConversationRest,
   shouldRebuildGuardianAfterHealthFailures,
+  guardianUiFailureKind,
   shouldRunDeferredGapRepair,
   shouldQueueWatchdogDiagnostic,
   shouldRetainSeenDevSpaceAudit,
@@ -896,6 +897,29 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shouldRebuildGuardianAfterHealthFailures(3, 3)).toBe(true)
     expect(shouldRebuildGuardianAfterHealthFailures(4, 3)).toBe(true)
     expect(shouldRebuildGuardianAfterHealthFailures(1, 1)).toBe(true)
+  })
+
+  test('Guardian 账户加载错误页属于 UI 自愈，不应当作 DOM baseline 漂移', () => {
+    expect(guardianUiFailureKind({
+      ready: 'complete',
+      composerPresent: false,
+      accountLoadFailure: true,
+    })).toBe('account-load-failure')
+    expect(guardianUiFailureKind({
+      ready: 'loading',
+      composerPresent: false,
+      accountLoadFailure: true,
+    })).toBeNull()
+    expect(guardianUiFailureKind({
+      ready: 'complete',
+      composerPresent: true,
+      accountLoadFailure: true,
+    })).toBeNull()
+    expect(guardianUiFailureKind({
+      ready: 'complete',
+      composerPresent: false,
+      accountLoadFailure: false,
+    })).toBeNull()
   })
 
   test('deferred gap repair 必须等待 WSS/debounce；cooldown 时仅允许已有 passive catalog 的纯被动 repair', () => {

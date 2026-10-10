@@ -834,6 +834,13 @@ export function shouldRebuildGuardianAfterHealthFailures(consecutiveFailures, th
   return failures >= safeThreshold
 }
 
+export function guardianUiFailureKind(snapshot) {
+  if (!snapshot || String(snapshot.ready || '') !== 'complete') return null
+  if (snapshot.composerPresent === true) return null
+  if (snapshot.accountLoadFailure === true) return 'account-load-failure'
+  return null
+}
+
 /**
  * 判断 deferred gap repair 是否已经可以发起一次低频 catalog overlap。
  *
@@ -1918,6 +1925,8 @@ async function main() {
   let guardianReadyAt = 0
   let guardianHealthFailures = 0
   let guardianRebuilds = 0
+  let guardianUiReloadAttemptedAt = null
+  let guardianUiFailure = null
   let activeSocketIds = new Set()
   // 逐 socket 的控制面遥测只保存在内存/state/log 中，用来回答“到底是哪一条 WSS 在轮换”。
   // 这里故意不保存完整 URL/query、正文、cookie、token 或认证头；requestId 只是本次 CDP
@@ -2748,6 +2757,8 @@ async function main() {
       nativeWindow: guardian.nativeWindow ?? null,
       healthFailures: guardianHealthFailures,
       rebuilds: guardianRebuilds,
+      uiFailure: guardianUiFailure,
+      uiReloadAttemptedAt: guardianUiReloadAttemptedAt,
     } : null,
     wss: {
       activeSockets: activeSocketIds.size,
@@ -6547,6 +6558,8 @@ async function main() {
     guardianConversationRestBlocked = false
     guardianReadyAt = Date.now()
     guardianHealthFailures = 0
+    guardianUiReloadAttemptedAt = null
+    guardianUiFailure = null
     if (reason !== 'startup') guardianRebuilds += 1
     wssGeneration += 1
     activeSocketIds = new Set()
@@ -6774,7 +6787,24 @@ async function main() {
       let runtime = null
       try {
         runtime = await guardian.page.send('Runtime.evaluate', {
-          expression: `({ visibility: document.visibilityState, discarded: document.wasDiscarded === true, ready: document.readyState })`,
+          expression: `(() => {
+            const bodyText = String(document.body?.innerText || '')
+            const composerPresent = Boolean(
+              document.querySelector('form[data-chatgpt-composer] #prompt-textarea')
+              || document.querySelector('form[data-chatgpt-composer] [contenteditable="true"][role="textbox"]')
+              || document.querySelector('form[data-chatgpt-composer] textarea')
+            )
+            const lower = bodyText.toLowerCase()
+            return {
+              visibility: document.visibilityState,
+              discarded: document.wasDiscarded === true,
+              ready: document.readyState,
+              composerPresent,
+              accountLoadFailure:
+                bodyText.includes('无法加载你的账户')
+                || lower.includes('unable to load your account'),
+            }
+          })()`,
           returnByValue: true,
         }, 3000)
         guardianHealthFailures = 0
@@ -6795,6 +6825,35 @@ async function main() {
       }
       if (runtime.result?.value?.discarded === true) {
         throw new Error('guardian renderer reports document.wasDiscarded=true')
+      }
+
+      const uiSnapshot = runtime.result?.value || null
+      const uiFailure = guardianUiFailureKind(uiSnapshot)
+      if (uiFailure) {
+        guardianUiFailure = uiFailure
+        const now = Date.now()
+        if (guardianUiReloadAttemptedAt === null) {
+          guardianUiReloadAttemptedAt = now
+          await log('guardian UI unhealthy; soft reload requested', {
+            failure: uiFailure,
+            ready: uiSnapshot?.ready ?? null,
+            composerPresent: Boolean(uiSnapshot?.composerPresent),
+          })
+          await guardian.page.send('Page.reload', { ignoreCache: false })
+          await writeState()
+          await new Promise(resolve => setTimeout(resolve, 3000))
+          continue
+        }
+        if (now - guardianUiReloadAttemptedAt >= 10_000) {
+          throw new Error(`guardian UI failure persisted after soft reload: ${uiFailure}`)
+        }
+        await writeState()
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        continue
+      }
+      if (uiSnapshot?.ready === 'complete') {
+        guardianUiFailure = null
+        guardianUiReloadAttemptedAt = null
       }
 
       // 首次加载时 gap 从 Guardian ready 起算；运行中 close 则从本次 CDP close 起算。

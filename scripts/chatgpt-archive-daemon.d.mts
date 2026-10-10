@@ -287,6 +287,12 @@ export function shouldRebuildGuardianAfterHealthFailures(
   threshold?: unknown,
 ): boolean
 
+export function guardianUiFailureKind(snapshot: {
+  ready?: unknown
+  composerPresent?: unknown
+  accountLoadFailure?: unknown
+} | null | undefined): 'account-load-failure' | null
+
 /** deferred gap repair 的统一门控：WSS、debounce、最小间隔、cooldown 与并发状态必须同时满足。 */
 export function shouldRunDeferredGapRepair(input: {
   now: number
