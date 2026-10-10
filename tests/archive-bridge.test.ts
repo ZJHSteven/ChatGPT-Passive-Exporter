@@ -523,13 +523,14 @@ describe('Archive Bridge', () => {
     const firstBody = await first.json() as { submission: { id: string, status: string } }
     const firstId = firstBody.submission.id
 
-    let finalBody: {
+    type SubmissionResponse = {
       submission: {
         id: string
         status: string
         result?: Record<string, unknown>
       }
-    } | null = null
+    }
+    let finalBody: SubmissionResponse | null = null
     const deadline = Date.now() + 1500
     while (Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 20))
@@ -538,7 +539,7 @@ describe('Archive Bridge', () => {
         headers: { ...started.headers, 'content-type': 'application/json' },
         body: JSON.stringify(body),
       })
-      finalBody = await response.json() as typeof finalBody
+      finalBody = await response.json() as SubmissionResponse
       if (finalBody?.submission.status === 'accepted') break
     }
 
