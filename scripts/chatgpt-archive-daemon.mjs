@@ -1668,13 +1668,27 @@ async function pageFetchJson(page, { url, targetPath, targetRoute, headers }) {
       headers: responseHeaders,
     }
   }.toString()})(${JSON.stringify(url)}, ${JSON.stringify(headers)})`
-  const result = await page.send('Runtime.evaluate', {
+  const evaluate = async () => await page.send('Runtime.evaluate', {
     expression,
     awaitPromise: true,
     returnByValue: true,
-  })
+  }, 20_000)
+  let result
+  try {
+    result = await evaluate()
+  }
+  catch (error) {
+    if (!shouldRetryConversationPageFetch(error)) throw error
+    await new Promise(resolve => setTimeout(resolve, 500))
+    result = await evaluate()
+  }
   const value = result?.result?.value
-  if (!value || typeof value.status !== 'number') throw new Error(`No fetch result for ${url}`)
+  if (!value || typeof value.status !== 'number') {
+    const exception = result?.exceptionDetails?.exception?.description
+      || result?.exceptionDetails?.text
+      || null
+    throw new Error(exception ? `Page fetch failed for ${url}: ${exception}` : `No fetch result for ${url}`)
+  }
   let body = null
   try { body = value.text ? JSON.parse(value.text) : null }
   catch { /* preserve status even when an error body is not JSON */ }

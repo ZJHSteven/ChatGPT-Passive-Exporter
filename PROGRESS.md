@@ -1,3 +1,4 @@
+- 2026-10-11 pageFetchJson 已将 Runtime.evaluate 等待从默认 10s 放宽到 20s，并仅在 Runtime.evaluate timeout 时延迟 500ms 后安全重试一次；若页面脚本自身抛异常，日志会优先暴露 exceptionDetails，而不是统一退化成 No fetch result。
 - 2026-10-11 stale REST block 修复后，原先 8 个 canonical 缺失 CID 已恢复 7 个；唯一剩余 6aca9284 的新 daemon 首次同步改为暴露真实独立故障：CDP Runtime.evaluate timed out。新增 shouldRetryConversationPageFetch，仅允许幂等 conversation GET 对该类 Runtime 超时安全重试一次。
 - 2026-10-11 cooldown 恢复顺序已改为先真实 unblock Chrome、成功后再清 recovery pending/cooldown；Guardian attach/rebuild 后 block 状态视为 unknown 并按当前 cooldown 强制同步；未知/仍 blocked 状态会阻止 active REST 与 periodic reconcile。
 - 2026-10-11 daemon 运行态已采用 uncertain 语义：Network.setBlockedURLs 成功后才更新 cached block 状态；CDP timeout/error 标记 uncertain，后续不能把 cached false 当成已解除。
