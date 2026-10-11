@@ -800,14 +800,34 @@ async function readActorDomObservation(client: ActorCdpClient): Promise<ActorDom
   return value as ActorDomObservation
 }
 
+/**
+ * 判断当前 DOM observation 是否只是 ChatGPT 页面切换/恢复过程中的“空壳快照”。
+ *
+ * 这类状态没有 composer、new-chat、sidebar anchor，也没有任何 composer control；
+ * 它表达的是“renderer 还没把可交互骨架挂出来”，而不是“稳定 DOM 结构发生了漂移”。
+ * 因此它不能写入 DOM drift ledger，更不能要求人工批准为 baseline。
+ */
+export function isTransientActorDomObservation(observation: ActorDomObservation): boolean {
+  return observation.composer === null
+    && observation.newChat === null
+    && observation.controls.length === 0
+    && !observation.sidebar.canonicalConversationLink
+    && !observation.sidebar.projectLink
+    && !observation.sidebar.accountButton
+}
+
 async function observeActorDomShape(
   client: ActorCdpClient,
   ledger: ActorDomDriftLedger | null,
   phase: string,
   onDomDrift?: ActorSendOptions['onDomDrift'],
+  options: { allowTransient?: boolean } = {},
 ): Promise<string | null> {
   if (!ledger) return null
   const observation = await readActorDomObservation(client)
+  if (options.allowTransient && isTransientActorDomObservation(observation)) {
+    return null
+  }
   const result = ledger.observe(observation)
   await ledger.flush()
   if (result.pending) {
@@ -1389,7 +1409,13 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
 
     // 任何导航/输入/点击之前先采一份当前页骨架。baseline 锁定后若这里已经漂移，
     // Actor 必须在真正改变页面之前停止，不能“先点了再告诉用户 DOM 变了”。
-    const domSignatureBefore = await observeActorDomShape(client, domLedger, 'navigation', options.onDomDrift)
+    const domSignatureBefore = await observeActorDomShape(
+      client,
+      domLedger,
+      'navigation',
+      options.onDomDrift,
+      { allowTransient: true },
+    )
 
     // Network listener 必须在 SPA 导航之前挂好：旧 conversation 切换时第一方页面会自己读取
     // conversation body。这个响应是“上下文已经真正到达浏览器”的强闭环证据，不能导航完以后再补监听。

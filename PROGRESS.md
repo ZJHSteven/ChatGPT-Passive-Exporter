@@ -1,3 +1,4 @@
+- 2026-10-11 Actor DOM drift 误报修复：conversation/home/project 切换过程中若 observation 同时满足 composer=null、newChat=null、controls=[]、sidebar anchors 全 false，则认定为 transient page skeleton，不写入 DOM drift ledger、不要求批准 baseline。仅 navigation 前允许跳过该空壳；真正 prompt-input 阶段仍必须通过稳定 DOM 指纹。
 - 2026-10-11 canonical exact-prompt 测试改用独立英文 fixture，避免历史测试文件乱码文本影响精确相等断言。
 - 2026-10-11 ambiguous queue 测试发现并修复持久化竞争：persist 临时文件原先只含 PID，同进程 enqueue/drain 并发写盘会争抢同一 tmp 并在 Windows rename 时触发 ENOENT；现改为 PID+randomUUID 唯一临时名，保留最终原子 rename。
 - 2026-10-11 ambiguous submission 回归已补：canonical 精确 prompt 命中时 1 次 POST 后直接 accepted；未命中时最多 2 次 POST（初次 + 唯一一次重发），第二次仍 unknown 则 failed；精确匹配不会接受仅空格不同的 prompt。
