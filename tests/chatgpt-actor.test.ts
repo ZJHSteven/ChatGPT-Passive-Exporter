@@ -10,6 +10,7 @@ import {
   actorResponseMimeAccepted,
   buildActorDomObservationExpression,
   conversationIdFromUrl,
+  isTransientActorDomObservation,
   normalizeActorProjectName,
   resolveActorStatusTarget,
   resolveActorSendMode,
@@ -18,6 +19,32 @@ import {
 } from '../src/local/chatgpt-actor.ts'
 
 describe('ChatGPT single actor helpers', () => {
+  test('导航期空壳 DOM 只表示页面未就绪，不应作为稳定 drift 指纹', () => {
+    expect(isTransientActorDomObservation({
+      routeKind: 'conversation',
+      composer: null,
+      newChat: null,
+      sidebar: {
+        canonicalConversationLink: false,
+        projectLink: false,
+        accountButton: false,
+      },
+      controls: [],
+    })).toBe(true)
+
+    expect(isTransientActorDomObservation({
+      routeKind: 'conversation',
+      composer: null,
+      newChat: null,
+      sidebar: {
+        canonicalConversationLink: true,
+        projectLink: false,
+        accountButton: false,
+      },
+      controls: [],
+    })).toBe(false)
+  })
+
   test('Guardian actor status 以 daemon target 为真相源并标出旧缓存 target', () => {
     expect(resolveActorStatusTarget(
       { targetId: 'old-target', source: 'guardian' },
