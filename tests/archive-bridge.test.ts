@@ -27,8 +27,12 @@ test('正式 POST 结果未知必须 fail-closed，不能按 timeout 自动重�
 
 test('canonical 精确 prompt 确认可认领原 conversation，且不做模糊匹配', () => {
   const archive = mockArchive()
+  archive.getMessages = (conversationId: string) => conversationId === 'cid-1'
+    ? [{ messageId: 'u1', ordinal: 1, role: 'user', text: 'exact prompt' }]
+    : []
+
   const exact = confirmCanonicalExactPrompt(archive, {
-    text: '���',
+    text: 'exact prompt',
     conversationId: 'cid-1',
     projectName: null,
     mode: 'continue',
@@ -37,7 +41,7 @@ test('canonical 精确 prompt 确认可认领原 conversation，且不做模糊�
   expect(exact).toEqual({ conversationId: 'cid-1', confirmedBy: 'canonical-exact-prompt' })
 
   const fuzzy = confirmCanonicalExactPrompt(archive, {
-    text: '��� ',
+    text: 'exact prompt ',
     conversationId: 'cid-1',
     projectName: null,
     mode: 'continue',
