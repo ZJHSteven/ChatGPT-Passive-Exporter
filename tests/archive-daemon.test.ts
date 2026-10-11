@@ -218,15 +218,14 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(isConfirmedTerminalTrigger('devspace-idle:bound-probe')).toBe(false)
   })
 
-  test('DevSpace idle 通知归入 Chat-Latency，并明确不是 turn 终止证据', () => {
+  test('工具静默通知把分钟数和短聊天名放标题，正文去掉重复套话', () => {
     const unbound = buildDevSpaceIdleNotificationPayload({
       metadataId: 'v1/abcdefghijklmnopqrstuvwxyz',
       title: '改造 DevSpace',
       thresholdMs: 180_000,
     })
-    expect(unbound.title).toContain('3 分钟')
-    expect(unbound.body).toContain('以“改造 DevSpace”为主题')
-    expect(unbound.body).toContain('不代表 turn 已结束')
+    expect(unbound.title).toBe('工具静默 3 分钟 · 改造 DevSpace')
+    expect(unbound.body).toBe('会话：改造 DevSpace · 未绑定')
     expect(unbound.group).toBe('Chat-Latency')
     expect(unbound).not.toHaveProperty('url')
 
@@ -237,14 +236,26 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       thresholdMs: 300_000,
     })
     expect(bound.body).toContain('Canonical title')
+    expect(bound.title).toBe('工具静默 5 分钟 · Canonical title')
     expect(bound.url).toContain('/c/conversation-a')
 
     const unnamed = buildDevSpaceIdleNotificationPayload({
       metadataId: 'v1/abcdefgh12345678',
       thresholdMs: 60_000,
     })
-    expect(unnamed.body).toContain('meta/abcdefgh')
+    expect(unnamed.title).toBe('工具静默 1 分钟')
+    expect(unnamed.body).toBe('未绑定 · meta/abcdefgh')
     expect(unnamed.body).not.toContain('v1/abcdefgh12345678')
+
+    const longTitle = '这是一个非常非常非常非常非常长的聊天标题用于测试截断'
+    const long = buildDevSpaceIdleNotificationPayload({
+      conversationId: 'conversation-long',
+      title: longTitle,
+      thresholdMs: 180_000,
+    })
+    expect(long.title).toMatch(/^工具静默 3 分钟 · .+…$/u)
+    expect(long.title).not.toContain(longTitle)
+    expect(long.body).toBe(`会话：${longTitle}`)
   })
 
   test('5 分钟诊断通知明确报告 Body 与 DevSpace audit 的 tail gap', () => {
@@ -894,10 +905,21 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       startedAt: 1_000,
       now: 46 * 60_000 + 1_000,
     })
-    expect(timeout.title).toBe('ChatGPT Watchdog 已超时')
+    expect(timeout.title).toBe('Watchdog 超时 · 长任务')
     expect(timeout.body).toContain('46 分钟')
-    expect(timeout.body).toContain('不会重新启动 Watchdog')
+    expect(timeout.body).toContain('会话：长任务')
+    expect(timeout.body).not.toContain('不会重新启动 Watchdog')
     expect(timeout.group).toBe('Chat-Timeout')
+
+    const longTimeoutTitle = '这是一个特别特别特别特别特别长的Watchdog聊天标题'
+    const longTimeout = buildWatchdogTimeoutNotificationPayload({
+      conversationId: 'conversation-long',
+      title: longTimeoutTitle,
+      startedAt: 1_000,
+      now: 46 * 60_000 + 1_000,
+    })
+    expect(longTimeout.title).toMatch(/^Watchdog 超时 · .+…$/u)
+    expect(longTimeout.body).toContain(`会话：${longTimeoutTitle}`)
 
     const diagnosis = buildWatchdogDiagnosisNotificationPayload({
       conversationId: 'conversation-a',
@@ -918,15 +940,16 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(finalDiagnosis.group).toBe('Chat-Done')
   })
 
-  test('未绑定 watchdog 到点也通知，但不猜 CID 或聊天名', () => {
+  test('未绑定 watchdog 不把 metadata ID 塞进标题', () => {
     const payload = buildUnboundWatchdogNotificationPayload({
       metadataId: 'v1/abcdefghijklmnopqrstuvwxyz0123456789',
       startedAt: 1_000,
       now: 50 * 60_000 + 1_000,
     })
-    expect(payload.title).toContain('会话未绑定')
+    expect(payload.title).toBe('Watchdog 超时 · 未绑定会话')
     expect(payload.body).toContain('50 分钟')
-    expect(payload.body).toContain('不能猜聊天名或 CID')
+    expect(payload.body).toContain('未绑定 · meta/abcdefgh')
+    expect(payload.body).not.toContain('v1/abcdefghijklmnopqrstuvwxyz0123456789')
     expect(payload.group).toBe('Chat-Timeout')
     expect(payload).not.toHaveProperty('url')
   })
@@ -950,10 +973,18 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       title: '正常长任务',
       diagnostic,
     })
-    expect(payload.title).toContain('正常完成')
-    expect(payload.body).toContain('正常长任务')
-    expect(payload.body).toContain('canonical body 已确认 final')
+    expect(payload.title).toBe('Turn 正常完成 · 正常长任务')
+    expect(payload.body).toBe('会话：正常长任务\n已确认 Final')
     expect(payload.group).toBe('Chat-Done')
+
+    const longTitle = '这是一个非常非常非常非常非常长的正常完成聊天标题'
+    const long = buildTurnFinalNotificationPayload({
+      conversationId: 'conversation-long',
+      title: longTitle,
+      diagnostic: { terminalEvidence: 'final', hasImageGenerationFinal: true, imageGenerationCount: 3 },
+    })
+    expect(long.title).toMatch(/^Turn 正常完成 · .+…$/u)
+    expect(long.body).toBe(`会话：${longTitle}\n已确认 Final · 3 张图片`)
   })
 
   test('短 WSS/gap repair 只需一整页稳定 overlap，startup/periodic 继续深扫描', () => {
