@@ -28,6 +28,7 @@ import {
   buildWssLifecycleTrace,
 } from '../src/local/active-turn-recorder.ts'
 import {
+  BARK_NOTIFICATION_GROUPS,
   loadIncidentNotificationConfig,
   sendIncidentNotification,
 } from '../src/local/incident-notifier.ts'
@@ -805,6 +806,7 @@ export function buildDevSpaceIdleDiagnosisNotificationPayload({
       ? 'DevSpace 5 分钟诊断 · Body 尾部缺失'
       : 'DevSpace 5 分钟诊断完成',
     body: lines.filter(Boolean).join('\n'),
+    group: BARK_NOTIFICATION_GROUPS.chatLatency,
     url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
   }
 }
@@ -827,6 +829,7 @@ export function buildDevSpaceIdleUnboundDiagnosisNotificationPayload({
       `DevSpace recovery 审计：${Number(recoveryAuditCount || 0)} 条（tool ${Number(recoveryToolCount || 0)}；checkpoint ${Number(checkpointCount || 0)}）`,
       '因此本轮无法做 Body vs DevSpace 尾部对账；不会猜 CID，也不会把“未绑定”误报成 canonical-tail-gap。',
     ].join('\n'),
+    group: BARK_NOTIFICATION_GROUPS.chatLatency,
   }
 }
 
@@ -851,6 +854,7 @@ export function buildCooldownNotificationPayload({
   return {
     title: 'ChatGPT API 429 冷却',
     body: lines.join('\n'),
+    group: BARK_NOTIFICATION_GROUPS.archiveWarning,
   }
 }
 
@@ -873,6 +877,7 @@ export function buildWatchdogDeferredNotificationPayload({
       `冷却至：${formatBeijingTime(cooldownUntil || now)}`,
       '冷却解除后会继续诊断；若随后确认异常，再发送最终诊断通知。',
     ].join('\n'),
+    group: BARK_NOTIFICATION_GROUPS.chatTimeout,
     url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
   }
 }
@@ -897,6 +902,7 @@ export function buildWatchdogTimeoutNotificationPayload({
       '本 turn 已锁定为 timed-out；后续同 turn 的工具、WSS 或 catalog 进展不会重新启动 Watchdog。',
       'Archive 会继续等待/拉取 canonical body，诊断完成后再发送第二条结果通知。',
     ].join('\n'),
+    group: BARK_NOTIFICATION_GROUPS.chatTimeout,
     url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
   }
 }
@@ -923,6 +929,9 @@ export function buildWatchdogDiagnosisNotificationPayload({ conversationId, titl
       `terminal：${terminal}`,
       `tail：${tail}`,
     ].join('\n'),
+    group: terminal === 'final'
+      ? BARK_NOTIFICATION_GROUPS.chatDone
+      : BARK_NOTIFICATION_GROUPS.incident,
     url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
   }
 }
@@ -953,6 +962,7 @@ export function buildUnboundWatchdogNotificationPayload({ metadataId, title = nu
       '当前还没有足够证据把该 metadata 安全绑定到 canonical ChatGPT conversation，因此不能猜聊天名或 CID。',
       'Archive 已启动 catalog/body 修复；绑定成功后继续正常诊断。',
     ].join('\n'),
+    group: BARK_NOTIFICATION_GROUPS.chatTimeout,
   }
 }
 
@@ -964,6 +974,7 @@ export function buildTurnFinalNotificationPayload({ conversationId, title, diagn
   return {
     title: 'ChatGPT Turn 正常完成',
     body: `${title || conversationId}\n服务端完成信号与 canonical body 已确认 final${imageSuffix}。`,
+    group: BARK_NOTIFICATION_GROUPS.chatDone,
     url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
   }
 }
@@ -1251,7 +1262,7 @@ export function buildDevSpaceIdleNotificationPayload({
       '可能是本轮已经停止，也可能正在准备 Final、纯模型思考，或正在使用 DevSpace 之外的工具。',
       '这是软提醒，不代表 turn 已结束；Archive 的正式 Watchdog / incident 判定不受影响。',
     ].join('\n'),
-    group: 'DevSpace Bug',
+    group: BARK_NOTIFICATION_GROUPS.chatLatency,
   }
   if (conversationId) payload.url = `https://chatgpt.com/c/${conversationId}`
   return payload
@@ -1328,7 +1339,7 @@ export function buildDevSpaceConclusionNotificationPayload({
       `工具：${String(tool || 'unknown')}`,
       String(conclusion || '').trim(),
     ].filter(Boolean).join('\n'),
-    group: 'DevSpace Conclusion',
+    group: BARK_NOTIFICATION_GROUPS.chatDone,
   }
   if (conversationId) payload.url = `https://chatgpt.com/c/${conversationId}`
   return payload
@@ -1353,7 +1364,7 @@ export function buildDevSpaceCheckpointNotificationPayload({
       String(summary || '').trim(),
       next ? `下一阶段：${String(next).trim()}` : null,
     ].filter(Boolean).join('\n'),
-    group: 'DevSpace Checkpoint',
+    group: BARK_NOTIFICATION_GROUPS.chatDone,
   }
   if (conversationId) payload.url = `https://chatgpt.com/c/${conversationId}`
   return payload
@@ -2910,6 +2921,7 @@ async function main() {
       payload: {
         title: 'ChatGPT DOM 漂移：Actor 已安全阻断',
         body,
+        group: BARK_NOTIFICATION_GROUPS.archiveWarning,
       },
       successLog: 'DOM drift notification sent',
       failureLog: 'DOM drift notification failed',
@@ -2953,8 +2965,13 @@ async function main() {
       : `ChatGPT 协议漂移警告 ${warning} 项`
 
     notificationLastAttemptAt = Date.now()
+    const payload = {
+      title,
+      body,
+      group: BARK_NOTIFICATION_GROUPS.archiveWarning,
+    }
     try {
-      const result = await sendIncidentNotification(notificationConfig, { title, body })
+      const result = await sendIncidentNotification(notificationConfig, payload)
       if (result.ok) {
         const sentAt = Date.now()
         for (const assessment of queued) {
@@ -2963,7 +2980,7 @@ async function main() {
             kind: 'protocol-drift',
             sentAt,
             providerStatus: result.status,
-            payload: { title, body, assessment },
+            payload: { ...payload, assessment },
           })
         }
         notificationLastSuccessAt = sentAt
@@ -3526,6 +3543,7 @@ async function main() {
           ? 'ChatGPT 运行中断'
           : 'ChatGPT 异常结束',
       body,
+      group: BARK_NOTIFICATION_GROUPS.incident,
       url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
     }
     dispatchPersistentNotification({
@@ -3730,6 +3748,7 @@ async function main() {
     const result = await sendIncidentNotification(notificationConfig, {
       title: 'ChatGPT 图片节点',
       body: `${conversationTitle}\n本轮已进入并完成 ImageGen，归档识别到 ${event.imageCount} 张图片。`,
+      group: BARK_NOTIFICATION_GROUPS.chatDone,
       url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
     })
     if (result.ok) {
