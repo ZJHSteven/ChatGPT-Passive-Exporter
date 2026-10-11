@@ -1,3 +1,4 @@
+- 为 8.89GB 生产库新增 `chatgpt-archive reindex --bigram-only`：直接从现有 `message_fts_trigram` 的可读正文重建 bigram，不触碰 unicode61/trigram/resource 全量派生链；抽样 5000/68268 条消息时 bigram token 计算约 207ms，估算全库约 960 万去重二元字 token，主要成本只剩一次性 FTS 写入。
 - Conversation-first 排序测试修正 fixture：`importRaw()` 的 Conversation `capturedAt` 来自第二参数，不从 payload `create_time` 推导；recent 回归现显式传入 100/300/200。
 - 兼容测试同步迁移：官方导出回归不再调用旧 message-level `search()` 语义，统一验证 Conversation-first `searchConversations()`。
 - 定向测试进一步暴露 unicode61 的边界：它不能保证命中“长江三峡”内部的任意两字子串 `三峡`。因此最终不以“短 CJK 只走 unicode61”牺牲召回，而新增紧凑 `message_fts_bigram`：每条可读消息只索引去重的相邻 CJK 二元字 token，不复制完整正文；两字查询先走 bigram，snippet 仅在最终入选 Conversation 内按 conversation 索引读取原文。

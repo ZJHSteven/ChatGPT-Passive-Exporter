@@ -54,7 +54,7 @@ Usage:
   chatgpt-archive stats [--db <path>]
   chatgpt-archive sources [--db <path>]
   chatgpt-archive schema [--source ID] [--db <path>]
-  chatgpt-archive reindex [--all] [--db <path>]
+  chatgpt-archive reindex [--all|--bigram-only] [--db <path>]
   chatgpt-archive incidents [--status open|resolved] [--limit N] [--db <path>]
   chatgpt-archive turn-trace [--limit N] [--trace <path>] [--cluster-ms N]
   chatgpt-archive actor send --prompt-file <path> [--mode auto|new|continue|steer] [--project <name>] [--wait-final] [--final-timeout-ms N] [--target guardian|dedicated] [--conversation <UUID>] [--cdp URL] [--trace <path>] [--state <path>] [--dom-ledger <path>]
@@ -961,6 +961,15 @@ async function main() {
     }
 
     if (command === 'reindex') {
+      if (flags.has('bigram-only')) {
+        const rebuiltBigramMessages = archive.rebuildBigramSearchIndex()
+        console.log(JSON.stringify({
+          database: archive.filePath,
+          bigramOnly: true,
+          rebuiltBigramMessages,
+        }, null, 2))
+        return
+      }
       const resourceCount = archive.rebuildDerivedResources()
       archive.rebuildSearchIndexes({ includeAuditText: flags.has('all') })
       console.log(JSON.stringify({

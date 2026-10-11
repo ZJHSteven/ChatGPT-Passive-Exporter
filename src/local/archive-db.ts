@@ -1579,6 +1579,46 @@ export class ChatArchiveDb {
     this.rebuildSearchIndexes({ includeAuditText: true })
   }
 
+  /**
+   * 只重建“两字 CJK”专用 bigram 索引。
+   *
+   * 生产库已经有健康的 unicode61/trigram FTS；为了给旧库补建 bigram，不应调用完整
+   * `rebuildSearchIndexes()` 去重复改写两个大索引和资源派生表。这里直接读取 trigram FTS
+   * 已筛选过的可读正文（约数万行），生成紧凑 bigram token 后写入新表。
+   *
+   * 返回写入的 message 数，便于部署脚本/人工验收确认不是空索引。
+   */
+  rebuildBigramSearchIndex(): number {
+    const rows = this.db.prepare(`
+      SELECT conversation_id AS conversationId, message_id AS messageId, text
+      FROM message_fts_trigram
+    `).iterate() as Iterable<{ conversationId: string, messageId: string, text: string }>
+    const insertBigram = this.db.prepare(
+      'INSERT INTO message_fts_bigram (conversation_id, message_id, grams) VALUES (?, ?, ?)',
+    )
+
+    let inserted = 0
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.exec('DELETE FROM message_fts_bigram')
+      for (const row of rows) {
+        const grams = cjkBigramTokens(row.text)
+        if (!grams) continue
+        insertBigram.run(row.conversationId, row.messageId, grams)
+        inserted += 1
+      }
+      this.db.exec('COMMIT')
+    }
+    catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+
+    // 一次性全量写入后主动合并 FTS segment，后续短词搜索无需承担碎片整理成本。
+    this.db.prepare("INSERT INTO message_fts_bigram(message_fts_bigram) VALUES('optimize')").run()
+    return inserted
+  }
+
   /** 返回一页 message id 中哪些已经存在，用于 body cursor overlap 停止判定。 */
   knownMessageIds(conversationId: string, messageIds: string[]): Set<string> {
     const known = new Set<string>()

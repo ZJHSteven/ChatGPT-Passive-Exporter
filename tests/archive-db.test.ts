@@ -658,6 +658,22 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('旧库可单独补建 bigram 索引，不必重建其余 FTS', () => {
+    const db = tempDb()
+    try {
+      db.importRaw(payload())
+      db.db.exec('DELETE FROM message_fts_bigram')
+      expect(db.searchConversations('三峡')).toHaveLength(0)
+
+      const rebuilt = db.rebuildBigramSearchIndex()
+      expect(rebuilt).toBe(2)
+      expect(db.searchConversations('三峡').some(row => row.conversationId === 'conversation-cn')).toBe(true)
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('Conversation limit 不会被单个高频聊天的 message hit 吃光，并支持 frequency/recent 排序', () => {
     const db = tempDb()
     try {
