@@ -1863,6 +1863,18 @@ export function shouldBlockGuardianConversationRest(input) {
 }
 
 /**
+ * 判断是否必须把 Guardian conversation REST block 目标状态真实下发给 Chrome。
+ *
+ * 解除 block 必须始终幂等下发。Network.setBlockedURLs 如果在 CDP 层超时，
+ * 浏览器端可能已经执行成功，而 daemon 本地缓存仍停留在 false；如果随后仅凭
+ * cached false 跳过 unblock，就会形成 Chrome 实际 blocked / daemon 认为 clear 的分裂。
+ */
+export function shouldApplyGuardianConversationRestBlockCommand(enabled, cachedBlocked, uncertain = false) {
+  if (!enabled) return true
+  return Boolean(uncertain) || !Boolean(cachedBlocked)
+}
+
+/**
  * passive body 只替代“这一次 ready 之后页面自然产生的响应”。
  * 过旧 observation 仍可作为历史证据落库，但不能拿来证明当前 complete 已追平。
  */

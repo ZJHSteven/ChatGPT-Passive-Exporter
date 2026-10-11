@@ -369,6 +369,11 @@ export function classifyConversationBackendUrl(input: unknown, base?: string): C
 
 /** cooldown 期间只屏蔽 Guardian 的 conversation REST，WSS 不受影响。 */
 export function shouldBlockGuardianConversationRest(input: unknown): boolean
+export function shouldApplyGuardianConversationRestBlockCommand(
+  enabled: unknown,
+  cachedBlocked: unknown,
+  uncertain?: unknown,
+): boolean
 
 /**
  * 判断一个 CDP target 是否应该挂普通页面被动 observer。
