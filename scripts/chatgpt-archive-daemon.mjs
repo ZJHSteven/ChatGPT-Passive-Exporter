@@ -438,18 +438,17 @@ export function shouldAttachPassivePageObserver(target) {
 }
 
 /**
- * 对连续无法 attach 的普通 ChatGPT target 递增退避。
- * 这类 target 常见于长期休眠/异常 renderer；继续每 5 分钟重试只会制造日志噪声和额外 CDP 压力。
+ * 普通 ChatGPT target 的 observer attach 失败使用固定低频重试。
+ * 这类失败经常只是 Chrome 正常冻结/休眠；不能按 Guardian 故障处理，也不能指数退避，
+ * 否则 target 醒来后可能要很久才重新被 observer 接管。failureCount 只用于遥测，不改变间隔。
  */
 export function passiveObserverRetryDelayMs(
-  failureCount,
+  _failureCount,
   baseMs = SLEEPING_TARGET_RETRY_MS,
-  maxMs = 60 * 60_000,
+  _maxMs = 60 * 60_000,
 ) {
-  const failures = Math.max(1, Number(failureCount) || 1)
   const base = Math.max(1000, Number(baseMs) || SLEEPING_TARGET_RETRY_MS)
-  const ceiling = Math.max(base, Number(maxMs) || 60 * 60_000)
-  return Math.min(ceiling, base * (2 ** Math.min(8, failures - 1)))
+  return base
 }
 
 /** Guardian target 命令超时后，用浏览器级 CDP ping 区分故障层级。 */
