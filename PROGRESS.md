@@ -1,3 +1,4 @@
+- 兼容测试同步迁移：官方导出回归不再调用旧 message-level `search()` 语义，统一验证 Conversation-first `searchConversations()`。
 - 定向测试进一步暴露 unicode61 的边界：它不能保证命中“长江三峡”内部的任意两字子串 `三峡`。因此最终不以“短 CJK 只走 unicode61”牺牲召回，而新增紧凑 `message_fts_bigram`：每条可读消息只索引去重的相邻 CJK 二元字 token，不复制完整正文；两字查询先走 bigram，snippet 仅在最终入选 Conversation 内按 conversation 索引读取原文。
 - 2026-10-11 CDP 加固生产验收：完整 check 25 files / 212 tests PASS，typecheck 与 Chrome/Edge/Firefox/Userscript build PASS。仅重启 Archive daemon，未重启日常 Chrome；新 daemon PID 47920，Guardian target 4C6119... 当前 healthFailures=0 / blocked=false / uncertain=false / lastError=null。启动阶段协议指纹并发达到上限后已跳过 3 个诊断 body 读取（inFlight 最多 2），验证 backpressure 生效；坏 target 02C370... 首次 attach failure 记录 failureCount=1/retryDelayMs=300000，后续将指数退避。Archive submission queue 当前 29/29 accepted；ClassFlow 2026-09-01 起已知 22 个课程组中 21 个全分段成功且 Notes 21/21 succeeded，唯一未补 Notes 的 2026-09-08 综合素养课程5/谢娟因 4 段中 2 段原始 VGA.mp4 资源不存在而下载失败，保持 fail-closed。## 2026-10-11 Conversation-first 搜索重构
 

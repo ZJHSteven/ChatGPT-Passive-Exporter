@@ -118,7 +118,7 @@ describe('official Data Export importer', () => {
       expect(oldOnly.missing).toBe(1)
       const branch = db.db.prepare('SELECT count(*) AS n FROM mapping_nodes WHERE conversation_id = ?').get('keep') as { n: number }
       expect(Number(branch.n)).toBe(4)
-      expect(db.search('旧正文').some(hit => hit.conversationId === 'keep')).toBe(true)
+      expect(db.searchConversations('旧正文').some(hit => hit.conversationId === 'keep')).toBe(true)
     }
     finally {
       db.close()
