@@ -90,7 +90,14 @@ function isCooldownError(message: string): boolean {
   return /cooldown|HTTP 429/iu.test(message)
 }
 
+export function isSubmissionOutcomeUnknownError(message: string): boolean {
+  return /submission outcome unknown/iu.test(message)
+}
+
 export function isRetryableInfrastructureError(message: string): boolean {
+  // 正式 POST 已经观察到、但最终 HTTP 结果未知时绝不能盲目重发；
+  // 否则一次 CDP timeout 可能把“其实已经送达”的 turn 重复提交。
+  if (isSubmissionOutcomeUnknownError(message)) return false
   return /cooldown|HTTP 429|unavailable|CDP|target.*closed|target.*unavailable|lease timeout|timed out|timeout|fetch failed|ECONN|socket|waiting for full answer|still live|DOM drift|prompt input not found|composer.*not found/iu.test(message)
 }
 
