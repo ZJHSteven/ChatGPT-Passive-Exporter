@@ -5,6 +5,7 @@
 - 本轮实现计划同时覆盖 DB、Bridge 与 CLI：短 CJK 改走 unicode61；3+ CJK 继续 trigram；Conversation-first 支持 relevance/recent/frequency、hitCount、bestRank、capturedAt 和每聊有限 snippets；原 message 搜索保留独立入口。
 - 真实库原型性能：只取轻量 FTS rank 行后在本机聚合，`搜索` 566 hits 约 22ms、`ChatGPT` 2158 hits 约 65ms；对最宽的单字符/高频英文查询，两阶段“轻量聚合 + 只为前20个 Conversation 生成 snippets”约 0.7s，明显低于网络/MCP 超时量级。
 
+- 2026-10-11 Bark 统一分组已生产部署并真实 canary 验证：Archive daemon 从 PID 47920 受控重载到 PID 56532，Bridge/认证/DevSpace wake/Bark 均恢复，conversation WSS 已恢复且无 gap，notification/daemon lastError 均为 null。重载后的自然 DevSpace 3 分钟静默通知成功 Bark HTTP 200，`turn_notification_ledger` 最新记录的 `payload_json.group=Chat-Latency`；其前一条旧版本 1 分钟通知仍为 `DevSpace Bug`，因此可精确确认生产切换边界。定向 notifier+daemon 63/63 通过，TypeScript 与 Chrome/Edge/Firefox/Userscript build 均通过；全量 214 tests 中 212 通过，2 个失败均位于同期 Conversation-first 两字中文搜索回归（`archive-db.test.ts`），与 Bark 分组路径无关，未在本任务中交叉修改搜索主线。
 - 2026-10-11 Bark 通知分组已统一为稳定语义契约：`Chat-Latency`（DevSpace 1/3/5 分钟静默与 5 分钟诊断）、`Chat-Timeout`（Watchdog 到点/延期/未绑定）、`Chat-Done`（正常 Final、ImageGen、DevSpace checkpoint/conclusion）、`Incident`（conversation 生命周期异常）、`Archive-Warning`（DOM Drift、协议漂移、429 cooldown）；同时预留 `LiveOps` / `Infra` 给对应发送端。只改变 Bark group，不改变任何通知频率、触发条件、去重 key 或生命周期判定。
 - 2026-10-11 submission unknown 回归已补：正式 POST 结果未知即使错误文本包含 timeout 也不得 retry；普通 pre-submit CDP timeout 仍保持可恢复。
 - 2026-10-11 Guardian CDP 分层与协议指纹 backpressure 回归已补：browser ping 成功=>target，失败=>browser；协议 body 读取在 inFlight>=2 时必须让路。
