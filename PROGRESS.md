@@ -1,4 +1,4 @@
-- 2026-10-11 queue 压力回归进一步定位到 stop durability：测试在内存状态已 failed、最后一次 persist 尚未结束时删除临时目录，触发 ENOENT；现 ActorSubmissionQueue.stop() 会先停止新调度，再等待当前 drain 退出并等待 persistTail 完成。该修复同时保证 daemon 重启/停止不会在最终状态落盘中途返回。
+- 2026-10-11 CDP/Actor 最终加固回归与生产状态：`npm run check` 25 files / 219 tests PASS，TypeScript 与 Chrome/Edge/Firefox/Userscript builds PASS；ambiguous submission queue 额外连续 8 轮压力跑无 ENOENT/EPERM。daemon PID 26848，Guardian `4C6119...` 当前 healthFailures=0 / lastError=null；navigation 期空壳 DOM 不再写入 drift ledger。9/8 残片 Notes submission 已越过旧 DOM-drift 阻塞，现为 retry_waiting，唯一阻塞是 07:07Z startup catalog 429；该 429 无 Retry-After，按现有 fallback 进入 cooldown 到 08:07:43Z，Guardian REST blocked=true/uncertain=false，Actor 未绕过 cooldown 发 POST。- 2026-10-11 queue 压力回归进一步定位到 stop durability：测试在内存状态已 failed、最后一次 persist 尚未结束时删除临时目录，触发 ENOENT；现 ActorSubmissionQueue.stop() 会先停止新调度，再等待当前 drain 退出并等待 persistTail 完成。该修复同时保证 daemon 重启/停止不会在最终状态落盘中途返回。
 - 2026-10-11 submission queue 持久化继续加固：唯一 tmp 名解决源文件竞争后，Vitest 在 Windows 仍复现两个 rename 同时覆盖正式 queue.json 的 EPERM；现增加 persistTail 单写者 Promise 链，所有 snapshot/write/atomic-rename 串行执行，单次失败不会毒死后续写盘链。
 - 2026-10-11 空壳 DOM 分类回归已补：完全没有 composer/new-chat/sidebar/control 时为 transient；只要出现 canonical sidebar anchor 就不再跳过，仍进入正常 drift 判断。
 - 2026-10-11 Actor DOM drift 误报修复：conversation/home/project 切换过程中若 observation 同时满足 composer=null、newChat=null、controls=[]、sidebar anchors 全 false，则认定为 transient page skeleton，不写入 DOM drift ledger、不要求批准 baseline。仅 navigation 前允许跳过该空壳；真正 prompt-input 阶段仍必须通过稳定 DOM 指纹。
@@ -776,6 +776,7 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - iPhone push 由 Companion daemon 转发；不把 push token 放进 Userscript。
 - 继续做本地轻量 Reader：历史 DevSpace tool/widget 默认静态折叠渲染，不创建真实 Apps SDK iframe。
 - 开发期模块继续分离；最终合并为单一 ChatGPT Companion runtime，Exporter / Run Watch / Fleet / Reader / Bookmark / Notification 共享状态与网络层。
+
 
 
 
