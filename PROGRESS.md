@@ -1,3 +1,4 @@
+- 2026-10-11 Bark 通知分组已统一为稳定语义契约：`Chat-Latency`（DevSpace 1/3/5 分钟静默与 5 分钟诊断）、`Chat-Timeout`（Watchdog 到点/延期/未绑定）、`Chat-Done`（正常 Final、ImageGen、DevSpace checkpoint/conclusion）、`Incident`（conversation 生命周期异常）、`Archive-Warning`（DOM Drift、协议漂移、429 cooldown）；同时预留 `LiveOps` / `Infra` 给对应发送端。只改变 Bark group，不改变任何通知频率、触发条件、去重 key 或生命周期判定。
 - 2026-10-11 submission unknown 回归已补：正式 POST 结果未知即使错误文本包含 timeout 也不得 retry；普通 pre-submit CDP timeout 仍保持可恢复。
 - 2026-10-11 Guardian CDP 分层与协议指纹 backpressure 回归已补：browser ping 成功=>target，失败=>browser；协议 body 读取在 inFlight>=2 时必须让路。
 - 2026-10-11 submission queue 已将 `submission outcome unknown` 明确排除出 retryable infrastructure error：正式 POST 结果未知时状态会 fail-closed，不会因为文本里含 timeout/CDP 而自动重复提交；后续可再升级为专门 confirming/unknown 状态，但当前先保证 exactly-once 安全边界。
