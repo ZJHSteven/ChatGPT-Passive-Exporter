@@ -43,6 +43,7 @@ import {
   recordCatalogWatchdogProgress,
   shouldBlockGuardianConversationRest,
   shouldApplyGuardianConversationRestBlockCommand,
+  shouldRetryConversationPageFetch,
   shouldRebuildGuardianAfterHealthFailures,
   guardianUiFailureKind,
   shouldRunDeferredGapRepair,
@@ -963,6 +964,12 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shouldApplyGuardianConversationRestBlockCommand(true, true, false)).toBe(false)
     expect(shouldApplyGuardianConversationRestBlockCommand(true, false, true)).toBe(true)
     expect(shouldApplyGuardianConversationRestBlockCommand(true, true, true)).toBe(true)
+  })
+
+  test('conversation page fetch 只对 Runtime.evaluate timeout 重试', () => {
+    expect(shouldRetryConversationPageFetch(new Error('CDP Runtime.evaluate timed out after 10000ms'))).toBe(true)
+    expect(shouldRetryConversationPageFetch(new Error('CDP Network.enable timed out after 10000ms'))).toBe(false)
+    expect(shouldRetryConversationPageFetch(new Error('HTTP 429'))).toBe(false)
   })
 
   test('cooldown 恢复期先 slow-start，成功探针清零后恢复正常间隔', () => {
