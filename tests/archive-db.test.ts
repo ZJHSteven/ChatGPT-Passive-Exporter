@@ -663,11 +663,13 @@ describe('ChatArchiveDb', () => {
     try {
       db.importRaw(payload())
       db.db.exec('DELETE FROM message_fts_bigram')
-      expect(db.searchConversations('三峡')).toHaveLength(0)
+      // `三峡` 同时出现在标题里，清空正文 bigram 后仍会正确命中标题；
+      // 因此这里用只存在于正文中的两字词 `游轮` 验证旧库补索引。
+      expect(db.searchConversations('游轮')).toHaveLength(0)
 
       const rebuilt = db.rebuildBigramSearchIndex()
       expect(rebuilt).toBe(2)
-      expect(db.searchConversations('三峡').some(row => row.conversationId === 'conversation-cn')).toBe(true)
+      expect(db.searchConversations('游轮').some(row => row.conversationId === 'conversation-cn')).toBe(true)
     }
     finally {
       db.close()

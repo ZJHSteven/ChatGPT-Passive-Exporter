@@ -1,3 +1,4 @@
+- bigram 专用重建测试使用只存在正文的 `游轮`，避免 `三峡` 同时命中 Conversation 标题而误判索引清空行为；这也验证标题命中与正文索引彼此独立。
 - 为 8.89GB 生产库新增 `chatgpt-archive reindex --bigram-only`：直接从现有 `message_fts_trigram` 的可读正文重建 bigram，不触碰 unicode61/trigram/resource 全量派生链；抽样 5000/68268 条消息时 bigram token 计算约 207ms，估算全库约 960 万去重二元字 token，主要成本只剩一次性 FTS 写入。
 - Conversation-first 排序测试修正 fixture：`importRaw()` 的 Conversation `capturedAt` 来自第二参数，不从 payload `create_time` 推导；recent 回归现显式传入 100/300/200。
 - 兼容测试同步迁移：官方导出回归不再调用旧 message-level `search()` 语义，统一验证 Conversation-first `searchConversations()`。
