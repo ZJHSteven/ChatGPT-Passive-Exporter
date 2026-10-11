@@ -676,9 +676,9 @@ describe('ChatArchiveDb', () => {
           metadata: {},
         })),
       })
-      db.importRaw(makeConversation('many-hits', '高频聊天', 100, 12))
-      db.importRaw(makeConversation('few-new', '较新聊天', 300, 2))
-      db.importRaw(makeConversation('few-old', '较旧聊天', 200, 1))
+      db.importRaw(makeConversation('many-hits', '高频聊天', 100, 12), 100)
+      db.importRaw(makeConversation('few-new', '较新聊天', 300, 2), 300)
+      db.importRaw(makeConversation('few-old', '较旧聊天', 200, 1), 200)
 
       const relevance = db.searchConversations('LifeOps', { limit: 3, snippetsPerConversation: 2 })
       expect(relevance.map(row => row.conversationId)).toEqual(expect.arrayContaining(['many-hits', 'few-new', 'few-old']))
