@@ -1,3 +1,4 @@
+- 2026-10-11 passive target 退避回归已补，固定 5m→10m→20m→40m→60m 并验证高失败次数封顶 60m。
 - 2026-10-11 passive observer 运行态已接入 failureCount：成功 attach/target 消失时清零；失败时使用递增 retryDelay 并在日志记录 failureCount/retryDelayMs。像 02C... 这种长期坏 target 将快速退避到每小时一次。
 - 2026-10-11 开始治理坏 target observer 重试：新增 passiveObserverRetryDelayMs，连续 attach 失败按 5m→10m→20m→40m→60m 递增隔离，而不是永久每 5 分钟重试。
 - 2026-10-11 CDP 稳定性复核：当前 Guardian target `4C6119...` 的 20 次 trivial Runtime.evaluate 0 timeout，P50≈0.46ms、P95≈1.03ms，Network.enable≈0.43ms，discarded=false；反复 Network.enable timeout 的大头来自普通 ChatGPT target `02C370...`，其自 2026-10-10 18:19Z 起约每 5 分钟 attach 失败一次。Guardian health timeout 最近 24h 多数为单次（62 次 consecutive=1，9 次 consecutive=2，4 次 consecutive=3），连续 3 次现有逻辑会重建 Guardian。准备继续做坏 target 隔离、health 分层诊断、诊断型 getResponseBody 限流，以及 POST 结果未知 fail-closed。

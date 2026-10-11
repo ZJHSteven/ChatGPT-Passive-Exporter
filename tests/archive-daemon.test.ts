@@ -53,6 +53,7 @@ import {
   shouldRepairConversationTransport,
   shouldRetireWssSocketsForFrameNavigation,
   shouldAttachPassivePageObserver,
+  passiveObserverRetryDelayMs,
   watchdogDiagnosticTurnKey,
   watchdogTurnStartedAtFromPayload,
   reconcileWatchdogDiagnosticTurn,
@@ -337,6 +338,15 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       ...guardian,
       webSocketDebuggerUrl: '',
     })).toBe(false)
+  })
+
+  test('异常 passive target 连续 attach 失败会递增退避并封顶', () => {
+    expect(passiveObserverRetryDelayMs(1, 300_000, 3_600_000)).toBe(300_000)
+    expect(passiveObserverRetryDelayMs(2, 300_000, 3_600_000)).toBe(600_000)
+    expect(passiveObserverRetryDelayMs(3, 300_000, 3_600_000)).toBe(1_200_000)
+    expect(passiveObserverRetryDelayMs(4, 300_000, 3_600_000)).toBe(2_400_000)
+    expect(passiveObserverRetryDelayMs(5, 300_000, 3_600_000)).toBe(3_600_000)
+    expect(passiveObserverRetryDelayMs(99, 300_000, 3_600_000)).toBe(3_600_000)
   })
 
   test('429 cooldown 通知文案包含原因、路由与预计解除时间', () => {
