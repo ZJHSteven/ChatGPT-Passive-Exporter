@@ -165,6 +165,13 @@ export class ActorSubmissionQueue {
     this.started = false
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
+    // stop 既是测试清理边界，也是 daemon 重启时的 durability 边界。
+    // 不能只停 timer 就返回，否则调用方可能在最后一次 drain/persist 仍进行时关闭进程、
+    // 删除目录或替换文件，造成“内存已终态、磁盘还没写完”的窗口。
+    while (this.draining) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    await this.persistTail
   }
 
   async enqueue(idempotencyKey: string, input: ActorSubmissionInput): Promise<ActorSubmissionRecord> {
