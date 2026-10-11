@@ -2157,6 +2157,7 @@ async function main() {
   let checkpointErrors = 0
   let checkpointCompleted = 0
   const passiveObserverRetryAfter = new Map()
+  const passiveObserverFailureCounts = new Map()
   const imageHydrationTargetRetryAfter = new Map()
   // body observation 可能恰好发生在一小时 cooldown 开始后。若缓存只有 10 分钟，
   // cooldown 结束时会忘掉已经免费拿到的 latest page，又重复请求一次。因此缓存寿命至少覆盖
@@ -6077,6 +6078,10 @@ async function main() {
       if (!liveIds.has(targetId) || observer.client.closed) {
         observer.client.close()
         passivePageObservers.delete(targetId)
+        if (!liveIds.has(targetId)) {
+          passiveObserverRetryAfter.delete(targetId)
+          passiveObserverFailureCounts.delete(targetId)
+        }
       }
     }
 
@@ -6086,11 +6091,17 @@ async function main() {
      try {
        await attachPassivePageObserver(target)
         passiveObserverRetryAfter.delete(target.id)
+        passiveObserverFailureCounts.delete(target.id)
      }
      catch (error) {
-        passiveObserverRetryAfter.set(target.id, Date.now() + SLEEPING_TARGET_RETRY_MS)
+        const failureCount = Number(passiveObserverFailureCounts.get(target.id) || 0) + 1
+        passiveObserverFailureCounts.set(target.id, failureCount)
+        const retryDelayMs = passiveObserverRetryDelayMs(failureCount)
+        passiveObserverRetryAfter.set(target.id, Date.now() + retryDelayMs)
        await log('passive ChatGPT page observer attach failed', {
           targetId: target.id,
+          failureCount,
+          retryDelayMs,
           error: error instanceof Error ? error.message : String(error),
         })
       }
