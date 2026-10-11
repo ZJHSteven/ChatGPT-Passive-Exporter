@@ -3226,6 +3226,7 @@ async function main() {
         bodyCacheEntries: passiveBodyPages.size,
         catalogCacheEntries: passiveCatalogPages.size,
         guardianConversationRestBlocked,
+        guardianConversationRestBlockUncertain,
       },
     },
     limits: {
@@ -3999,6 +4000,9 @@ async function main() {
 
   const requireRequestWindow = () => {
     if (Date.now() < cooldownUntil) throw new Error(`active API cooldown until ${new Date(cooldownUntil).toISOString()}`)
+    if (cooldownRecoveryPending) throw new Error('active API cooldown recovery pending')
+    if (guardianConversationRestBlockUncertain) throw new Error('Guardian conversation REST block state is uncertain')
+    if (guardianConversationRestBlocked) throw new Error('Guardian conversation REST is still blocked')
     if (!authHeaders) throw new Error('no captured first-party auth context yet')
     if (!guardian?.page || guardian.page.closed) throw new Error('guardian page unavailable')
   }
@@ -6914,6 +6918,7 @@ async function main() {
     guardian?.browser?.close()
     guardian = await ensureGuardian(cdpHttp)
     guardianConversationRestBlocked = false
+    guardianConversationRestBlockUncertain = true
     guardianReadyAt = Date.now()
     guardianHealthFailures = 0
     guardianUiReloadAttemptedAt = null
@@ -6938,13 +6943,13 @@ async function main() {
     await attachGuardianEvents()
     // 如果进程启动时继承了真实 429 cooldown，先在 reload/navigation 之前就挡住
     // Guardian 自己的 conversation REST。WSS 使用 wss://，不会命中这个 HTTPS block。
-    if (Date.now() < cooldownUntil) {
-      await setGuardianConversationRestBlocked(true).catch(async (error) => {
-        await log('Guardian REST pre-block failed during cooldown startup', {
-          error: error instanceof Error ? error.message : String(error),
-        })
+    const shouldBlockForCooldown = Date.now() < cooldownUntil
+    await setGuardianConversationRestBlocked(shouldBlockForCooldown).catch(async (error) => {
+      await log('Guardian REST block state sync failed after attach', {
+        desiredBlocked: shouldBlockForCooldown,
+        error: error instanceof Error ? error.message : String(error),
       })
-    }
+    })
     await log('guardian ready', {
       reason,
       targetId: guardian.targetId,
@@ -7233,6 +7238,9 @@ async function main() {
       if (reconcileHours > 0
         && authHeaders
         && activeApiAllowed(cooldownUntil)
+        && !cooldownRecoveryPending
+        && !guardianConversationRestBlockUncertain
+        && !guardianConversationRestBlocked
         && Date.now() - lastReconcileAt >= reconcileHours * 3600_000) {
         await reconcileCatalog('periodic').catch(async (error) => {
           await log('periodic reconciliation failed; passive Guardian remains online', {
@@ -7243,9 +7251,19 @@ async function main() {
       // cooldown 到期只解除“主动 API 禁止”，不再拿完整 catalog 扫描当探针。
       // 先保持 WSS 在线；已知 ready conversation 由 drainDirty 逐条补 body。
       if (cooldownRecoveryPending && activeApiAllowed(cooldownUntil)) {
+        try {
+          await setGuardianConversationRestBlocked(false)
+        }
+        catch (error) {
+          await log('Guardian REST block release failed after cooldown; recovery remains pending', {
+            error: error instanceof Error ? error.message : String(error),
+          })
+          await writeState()
+          await new Promise(resolve => setTimeout(resolve, 1000))
+          continue
+        }
         cooldownRecoveryPending = false
         cooldownUntil = 0
-        await setGuardianConversationRestBlocked(false).catch(() => {})
         recoveryProbeRemaining = recoveryProbeSuccesses
         lastReconcileAt = Date.now()
         if (pendingGapRepair) pendingGapRepair.lastAt = Date.now()

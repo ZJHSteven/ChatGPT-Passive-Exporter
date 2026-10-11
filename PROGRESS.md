@@ -1,3 +1,4 @@
+- 2026-10-11 cooldown 恢复顺序已改为先真实 unblock Chrome、成功后再清 recovery pending/cooldown；Guardian attach/rebuild 后 block 状态视为 unknown 并按当前 cooldown 强制同步；未知/仍 blocked 状态会阻止 active REST 与 periodic reconcile。
 - 2026-10-11 daemon 运行态已采用 uncertain 语义：Network.setBlockedURLs 成功后才更新 cached block 状态；CDP timeout/error 标记 uncertain，后续不能把 cached false 当成已解除。
 - 2026-10-11 Guardian block helper 回归断言已补齐：clear/blocked/uncertain 六种组合均覆盖，尤其固定 cached=false 也必须真实 unblock 的故障边界。
 - 2026-10-11 archive-daemon 回归测试已接入 shouldApplyGuardianConversationRestBlockCommand helper，下一提交补齐状态组合断言。
