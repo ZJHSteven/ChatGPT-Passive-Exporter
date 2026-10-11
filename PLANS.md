@@ -1,3 +1,11 @@
+# 2026-10-11 CDP target 语义修正与残片课堂策略
+
+用户校正：普通 ChatGPT tab 的 passive observer timeout 与 Guardian health 必须严格分层。普通 target 可能只是 Chrome 正常冻结/休眠，不能把它当 Guardian/CDP 总线故障，也不应指数退避到一小时；保持固定低频探测，醒来后应能及时重新 attach。Guardian 自身继续使用 target-level health probe，失败时 browser-level ping 只用于诊断“target 还是 browser”，不替代 health probe。
+
+同时修正历史课堂策略：永久源缺失（明确资源不存在/404/410）不属于可恢复失败。若同一课堂已有至少一个成功分段，应允许按现有成功分段生成“残片 Notes”，并在输入元数据中明确缺失分段；只有下载中断、ASR 失败、临时网络错误等可恢复故障继续阻塞整堂 Notes。
+
+Actor 提交不确定性不应简单永久 fail：正式 POST 后结果未知时，Archive 应优先 reconcile/探测是否已经产生对应 turn；只有明确证明未提交才允许重发。当前先保留 fail-closed 防双发边界，不把“未知”误当普通 timeout 自动重发；后续本轮评估是否能用现有 canonical/actor 证据实现确认态。
+
 # 2026-10-11 Bark 高频通知文案精简 ExecPlan
 
 目标：不改变 Bark 分组、触发频率、阈值、去重 key 或生命周期判定，只让高频通知适合手机锁屏快速扫读；关键信息优先放标题，正文只留一两行必要细节。
