@@ -1,3 +1,14 @@
+## 2026-10-11 Conversation-first 搜索生产收口
+
+- **已部署完成。** Archive 搜索的第一返回单位现在是 Conversation；全局 limit 不再被单个长聊天的 message hit 吃光。模型可选择 `relevance / recent / frequency`，并分别控制 Conversation limit 与 `snippetsPerConversation`；原始 message 级结果保留为 `search-messages`/`/v1/search/messages` 展开入口。
+- LifeOps 已删除 `limit×6`、30~200 message 扩张、本地分组，以及第二次 `/v1/conversations?limit=200` 元数据补查；生产 MCP 现直接透传 Archive 的 `capturedAt / lifecycleState / hitCount / bestRank / snippets / timing`。
+- 历史 12 秒级超时的数据库根因已定位并移除：旧 1~2 字 CJK 走 `%LIKE%` 全表正文扫描，真实 `搜索` 查询曾超过 60 秒未完成；现 1~2 字 CJK 使用紧凑短词 FTS（每条可读消息去重 unigram+bigram），3+ CJK 继续 trigram，英文/数字继续 unicode61。
+- 生产库迁移：初始 DB 8,886,444,032 bytes；最终短 CJK 索引覆盖 64,675 条消息，DB 为 9,369,735,168 bytes，总增量 483,291,136 bytes（约 5.4%）。最后一轮 unigram+bigram 重建耗时 191.3s，属于一次性部署成本。
+- 生产 Bridge 5 次热态实测：`LifeOps` p50=117.71ms（首次冷态753.01ms），`搜索` p50=344.09ms，单字 `肾` p50=197.78ms；5 次中的最大值分别 753.01/379.79/254.40ms。lifecycle enrich 通常约 1~3ms。
+- ChatGPT 宿主真实 `search_conversations("LifeOps")` 已返回新 Conversation 结构，Archive timing=114.89ms；`search_conversations("搜索")` 整链 timing=391.94ms，成功命中老聊天，证明不再受“最近200条 Conversation”限制。
+- CLI 验收：默认 `chatgpt-archive search 搜索 --limit 3 --snippets-per-conversation 1` 返回 Conversation 结构，进程启动+查询 wall≈569ms；`search-messages` 的 stdout 原始 UTF-8 JSON 经文件重定向后 JSON.parse 正常，PowerShell 管道中的中文乱码只属于终端解码问题。
+- 最终工程回归：25/25 test files、215/215 tests PASS；最终 `npm run typecheck` PASS。生产 daemon PID=62060，WSS=3、gap=null、Guardian failures=0、Bridge listening=true、LifeOps pending=0、daemon lastError=null。
+
 - 2026-10-11 passive observer 退避语义已纠正：failureCount 继续保留用于识别“哪个 target 长期睡眠/异常”，但 retryDelay 固定为 5 分钟，不再随失败次数指数增长；该指标不会进入 Guardian health 或 browser-level CDP 故障判断。
 - 2026-10-11 用户校正：普通 passive target timeout 属于 target 自身睡眠/冻结的正常可预期情形，必须与 Guardian health 严格分开；指数退避到 60m 会拖慢 target 醒来后的重新发现，准备恢复固定低频探测。协议指纹并发上限仅视为低优先级诊断让路，不再宣称它是 Guardian timeout 根因；Chrome CDP 支持多并发，当前没有证据表明 2~4 个命令会把本机 Chrome 压垮。
 - 2026-10-11 Bark 高频文案已生产上线：全量门禁 25/25 test files、215/215 tests、TypeScript、Chrome/Edge/Firefox/Userscript build 全绿。部署时恰遇另一并行任务 `chatgpt-archive reindex --bigram-only` 持有 SQLite，第一次 daemon start 在 DB open 前静默退出；未杀 reindex，等待其正常完成后重新启动成功。当前 production daemon PID=62060，Bridge=true、WSS=3、gap=null、Bark notification error=null、syncErrors=0、lastError=null。运行时 payload 已核对为 `工具静默 3 分钟 · classflow继续`、`Turn 正常完成 · 医学统计学课堂笔记`、`Watchdog 超时 · DO用量异常分析`；超长聊天名标题截断加 `…`，正文保留全名。
