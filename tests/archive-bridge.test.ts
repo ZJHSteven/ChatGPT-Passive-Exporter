@@ -8,13 +8,21 @@ import {
   type ArchiveBridgeDataSource,
   type ArchiveBridgeTurnInput,
 } from '../src/local/archive-bridge.ts'
-import { isRetryableInfrastructureError } from '../src/local/actor-submission-queue.ts'
+import { isRetryableInfrastructureError, isSubmissionOutcomeUnknownError } from '../src/local/actor-submission-queue.ts'
 
 test('Actor submission 把页面输入暂时缺失视为可重试基础设施错误', () => {
   expect(isRetryableInfrastructureError('ChatGPT actor prompt input not found')).toBe(true)
   expect(isRetryableInfrastructureError('ChatGPT actor composer element not found')).toBe(true)
   expect(isRetryableInfrastructureError('invalid projectName')).toBe(false)
 })
+
+test('正式 POST 结果未知必须 fail-closed，不能按 timeout 自动重试', () => {
+  const message = 'ChatGPT actor submission outcome unknown after formal POST 123.45: no HTTP response arrived before timeout'
+  expect(isSubmissionOutcomeUnknownError(message)).toBe(true)
+  expect(isRetryableInfrastructureError(message)).toBe(false)
+  expect(isSubmissionOutcomeUnknownError('CDP Runtime.evaluate timed out after 10000ms')).toBe(false)
+})
+
 
 const TOKEN = 'test-token-that-is-long-enough-for-bridge-auth-1234567890'
 const servers: ArchiveBridgeServer[] = []
