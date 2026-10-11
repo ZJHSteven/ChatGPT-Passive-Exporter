@@ -1,3 +1,4 @@
+- 2026-10-11 Guardian CDP 分层与协议指纹 backpressure 回归已补：browser ping 成功=>target，失败=>browser；协议 body 读取在 inFlight>=2 时必须让路。
 - 2026-10-11 submission queue 已将 `submission outcome unknown` 明确排除出 retryable infrastructure error：正式 POST 结果未知时状态会 fail-closed，不会因为文本里含 timeout/CDP 而自动重复提交；后续可再升级为专门 confirming/unknown 状态，但当前先保证 exactly-once 安全边界。
 - 2026-10-11 Actor 正式 POST 已增加不可重发提交点：一旦观察到 `/f/conversation` 2xx 且已绑定 conversationId，后续 CDP/neutralize/trace 本地失败会降级返回 accepted，不再让队列重发；若已观察到正式 POST 但 HTTP response 未知，统一抛 `submission outcome unknown`，交给队列 fail-closed。
 - 2026-10-11 Guardian 协议指纹读取已接入 2 并发 backpressure：超过上限直接跳过该诊断指纹并累计 skipped，不阻塞业务；state 暴露 inFlight/skipped 便于判断诊断流量是否挤压 CDP。

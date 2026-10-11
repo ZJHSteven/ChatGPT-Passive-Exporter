@@ -54,6 +54,8 @@ import {
   shouldRetireWssSocketsForFrameNavigation,
   shouldAttachPassivePageObserver,
   passiveObserverRetryDelayMs,
+  guardianCdpFailureScope,
+  shouldReadGuardianProtocolBody,
   watchdogDiagnosticTurnKey,
   watchdogTurnStartedAtFromPayload,
   reconcileWatchdogDiagnosticTurn,
@@ -347,6 +349,18 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(passiveObserverRetryDelayMs(4, 300_000, 3_600_000)).toBe(2_400_000)
     expect(passiveObserverRetryDelayMs(5, 300_000, 3_600_000)).toBe(3_600_000)
     expect(passiveObserverRetryDelayMs(99, 300_000, 3_600_000)).toBe(3_600_000)
+  })
+
+  test('Guardian CDP timeout 可区分 target 与 browser 层级', () => {
+    expect(guardianCdpFailureScope(true)).toBe('target')
+    expect(guardianCdpFailureScope(false)).toBe('browser')
+  })
+
+  test('Guardian 协议指纹 body 读取遵守并发上限', () => {
+    expect(shouldReadGuardianProtocolBody(0, 2)).toBe(true)
+    expect(shouldReadGuardianProtocolBody(1, 2)).toBe(true)
+    expect(shouldReadGuardianProtocolBody(2, 2)).toBe(false)
+    expect(shouldReadGuardianProtocolBody(99, 2)).toBe(false)
   })
 
   test('429 cooldown 通知文案包含原因、路由与预计解除时间', () => {
