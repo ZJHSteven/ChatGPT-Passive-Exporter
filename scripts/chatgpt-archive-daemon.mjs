@@ -436,6 +436,21 @@ export function shouldAttachPassivePageObserver(target) {
   )
 }
 
+/**
+ * 对连续无法 attach 的普通 ChatGPT target 递增退避。
+ * 这类 target 常见于长期休眠/异常 renderer；继续每 5 分钟重试只会制造日志噪声和额外 CDP 压力。
+ */
+export function passiveObserverRetryDelayMs(
+  failureCount,
+  baseMs = SLEEPING_TARGET_RETRY_MS,
+  maxMs = 60 * 60_000,
+) {
+  const failures = Math.max(1, Number(failureCount) || 1)
+  const base = Math.max(1000, Number(baseMs) || SLEEPING_TARGET_RETRY_MS)
+  const ceiling = Math.max(base, Number(maxMs) || 60 * 60_000)
+  return Math.min(ceiling, base * (2 ** Math.min(8, failures - 1)))
+}
+
 /** catalog late-start 超时与可靠 start 超时必须保留不同 lifecycle 语义。 */
 export function watchdogTriggerForStartType(startType) {
   return String(startType || '').startsWith('catalog:')

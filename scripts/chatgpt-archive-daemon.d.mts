@@ -385,6 +385,11 @@ export function shouldAttachPassivePageObserver(target: {
   url?: unknown
   webSocketDebuggerUrl?: unknown
 } | null | undefined): boolean
+export function passiveObserverRetryDelayMs(
+  failureCount: unknown,
+  baseMs?: unknown,
+  maxMs?: unknown,
+): number
 
 /** 判断某个 passive response 是否足够新，可以替代本次 ready 后的主动 replay。 */
 export function passiveObservationMatchesReady(capturedAt: unknown, readyAt: unknown, toleranceMs?: number): boolean
