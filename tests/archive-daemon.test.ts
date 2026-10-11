@@ -354,13 +354,11 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     })).toBe(false)
   })
 
-  test('异常 passive target 连续 attach 失败会递增退避并封顶', () => {
+  test('普通 passive target 连续 attach 失败仍保持固定低频探测', () => {
     expect(passiveObserverRetryDelayMs(1, 300_000, 3_600_000)).toBe(300_000)
-    expect(passiveObserverRetryDelayMs(2, 300_000, 3_600_000)).toBe(600_000)
-    expect(passiveObserverRetryDelayMs(3, 300_000, 3_600_000)).toBe(1_200_000)
-    expect(passiveObserverRetryDelayMs(4, 300_000, 3_600_000)).toBe(2_400_000)
-    expect(passiveObserverRetryDelayMs(5, 300_000, 3_600_000)).toBe(3_600_000)
-    expect(passiveObserverRetryDelayMs(99, 300_000, 3_600_000)).toBe(3_600_000)
+    expect(passiveObserverRetryDelayMs(2, 300_000, 3_600_000)).toBe(300_000)
+    expect(passiveObserverRetryDelayMs(5, 300_000, 3_600_000)).toBe(300_000)
+    expect(passiveObserverRetryDelayMs(99, 300_000, 3_600_000)).toBe(300_000)
   })
 
   test('Guardian CDP timeout 可区分 target 与 browser 层级', () => {

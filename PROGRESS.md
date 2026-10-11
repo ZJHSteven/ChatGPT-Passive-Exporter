@@ -1,3 +1,4 @@
+- 2026-10-11 passive target 固定探测回归已更新：无论连续失败次数多少，默认仍每 5 分钟尝试一次，保证 target 从 Chrome 睡眠恢复后能在有界时间内重新 attach。
 ## 2026-10-11 Conversation-first 搜索生产收口
 
 - **已部署完成。** Archive 搜索的第一返回单位现在是 Conversation；全局 limit 不再被单个长聊天的 message hit 吃光。模型可选择 `relevance / recent / frequency`，并分别控制 Conversation limit 与 `snippetsPerConversation`；原始 message 级结果保留为 `search-messages`/`/v1/search/messages` 展开入口。
