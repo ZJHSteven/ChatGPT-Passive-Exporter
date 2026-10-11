@@ -391,6 +391,7 @@ export function passiveObserverRetryDelayMs(
   maxMs?: unknown,
 ): number
 export function guardianCdpFailureScope(browserLevelHealthy: unknown): 'target' | 'browser'
+export function shouldReadGuardianProtocolBody(inFlight: unknown, maxConcurrent?: unknown): boolean
 
 /** 判断某个 passive response 是否足够新，可以替代本次 ready 后的主动 replay。 */
 export function passiveObservationMatchesReady(capturedAt: unknown, readyAt: unknown, toleranceMs?: number): boolean

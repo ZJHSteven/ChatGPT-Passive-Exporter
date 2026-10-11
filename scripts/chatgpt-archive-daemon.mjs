@@ -456,6 +456,13 @@ export function guardianCdpFailureScope(browserLevelHealthy) {
   return browserLevelHealthy ? 'target' : 'browser'
 }
 
+/** 协议指纹 body 读取只是诊断用途，超过并发上限时应让位给业务同步和 health probe。 */
+export function shouldReadGuardianProtocolBody(inFlight, maxConcurrent = 2) {
+  const active = Math.max(0, Number(inFlight) || 0)
+  const limit = Math.max(1, Number(maxConcurrent) || 2)
+  return active < limit
+}
+
 /** catalog late-start 超时与可靠 start 超时必须保留不同 lifecycle 语义。 */
 export function watchdogTriggerForStartType(startType) {
   return String(startType || '').startsWith('catalog:')
