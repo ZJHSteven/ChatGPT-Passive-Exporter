@@ -1,3 +1,15 @@
+# 2026-10-11 Bark 通知统一分组 ExecPlan
+
+目标：保持现有 Bark 通知频率和触发条件不变，只统一通知分组，让 iPhone/Bark 历史能按“聊天延迟、聊天超时、正常完成、真正事故、Archive 自身告警”等语义快速归类。
+
+1. 固定七类 group：`Chat-Latency`、`Chat-Timeout`、`Chat-Done`、`Incident`、`Archive-Warning`、`LiveOps`、`Infra`；本仓库只负责当前实际拥有的前五类，LifeOps/Infra 保留给对应发送端。
+2. DevSpace 1/3/5 分钟工具静默和 5 分钟诊断归 `Chat-Latency`；DevSpace checkpoint/conclusion 归 `Chat-Done`。
+3. Watchdog 到点、cooldown-deferred、未绑定 Watchdog 归 `Chat-Timeout`；Watchdog 最终诊断按结果动态归 `Chat-Done`（final）或 `Incident`（异常）。
+4. 正常 turn final、ImageGen 完成归 `Chat-Done`；conversation lifecycle 异常归 `Incident`。
+5. DOM Drift、HTTP protocol drift、429 cooldown 统一归 `Archive-Warning`，明确与 conversation 自身异常隔离。
+6. 不改 Bark token、声音、优先级、通知频率、持久去重 key 或生命周期判定，只补 group；配置里的默认 group 仅作为未来未知通知的 fallback。
+7. 补 payload/build request 单测，跑 daemon 定向测试、notifier 测试、TypeScript 和全量测试；部署时只重载 Archive daemon，随后用本地 payload 验证所有 lane 都带正确 group。
+
 # 2026-10-11 Conversation-first 搜索重构 ExecPlan
 
 目标：把 Archive 搜索的第一返回单位从全局 message hit 改为 Conversation，避免高频词被少数长聊天占满 message limit；同时修复两字中文错误落入无界 LIKE 全表扫描造成的 12 秒级超时。
