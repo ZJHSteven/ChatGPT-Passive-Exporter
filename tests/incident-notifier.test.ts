@@ -1,7 +1,23 @@
 import { describe, expect, test } from 'vitest'
-import { buildBarkIncidentRequest, sendIncidentNotification } from '../src/local/incident-notifier.ts'
+import {
+  BARK_NOTIFICATION_GROUPS,
+  buildBarkIncidentRequest,
+  sendIncidentNotification,
+} from '../src/local/incident-notifier.ts'
 
 describe('incident notifier', () => {
+  test('统一 Bark 分组名保持稳定，供各发送端复用同一语义契约', () => {
+    expect(BARK_NOTIFICATION_GROUPS).toEqual({
+      chatLatency: 'Chat-Latency',
+      chatTimeout: 'Chat-Timeout',
+      chatDone: 'Chat-Done',
+      incident: 'Incident',
+      archiveWarning: 'Archive-Warning',
+      liveOps: 'LiveOps',
+      infra: 'Infra',
+    })
+  })
+
   test('Bark V2 使用 POST /push JSON，device key 与正文不进入 URL', () => {
     const request = buildBarkIncidentRequest({
       provider: 'bark',
@@ -28,7 +44,7 @@ describe('incident notifier', () => {
     expect(request.url.toString()).not.toContain('device')
   })
 
-  test('单条通知可以覆盖默认 Bark group，供 DevSpace Bug 独立分组', () => {
+  test('单条通知可以覆盖默认 Bark group，供语义分组独立归类', () => {
     const request = buildBarkIncidentRequest({
       provider: 'bark',
       enabled: true,
@@ -38,9 +54,9 @@ describe('incident notifier', () => {
     }, {
       title: 'DevSpace idle',
       body: 'soft warning',
-      group: 'DevSpace Bug',
+      group: BARK_NOTIFICATION_GROUPS.chatLatency,
     })
-    expect(JSON.parse(String(request.init.body)).group).toBe('DevSpace Bug')
+    expect(JSON.parse(String(request.init.body)).group).toBe('Chat-Latency')
   })
 
   test('未配置通知时完全不发网络请求', async () => {

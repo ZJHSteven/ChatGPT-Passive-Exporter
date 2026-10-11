@@ -135,7 +135,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shortDevSpaceMetadataAlias('')).toBe('meta/unknown')
   })
 
-  test('Conclusion 只接受非空字符串，并生成独立 Bark 分组', () => {
+  test('Conclusion 只接受非空字符串，并归入 Chat-Done 分组', () => {
     expect(extractDevSpaceConclusion('{"conclusion":"  已完成受控重启  "}')).toBe('已完成受控重启')
     expect(extractDevSpaceConclusion('{"conclusion":"   "}')).toBeNull()
     expect(extractDevSpaceConclusion('{broken')).toBeNull()
@@ -152,7 +152,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(bound.body).toContain('聊天：需求梳理')
     expect(bound.body).toContain('工具：exec_command')
     expect(bound.body).toContain('已经完成阶段一。')
-    expect(bound.group).toBe('DevSpace Conclusion')
+    expect(bound.group).toBe('Chat-Done')
     expect(bound.url).toContain('/c/conversation-a')
 
     const titled = buildDevSpaceConclusionNotificationPayload({
@@ -173,7 +173,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(unnamed.body).not.toContain('v1/abcdefgh12345678')
   })
 
-  test('Checkpoint 解析 summary/next，并使用独立阶段进展 Bark 分组', () => {
+  test('Checkpoint 解析 summary/next，并归入 Chat-Done 分组', () => {
     expect(extractDevSpaceCheckpoint(JSON.stringify({
       summary: '  已确认虚拟 conversation 可以在 binding 前持续积累。  ',
       next: '  转入 canonical supersede 验证。  ',
@@ -194,7 +194,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(payload.body).toContain('以“Archive 临时 Conversation”为主题')
     expect(payload.body).toContain('阶段一已经完成。')
     expect(payload.body).toContain('下一阶段：开始生产 E2E。')
-    expect(payload.group).toBe('DevSpace Checkpoint')
+    expect(payload.group).toBe('Chat-Done')
     expect(payload).not.toHaveProperty('url')
   })
 
@@ -218,7 +218,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(isConfirmedTerminalTrigger('devspace-idle:bound-probe')).toBe(false)
   })
 
-  test('DevSpace idle 通知是独立 Bug 分组，并明确不是 turn 终止证据', () => {
+  test('DevSpace idle 通知归入 Chat-Latency，并明确不是 turn 终止证据', () => {
     const unbound = buildDevSpaceIdleNotificationPayload({
       metadataId: 'v1/abcdefghijklmnopqrstuvwxyz',
       title: '改造 DevSpace',
@@ -227,7 +227,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(unbound.title).toContain('3 分钟')
     expect(unbound.body).toContain('以“改造 DevSpace”为主题')
     expect(unbound.body).toContain('不代表 turn 已结束')
-    expect(unbound.group).toBe('DevSpace Bug')
+    expect(unbound.group).toBe('Chat-Latency')
     expect(unbound).not.toHaveProperty('url')
 
     const bound = buildDevSpaceIdleNotificationPayload({
@@ -264,6 +264,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       },
     })
     expect(payload.title).toContain('Body 尾部缺失')
+    expect(payload.group).toBe('Chat-Latency')
     expect(payload.body).toContain('canonical：terminal=none；tail=tool-result-returned')
     expect(payload.body).toContain('累计 canonical 节点：5317')
     expect(payload.body).toContain('67 条')
@@ -378,6 +379,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
         '主动 API 冷却至：2026-10-06 17:02:52 北京时间',
         'WSS/CDP 被动监听继续运行；滑动延长只记日志，不重复通知。',
       ].join('\n'),
+      group: 'Archive-Warning',
     })
   })
 
@@ -881,6 +883,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(payload.body).toContain('继续处理异常终止')
     expect(payload.body).toContain('429 cooldown')
     expect(payload.body).toContain('46 分钟')
+    expect(payload.group).toBe('Chat-Timeout')
     expect(payload.url).toContain('/c/conversation-a')
   })
 
@@ -894,6 +897,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(timeout.title).toBe('ChatGPT Watchdog 已超时')
     expect(timeout.body).toContain('46 分钟')
     expect(timeout.body).toContain('不会重新启动 Watchdog')
+    expect(timeout.group).toBe('Chat-Timeout')
 
     const diagnosis = buildWatchdogDiagnosisNotificationPayload({
       conversationId: 'conversation-a',
@@ -904,6 +908,14 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(diagnosis.title).toContain('诊断完成')
     expect(diagnosis.body).toContain('最新工具结果已经回来')
     expect(diagnosis.body).toContain('tool-result-returned')
+    expect(diagnosis.group).toBe('Incident')
+
+    const finalDiagnosis = buildWatchdogDiagnosisNotificationPayload({
+      conversationId: 'conversation-a',
+      title: '长任务',
+      diagnostic: { terminalEvidence: 'final', tailShape: 'final' },
+    })
+    expect(finalDiagnosis.group).toBe('Chat-Done')
   })
 
   test('未绑定 watchdog 到点也通知，但不猜 CID 或聊天名', () => {
@@ -915,6 +927,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(payload.title).toContain('会话未绑定')
     expect(payload.body).toContain('50 分钟')
     expect(payload.body).toContain('不能猜聊天名或 CID')
+    expect(payload.group).toBe('Chat-Timeout')
     expect(payload).not.toHaveProperty('url')
   })
 
@@ -940,6 +953,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(payload.title).toContain('正常完成')
     expect(payload.body).toContain('正常长任务')
     expect(payload.body).toContain('canonical body 已确认 final')
+    expect(payload.group).toBe('Chat-Done')
   })
 
   test('短 WSS/gap repair 只需一整页稳定 overlap，startup/periodic 继续深扫描', () => {
