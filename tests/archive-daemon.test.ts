@@ -956,6 +956,15 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(passiveObservationMatchesReady(8_600, 10_000, 1_500)).toBe(true)
   })
 
+  test('Guardian REST unblock 永远真实下发，未知状态不能信任 cached false', () => {
+    expect(shouldApplyGuardianConversationRestBlockCommand(false, false, false)).toBe(true)
+    expect(shouldApplyGuardianConversationRestBlockCommand(false, true, false)).toBe(true)
+    expect(shouldApplyGuardianConversationRestBlockCommand(true, false, false)).toBe(true)
+    expect(shouldApplyGuardianConversationRestBlockCommand(true, true, false)).toBe(false)
+    expect(shouldApplyGuardianConversationRestBlockCommand(true, false, true)).toBe(true)
+    expect(shouldApplyGuardianConversationRestBlockCommand(true, true, true)).toBe(true)
+  })
+
   test('cooldown 恢复期先 slow-start，成功探针清零后恢复正常间隔', () => {
     expect(effectiveActiveRequestGap(6000, 3, 30_000)).toBe(30_000)
     expect(effectiveActiveRequestGap(5000, 1, 30_000)).toBe(30_000)

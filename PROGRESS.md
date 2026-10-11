@@ -1,3 +1,4 @@
+- 2026-10-11 Guardian block helper 回归断言已补齐：clear/blocked/uncertain 六种组合均覆盖，尤其固定 cached=false 也必须真实 unblock 的故障边界。
 - 2026-10-11 archive-daemon 回归测试已接入 shouldApplyGuardianConversationRestBlockCommand helper，下一提交补齐状态组合断言。
 - 2026-10-11 已增加 Guardian REST block 命令判定 helper：unblock 无条件真实下发；block 只有在 cached=true 且状态确定时才可跳过；uncertain 时必须重新同步 Chrome。
 - 2026-10-11 定位到历史 Notes 03:45 后停滞的真正根因：Archive Actor submission 已成功且 WSS 多次 complete，但 Guardian canonical body GET 长期报 No fetch result。原始 CDP 重放得到 TypeError: Failed to fetch；日志同时显示 19:44 Network.setBlockedURLs 超时、20:44 cooldown expired 却没有 REST block released。代码确认 setBlockedURLs 超时时真实 Chrome 状态可能已改变，而 guardianConversationRestBlocked 仍为 false，随后 unblock 因缓存 false 直接 return，形成 Chrome 实际 blocked / daemon 状态 false 的分裂。准备修复为 uncertain + 强制幂等 unblock。
