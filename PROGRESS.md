@@ -1,4 +1,4 @@
-## 2026-10-11 Conversation-first 搜索重构
+- 2026-10-11 CDP 加固生产验收：完整 check 25 files / 212 tests PASS，typecheck 与 Chrome/Edge/Firefox/Userscript build PASS。仅重启 Archive daemon，未重启日常 Chrome；新 daemon PID 47920，Guardian target 4C6119... 当前 healthFailures=0 / blocked=false / uncertain=false / lastError=null。启动阶段协议指纹并发达到上限后已跳过 3 个诊断 body 读取（inFlight 最多 2），验证 backpressure 生效；坏 target 02C370... 首次 attach failure 记录 failureCount=1/retryDelayMs=300000，后续将指数退避。Archive submission queue 当前 29/29 accepted；ClassFlow 2026-09-01 起已知 22 个课程组中 21 个全分段成功且 Notes 21/21 succeeded，唯一未补 Notes 的 2026-09-08 综合素养课程5/谢娟因 4 段中 2 段原始 VGA.mp4 资源不存在而下载失败，保持 fail-closed。## 2026-10-11 Conversation-first 搜索重构
 
 - 已定位历史搜索超时的数据库慢路径：旧 `ChatArchiveDb.search()` 对 1~2 字 CJK 故意跳过 FTS，进入 `%LIKE%` 全表正文扫描；真实库 `搜索` 查询超过 60 秒未完成。直接使用现有 unicode61 FTS 时，同词冷查询约 39ms，`英国` 约 6ms，说明 SQLite/FTS 本体没有 12 秒级性能问题。
 - 已确定新语义：Conversation 才是全局 limit/排序单位；message 只作为 Conversation 下的命中统计与有限 snippets，不能再让少数长聊天占满全局 message hit 配额。
@@ -744,6 +744,7 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - iPhone push 由 Companion daemon 转发；不把 push token 放进 Userscript。
 - 继续做本地轻量 Reader：历史 DevSpace tool/widget 默认静态折叠渲染，不创建真实 Apps SDK iframe。
 - 开发期模块继续分离；最终合并为单一 ChatGPT Companion runtime，Exporter / Run Watch / Fleet / Reader / Bookmark / Notification 共享状态与网络层。
+
 
 
 
