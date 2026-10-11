@@ -1,3 +1,4 @@
+- 2026-10-11 ambiguous queue 测试发现并修复持久化竞争：persist 临时文件原先只含 PID，同进程 enqueue/drain 并发写盘会争抢同一 tmp 并在 Windows rename 时触发 ENOENT；现改为 PID+randomUUID 唯一临时名，保留最终原子 rename。
 - 2026-10-11 ambiguous submission 回归已补：canonical 精确 prompt 命中时 1 次 POST 后直接 accepted；未命中时最多 2 次 POST（初次 + 唯一一次重发），第二次仍 unknown 则 failed；精确匹配不会接受仅空格不同的 prompt。
 - 2026-10-11 Archive Bridge 已接入 ambiguous POST canonical 确认：continue/steer 仅检查指定 CID；new 仅扫最近 100 个 canonical conversation；必须存在 role=user 且 message.text 与原 prompt 全量精确相等才认领，命中后返回原 conversationId，不做模糊匹配。
 - 2026-10-11 ambiguous POST 恢复策略调整：submission queue 新增 confirmTurn 钩子；`submission outcome unknown` 第一次不再永久 fail，而是进入 retry_waiting，下一轮先从 canonical 精确确认同一 user prompt，确认不到才允许唯一一次重新 POST；第二次仍 unknown 才终止，避免无限重复 turn。

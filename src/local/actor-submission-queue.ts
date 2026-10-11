@@ -386,7 +386,10 @@ export class ActorSubmissionQueue {
       globalNotBefore: this.globalNotBefore > Date.now() ? this.globalNotBefore : null,
       records: [...this.recordsByKey.values()].sort((left, right) => left.createdAt - right.createdAt),
     }
-    const tempPath = this.options.filePath + '.tmp-' + process.pid
+    // 同一进程里 enqueue()/drain()/恢复写盘可能短时间重叠；只用 PID 会让多个 persist
+    // 抢同一个临时文件，Windows rename 尤其容易出现 ENOENT。每次写盘使用独立临时名，
+    // 最终仍通过原子 rename 覆盖正式状态文件。
+    const tempPath = this.options.filePath + '.tmp-' + process.pid + '-' + randomUUID()
     await fs.writeFile(tempPath, JSON.stringify(state, null, 2) + '\n', 'utf8')
     await fs.rename(tempPath, this.options.filePath)
   }
