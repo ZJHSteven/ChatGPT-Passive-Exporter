@@ -1,3 +1,16 @@
+# 2026-10-11 Archive daemon 常驻启动回填修复 ExecPlan
+
+现象：生产 Archive daemon 在 15:30 左右无优雅 shutdown 记录直接消失；Windows 计划任务未接管。恢复计划任务后，新 daemon 又在 `DevSpace historical metadata seed complete` 后持续高 CPU / 约 1.1 GiB 工作集，迟迟未进入 wake listener 与 WSS 主循环。
+
+根因：启动逻辑把“本次历史 seed 新建了任意 metadata 行”误当成“首次历史迁移”，于是只要 daemon 停机期间出现一个新 metadata，重启就会执行全量 `backfillStoredDevSpaceBindings()`。这与代码注释“全量 backfill 只在首次迁移执行一次”相违背，也会拖延常驻监控恢复。
+
+修复计划：
+1. 在 historical seed 前判断 Archive 是否已经存在任何 DevSpace binding 记录。
+2. 只有“启动前 binding 表为空 且本次 seed 确实创建了历史行”时执行全量历史 backfill；普通重启只保留现有的近期窄窗口 backfill。
+3. 增加纯函数门槛及回归测试，并同步声明文件。
+4. 跑定向测试、TypeScript/全量检查；随后只通过 Windows 计划任务启动生产 daemon。
+5. 验证 task owner、PID/state 新鲜度、Bridge 47832、DevSpace wake 47831、WSS、Guardian、Bark 配置与 lastError。
+
 # 2026-10-11 CDP target 语义修正与残片课堂策略
 
 用户校正：普通 ChatGPT tab 的 passive observer timeout 与 Guardian health 必须严格分层。普通 target 可能只是 Chrome 正常冻结/休眠，不能把它当 Guardian/CDP 总线故障，也不应指数退避到一小时；保持固定低频探测，醒来后应能及时重新 attach。Guardian 自身继续使用 target-level health probe，失败时 browser-level ping 只用于诊断“target 还是 browser”，不替代 health probe。
