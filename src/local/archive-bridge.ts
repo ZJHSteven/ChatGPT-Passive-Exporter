@@ -59,6 +59,40 @@ export interface ArchiveBridgeTurnInput {
   idempotencyKey?: string | null
 }
 
+/**
+ * 在 canonical Archive 中精确确认一条 user prompt 是否已经真实出现。
+ *
+ * 这是“正式 POST 已发出但本地没拿到 HTTP 闭环”时的恢复证据：
+ * - continue/steer：只检查指定 conversation，避免串会话；
+ * - new：只扫最近的 canonical conversations，并要求 user message 文本全量精确相等。
+ *
+ * 不做模糊搜索，也不靠标题猜测，因此不会把相似课堂/标题请求误认成同一次提交。
+ */
+export function confirmCanonicalExactPrompt(
+  archive: ArchiveBridgeDataSource,
+  input: ArchiveBridgeTurnInput,
+  recentConversationLimit = 100,
+): Record<string, unknown> | null {
+  const conversationIds = input.conversationId
+    ? [input.conversationId]
+    : archive.list(Math.max(1, recentConversationLimit)).map(row => row.id)
+
+  for (const conversationId of conversationIds) {
+    const messages = archive.getMessages(conversationId)
+    const matched = messages.some(message => (
+      String(message.role || '') === 'user'
+      && typeof message.text === 'string'
+      && message.text === input.text
+    ))
+    if (!matched) continue
+    return {
+      conversationId,
+      confirmedBy: 'canonical-exact-prompt',
+    }
+  }
+  return null
+}
+
 export interface ArchiveBridgeEvent {
   version: 1
   at: number
@@ -473,6 +507,10 @@ export class ArchiveBridgeServer {
               ...input,
               idempotencyKey: null,
             }),
+          ),
+          confirmTurn: async input => confirmCanonicalExactPrompt(
+            this.options.archive,
+            input as ArchiveBridgeTurnInput,
           ),
           onAccepted: async record => this.publishAcceptedSubmission(record),
         })
