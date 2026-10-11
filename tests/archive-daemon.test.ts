@@ -49,6 +49,7 @@ import {
   shouldRunDeferredGapRepair,
   shouldQueueWatchdogDiagnostic,
   shouldRetainSeenDevSpaceAudit,
+  shouldRunHistoricalDevSpaceBackfill,
   shouldCloseWatchdogGenerationAfterSync,
   shouldRepairConversationTransport,
   shouldRetireWssSocketsForFrameNavigation,
@@ -120,6 +121,13 @@ test('上一轮 conversation final 不能挡住更新的 resume token', () => {
 })
 
 describe('ChatGPT Archive daemon WSS parser', () => {
+  test('DevSpace 全量历史 binding backfill 只在首次初始化执行', () => {
+    expect(shouldRunHistoricalDevSpaceBackfill(false, 1)).toBe(true)
+    expect(shouldRunHistoricalDevSpaceBackfill(false, 0)).toBe(false)
+    expect(shouldRunHistoricalDevSpaceBackfill(true, 1)).toBe(false)
+    expect(shouldRunHistoricalDevSpaceBackfill(true, 20)).toBe(false)
+  })
+
   test('SSE resume 使用有限退避，不会无限加速重试', () => {
     expect(resumeRetryDelayMs(1)).toBe(2_000)
     expect(resumeRetryDelayMs(2)).toBe(5_000)

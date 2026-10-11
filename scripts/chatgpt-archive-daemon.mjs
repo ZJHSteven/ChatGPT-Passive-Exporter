@@ -428,6 +428,10 @@ export function shouldRetainSeenDevSpaceAudit(eventAt, pollSinceAt, overlapMs = 
  * cooldown `Network.setBlockedURLs` 等控制面；被动 observer session 只 `Network.enable` 并读取页面已经
  * 自然产生的 response/stream，不创建请求、不改路由。因此这里不再按 Guardian 身份排除。
  */
+export function shouldRunHistoricalDevSpaceBackfill(hadExistingBindings, createdCount) {
+  return !hadExistingBindings && Number(createdCount) > 0
+}
+
 export function shouldAttachPassivePageObserver(target) {
   return Boolean(
     target?.type === 'page'
@@ -7160,6 +7164,7 @@ async function main() {
   // 先把 DevSpace SQLite 里所有历史 metadata 的首末时间 seed 进 Archive。
   // 这只是补齐“曾经存在过”的事实，不把历史行放进 unboundDevSpaceTurns，
   // 所以不会把几周前的聊天误当成当前 active watchdog。
+  const hadExistingDevSpaceMetadataBindings = archive.listDevSpaceMetadataBindings({ limit: 1 }).length > 0
   let devSpaceHistoricalSeeded = 0
   const devSpaceMetadataHistory = devSpaceAuditBridge.metadataSummaries(10_000)
   for (const summary of devSpaceMetadataHistory) {
@@ -7183,7 +7188,10 @@ async function main() {
   // 首次把旧 DevSpace metadata seed 进 Archive 时跑一遍即可；之后 live body sync 自己会
   // 对当前 turn 做 exact-match。否则少量永久无法匹配的旧 metadata 会让每次启动都重扫
   // 2 万+ audit / 数百 turn，甚至把 Watchdog 主循环堵住一分多钟。
-  const devSpaceBackfilledBindings = devSpaceHistoricalSeeded > 0
+  const devSpaceBackfilledBindings = shouldRunHistoricalDevSpaceBackfill(
+    hadExistingDevSpaceMetadataBindings,
+    devSpaceHistoricalSeeded,
+  )
     ? backfillStoredDevSpaceBindings()
     : 0
   if (devSpaceBackfilledBindings > 0) {

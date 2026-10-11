@@ -68,6 +68,12 @@ export function shouldRetainSeenDevSpaceAudit(
 ): boolean
 
 /** 根据 active 的 startType 选择普通 watchdog 或 catalog active-zombie watchdog。 */
+/** 全量 DevSpace binding backfill 只在 binding 表首次初始化时执行。 */
+export function shouldRunHistoricalDevSpaceBackfill(
+  hadExistingBindings: unknown,
+  createdCount: unknown,
+): boolean
+
 export function watchdogTriggerForStartType(startType: unknown): 'watchdog:catalog-active-timeout' | 'watchdog:active-timeout'
 
 /** DevSpace first-tool 启动新 turn watchdog；当前 turn key 在第一次 body 诊断前必须保持 unknown。 */
