@@ -981,7 +981,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     const long = buildTurnFinalNotificationPayload({
       conversationId: 'conversation-long',
       title: longTitle,
-      diagnostic: { terminalEvidence: 'final', hasImageGenerationFinal: true, imageGenerationCount: 3 },
+      diagnostic: { hasImageGenerationFinal: true, imageGenerationCount: 3 },
     })
     expect(long.title).toMatch(/^Turn 正常完成 · .+…$/u)
     expect(long.body).toBe(`会话：${longTitle}\n已确认 Final · 3 张图片`)
