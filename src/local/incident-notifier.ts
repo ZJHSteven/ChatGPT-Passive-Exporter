@@ -1,5 +1,15 @@
 import fs from 'node:fs/promises'
 
+export const BARK_NOTIFICATION_GROUPS = {
+  chatLatency: 'Chat-Latency',
+  chatTimeout: 'Chat-Timeout',
+  chatDone: 'Chat-Done',
+  incident: 'Incident',
+  archiveWarning: 'Archive-Warning',
+  liveOps: 'LiveOps',
+  infra: 'Infra',
+} as const
+
 /**
  * ChatGPT Archive 的本地事故通知配置。
  *
