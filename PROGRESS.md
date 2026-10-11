@@ -1,3 +1,4 @@
+- 2026-10-11 Guardian 协议指纹读取已接入 2 并发 backpressure：超过上限直接跳过该诊断指纹并累计 skipped，不阻塞业务；state 暴露 inFlight/skipped 便于判断诊断流量是否挤压 CDP。
 - 2026-10-11 增加 Guardian 协议指纹 body 读取让路 helper：诊断型 Network.getResponseBody 默认最多 2 个并发，超过即跳过，避免与 canonical 同步和 health probe 抢同一 target CDP session。
 - 2026-10-11 Guardian health 运行态已接入浏览器级 Browser.getVersion ping：每次 target Runtime timeout 都记录 cdpFailureScope=target|browser 与 browserPingMs；一次成功 probe 会清除 last scope。连续 3 次 target 失败仍按既有策略重建 Guardian，不会因为普通 observer target 失败误重建。
 - 2026-10-11 Guardian health 分层诊断 helper 已增加：target Runtime timeout 后再做浏览器级 CDP ping，可明确区分 target/renderer 卡顿与整个 Chrome CDP 路径异常。

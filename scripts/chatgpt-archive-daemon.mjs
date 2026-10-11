@@ -2186,6 +2186,8 @@ async function main() {
   let passive429Responses = 0
   let passiveBodyPagesReused = 0
   let passiveCatalogPagesReused = 0
+  let guardianProtocolBodyReadsInFlight = 0
+  let guardianProtocolBodyReadsSkipped = 0
   let guardianConversationRestBlocked = false
   let guardianConversationRestBlockUncertain = true
   // catalogActive 只表示“低频 conversation list 曾看见 async_status=3/5”。它不是可靠
@@ -3277,6 +3279,8 @@ async function main() {
         catalogPagesReused: passiveCatalogPagesReused,
         bodyCacheEntries: passiveBodyPages.size,
         catalogCacheEntries: passiveCatalogPages.size,
+        guardianProtocolBodyReadsInFlight,
+        guardianProtocolBodyReadsSkipped,
         guardianConversationRestBlocked,
         guardianConversationRestBlockUncertain,
       },
@@ -6803,6 +6807,17 @@ async function main() {
       guardianProtocolRequestSignatures.delete(requestId)
       if (!meta) return
       guardianProtocolResponses.delete(requestId)
+      if (!shouldReadGuardianProtocolBody(guardianProtocolBodyReadsInFlight)) {
+        guardianProtocolBodyReadsSkipped += 1
+        if (guardianProtocolBodyReadsSkipped <= 3 || guardianProtocolBodyReadsSkipped % 25 === 0) {
+          void log('guardian protocol response fingerprint skipped for CDP backpressure', {
+            inFlight: guardianProtocolBodyReadsInFlight,
+            skipped: guardianProtocolBodyReadsSkipped,
+          }).catch(() => {})
+        }
+        return
+      }
+      guardianProtocolBodyReadsInFlight += 1
       void decodeCdpJsonResponseBody(page, requestId).then((payload) => {
         observeProtocolResponse(meta.requestSignature, {
           status: meta.status,
@@ -6813,6 +6828,8 @@ async function main() {
         await log('guardian protocol response fingerprint failed', {
           error: error instanceof Error ? error.message : String(error),
         }).catch(() => {})
+      }).finally(() => {
+        guardianProtocolBodyReadsInFlight = Math.max(0, guardianProtocolBodyReadsInFlight - 1)
       })
     })
     page.on('Network.loadingFailed', ({ requestId }) => {
