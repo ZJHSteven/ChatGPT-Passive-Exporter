@@ -622,6 +622,7 @@ describe('ChatArchiveDb', () => {
         messageCount: 3,
         indexedMessageCount: 2,
         trigramIndexedMessageCount: 2,
+        bigramIndexedMessageCount: 2,
       })
     }
     finally {
@@ -845,7 +846,7 @@ describe('ChatArchiveDb', () => {
       expect(db.getMessages('conversation-cn').map(item => item.messageId)).toEqual(
         expect.arrayContaining(['u1', 'tool-call', 'a2', 'u3', 'a3']),
       )
-      expect(db.search('重庆').some(hit => hit.conversationId === 'conversation-cn')).toBe(true)
+      expect(db.searchConversations('重庆').some(hit => hit.conversationId === 'conversation-cn')).toBe(true)
       expect(db.db.prepare('SELECT count(*) AS n FROM live_observations').get()).toMatchObject({ n: 1 })
       expect(db.listIncidents({ status: 'open' })).toHaveLength(0)
     }

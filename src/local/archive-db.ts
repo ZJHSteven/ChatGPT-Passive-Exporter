@@ -55,7 +55,7 @@ export interface ArchiveConversationSearchResult {
   snippets: ArchiveSearchHit[]
 }
 
-type ArchiveSearchIndex = 'message_fts' | 'message_fts_trigram'
+type ArchiveSearchIndex = 'message_fts' | 'message_fts_trigram' | 'message_fts_bigram'
 
 interface ArchiveSearchPlan {
   table: ArchiveSearchIndex
@@ -74,6 +74,35 @@ interface ArchiveSearchMetaRow {
   capturedAt: number
   terminalState: string | null
   lastFinishType: string | null
+}
+
+const CJK_CODEPOINT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
+
+/**
+ * 为“两字 CJK 任意子串”生成紧凑的二元字 token。
+ * 只收录相邻且都属于 CJK 的两个 code point，并在同一 message 内去重。
+ * 例如 `长江三峡` 会生成 `长江 江三 三峡`，搜索 `三峡` 不需要 `%LIKE%` 扫全库。
+ */
+function cjkBigramTokens(text: string): string {
+  const codepoints = Array.from(text)
+  const tokens = new Set<string>()
+  for (let index = 0; index + 1 < codepoints.length; index += 1) {
+    const left = codepoints[index]!
+    const right = codepoints[index + 1]!
+    if (CJK_CODEPOINT.test(left) && CJK_CODEPOINT.test(right)) tokens.add(`${left}${right}`)
+  }
+  return [...tokens].join(' ')
+}
+
+/** 为 bigram 命中生成与 FTS snippet 类似的短上下文，并用 [] 标出真实子串。 */
+function substringSnippet(text: string, query: string): string {
+  const index = text.indexOf(query)
+  if (index < 0) return text.slice(0, 260)
+  const start = Math.max(0, index - 80)
+  const end = Math.min(text.length, index + query.length + 160)
+  const prefix = start > 0 ? ' … ' : ''
+  const suffix = end < text.length ? ' … ' : ''
+  return `${prefix}${text.slice(start, index)}[${text.slice(index, index + query.length)}]${text.slice(index + query.length, end)}${suffix}`
 }
 
 export interface ArchiveConversationRow {
@@ -520,6 +549,13 @@ export class ChatArchiveDb {
         role UNINDEXED,
         text,
         tokenize='trigram'
+      );
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS message_fts_bigram USING fts5(
+        conversation_id UNINDEXED,
+        message_id UNINDEXED,
+        grams,
+        tokenize='unicode61'
       );
 
       -- 数据源表让“官方 ZIP / 被动 capture / 在线 sync”成为一等公民。
@@ -1492,6 +1528,7 @@ export class ChatArchiveDb {
 
     const insertFts = this.db.prepare('INSERT INTO message_fts (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
     const insertTrigram = this.db.prepare('INSERT INTO message_fts_trigram (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
+    const insertBigram = this.db.prepare('INSERT INTO message_fts_bigram (conversation_id, message_id, grams) VALUES (?, ?, ?)')
     const insertAll = this.db.prepare('INSERT INTO message_fts_all (conversation_id, message_id, title, role, channel, content_type, text) VALUES (?, ?, ?, ?, ?, ?, ?)')
 
     this.db.exec('BEGIN IMMEDIATE')
@@ -1499,6 +1536,7 @@ export class ChatArchiveDb {
       this.db.exec(`
         DELETE FROM message_fts;
         DELETE FROM message_fts_trigram;
+        DELETE FROM message_fts_bigram;
         DELETE FROM message_fts_all;
       `)
       for (const message of messages) {
@@ -1521,6 +1559,8 @@ export class ChatArchiveDb {
         ) {
           insertFts.run(message.conversationId, message.messageId, message.title, message.role, message.text)
           insertTrigram.run(message.conversationId, message.messageId, message.title, message.role, message.text)
+          const grams = cjkBigramTokens(message.text)
+          if (grams) insertBigram.run(message.conversationId, message.messageId, grams)
         }
       }
       this.db.exec('COMMIT')
@@ -2307,9 +2347,11 @@ export class ChatArchiveDb {
 
     this.db.prepare('DELETE FROM message_fts WHERE conversation_id = ?').run(conversationId)
     this.db.prepare('DELETE FROM message_fts_trigram WHERE conversation_id = ?').run(conversationId)
+    this.db.prepare('DELETE FROM message_fts_bigram WHERE conversation_id = ?').run(conversationId)
     this.db.prepare('DELETE FROM resources WHERE conversation_id = ?').run(conversationId)
     const insertFts = this.db.prepare('INSERT INTO message_fts (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
     const insertTrigram = this.db.prepare('INSERT INTO message_fts_trigram (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
+    const insertBigram = this.db.prepare('INSERT INTO message_fts_bigram (conversation_id, message_id, grams) VALUES (?, ?, ?)')
     const insertResource = this.db.prepare('INSERT INTO resources (conversation_id, message_id, ordinal, kind, label, data_json) VALUES (?, ?, ?, ?, ?, ?)')
     const upsertImageAsset = this.db.prepare(`
       INSERT INTO image_assets (
@@ -2337,6 +2379,8 @@ export class ChatArchiveDb {
       if (row.hidden === 0 && row.recipient === 'all' && (row.role === 'user' || row.role === 'assistant') && row.text.trim()) {
         insertFts.run(conversationId, row.messageId, conversationRow.title, row.role, row.text)
         insertTrigram.run(conversationId, row.messageId, conversationRow.title, row.role, row.text)
+        const grams = cjkBigramTokens(row.text)
+        if (grams) insertBigram.run(conversationId, row.messageId, grams)
       }
       try {
         const rawMessage = JSON.parse(row.rawJson)
@@ -2985,11 +3029,16 @@ export class ChatArchiveDb {
       INSERT INTO message_fts_trigram (conversation_id, message_id, title, role, text)
       VALUES (?, ?, ?, ?, ?)
     `)
+    const insertBigram = this.db.prepare(`
+      INSERT INTO message_fts_bigram (conversation_id, message_id, grams)
+      VALUES (?, ?, ?)
+    `)
 
     this.db.exec('BEGIN IMMEDIATE')
     try {
       this.db.prepare('DELETE FROM message_fts WHERE conversation_id = ?').run(conversationId)
       this.db.prepare('DELETE FROM message_fts_trigram WHERE conversation_id = ?').run(conversationId)
+      this.db.prepare('DELETE FROM message_fts_bigram WHERE conversation_id = ?').run(conversationId)
       // conversations 的 ON DELETE CASCADE 会清理旧 messages/resources；随后同 ID 重建最新 snapshot。
       this.db.prepare('DELETE FROM conversations WHERE id = ?').run(conversationId)
       upsertConversation.run(
@@ -3047,6 +3096,8 @@ export class ChatArchiveDb {
           message.role,
           message.text,
         )
+        const grams = cjkBigramTokens(message.text)
+        if (grams) insertBigram.run(conversationId, message.id, grams)
       })
       this.db.exec('COMMIT')
     }
@@ -3078,18 +3129,24 @@ export class ChatArchiveDb {
   private resolveSearchPlan(query: string): ArchiveSearchPlan | null {
     const codepointLength = Array.from(query).length
     const hasCjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(query)
-    const indexOrder: ArchiveSearchIndex[] = hasCjk && codepointLength >= 3
-      ? ['message_fts_trigram', 'message_fts']
-      : codepointLength >= 3
-        ? ['message_fts', 'message_fts_trigram']
-        : ['message_fts']
+    const indexOrder: ArchiveSearchIndex[] = hasCjk && codepointLength === 2
+      ? ['message_fts_bigram', 'message_fts']
+      : hasCjk && codepointLength >= 3
+        ? ['message_fts_trigram', 'message_fts']
+        : codepointLength >= 3
+          ? ['message_fts', 'message_fts_trigram']
+          : ['message_fts']
 
     // 默认允许调用者使用 FTS5 的 AND/OR/引号等语法；若语法不完整，再把整段当普通字面短语重试。
-    const rawExpression = `{text} : (${query})`
-    const literalExpression = `{text} : "${query.replaceAll('"', '""')}"`
+    const rawExpression = (table: ArchiveSearchIndex) => table === 'message_fts_bigram'
+      ? `{grams} : (${query})`
+      : `{text} : (${query})`
+    const literalExpression = (table: ArchiveSearchIndex) => table === 'message_fts_bigram'
+      ? `{grams} : "${query.replaceAll('"', '""')}"`
+      : `{text} : "${query.replaceAll('"', '""')}"`
 
     for (const table of indexOrder) {
-      for (const expression of [rawExpression, literalExpression]) {
+      for (const expression of [rawExpression(table), literalExpression(table)]) {
         try {
           const row = this.db.prepare(`SELECT 1 AS found FROM ${table} WHERE ${table} MATCH ? LIMIT 1`).get(expression)
           if (row) return { table, expression }
@@ -3112,6 +3169,48 @@ export class ChatArchiveDb {
       FROM ${plan.table}
       WHERE ${plan.table} MATCH ?
     `).all(plan.expression) as unknown as ArchiveSearchRankRow[]
+  }
+
+  private readBigramSnippets(
+    query: string,
+    selectedConversationIds: string[],
+    rankRows: ArchiveSearchRankRow[],
+    snippetsPerConversation: number,
+  ): Map<string, ArchiveSearchHit[]> {
+    const result = new Map<string, ArchiveSearchHit[]>()
+    if (selectedConversationIds.length === 0) return result
+    const selected = new Set(selectedConversationIds)
+    const rankByMessage = new Map<string, number>()
+    for (const row of rankRows) {
+      if (!selected.has(row.conversationId)) continue
+      rankByMessage.set(`${row.conversationId}\u0000${row.messageId}`, row.rank)
+    }
+    const placeholders = selectedConversationIds.map(() => '?').join(',')
+    const rows = this.db.prepare(`
+      SELECT m.conversation_id AS conversationId, m.message_id AS messageId,
+             c.title AS title, m.role AS role, m.text AS text
+      FROM messages m
+      JOIN conversations c ON c.id = m.conversation_id
+      WHERE m.conversation_id IN (${placeholders})
+        AND m.hidden = 0
+        AND m.recipient = 'all'
+        AND m.role IN ('user', 'assistant')
+        AND instr(m.text, ?) > 0
+    `).all(...selectedConversationIds, query) as Array<Omit<ArchiveSearchHit, 'rank'>>
+    const hits = rows
+      .map(row => ({
+        ...row,
+        text: substringSnippet(row.text, query),
+        rank: rankByMessage.get(`${row.conversationId}\u0000${row.messageId}`) ?? 0,
+      }))
+      .filter(row => rankByMessage.has(`${row.conversationId}\u0000${row.messageId}`))
+      .sort((left, right) => left.rank - right.rank)
+    for (const row of hits) {
+      const bucket = result.get(row.conversationId) ?? []
+      if (bucket.length < snippetsPerConversation) bucket.push(row)
+      result.set(row.conversationId, bucket)
+    }
+    return result
   }
 
   /** 批量读取 Conversation 元数据；分块避免未来聊天数增大后撞 SQLite 参数数量上限。 */
@@ -3215,7 +3314,16 @@ export class ChatArchiveDb {
 
     const selected = candidates.slice(0, safeLimit)
     const snippets = new Map<string, ArchiveSearchHit[]>()
-    if (plan && selected.length > 0) {
+    if (plan && selected.length > 0 && plan.table === 'message_fts_bigram') {
+      const bigramSnippets = this.readBigramSnippets(
+        normalized,
+        selected.map(row => row.conversationId),
+        rankRows,
+        snippetsPerConversation,
+      )
+      for (const [conversationId, rows] of bigramSnippets) snippets.set(conversationId, rows)
+    }
+    else if (plan && selected.length > 0) {
       const selectedIds = selected.map(row => row.conversationId)
       const placeholders = selectedIds.map(() => '?').join(',')
       const rows = this.db.prepare(`
@@ -3267,6 +3375,23 @@ export class ChatArchiveDb {
     const safeLimit = Math.max(1, Math.min(200, Math.trunc(limit)))
     const plan = this.resolveSearchPlan(normalized)
     if (!plan) return []
+    if (plan.table === 'message_fts_bigram') {
+      const rankRows = this.readSearchRankRows(plan)
+        .sort((left, right) => left.rank - right.rank)
+        .slice(0, safeLimit)
+      const snippets = this.readBigramSnippets(
+        normalized,
+        [...new Set(rankRows.map(row => row.conversationId))],
+        rankRows,
+        safeLimit,
+      )
+      const wanted = new Set(rankRows.map(row => `${row.conversationId}\u0000${row.messageId}`))
+      return [...snippets.values()]
+        .flat()
+        .filter(row => wanted.has(`${row.conversationId}\u0000${row.messageId}`))
+        .sort((left, right) => left.rank - right.rank)
+        .slice(0, safeLimit)
+    }
     return this.db.prepare(`
       SELECT
         conversation_id AS conversationId,
@@ -4579,6 +4704,7 @@ export class ChatArchiveDb {
     const resourceCount = Number((this.db.prepare('SELECT count(*) AS n FROM resources').get() as { n: number }).n)
     const indexedMessageCount = Number((this.db.prepare('SELECT count(*) AS n FROM message_fts').get() as { n: number }).n)
     const trigramIndexedMessageCount = Number((this.db.prepare('SELECT count(*) AS n FROM message_fts_trigram').get() as { n: number }).n)
+    const bigramIndexedMessageCount = Number((this.db.prepare('SELECT count(*) AS n FROM message_fts_bigram').get() as { n: number }).n)
     const mappingNodeCount = Number((this.db.prepare('SELECT count(*) AS n FROM mapping_nodes').get() as { n: number }).n)
     const snapshotCount = Number((this.db.prepare('SELECT count(*) AS n FROM conversation_snapshots').get() as { n: number }).n)
     const sourceCount = Number((this.db.prepare('SELECT count(*) AS n FROM archive_sources').get() as { n: number }).n)
@@ -4592,6 +4718,7 @@ export class ChatArchiveDb {
       resourceCount,
       indexedMessageCount,
       trigramIndexedMessageCount,
+      bigramIndexedMessageCount,
       mappingNodeCount,
       snapshotCount,
       sourceCount,
