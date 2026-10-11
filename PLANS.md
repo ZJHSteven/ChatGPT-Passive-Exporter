@@ -1,3 +1,14 @@
+# 2026-10-11 CDP 稳定性与提交不确定性加固
+
+背景：历史 Notes 已完成 21/21 成功课堂回填，但日志显示两类 CDP timeout：一类是普通/睡眠 ChatGPT target 的 `Network.enable` 长期重试噪声；另一类是 Guardian 偶发 `Runtime.evaluate` / `Network.getResponseBody` timeout。当前 Guardian 现场基准正常（20 次 trivial Runtime.evaluate 全成功，P95 约 1ms），说明不是 127.0.0.1:9222 整体失效，而是 target/renderer 与同 session 诊断流量需要更细粒度隔离。
+
+本轮目标：
+1. 被动 observer 对连续 attach timeout 的 target 使用递增隔离窗口，避免同一个坏 target 每 5 分钟永久重试。
+2. Guardian health probe timeout 时增加浏览器级 CDP ping，区分 target/renderer 故障与整个 Chrome CDP 故障；保留连续失败自动重建 Guardian，但日志明确故障层级。
+3. Guardian 协议指纹 `Network.getResponseBody` 属于诊断流量，增加小并发上限；过载时直接跳过指纹，不与业务同步/health probe 抢同一 CDP session。
+4. Actor 已观察到正式 `/backend-api/f/conversation` POST、但没有拿到 HTTP response 时，submission queue 禁止把它当普通 timeout 自动重发；改为 fail-closed 的“提交结果未知”终止错误，避免潜在重复 POST。当前已 accepted 的记录不受影响。
+5. 回归：daemon/bridge/actor 定向测试 + typecheck + 全量 check；生产仅重启 Archive daemon，不重启日常 Chrome。
+
 # 2026-10-11 Guardian REST block 状态分裂修复
 
 现象：ClassFlow 历史 Notes submission 已全部由 Archive 接受，但 03:45 后大量 conversation 长期停在 generating。日志显示 WSS/Actor 已完成，canonical 同步却持续报 No fetch result for /backend-api/conversations/<cid>。原始 CDP 复现得到 TypeError: Failed to fetch。
