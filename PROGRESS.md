@@ -1,3 +1,4 @@
+- 2026-10-11 daemon 运行态已采用 uncertain 语义：Network.setBlockedURLs 成功后才更新 cached block 状态；CDP timeout/error 标记 uncertain，后续不能把 cached false 当成已解除。
 - 2026-10-11 Guardian block helper 回归断言已补齐：clear/blocked/uncertain 六种组合均覆盖，尤其固定 cached=false 也必须真实 unblock 的故障边界。
 - 2026-10-11 archive-daemon 回归测试已接入 shouldApplyGuardianConversationRestBlockCommand helper，下一提交补齐状态组合断言。
 - 2026-10-11 已增加 Guardian REST block 命令判定 helper：unblock 无条件真实下发；block 只有在 cached=true 且状态确定时才可跳过；uncertain 时必须重新同步 Chrome。

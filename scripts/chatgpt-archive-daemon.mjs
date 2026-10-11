@@ -2137,6 +2137,7 @@ async function main() {
   let passiveBodyPagesReused = 0
   let passiveCatalogPagesReused = 0
   let guardianConversationRestBlocked = false
+  let guardianConversationRestBlockUncertain = true
   // catalogActive 只表示“低频 conversation list 曾看见 async_status=3/5”。它不是可靠
   // turn start；若没有更强证据，activeTurns 可以用“首次观察时刻”作为保守 late-start 下界，
   // 但必须以 catalog:* 标记，并在一次诊断后保留 tombstone，不能把它伪装成 reliable start。
@@ -6059,17 +6060,27 @@ async function main() {
   }
 
   const setGuardianConversationRestBlocked = async (enabled) => {
-    if (!guardian?.page || guardian.page.closed || guardianConversationRestBlocked === enabled) return
-    await guardian.page.send('Network.setBlockedURLs', {
-      urls: enabled ? [
-        // 明确限定 HTTPS。不要使用 *://，这样即使未来 WSS 恰好复用相似 pathname，
-        // wss://chatgpt.com/... 也绝不会被 REST cooldown 规则误伤。
-        'https://chatgpt.com/backend-api/conversations*',
-        'https://chatgpt.com/backend-api/conversation/*',
-      ] : [],
-    }, 3000)
-    guardianConversationRestBlocked = enabled
-    await log(enabled ? 'Guardian conversation REST blocked for cooldown' : 'Guardian conversation REST block released')
+    if (!guardian?.page || guardian.page.closed) return
+    if (!shouldApplyGuardianConversationRestBlockCommand(
+      enabled,
+      guardianConversationRestBlocked,
+      guardianConversationRestBlockUncertain,
+    )) return
+    try {
+      await guardian.page.send('Network.setBlockedURLs', {
+        urls: enabled ? [
+          'https://chatgpt.com/backend-api/conversations*',
+          'https://chatgpt.com/backend-api/conversation/*',
+        ] : [],
+      }, 3000)
+      guardianConversationRestBlocked = enabled
+      guardianConversationRestBlockUncertain = false
+      await log(enabled ? 'Guardian conversation REST blocked for cooldown' : 'Guardian conversation REST block released')
+    }
+    catch (error) {
+      guardianConversationRestBlockUncertain = true
+      throw error
+    }
   }
 
   const observeConversationEvent = (event) => {
