@@ -1,3 +1,4 @@
+- 2026-10-11 submission queue 持久化继续加固：唯一 tmp 名解决源文件竞争后，Vitest 在 Windows 仍复现两个 rename 同时覆盖正式 queue.json 的 EPERM；现增加 persistTail 单写者 Promise 链，所有 snapshot/write/atomic-rename 串行执行，单次失败不会毒死后续写盘链。
 - 2026-10-11 空壳 DOM 分类回归已补：完全没有 composer/new-chat/sidebar/control 时为 transient；只要出现 canonical sidebar anchor 就不再跳过，仍进入正常 drift 判断。
 - 2026-10-11 Actor DOM drift 误报修复：conversation/home/project 切换过程中若 observation 同时满足 composer=null、newChat=null、controls=[]、sidebar anchors 全 false，则认定为 transient page skeleton，不写入 DOM drift ledger、不要求批准 baseline。仅 navigation 前允许跳过该空壳；真正 prompt-input 阶段仍必须通过稳定 DOM 指纹。
 - 2026-10-11 canonical exact-prompt 测试改用独立英文 fixture，避免历史测试文件乱码文本影响精确相等断言。

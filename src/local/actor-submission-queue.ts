@@ -113,6 +113,12 @@ export class ActorSubmissionQueue {
   private draining = false
   private timer: NodeJS.Timeout | null = null
   private globalNotBefore = 0
+  /**
+   * 同一 submission queue 的持久化必须串行。
+   * enqueue、drain、启动修复都可能在同一 Node 进程里几乎同时修改状态；即使每次使用
+   * 不同临时文件，Windows 仍可能因为两个 rename 同时覆盖同一个正式 JSON 而返回 EPERM。
+   */
+  private persistTail: Promise<void> = Promise.resolve()
 
   constructor(options: ActorSubmissionQueueOptions) {
     this.options = {
@@ -379,7 +385,7 @@ export class ActorSubmissionQueue {
     }
   }
 
-  private async persist(): Promise<void> {
+  private async persistNow(): Promise<void> {
     await fs.mkdir(path.dirname(this.options.filePath), { recursive: true })
     const state: ActorSubmissionQueueState = {
       version: 1,
@@ -392,5 +398,12 @@ export class ActorSubmissionQueue {
     const tempPath = this.options.filePath + '.tmp-' + process.pid + '-' + randomUUID()
     await fs.writeFile(tempPath, JSON.stringify(state, null, 2) + '\n', 'utf8')
     await fs.rename(tempPath, this.options.filePath)
+  }
+
+  private async persist(): Promise<void> {
+    const write = this.persistTail.then(() => this.persistNow())
+    // 单次写盘失败不能让 Promise 链永久 rejected；调用方仍会收到本次 write 的真实错误。
+    this.persistTail = write.catch(() => {})
+    await write
   }
 }
