@@ -374,6 +374,7 @@ export function shouldApplyGuardianConversationRestBlockCommand(
   cachedBlocked: unknown,
   uncertain?: unknown,
 ): boolean
+export function shouldRetryConversationPageFetch(error: unknown): boolean
 
 /**
  * 判断一个 CDP target 是否应该挂普通页面被动 observer。

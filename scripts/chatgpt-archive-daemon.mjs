@@ -1874,6 +1874,12 @@ export function shouldApplyGuardianConversationRestBlockCommand(enabled, cachedB
   return Boolean(uncertain) || !Boolean(cachedBlocked)
 }
 
+/** conversation body/catalog 都是幂等 GET；仅对 CDP Runtime.evaluate 超时允许一次安全重试。 */
+export function shouldRetryConversationPageFetch(error) {
+  const message = error instanceof Error ? error.message : String(error || '')
+  return /CDP Runtime\.evaluate timed out/iu.test(message)
+}
+
 /**
  * passive body 只替代“这一次 ready 之后页面自然产生的响应”。
  * 过旧 observation 仍可作为历史证据落库，但不能拿来证明当前 complete 已追平。
