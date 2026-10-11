@@ -4,11 +4,12 @@ import path from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 import {
   ArchiveBridgeServer,
+  confirmCanonicalExactPrompt,
   ensureArchiveBridgeAuthToken,
   type ArchiveBridgeDataSource,
   type ArchiveBridgeTurnInput,
 } from '../src/local/archive-bridge.ts'
-import { isRetryableInfrastructureError, isSubmissionOutcomeUnknownError } from '../src/local/actor-submission-queue.ts'
+import { ActorSubmissionQueue, isRetryableInfrastructureError, isSubmissionOutcomeUnknownError } from '../src/local/actor-submission-queue.ts'
 
 test('Actor submission 把页面输入暂时缺失视为可重试基础设施错误', () => {
   expect(isRetryableInfrastructureError('ChatGPT actor prompt input not found')).toBe(true)
@@ -23,6 +24,102 @@ test('正式 POST 结果未知必须 fail-closed，不能按 timeout 自动重�
   expect(isSubmissionOutcomeUnknownError('CDP Runtime.evaluate timed out after 10000ms')).toBe(false)
 })
 
+
+test('canonical 精确 prompt 确认可认领原 conversation，且不做模糊匹配', () => {
+  const archive = mockArchive()
+  const exact = confirmCanonicalExactPrompt(archive, {
+    text: '���',
+    conversationId: 'cid-1',
+    projectName: null,
+    mode: 'continue',
+    targetMode: 'guardian',
+  })
+  expect(exact).toEqual({ conversationId: 'cid-1', confirmedBy: 'canonical-exact-prompt' })
+
+  const fuzzy = confirmCanonicalExactPrompt(archive, {
+    text: '��� ',
+    conversationId: 'cid-1',
+    projectName: null,
+    mode: 'continue',
+    targetMode: 'guardian',
+  })
+  expect(fuzzy).toBeNull()
+})
+
+test('ambiguous submission 会先 canonical 确认，命中时不做第二次 POST', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-ambiguous-confirm-'))
+  const queuePath = path.join(dir, 'queue.json')
+  let attempts = 0
+  let confirms = 0
+  const queue = new ActorSubmissionQueue({
+    filePath: queuePath,
+    pollIntervalMs: 10,
+    retryBaseMs: 100,
+    retryMaxMs: 1000,
+    submitTurn: async () => {
+      attempts += 1
+      throw new Error('ChatGPT actor submission outcome unknown after formal POST 1.1: no HTTP response arrived before timeout')
+    },
+    confirmTurn: async () => {
+      confirms += 1
+      return { conversationId: 'confirmed-cid', confirmedBy: 'canonical-exact-prompt' }
+    },
+  })
+  await queue.start()
+  await queue.enqueue('ambiguous-confirm', {
+    text: 'exact prompt',
+    conversationId: null,
+    projectName: '课堂录音→笔记',
+    mode: 'new',
+    targetMode: 'guardian',
+  })
+  const deadline = Date.now() + 1500
+  while (Date.now() < deadline && queue.get('ambiguous-confirm')?.status !== 'accepted') {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  const record = queue.get('ambiguous-confirm')
+  expect(record?.status).toBe('accepted')
+  expect(record?.result?.conversationId).toBe('confirmed-cid')
+  expect(attempts).toBe(1)
+  expect(confirms).toBeGreaterThanOrEqual(1)
+  await queue.stop()
+  await fs.rm(dir, { recursive: true, force: true })
+})
+
+test('ambiguous submission canonical 未命中时最多只重发一次', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-ambiguous-retry-'))
+  const queuePath = path.join(dir, 'queue.json')
+  let attempts = 0
+  const queue = new ActorSubmissionQueue({
+    filePath: queuePath,
+    pollIntervalMs: 10,
+    retryBaseMs: 100,
+    retryMaxMs: 1000,
+    submitTurn: async () => {
+      attempts += 1
+      throw new Error(`ChatGPT actor submission outcome unknown after formal POST ${attempts}.1: no HTTP response arrived before timeout`)
+    },
+    confirmTurn: async () => null,
+  })
+  await queue.start()
+  await queue.enqueue('ambiguous-retry', {
+    text: 'exact prompt',
+    conversationId: null,
+    projectName: '课堂录音→笔记',
+    mode: 'new',
+    targetMode: 'guardian',
+  })
+  const deadline = Date.now() + 1800
+  while (Date.now() < deadline && queue.get('ambiguous-retry')?.status !== 'failed') {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  const record = queue.get('ambiguous-retry')
+  expect(record?.status).toBe('failed')
+  expect(record?.attemptCount).toBe(2)
+  expect(attempts).toBe(2)
+  await queue.stop()
+  await fs.rm(dir, { recursive: true, force: true })
+})
 
 const TOKEN = 'test-token-that-is-long-enough-for-bridge-auth-1234567890'
 const servers: ArchiveBridgeServer[] = []
