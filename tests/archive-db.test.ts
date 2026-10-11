@@ -641,6 +641,10 @@ describe('ChatArchiveDb', () => {
       expect(shortCn[0]).toMatchObject({ hitCount: 2, titleMatched: true })
       expect(shortCn[0]?.snippets.length).toBeGreaterThan(0)
 
+      const singleCn = db.searchConversations('峡')
+      expect(singleCn.some(hit => hit.conversationId === 'conversation-cn')).toBe(true)
+      expect(singleCn.find(hit => hit.conversationId === 'conversation-cn')?.snippets[0]?.text).toContain('[峡]')
+
       const longCn = db.searchConversations('长江三峡')
       expect(longCn.length).toBeGreaterThan(0)
       expect(longCn[0]?.snippets[0]?.text).toContain('[长江三峡]')

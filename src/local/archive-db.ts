@@ -79,13 +79,16 @@ interface ArchiveSearchMetaRow {
 const CJK_CODEPOINT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
 
 /**
- * 为“两字 CJK 任意子串”生成紧凑的二元字 token。
- * 只收录相邻且都属于 CJK 的两个 code point，并在同一 message 内去重。
- * 例如 `长江三峡` 会生成 `长江 江三 三峡`，搜索 `三峡` 不需要 `%LIKE%` 扫全库。
+ * 为“一到两字 CJK 任意子串”生成紧凑的短词 token。
+ * 同一 message 内同时保存去重 unigram + 相邻 bigram；例如 `长江三峡` 会生成
+ * `长 江 三 峡 长江 江三 三峡`。这样搜索 `肾` 或 `三峡` 都不需要 `%LIKE%` 扫全库。
  */
-function cjkBigramTokens(text: string): string {
+function cjkShortTokens(text: string): string {
   const codepoints = Array.from(text)
   const tokens = new Set<string>()
+  for (const codepoint of codepoints) {
+    if (CJK_CODEPOINT.test(codepoint)) tokens.add(codepoint)
+  }
   for (let index = 0; index + 1 < codepoints.length; index += 1) {
     const left = codepoints[index]!
     const right = codepoints[index + 1]!
@@ -1559,7 +1562,7 @@ export class ChatArchiveDb {
         ) {
           insertFts.run(message.conversationId, message.messageId, message.title, message.role, message.text)
           insertTrigram.run(message.conversationId, message.messageId, message.title, message.role, message.text)
-          const grams = cjkBigramTokens(message.text)
+          const grams = cjkShortTokens(message.text)
           if (grams) insertBigram.run(message.conversationId, message.messageId, grams)
         }
       }
@@ -1602,7 +1605,7 @@ export class ChatArchiveDb {
     try {
       this.db.exec('DELETE FROM message_fts_bigram')
       for (const row of rows) {
-        const grams = cjkBigramTokens(row.text)
+        const grams = cjkShortTokens(row.text)
         if (!grams) continue
         insertBigram.run(row.conversationId, row.messageId, grams)
         inserted += 1
@@ -2419,7 +2422,7 @@ export class ChatArchiveDb {
       if (row.hidden === 0 && row.recipient === 'all' && (row.role === 'user' || row.role === 'assistant') && row.text.trim()) {
         insertFts.run(conversationId, row.messageId, conversationRow.title, row.role, row.text)
         insertTrigram.run(conversationId, row.messageId, conversationRow.title, row.role, row.text)
-        const grams = cjkBigramTokens(row.text)
+        const grams = cjkShortTokens(row.text)
         if (grams) insertBigram.run(conversationId, row.messageId, grams)
       }
       try {
@@ -3136,7 +3139,7 @@ export class ChatArchiveDb {
           message.role,
           message.text,
         )
-        const grams = cjkBigramTokens(message.text)
+        const grams = cjkShortTokens(message.text)
         if (grams) insertBigram.run(conversationId, message.id, grams)
       })
       this.db.exec('COMMIT')
@@ -3169,7 +3172,7 @@ export class ChatArchiveDb {
   private resolveSearchPlan(query: string): ArchiveSearchPlan | null {
     const codepointLength = Array.from(query).length
     const hasCjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(query)
-    const indexOrder: ArchiveSearchIndex[] = hasCjk && codepointLength === 2
+    const indexOrder: ArchiveSearchIndex[] = hasCjk && codepointLength <= 2
       ? ['message_fts_bigram', 'message_fts']
       : hasCjk && codepointLength >= 3
         ? ['message_fts_trigram', 'message_fts']
