@@ -42,6 +42,7 @@ import {
   passiveObservationMatchesReady,
   recordCatalogWatchdogProgress,
   shouldBlockGuardianConversationRest,
+  shouldApplyGuardianConversationRestBlockCommand,
   shouldRebuildGuardianAfterHealthFailures,
   guardianUiFailureKind,
   shouldRunDeferredGapRepair,
