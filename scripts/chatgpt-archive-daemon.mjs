@@ -4531,6 +4531,7 @@ async function main() {
     let pages = 0
     let passivePagesUsed = passiveFirst ? 1 : 0
     let newMessages = 0
+    let databaseMergeMs = 0
     let latestDiagnostic = null
     let imageGenerationEvent = null
     const versionMarkerIds = new Set()
@@ -4546,6 +4547,7 @@ async function main() {
         ? new Set(passivePageEntry.knownBeforeIds)
         : archive.knownMessageIds(conversationId, ids)
       const allKnownBefore = ids.length > 0 && ids.every(id => knownBefore.has(id))
+      const mergeStartedAt = performance.now()
       const merged = archive.mergeLiveMessagesPage(normalized, {
         observedAt: Date.now(),
         endpoint: pages === 0 ? basePath : `${basePath}/messages`,
@@ -4561,6 +4563,7 @@ async function main() {
           && (confirmedTerminal || trigger.startsWith('watchdog:')),
         incidentKind: requestedIncidentKind,
       })
+      databaseMergeMs += performance.now() - mergeStartedAt
       if (pages === 0) latestDiagnostic = merged.diagnostic
       if (pages === 0 && merged.diagnostic.hasImageGenerationFinal) {
         imageGenerationEvent = archive.getImageGenerationEvent(conversationId, merged.diagnostic.turnExchangeId)
@@ -4598,11 +4601,13 @@ async function main() {
               if (!mappingPayload?.mapping || typeof mappingPayload.mapping !== 'object') {
                 throw new Error(`conversation ${conversationId} singular response has no mapping`)
               }
+              const mappingMergeStartedAt = performance.now()
               const mappingResult = archive.mergeLiveMappingSnapshot(mappingPayload, {
                 observedAt: Date.now(),
                 endpoint: singularPath,
                 observationKind: `mapping-snapshot:${trigger}`,
               })
+              databaseMergeMs += performance.now() - mappingMergeStartedAt
               newMessages += mappingResult.newMessageCount
               exactMapping = true
               await log('versioned conversation exact mapping merged', {
@@ -4649,6 +4654,7 @@ async function main() {
           imageGenerationEvent,
           exactMapping,
           passivePagesUsed,
+          databaseMergeMs,
           terminalSettleNeeded,
           watchdogTurnChanged,
           watchdogTurnStartedAt,
@@ -4980,6 +4986,7 @@ async function main() {
           trigger,
           pages: result.pages,
           newMessages: result.newMessages,
+          dbMergeMs: Math.round(result.databaseMergeMs * 100) / 100,
           exactMapping: result.exactMapping,
           passivePagesUsed: result.passivePagesUsed,
           terminal: result.diagnostic.terminalEvidence,
