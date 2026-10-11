@@ -1,3 +1,17 @@
+# 2026-10-11 Guardian REST block 状态分裂修复
+
+现象：ClassFlow 历史 Notes submission 已全部由 Archive 接受，但 03:45 后大量 conversation 长期停在 generating。日志显示 WSS/Actor 已完成，canonical 同步却持续报 No fetch result for /backend-api/conversations/<cid>。原始 CDP 复现得到 TypeError: Failed to fetch。
+
+根因：429 cooldown 会调用 Network.setBlockedURLs 临时阻断 Guardian conversation REST。若 CDP 调用超时，Chrome 可能已经执行 block，但本地布尔值仍保持 false；cooldown 到期时 setGuardianConversationRestBlocked(false) 又会因为缓存值已经 false 直接 return，导致真实 block 永远未清理。daemon/Guardian 重启复用同一 target 时也可能继承未知 block 状态。
+
+修复：
+1. Guardian block 状态改为“缓存状态 + uncertain”语义；CDP timeout 后标记 uncertain。
+2. unblock（enabled=false）永远真实下发 Network.setBlockedURLs([])，不允许仅凭缓存 false 跳过。
+3. Guardian attach/rebuild 后把 block 状态视为 unknown，并按当前 cooldown 真实同步一次目标状态。
+4. cooldown 到期先成功解除 block，再清空 cooldownRecoveryPending/cooldownUntil；解除失败时保留 recovery pending，并禁止 active REST 继续执行。
+5. 增加 helper 回归测试，覆盖 cached false 但 uncertain / disable 仍必须下发。
+6. 部署前先对当前 Guardian 显式清空 blocked URLs，并用已卡住 CID 验证 conversation body 恢复。
+
 # 2026-10-11 Archive 429 请求合并与 Retry-After 收口 ExecPlan
 
 生产实证：WSS complete 后同一 conversation 的 body-latest 在 52ms 内先出现页面原生 GET 429、随后 daemon active GET 429；服务端 Retry-After=16s，但现有 tripCooldown 固定转换为 60min。目标是不牺牲 fail-closed 的前提下消除重复主动 body，并让明确的服务端冷却时间成为主要真相源。
