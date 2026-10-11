@@ -1,3 +1,4 @@
+- 2026-10-11 Bark 高频通知文案已精简：正常完成改为 `Turn 正常完成 · <聊天名>`，工具静默改为 `工具静默 X 分钟 · <聊天名>`，Watchdog 到点改为 `Watchdog 超时 · <聊天名>`；聊天名统一压缩为最多 18 个 Unicode 字符，超长加 `…` 并在正文保留全名，metadata/未绑定 ID 不进入标题。工具静默删除 Final/纯思考/非终止证据等重复说明；Watchdog 正文仅保留会话、运行分钟数与起点；正常完成正文仅保留会话、Final 与可选图片数。漂移、429 cooldown、Watchdog 诊断、5 分钟诊断、checkpoint/conclusion 本轮不改。定向 notifier+daemon 63/63 PASS。
 - 短 CJK 索引最终覆盖 1~2 字：抽样 5000 条可读消息时去重 unigram 数约为 bigram 的 69.6%，估算全库约 668 万 unigram；因此同一 `message_fts_bigram` 现在同时保存 unigram+bigram，保留旧 LIKE 对 `肾/药/税` 等单字查询的召回，同时仍避免全库正文扫描。
 - bigram 专用重建测试使用只存在正文的 `游轮`，避免 `三峡` 同时命中 Conversation 标题而误判索引清空行为；这也验证标题命中与正文索引彼此独立。
 - 为 8.89GB 生产库新增 `chatgpt-archive reindex --bigram-only`：直接从现有 `message_fts_trigram` 的可读正文重建 bigram，不触碰 unicode61/trigram/resource 全量派生链；抽样 5000/68268 条消息时 bigram token 计算约 207ms，估算全库约 960 万去重二元字 token，主要成本只剩一次性 FTS 写入。
