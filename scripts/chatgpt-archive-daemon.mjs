@@ -766,6 +766,24 @@ export function formatDurationMs(value) {
   return parts.join(' ')
 }
 
+/**
+ * 手机锁屏标题只保留一小段可辨认的聊天名。
+ *
+ * 这里按 Unicode code point 截断，而不是按 UTF-16 code unit，避免中文/emoji 在中间被切坏。
+ * 完整名称仍由各 payload builder 放进正文，所以标题压缩不会丢失可检索信息。
+ */
+function compactNotificationSubject(value, maxChars = 18) {
+  const full = String(value || '').replace(/\s+/gu, ' ').trim()
+  if (!full) return { full: null, short: null, truncated: false }
+  const chars = Array.from(full)
+  if (chars.length <= maxChars) return { full, short: full, truncated: false }
+  return { full, short: `${chars.slice(0, maxChars).join('')}…`, truncated: true }
+}
+
+function notificationTitleWithSubject(prefix, subject) {
+  return subject?.short ? `${prefix} · ${subject.short}` : prefix
+}
+
 /** 5 分钟 DevSpace 静默 probe 的最终诊断通知：扫完必须给结果。 */
 export function buildDevSpaceIdleDiagnosisNotificationPayload({
   conversationId,
@@ -893,14 +911,12 @@ export function buildWatchdogTimeoutNotificationPayload({
   now = Date.now(),
 }) {
   const activeForMs = Math.max(0, Number(now) - Number(startedAt || now))
+  const subject = compactNotificationSubject(title)
   return {
-    title: 'ChatGPT Watchdog 已超时',
+    title: notificationTitleWithSubject('Watchdog 超时', subject),
     body: [
-      title || conversationId,
-      `Watchdog 已运行 ${Math.floor(activeForMs / 60_000)} 分钟，达到超时阈值。`,
-      `本轮起点：${formatBeijingTime(startedAt || now)}`,
-      '本 turn 已锁定为 timed-out；后续同 turn 的工具、WSS 或 catalog 进展不会重新启动 Watchdog。',
-      'Archive 会继续等待/拉取 canonical body，诊断完成后再发送第二条结果通知。',
+      `会话：${subject.full || conversationId}`,
+      `已运行 ${Math.floor(activeForMs / 60_000)} 分钟；起点：${formatBeijingTime(startedAt || now)}`,
     ].join('\n'),
     group: BARK_NOTIFICATION_GROUPS.chatTimeout,
     url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
@@ -951,16 +967,16 @@ export function shortDevSpaceMetadataAlias(metadataId) {
 
 export function buildUnboundWatchdogNotificationPayload({ metadataId, title = null, startedAt, now = Date.now() }) {
   const activeForMs = Math.max(0, Number(now) - Number(startedAt || now))
-  const subject = typeof title === 'string' && title.trim()
-    ? `聊天：以“${title.trim()}”为主题（尚未绑定 Conversation）`
-    : `聊天：未命名（${shortDevSpaceMetadataAlias(metadataId)}，尚未绑定 Conversation）`
+  const subject = compactNotificationSubject(title)
   return {
-    title: 'ChatGPT Watchdog 已超时 · 会话未绑定',
+    title: subject.short
+      ? notificationTitleWithSubject('Watchdog 超时', subject)
+      : 'Watchdog 超时 · 未绑定会话',
     body: [
-      subject,
-      `Watchdog 已运行 ${Math.floor(activeForMs / 60_000)} 分钟。`,
-      '当前还没有足够证据把该 metadata 安全绑定到 canonical ChatGPT conversation，因此不能猜聊天名或 CID。',
-      'Archive 已启动 catalog/body 修复；绑定成功后继续正常诊断。',
+      subject.full
+        ? `会话：${subject.full} · 未绑定`
+        : `未绑定 · ${shortDevSpaceMetadataAlias(metadataId)}`,
+      `已运行 ${Math.floor(activeForMs / 60_000)} 分钟；起点：${formatBeijingTime(startedAt || now)}`,
     ].join('\n'),
     group: BARK_NOTIFICATION_GROUPS.chatTimeout,
   }
@@ -968,12 +984,16 @@ export function buildUnboundWatchdogNotificationPayload({ metadataId, title = nu
 
 /** 正常 final 也作为 turn 的最终可见结果发送，和异常 incident 对称。 */
 export function buildTurnFinalNotificationPayload({ conversationId, title, diagnostic }) {
-  const imageSuffix = diagnostic?.hasImageGenerationFinal
-    ? `；包含 ${Number(diagnostic?.imageGenerationCount || 0)} 张生成图片`
-    : ''
+  const subject = compactNotificationSubject(title)
+  const finalLine = diagnostic?.hasImageGenerationFinal
+    ? `已确认 Final · ${Number(diagnostic?.imageGenerationCount || 0)} 张图片`
+    : '已确认 Final'
   return {
-    title: 'ChatGPT Turn 正常完成',
-    body: `${title || conversationId}\n服务端完成信号与 canonical body 已确认 final${imageSuffix}。`,
+    title: notificationTitleWithSubject('Turn 正常完成', subject),
+    body: [
+      `会话：${subject.full || conversationId}`,
+      finalLine,
+    ].join('\n'),
     group: BARK_NOTIFICATION_GROUPS.chatDone,
     url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
   }
@@ -1249,18 +1269,15 @@ export function buildDevSpaceIdleNotificationPayload({
   thresholdMs,
 }) {
   const minutes = Math.round(Number(thresholdMs) / 60_000)
-  const subject = title
-    ? conversationId
-      ? `聊天：${title}`
-      : `聊天：以“${title}”为主题（尚未绑定 Conversation）`
-    : `聊天：未命名（${shortDevSpaceMetadataAlias(metadataId)}，尚未绑定 Conversation）`
+  const subject = compactNotificationSubject(title)
   const payload = {
-    title: `DevSpace Bug · 工具静默 ${minutes} 分钟`,
+    title: notificationTitleWithSubject(`工具静默 ${minutes} 分钟`, subject),
     body: [
-      subject,
-      `DevSpace 已连续约 ${minutes} 分钟没有新的工具调用，且当前没有正在运行的 DevSpace 工具。`,
-      '可能是本轮已经停止，也可能正在准备 Final、纯模型思考，或正在使用 DevSpace 之外的工具。',
-      '这是软提醒，不代表 turn 已结束；Archive 的正式 Watchdog / incident 判定不受影响。',
+      subject.full
+        ? `会话：${subject.full}${conversationId ? '' : ' · 未绑定'}`
+        : conversationId
+          ? `会话：${conversationId}`
+          : `未绑定 · ${shortDevSpaceMetadataAlias(metadataId)}`,
     ].join('\n'),
     group: BARK_NOTIFICATION_GROUPS.chatLatency,
   }
