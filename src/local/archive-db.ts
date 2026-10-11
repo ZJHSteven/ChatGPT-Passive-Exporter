@@ -1505,6 +1505,7 @@ export class ChatArchiveDb {
   rebuildSearchIndexes(options: { includeAuditText?: boolean } = {}): void {
     const messages = this.db.prepare(`
       SELECT
+        m.row_id AS rowId,
         m.conversation_id AS conversationId,
         m.message_id AS messageId,
         c.title AS title,
@@ -1518,6 +1519,7 @@ export class ChatArchiveDb {
       JOIN conversations c ON c.id = m.conversation_id
       ORDER BY m.row_id
     `).iterate() as Iterable<{
+      rowId: number
       conversationId: string
       messageId: string
       title: string
@@ -1529,10 +1531,10 @@ export class ChatArchiveDb {
       recipient: string
     }>
 
-    const insertFts = this.db.prepare('INSERT INTO message_fts (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
-    const insertTrigram = this.db.prepare('INSERT INTO message_fts_trigram (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
-    const insertBigram = this.db.prepare('INSERT INTO message_fts_bigram (conversation_id, message_id, grams) VALUES (?, ?, ?)')
-    const insertAll = this.db.prepare('INSERT INTO message_fts_all (conversation_id, message_id, title, role, channel, content_type, text) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    const insertFts = this.db.prepare('INSERT INTO message_fts (rowid, conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?, ?)')
+    const insertTrigram = this.db.prepare('INSERT INTO message_fts_trigram (rowid, conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?, ?)')
+    const insertBigram = this.db.prepare('INSERT INTO message_fts_bigram (rowid, conversation_id, message_id, grams) VALUES (?, ?, ?, ?)')
+    const insertAll = this.db.prepare('INSERT INTO message_fts_all (rowid, conversation_id, message_id, title, role, channel, content_type, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
 
     this.db.exec('BEGIN IMMEDIATE')
     try {
@@ -1545,6 +1547,7 @@ export class ChatArchiveDb {
       for (const message of messages) {
         if (options.includeAuditText && message.text.trim()) {
           insertAll.run(
+            message.rowId,
             message.conversationId,
             message.messageId,
             message.title,
@@ -1560,10 +1563,10 @@ export class ChatArchiveDb {
           && (message.role === 'user' || message.role === 'assistant')
           && message.text.trim()
         ) {
-          insertFts.run(message.conversationId, message.messageId, message.title, message.role, message.text)
-          insertTrigram.run(message.conversationId, message.messageId, message.title, message.role, message.text)
+          insertFts.run(message.rowId, message.conversationId, message.messageId, message.title, message.role, message.text)
+          insertTrigram.run(message.rowId, message.conversationId, message.messageId, message.title, message.role, message.text)
           const grams = cjkShortTokens(message.text)
-          if (grams) insertBigram.run(message.conversationId, message.messageId, grams)
+          if (grams) insertBigram.run(message.rowId, message.conversationId, message.messageId, grams)
         }
       }
       this.db.exec('COMMIT')
@@ -1593,11 +1596,14 @@ export class ChatArchiveDb {
    */
   rebuildBigramSearchIndex(): number {
     const rows = this.db.prepare(`
-      SELECT conversation_id AS conversationId, message_id AS messageId, text
-      FROM message_fts_trigram
-    `).iterate() as Iterable<{ conversationId: string, messageId: string, text: string }>
+      SELECT m.row_id AS rowId, f.conversation_id AS conversationId, f.message_id AS messageId, f.text
+      FROM message_fts_trigram f
+      JOIN messages m
+        ON m.conversation_id = f.conversation_id
+       AND m.message_id = f.message_id
+    `).iterate() as Iterable<{ rowId: number, conversationId: string, messageId: string, text: string }>
     const insertBigram = this.db.prepare(
-      'INSERT INTO message_fts_bigram (conversation_id, message_id, grams) VALUES (?, ?, ?)',
+      'INSERT INTO message_fts_bigram (rowid, conversation_id, message_id, grams) VALUES (?, ?, ?, ?)',
     )
 
     let inserted = 0
@@ -1607,7 +1613,7 @@ export class ChatArchiveDb {
       for (const row of rows) {
         const grams = cjkShortTokens(row.text)
         if (!grams) continue
-        insertBigram.run(row.conversationId, row.messageId, grams)
+        insertBigram.run(row.rowId, row.conversationId, row.messageId, grams)
         inserted += 1
       }
       this.db.exec('COMMIT')
@@ -1919,7 +1925,7 @@ export class ChatArchiveDb {
         gzipSync(Buffer.from(rawText, 'utf8')),
       )
 
-      this.rebuildConversationDerivedInsideTransaction(conversationId)
+      this.rebuildConversationDerivedInsideTransaction(conversationId, conversation.messages.map(message => message.id))
       this.db.exec('COMMIT')
     }
     catch (error) {
@@ -2245,7 +2251,7 @@ export class ChatArchiveDb {
         gzipSync(Buffer.from(rawText, 'utf8')),
       )
 
-      this.rebuildConversationDerivedInsideTransaction(conversationId)
+      this.rebuildConversationDerivedInsideTransaction(conversationId, messageIds)
       this.db.exec('COMMIT')
     }
     catch (error) {
@@ -2361,17 +2367,32 @@ export class ChatArchiveDb {
     return { conversations, nodes, inferredOnly }
   }
 
-  /** 在线增量只重建一个 conversation 的派生表，避免全库 FTS/资源重算。 */
-  private rebuildConversationDerivedInsideTransaction(conversationId: string): void {
+  /**
+   * 在线增量只刷新本页实际触碰到的 message 派生数据。
+   *
+   * 旧实现虽然没有重建“全库”，但每个 live page 都会把当前 Conversation 的全部 messages
+   * 重新做三套 FTS、resources 和 markdown。对几千条消息的长聊天，这会同步阻塞 daemon
+   * 主线程数秒到数十秒，连同进程的 Archive Bridge HTTP 也得不到调度。
+   *
+   * touchedMessageIds 存在时：
+   * - live 热路径不再重写整聊天 ordinal；Reader 读取时按 create_time,row_id 动态生成稳定游标；
+   * - FTS/resources 只删除并重建 touched messages；
+   * - message/resource count 用 SQL 汇总；
+   * - markdown 不在采集热路径生成，getMarkdown() 读取 live conversation 时按需计算。
+   *
+   * touchedMessageIds 省略时仍保留完整重建语义，供未来显式 repair/reindex 使用。
+   */
+  private rebuildConversationDerivedInsideTransaction(conversationId: string, touchedMessageIds?: string[]): void {
     const conversationRow = this.db.prepare('SELECT title FROM conversations WHERE id = ?').get(conversationId) as { title: string }
-    const rows = [...this.db.prepare(`
+
+    const selectRowsSql = `
       SELECT row_id AS rowId, message_id AS messageId, role, author_name AS authorName,
              recipient, channel, content_type AS contentType, text, hidden,
              create_time AS createTime, raw_json AS rawJson
       FROM messages
       WHERE conversation_id = ?
-      ORDER BY COALESCE(create_time, 0), row_id
-    `).iterate(conversationId)] as Array<{
+    `
+    type DerivedRow = {
       rowId: number
       messageId: string
       role: string
@@ -2383,18 +2404,54 @@ export class ChatArchiveDb {
       hidden: number
       createTime: number | null
       rawJson: string
-    }>
+    }
 
-    const updateOrdinal = this.db.prepare('UPDATE messages SET ordinal = ? WHERE row_id = ?')
-    rows.forEach((row, index) => updateOrdinal.run(index, row.rowId))
+    let rows: DerivedRow[]
+    const touched = touchedMessageIds
+      ? [...new Set(touchedMessageIds.filter(Boolean))]
+      : null
+    if (touched) {
+      rows = []
+      for (let offset = 0; offset < touched.length; offset += 400) {
+        const chunk = touched.slice(offset, offset + 400)
+        if (chunk.length === 0) continue
+        const placeholders = chunk.map(() => '?').join(',')
+        rows.push(...this.db.prepare(`${selectRowsSql} AND message_id IN (${placeholders}) ORDER BY COALESCE(create_time, 0), row_id`).all(
+          conversationId,
+          ...chunk,
+        ) as unknown as DerivedRow[])
+      }
+    }
+    else {
+      rows = this.db.prepare(`${selectRowsSql} ORDER BY COALESCE(create_time, 0), row_id`).all(conversationId) as unknown as DerivedRow[]
+      this.db.prepare('DELETE FROM message_fts WHERE conversation_id = ?').run(conversationId)
+      this.db.prepare('DELETE FROM message_fts_trigram WHERE conversation_id = ?').run(conversationId)
+      this.db.prepare('DELETE FROM message_fts_bigram WHERE conversation_id = ?').run(conversationId)
+      this.db.prepare('DELETE FROM resources WHERE conversation_id = ?').run(conversationId)
+    }
 
-    this.db.prepare('DELETE FROM message_fts WHERE conversation_id = ?').run(conversationId)
-    this.db.prepare('DELETE FROM message_fts_trigram WHERE conversation_id = ?').run(conversationId)
-    this.db.prepare('DELETE FROM message_fts_bigram WHERE conversation_id = ?').run(conversationId)
-    this.db.prepare('DELETE FROM resources WHERE conversation_id = ?').run(conversationId)
-    const insertFts = this.db.prepare('INSERT INTO message_fts (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
-    const insertTrigram = this.db.prepare('INSERT INTO message_fts_trigram (conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?)')
-    const insertBigram = this.db.prepare('INSERT INTO message_fts_bigram (conversation_id, message_id, grams) VALUES (?, ?, ?)')
+    if (touched && touched.length > 0) {
+      // FTS5 的 conversation_id/message_id 是 UNINDEXED 辅助列；逐条 DELETE 会让虚表反复扫描。
+      // 必须按页批量删：每套 FTS 每批最多一次 scan，再批量重新插入 touched rows。
+      for (let offset = 0; offset < touched.length; offset += 400) {
+        const chunk = touched.slice(offset, offset + 400)
+        const placeholders = chunk.map(() => '?').join(',')
+        const chunkRows = rows.filter(row => chunk.includes(row.messageId))
+        const rowIds = chunkRows.map(row => row.rowId)
+        if (rowIds.length > 0) {
+          const rowIdPlaceholders = rowIds.map(() => '?').join(',')
+          this.db.prepare(`DELETE FROM message_fts WHERE rowid IN (${rowIdPlaceholders})`).run(...rowIds)
+          this.db.prepare(`DELETE FROM message_fts_trigram WHERE rowid IN (${rowIdPlaceholders})`).run(...rowIds)
+          this.db.prepare(`DELETE FROM message_fts_bigram WHERE rowid IN (${rowIdPlaceholders})`).run(...rowIds)
+        }
+        this.db.prepare(`DELETE FROM resources WHERE conversation_id = ? AND message_id IN (${placeholders})`).run(
+          conversationId, ...chunk,
+        )
+      }
+    }
+    const insertFts = this.db.prepare('INSERT INTO message_fts (rowid, conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?, ?)')
+    const insertTrigram = this.db.prepare('INSERT INTO message_fts_trigram (rowid, conversation_id, message_id, title, role, text) VALUES (?, ?, ?, ?, ?, ?)')
+    const insertBigram = this.db.prepare('INSERT INTO message_fts_bigram (rowid, conversation_id, message_id, grams) VALUES (?, ?, ?, ?)')
     const insertResource = this.db.prepare('INSERT INTO resources (conversation_id, message_id, ordinal, kind, label, data_json) VALUES (?, ?, ?, ?, ?, ?)')
     const upsertImageAsset = this.db.prepare(`
       INSERT INTO image_assets (
@@ -2417,13 +2474,12 @@ export class ChatArchiveDb {
     `)
 
     const rawMessages: unknown[] = []
-    let resourceOrdinal = 0
     for (const row of rows) {
       if (row.hidden === 0 && row.recipient === 'all' && (row.role === 'user' || row.role === 'assistant') && row.text.trim()) {
-        insertFts.run(conversationId, row.messageId, conversationRow.title, row.role, row.text)
-        insertTrigram.run(conversationId, row.messageId, conversationRow.title, row.role, row.text)
+        insertFts.run(row.rowId, conversationId, row.messageId, conversationRow.title, row.role, row.text)
+        insertTrigram.run(row.rowId, conversationId, row.messageId, conversationRow.title, row.role, row.text)
         const grams = cjkShortTokens(row.text)
-        if (grams) insertBigram.run(conversationId, row.messageId, grams)
+        if (grams) insertBigram.run(row.rowId, conversationId, row.messageId, grams)
       }
       try {
         const rawMessage = JSON.parse(row.rawJson)
@@ -2433,8 +2489,10 @@ export class ChatArchiveDb {
           conversation_id: conversationId,
           messages: [rawMessage],
         }))
-        for (const item of manifest.items) {
-          insertResource.run(conversationId, item.messageId || row.messageId, resourceOrdinal++, item.kind, item.label, json(item.data))
+        for (const [itemIndex, item] of manifest.items.entries()) {
+          // 存储 ordinal 仅用于资源内部稳定键；展示顺序由 getResources() 按 message 时间动态生成。
+          const resourceOrdinal = row.rowId * 100_000 + itemIndex
+          insertResource.run(conversationId, item.messageId || row.messageId, resourceOrdinal, item.kind, item.label, json(item.data))
         }
 
         const rawRecord = record(rawMessage)
@@ -2466,8 +2524,8 @@ export class ChatArchiveDb {
       }
     }
 
-    let markdown = ''
-    if (rawMessages.length > 0) {
+    let markdown: string | null = null
+    if (!touched && rawMessages.length > 0) {
       const canonical = adaptConversation({
         title: conversationRow.title,
         conversation_id: conversationId,
@@ -2475,11 +2533,20 @@ export class ChatArchiveDb {
       })
       if (visibleForMarkdown(canonical)) markdown = conversationToMarkdown(canonical)
     }
+    const messageCount = Number((this.db.prepare(
+      'SELECT count(*) AS n FROM messages WHERE conversation_id = ?',
+    ).get(conversationId) as { n: number }).n)
+    const resourceCount = Number((this.db.prepare(
+      'SELECT count(*) AS n FROM resources WHERE conversation_id = ?',
+    ).get(conversationId) as { n: number }).n)
     this.db.prepare(`
       UPDATE conversations
-      SET message_count = ?, resource_count = ?, markdown = ?, imported_at = ?
+      SET message_count = ?,
+          resource_count = ?,
+          markdown = CASE WHEN ? IS NULL THEN markdown ELSE ? END,
+          imported_at = ?
       WHERE id = ?
-    `).run(rows.length, resourceOrdinal, markdown, Date.now(), conversationId)
+    `).run(messageCount, resourceCount, markdown, markdown, Date.now(), conversationId)
   }
 
   /** 列出仍未落盘的 ImageGen 图片；供 Guardian 的机会式被动补全使用。 */
@@ -3065,16 +3132,16 @@ export class ChatArchiveDb {
       ) VALUES (?, ?, ?, ?, ?, ?)
     `)
     const insertFts = this.db.prepare(`
-      INSERT INTO message_fts (conversation_id, message_id, title, role, text)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO message_fts (rowid, conversation_id, message_id, title, role, text)
+      VALUES (?, ?, ?, ?, ?, ?)
     `)
     const insertTrigram = this.db.prepare(`
-      INSERT INTO message_fts_trigram (conversation_id, message_id, title, role, text)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO message_fts_trigram (rowid, conversation_id, message_id, title, role, text)
+      VALUES (?, ?, ?, ?, ?, ?)
     `)
     const insertBigram = this.db.prepare(`
-      INSERT INTO message_fts_bigram (conversation_id, message_id, grams)
-      VALUES (?, ?, ?)
+      INSERT INTO message_fts_bigram (rowid, conversation_id, message_id, grams)
+      VALUES (?, ?, ?, ?)
     `)
 
     this.db.exec('BEGIN IMMEDIATE')
@@ -3096,8 +3163,9 @@ export class ChatArchiveDb {
         markdown,
       )
 
+      const rowIds = new Map<string, number>()
       conversation.messages.forEach((message, ordinal) => {
-        insertMessage.run(
+        const insertedMessage = insertMessage.run(
           conversationId,
           message.id,
           ordinal,
@@ -3111,6 +3179,7 @@ export class ChatArchiveDb {
           message.createTime ?? null,
           json(message.metadata),
         )
+        rowIds.set(message.id, Number(insertedMessage.lastInsertRowid))
       })
 
       manifest.items.forEach((item, ordinal) => {
@@ -3125,7 +3194,10 @@ export class ChatArchiveDb {
       })
 
       visibleMessages.forEach((message) => {
+        const rowId = rowIds.get(message.id)
+        if (!rowId) return
         insertFts.run(
+          rowId,
           conversationId,
           message.id,
           conversation.title,
@@ -3133,6 +3205,7 @@ export class ChatArchiveDb {
           message.text,
         )
         insertTrigram.run(
+          rowId,
           conversationId,
           message.id,
           conversation.title,
@@ -3140,7 +3213,7 @@ export class ChatArchiveDb {
           message.text,
         )
         const grams = cjkShortTokens(message.text)
-        if (grams) insertBigram.run(conversationId, message.id, grams)
+        if (grams) insertBigram.run(rowId, conversationId, message.id, grams)
       })
       this.db.exec('COMMIT')
     }
@@ -3496,8 +3569,60 @@ export class ChatArchiveDb {
   }
 
   getMarkdown(conversationId: string): string | null {
-    const row = this.db.prepare('SELECT markdown FROM conversations WHERE id = ?').get(conversationId) as { markdown?: string } | undefined
-    return typeof row?.markdown === 'string' ? row.markdown : null
+    const row = this.db.prepare(
+      'SELECT title, source_format AS sourceFormat, markdown FROM conversations WHERE id = ?',
+    ).get(conversationId) as { title?: string, sourceFormat?: string, markdown?: string } | undefined
+    if (!row) return null
+
+    // Live plural/mapping 会持续增量变化；把 markdown 从采集写热路径移到显式读取时再生成，
+    // 避免每页同步都扫描/解析整段长聊天。这里直接使用 canonical messages 表字段重建，
+    // 不依赖历史行是否保存了完整 raw_json；官方静态导入仍直接复用持久化 markdown。
+    if (row.sourceFormat === 'messages' || row.sourceFormat === 'mapping') {
+      const storedMessages = this.db.prepare(`
+        SELECT message_id AS messageId, role, author_name AS authorName, recipient,
+               content_type AS contentType, text, hidden, create_time AS createTime,
+               metadata_json AS metadataJson
+        FROM messages
+        WHERE conversation_id = ?
+        ORDER BY COALESCE(create_time, 0), row_id
+      `).all(conversationId) as Array<{
+        messageId: string
+        role: string
+        authorName: string | null
+        recipient: string
+        contentType: string
+        text: string
+        hidden: number
+        createTime: number | null
+        metadataJson: string
+      }>
+      if (storedMessages.length === 0) return ''
+      const rawMessages = storedMessages.map(message => {
+        let metadata: Record<string, unknown> = {}
+        try { metadata = JSON.parse(message.metadataJson) as Record<string, unknown> }
+        catch { /* 保留空 metadata，正文仍然可读。 */ }
+        if (message.hidden) metadata = { ...metadata, is_visually_hidden_from_conversation: true }
+        return {
+          id: message.messageId,
+          author: { role: message.role, name: message.authorName },
+          recipient: message.recipient,
+          create_time: message.createTime,
+          content: {
+            content_type: message.contentType,
+            parts: [message.text],
+          },
+          metadata,
+        }
+      })
+      const canonical = adaptConversation({
+        title: row.title ?? '',
+        conversation_id: conversationId,
+        messages: rawMessages,
+      })
+      return visibleForMarkdown(canonical) ? conversationToMarkdown(canonical) : ''
+    }
+
+    return typeof row.markdown === 'string' ? row.markdown : null
   }
 
   /** 记录一次 DevSpace tool audit；第一次时间永远不被后续调用覆盖。 */
@@ -4610,7 +4735,7 @@ export class ChatArchiveDb {
     return this.db.prepare(`
       SELECT
         message_id AS messageId,
-        ordinal,
+        ROW_NUMBER() OVER (ORDER BY COALESCE(create_time, 0), row_id) - 1 AS ordinal,
         role,
         author_name AS authorName,
         recipient,
@@ -4630,16 +4755,21 @@ export class ChatArchiveDb {
         resolved_model_slug AS resolvedModelSlug
       FROM messages
       WHERE conversation_id = ?
-      ORDER BY ordinal
+      ORDER BY COALESCE(create_time, 0), row_id
     `).all(conversationId) as unknown as Array<Record<string, unknown>>
   }
 
   getResources(conversationId: string): Array<Record<string, unknown>> {
     const rows = this.db.prepare(`
-      SELECT message_id AS messageId, ordinal, kind, label, data_json AS dataJson
-      FROM resources
-      WHERE conversation_id = ?
-      ORDER BY ordinal
+      SELECT r.message_id AS messageId,
+             ROW_NUMBER() OVER (ORDER BY COALESCE(m.create_time, 0), m.row_id, r.ordinal) - 1 AS ordinal,
+             r.kind, r.label, r.data_json AS dataJson
+      FROM resources r
+      LEFT JOIN messages m
+        ON m.conversation_id = r.conversation_id
+       AND m.message_id = r.message_id
+      WHERE r.conversation_id = ?
+      ORDER BY COALESCE(m.create_time, 0), m.row_id, r.ordinal
     `).all(conversationId) as unknown as Array<Record<string, unknown> & { dataJson: string }>
     // 图片二进制下载状态是“可变的本地缓存状态”，不能反向写进可重建的 resources.data_json；
     // 否则下一次 reindex 就会把 local_path/hash 等本地事实抹掉。CLI 查询时再把 image_assets

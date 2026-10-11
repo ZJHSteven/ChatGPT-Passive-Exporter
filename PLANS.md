@@ -1,3 +1,21 @@
+# 2026-10-11 Archive Reader 长尾阻塞修复 ExecPlan
+
+状态：实现完成，待生产迁移验证。
+
+现象：LifeOps `/v1/search` 人为 5s HTTP timeout 再次触发。相同 query 直接请求本机 Bridge 墙钟 26.45s，但 Bridge 内部 search timing 仅 1.03s，证明大部分时间发生在 HTTP handler 得到主线程调度之前，而非搜索 SQL。
+
+根因：
+1. Archive Bridge 与 daemon 同 Node 主线程。
+2. `mergeLiveMessagesPage()` 每页都调用 `rebuildConversationDerivedInsideTransaction()`；旧实现对整个 Conversation 重建 ordinal、三套 FTS、resources、markdown。
+3. 对约 3500 条消息的 synthetic Conversation，只更新 24 条时旧路径约 48~54s；进一步分阶段计时发现全局 ordinal 窗口 UPDATE 单独耗时约 55s。
+
+修复：
+1. live merge 派生数据只刷新 touched messages；FTS rowid 与 canonical `messages.row_id` 对齐，按 rowid 主键删除/重插。
+2. live 热路径不再重写整聊天 ordinal；Reader `getMessages()` 读取时按 `create_time,row_id` 动态生成稳定 ordinal 游标。
+3. resources 按 message 时间动态排序；markdown 移出采集热路径，显式读取 live Conversation 时由 canonical messages 按需生成。
+4. CLI 增加 `reindex --search-only`，生产一次性重建搜索派生索引以完成旧 FTS rowid 对齐。
+
+验收门槛：全量测试/typecheck 通过；3500 条 Conversation 更新 24 条 synthetic merge <1s；生产并发同步期间 LifeOps 搜索不再触发 5s timeout。
 # 2026-10-11 Archive daemon 常驻启动回填修复 ExecPlan
 
 现象：生产 Archive daemon 在 15:30 左右无优雅 shutdown 记录直接消失；Windows 计划任务未接管。恢复计划任务后，新 daemon 又在 `DevSpace historical metadata seed complete` 后持续高 CPU / 约 1.1 GiB 工作集，迟迟未进入 wake listener 与 WSS 主循环。

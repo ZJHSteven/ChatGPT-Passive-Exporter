@@ -624,6 +624,15 @@ describe('ChatArchiveDb', () => {
         trigramIndexedMessageCount: 2,
         bigramIndexedMessageCount: 2,
       })
+      const alignedFts = db.db.prepare(`
+        SELECT count(*) AS n
+        FROM message_fts f
+        JOIN messages m
+          ON m.row_id = f.rowid
+         AND m.conversation_id = f.conversation_id
+         AND m.message_id = f.message_id
+      `).get() as { n: number }
+      expect(Number(alignedFts.n)).toBe(2)
     }
     finally {
       db.close()
