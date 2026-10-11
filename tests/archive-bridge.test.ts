@@ -8,6 +8,13 @@ import {
   type ArchiveBridgeDataSource,
   type ArchiveBridgeTurnInput,
 } from '../src/local/archive-bridge.ts'
+import { isRetryableInfrastructureError } from '../src/local/actor-submission-queue.ts'
+
+test('Actor submission 把页面输入暂时缺失视为可重试基础设施错误', () => {
+  expect(isRetryableInfrastructureError('ChatGPT actor prompt input not found')).toBe(true)
+  expect(isRetryableInfrastructureError('ChatGPT actor composer element not found')).toBe(true)
+  expect(isRetryableInfrastructureError('invalid projectName')).toBe(false)
+})
 
 const TOKEN = 'test-token-that-is-long-enough-for-bridge-auth-1234567890'
 const servers: ArchiveBridgeServer[] = []

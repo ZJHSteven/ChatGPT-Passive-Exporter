@@ -1,3 +1,4 @@
+- 2026-10-11 submission retry 分类回归已补：prompt input/composer not found 必须 retryable，真正输入错误 invalid projectName 仍保持 non-retryable。
 - 2026-10-11 submission queue 恢复分类补漏：prompt input not found / composer not found 现在属于可重试的页面就绪类错误；daemon 启动时也会把历史 failed 但按当前规则已属 retryable 的同幂等记录自动转回 retry_waiting，避免旧错误永久封死 title key。
 - 2026-10-11 conversation GET 超时重试回归已补：仅 Runtime.evaluate timeout 可重试，Network.enable timeout 与 HTTP 429 均不会被误当成 GET 层重试。
 - 2026-10-11 pageFetchJson 已将 Runtime.evaluate 等待从默认 10s 放宽到 20s，并仅在 Runtime.evaluate timeout 时延迟 500ms 后安全重试一次；若页面脚本自身抛异常，日志会优先暴露 exceptionDetails，而不是统一退化成 No fetch result。
