@@ -1,3 +1,14 @@
+# 2026-10-11 Conversation-first 搜索重构 ExecPlan
+
+目标：把 Archive 搜索的第一返回单位从全局 message hit 改为 Conversation，避免高频词被少数长聊天占满 message limit；同时修复两字中文错误落入无界 LIKE 全表扫描造成的 12 秒级超时。
+
+1. `ChatArchiveDb` 新增 Conversation-first 搜索：先按 Conversation 聚合命中并排序/limit，再为入选 Conversation 返回有限 snippets；结果带 `hitCount / bestRank / capturedAt`。
+2. 模型可选择 `relevance / recent / frequency` 排序，以及 `conversationLimit / snippetsPerConversation`；全局 message hit 不再决定 Conversation 召回。
+3. 原 message-level 搜索保留为独立 `searchMessages`/CLI `search-messages` 兼容与展开入口。
+4. 中文 3+ 字继续 trigram；短 CJK 优先现有 unicode61 FTS，只有 FTS 无法解析/确实无结果时才进入受限 fallback，禁止无界 `%LIKE%` 扫全库。
+5. Archive Bridge `/v1/search` 一次返回 Conversation 结果并本地补 `lifecycleState`；不要求调用方再拉“最近 200 个 Conversation”。
+6. 增加搜索 timing（DB search / lifecycle enrich / bridge total），并用 `LifeOps`、两字中文、英文及高频单聊天数据做召回与性能回归。
+7. CLI 默认 `search` 切换为 Conversation-first；补充 `--sort`、`--snippets-per-conversation`，保留 `search-messages`。
 # 2026-10-11 CDP 稳定性与提交不确定性加固
 
 背景：历史 Notes 已完成 21/21 成功课堂回填，但日志显示两类 CDP timeout：一类是普通/睡眠 ChatGPT target 的 `Network.enable` 长期重试噪声；另一类是 Guardian 偶发 `Runtime.evaluate` / `Network.getResponseBody` timeout。当前 Guardian 现场基准正常（20 次 trivial Runtime.evaluate 全成功，P95 约 1ms），说明不是 127.0.0.1:9222 整体失效，而是 target/renderer 与同 session 诊断流量需要更细粒度隔离。
