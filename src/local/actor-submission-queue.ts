@@ -57,6 +57,7 @@ export class ActorSubmissionConflictError extends Error {
 export interface ActorSubmissionQueueOptions {
   filePath: string
   submitTurn: (input: ActorSubmissionInput) => Promise<Record<string, unknown>>
+  confirmTurn?: (input: ActorSubmissionInput) => Promise<Record<string, unknown> | null>
   pollIntervalMs?: number
   retryBaseMs?: number
   retryMaxMs?: number
@@ -105,7 +106,7 @@ export class ActorSubmissionQueue {
   private readonly options: Required<Pick<
     ActorSubmissionQueueOptions,
     'filePath' | 'submitTurn' | 'pollIntervalMs' | 'retryBaseMs' | 'retryMaxMs'
-  >> & Pick<ActorSubmissionQueueOptions, 'log' | 'onAccepted'>
+  >> & Pick<ActorSubmissionQueueOptions, 'confirmTurn' | 'log' | 'onAccepted'>
 
   private readonly recordsByKey = new Map<string, ActorSubmissionRecord>()
   private started = false
@@ -117,6 +118,7 @@ export class ActorSubmissionQueue {
     this.options = {
       filePath: options.filePath,
       submitTurn: options.submitTurn,
+      confirmTurn: options.confirmTurn,
       pollIntervalMs: Math.max(10, options.pollIntervalMs ?? 1000),
       retryBaseMs: Math.max(100, options.retryBaseMs ?? 5000),
       retryMaxMs: Math.max(1000, options.retryMaxMs ?? 60_000),
@@ -249,6 +251,42 @@ export class ActorSubmissionQueue {
           return
         }
 
+        // 正式 POST 的结果如果处于 unknown，下一次动作不是立刻重发，而是先从
+        // Archive canonical history 精确确认同一条 user prompt 是否已经出现。
+        // 这一步不消耗 attemptCount；命中即直接 accepted，避免重复 turn。
+        if (
+          record.status === 'retry_waiting'
+          && record.lastError
+          && isSubmissionOutcomeUnknownError(record.lastError)
+          && this.options.confirmTurn
+        ) {
+          try {
+            const confirmed = await this.options.confirmTurn(record.input)
+            if (confirmed) {
+              record.status = 'accepted'
+              record.result = confirmed
+              record.lastError = null
+              record.updatedAt = Date.now()
+              record.nextAttemptAt = null
+              await this.persist()
+              await this.options.onAccepted?.(cloneRecord(record))
+              await this.options.log?.('actor submission confirmed from canonical history', {
+                submissionId: record.id,
+                idempotencyKey: record.idempotencyKey,
+                attemptCount: record.attemptCount,
+              })
+              continue
+            }
+          }
+          catch (error) {
+            await this.options.log?.('actor submission canonical confirmation failed', {
+              submissionId: record.id,
+              idempotencyKey: record.idempotencyKey,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+        }
+
         record.status = 'processing'
         record.attemptCount += 1
         record.updatedAt = Date.now()
@@ -272,10 +310,17 @@ export class ActorSubmissionQueue {
         }
         catch (error) {
           const message = error instanceof Error ? error.message : String(error)
+          const outcomeUnknown = isSubmissionOutcomeUnknownError(message)
           const retryable = isRetryableInfrastructureError(message)
           record.lastError = message
           record.updatedAt = Date.now()
-          if (!retryable) {
+          if (outcomeUnknown && record.attemptCount < 2) {
+            // ambiguous POST 最多只允许一次后续重发。重发前下一轮会先走 confirmTurn；
+            // 因而正常路径是“先确认，确认不到才第二次 POST”，不会无限复制 turn。
+            record.status = 'retry_waiting'
+            record.nextAttemptAt = Date.now() + this.retryDelay(record.attemptCount)
+          }
+          else if (!retryable) {
             record.status = 'failed'
             record.nextAttemptAt = null
           }

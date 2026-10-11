@@ -1,3 +1,4 @@
+- 2026-10-11 ambiguous POST 恢复策略调整：submission queue 新增 confirmTurn 钩子；`submission outcome unknown` 第一次不再永久 fail，而是进入 retry_waiting，下一轮先从 canonical 精确确认同一 user prompt，确认不到才允许唯一一次重新 POST；第二次仍 unknown 才终止，避免无限重复 turn。
 - 2026-10-11 passive target 固定探测回归已更新：无论连续失败次数多少，默认仍每 5 分钟尝试一次，保证 target 从 Chrome 睡眠恢复后能在有界时间内重新 attach。
 ## 2026-10-11 Conversation-first 搜索生产收口
 
