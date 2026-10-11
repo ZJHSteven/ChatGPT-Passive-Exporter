@@ -1,3 +1,4 @@
+- 2026-10-11 Guardian health 运行态已接入浏览器级 Browser.getVersion ping：每次 target Runtime timeout 都记录 cdpFailureScope=target|browser 与 browserPingMs；一次成功 probe 会清除 last scope。连续 3 次 target 失败仍按既有策略重建 Guardian，不会因为普通 observer target 失败误重建。
 - 2026-10-11 Guardian health 分层诊断 helper 已增加：target Runtime timeout 后再做浏览器级 CDP ping，可明确区分 target/renderer 卡顿与整个 Chrome CDP 路径异常。
 - 2026-10-11 passive target 退避回归已补，固定 5m→10m→20m→40m→60m 并验证高失败次数封顶 60m。
 - 2026-10-11 passive observer 运行态已接入 failureCount：成功 attach/target 消失时清零；失败时使用递增 retryDelay 并在日志记录 failureCount/retryDelayMs。像 02C... 这种长期坏 target 将快速退避到每小时一次。

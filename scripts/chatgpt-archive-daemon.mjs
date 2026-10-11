@@ -2114,6 +2114,8 @@ async function main() {
   let lastSafeWssControls = []
   let guardianReadyAt = 0
   let guardianHealthFailures = 0
+  let guardianLastCdpFailureScope = null
+  let guardianLastBrowserPingMs = null
   let guardianRebuilds = 0
   let guardianUiReloadAttemptedAt = null
   let guardianUiFailure = null
@@ -3116,6 +3118,8 @@ async function main() {
       pageClosed: guardian.page?.closed ?? true,
       nativeWindow: guardian.nativeWindow ?? null,
       healthFailures: guardianHealthFailures,
+      lastCdpFailureScope: guardianLastCdpFailureScope,
+      lastBrowserPingMs: guardianLastBrowserPingMs,
       rebuilds: guardianRebuilds,
       uiFailure: guardianUiFailure,
       uiReloadAttemptedAt: guardianUiReloadAttemptedAt,
@@ -7227,12 +7231,26 @@ async function main() {
           returnByValue: true,
         }, 3000)
         guardianHealthFailures = 0
+        guardianLastCdpFailureScope = null
       }
       catch (error) {
+        let browserLevelHealthy = false
+        const browserPingStartedAt = Date.now()
+        try {
+          await guardian.browser.send('Browser.getVersion', {}, 1500)
+          browserLevelHealthy = true
+        }
+        catch {
+          browserLevelHealthy = false
+        }
+        guardianLastBrowserPingMs = Date.now() - browserPingStartedAt
+        guardianLastCdpFailureScope = guardianCdpFailureScope(browserLevelHealthy)
         guardianHealthFailures += 1
         await log('guardian health probe failed', {
           consecutiveFailures: guardianHealthFailures,
           threshold: guardianHealthFailureThreshold,
+          cdpFailureScope: guardianLastCdpFailureScope,
+          browserPingMs: guardianLastBrowserPingMs,
           error: error instanceof Error ? error.message : String(error),
         })
         if (!shouldRebuildGuardianAfterHealthFailures(guardianHealthFailures, guardianHealthFailureThreshold)) {
