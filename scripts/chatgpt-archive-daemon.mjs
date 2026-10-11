@@ -451,6 +451,11 @@ export function passiveObserverRetryDelayMs(
   return Math.min(ceiling, base * (2 ** Math.min(8, failures - 1)))
 }
 
+/** Guardian target 命令超时后，用浏览器级 CDP ping 区分故障层级。 */
+export function guardianCdpFailureScope(browserLevelHealthy) {
+  return browserLevelHealthy ? 'target' : 'browser'
+}
+
 /** catalog late-start 超时与可靠 start 超时必须保留不同 lifecycle 语义。 */
 export function watchdogTriggerForStartType(startType) {
   return String(startType || '').startsWith('catalog:')

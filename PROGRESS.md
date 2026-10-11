@@ -1,3 +1,4 @@
+- 2026-10-11 Guardian health 分层诊断 helper 已增加：target Runtime timeout 后再做浏览器级 CDP ping，可明确区分 target/renderer 卡顿与整个 Chrome CDP 路径异常。
 - 2026-10-11 passive target 退避回归已补，固定 5m→10m→20m→40m→60m 并验证高失败次数封顶 60m。
 - 2026-10-11 passive observer 运行态已接入 failureCount：成功 attach/target 消失时清零；失败时使用递增 retryDelay 并在日志记录 failureCount/retryDelayMs。像 02C... 这种长期坏 target 将快速退避到每小时一次。
 - 2026-10-11 开始治理坏 target observer 重试：新增 passiveObserverRetryDelayMs，连续 attach 失败按 5m→10m→20m→40m→60m 递增隔离，而不是永久每 5 分钟重试。
