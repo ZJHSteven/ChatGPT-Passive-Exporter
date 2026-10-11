@@ -90,8 +90,8 @@ function isCooldownError(message: string): boolean {
   return /cooldown|HTTP 429/iu.test(message)
 }
 
-function isRetryableInfrastructureError(message: string): boolean {
-  return /cooldown|HTTP 429|unavailable|CDP|target.*closed|target.*unavailable|lease timeout|timed out|timeout|fetch failed|ECONN|socket|waiting for full answer|still live|DOM drift/iu.test(message)
+export function isRetryableInfrastructureError(message: string): boolean {
+  return /cooldown|HTTP 429|unavailable|CDP|target.*closed|target.*unavailable|lease timeout|timed out|timeout|fetch failed|ECONN|socket|waiting for full answer|still live|DOM drift|prompt input not found|composer.*not found/iu.test(message)
 }
 
 export class ActorSubmissionQueue {
@@ -124,11 +124,23 @@ export class ActorSubmissionQueue {
     await this.load()
     let repaired = false
     for (const record of this.recordsByKey.values()) {
-      if (record.status !== 'processing') continue
-      record.status = 'queued'
-      record.nextAttemptAt = null
-      record.updatedAt = Date.now()
-      repaired = true
+      if (record.status === 'processing') {
+        record.status = 'queued'
+        record.nextAttemptAt = null
+        record.updatedAt = Date.now()
+        repaired = true
+        continue
+      }
+      // 软件升级后若某类错误从“永久失败”被重新判定为基础设施瞬态错误，
+      // 旧 failed 记录也要自动回到重试队列；否则同一 idempotencyKey 会永远卡死。
+      if (record.status === 'failed'
+        && record.lastError
+        && isRetryableInfrastructureError(record.lastError)) {
+        record.status = 'retry_waiting'
+        record.nextAttemptAt = Date.now()
+        record.updatedAt = Date.now()
+        repaired = true
+      }
     }
     if (repaired) await this.persist()
     this.schedule(0)
