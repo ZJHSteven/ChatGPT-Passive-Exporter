@@ -1410,6 +1410,10 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
       status: null,
       mimeType: null,
     }
+    // 一旦正式 POST 已拿到 2xx + conversationId，就越过“不可自动重发”的提交点。
+    // 后续本地诊断/neutralize/trace 即使失败，也只能降级记录，不能把整个 send 判失败后再次 POST。
+    let acceptedConversationId: string | null = null
+    let acceptedBoundAt: number | null = null
     let firstDataAt: number | null = null
     const conversationRequestUrl = 'https://chatgpt.com/backend-api/f/conversation'
     const steerRequestUrl = 'https://chatgpt.com/backend-api/f/steer_turn'
@@ -1543,6 +1547,8 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
             throw new Error(`ChatGPT actor ${mode} response drifted from ${expectedMime}: ${responseState.mimeType}`)
           }
           boundAt = Date.now()
+          acceptedConversationId = conversationId
+          acceptedBoundAt = boundAt
           // 对 new/continue，给真实 SSE 首个 data 一个很短的接管窗口。若没看到首包，发送本身仍然
           // 成功，但 Guardian 保留在当前 conversation，避免 cleanup 过早 abort 一个尚未稳定的流。
           if (mode !== 'steer' && firstDataAt === null) {
@@ -1646,8 +1652,44 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
         await new Promise(resolve => setTimeout(resolve, 100))
       }
       if (!submitState.event) throw new Error(`ChatGPT actor did not emit POST ${formalRequestUrl}`)
-      if (responseState.status === null) throw new Error(`ChatGPT actor ${requestedMode} request started but no HTTP response arrived before timeout`)
-      throw new Error('ChatGPT actor request was accepted but conversation UUID was not bound before timeout')
+      if (responseState.status === null) {
+        throw new Error(`ChatGPT actor submission outcome unknown after formal POST ${submitState.event.requestId}: no HTTP response arrived before timeout`)
+      }
+      throw new Error('ChatGPT actor submission outcome unknown: request returned 2xx but conversation UUID was not bound before timeout')
+    }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const submitEvent = submitState.event
+      if (
+        submitEvent
+        && acceptedConversationId
+        && responseState.status !== null
+        && responseState.status >= 200
+        && responseState.status < 300
+      ) {
+        // 服务端已经明确 2xx；从这里开始任何本地 CDP/trace/neutralize 失败都不能触发重发。
+        return {
+          targetId,
+          conversationId: acceptedConversationId,
+          submittedAt: submitEvent.at,
+          boundAt: acceptedBoundAt ?? submitEvent.at,
+          bindDelayMs: Math.max(0, Number(acceptedBoundAt ?? submitEvent.at) - submitEvent.at),
+          cdpRequestId: submitEvent.requestId,
+          responseStatus: responseState.status,
+          responseMimeType: responseState.mimeType,
+          mode: requestedMode,
+          projectName,
+          targetMode,
+          runningConfirmed: false,
+          postSubmitNeutralized: false,
+          postSubmitNeutralizeReason: `local finalize degraded after confirmed 2xx: ${message}`,
+          degradedAfterAccept: true,
+        }
+      }
+      if (submitEvent && responseState.status === null && !message.includes('submission outcome unknown')) {
+        throw new Error(`ChatGPT actor submission outcome unknown after formal POST ${submitEvent.requestId}: ${message}`)
+      }
+      throw error
     }
     finally {
       offRequest()
