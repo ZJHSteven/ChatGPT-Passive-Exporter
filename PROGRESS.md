@@ -1,4 +1,4 @@
-- 2026-10-11 submission retry 分类回归已补：prompt input/composer not found 必须 retryable，真正输入错误 invalid projectName 仍保持 non-retryable。
+- 2026-10-11 Guardian REST block 状态分裂事故已生产闭环：429 cooldown 期间 Network.setBlockedURLs 超时造成 Chrome session 实际 blocked、daemon cached=false；cooldown 到期因缓存 false 跳过真实 unblock，导致 Actor/WSS/submit 继续成功但 canonical conversation GET 长期 TypeError/No fetch result。修复后 unblock 永远真实下发、CDP timeout 标记 uncertain、attach/rebuild 强制同步目标 block 状态、成功解封后才恢复 active REST；conversation GET 的 Runtime.evaluate timeout 20s + 一次安全重试并透出 exceptionDetails；prompt input/composer not found 改为 retryable，历史 failed transient submission 会在启动时自动复活。生产 daemon PID 52196 当前 blocked=false / uncertain=false / lastError=null，Archive submission 非 accepted=0；原先 8 个 canonical 缺失 CID 已 8/8 恢复，ClassFlow 历史 Notes 从 10 succeeded / 11 generating 最终推进到 21/21 succeeded。最终回归：25 test files / 208 tests PASS，TypeScript PASS，Chrome/Edge/Firefox/Userscript builds PASS。- 2026-10-11 submission retry 分类回归已补：prompt input/composer not found 必须 retryable，真正输入错误 invalid projectName 仍保持 non-retryable。
 - 2026-10-11 submission queue 恢复分类补漏：prompt input not found / composer not found 现在属于可重试的页面就绪类错误；daemon 启动时也会把历史 failed 但按当前规则已属 retryable 的同幂等记录自动转回 retry_waiting，避免旧错误永久封死 title key。
 - 2026-10-11 conversation GET 超时重试回归已补：仅 Runtime.evaluate timeout 可重试，Network.enable timeout 与 HTTP 429 均不会被误当成 GET 层重试。
 - 2026-10-11 pageFetchJson 已将 Runtime.evaluate 等待从默认 10s 放宽到 20s，并仅在 Runtime.evaluate timeout 时延迟 500ms 后安全重试一次；若页面脚本自身抛异常，日志会优先暴露 exceptionDetails，而不是统一退化成 No fetch result。
@@ -724,6 +724,7 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - iPhone push 由 Companion daemon 转发；不把 push token 放进 Userscript。
 - 继续做本地轻量 Reader：历史 DevSpace tool/widget 默认静态折叠渲染，不创建真实 Apps SDK iframe。
 - 开发期模块继续分离；最终合并为单一 ChatGPT Companion runtime，Exporter / Run Watch / Fleet / Reader / Bookmark / Notification 共享状态与网络层。
+
 
 
 
