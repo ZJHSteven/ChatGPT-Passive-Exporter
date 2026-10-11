@@ -1,3 +1,10 @@
+## 2026-10-11 Conversation-first 搜索重构
+
+- 已定位历史搜索超时的数据库慢路径：旧 `ChatArchiveDb.search()` 对 1~2 字 CJK 故意跳过 FTS，进入 `%LIKE%` 全表正文扫描；真实库 `搜索` 查询超过 60 秒未完成。直接使用现有 unicode61 FTS 时，同词冷查询约 39ms，`英国` 约 6ms，说明 SQLite/FTS 本体没有 12 秒级性能问题。
+- 已确定新语义：Conversation 才是全局 limit/排序单位；message 只作为 Conversation 下的命中统计与有限 snippets，不能再让少数长聊天占满全局 message hit 配额。
+- 本轮实现计划同时覆盖 DB、Bridge 与 CLI：短 CJK 改走 unicode61；3+ CJK 继续 trigram；Conversation-first 支持 relevance/recent/frequency、hitCount、bestRank、capturedAt 和每聊有限 snippets；原 message 搜索保留独立入口。
+- 真实库原型性能：只取轻量 FTS rank 行后在本机聚合，`搜索` 566 hits 约 22ms、`ChatGPT` 2158 hits 约 65ms；对最宽的单字符/高频英文查询，两阶段“轻量聚合 + 只为前20个 Conversation 生成 snippets”约 0.7s，明显低于网络/MCP 超时量级。
+
 - 2026-10-11 Bark 通知分组已统一为稳定语义契约：`Chat-Latency`（DevSpace 1/3/5 分钟静默与 5 分钟诊断）、`Chat-Timeout`（Watchdog 到点/延期/未绑定）、`Chat-Done`（正常 Final、ImageGen、DevSpace checkpoint/conclusion）、`Incident`（conversation 生命周期异常）、`Archive-Warning`（DOM Drift、协议漂移、429 cooldown）；同时预留 `LiveOps` / `Infra` 给对应发送端。只改变 Bark group，不改变任何通知频率、触发条件、去重 key 或生命周期判定。
 - 2026-10-11 submission unknown 回归已补：正式 POST 结果未知即使错误文本包含 timeout 也不得 retry；普通 pre-submit CDP timeout 仍保持可恢复。
 - 2026-10-11 Guardian CDP 分层与协议指纹 backpressure 回归已补：browser ping 成功=>target，失败=>browser；协议 body 读取在 inFlight>=2 时必须让路。

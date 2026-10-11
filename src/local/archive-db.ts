@@ -29,6 +29,53 @@ export interface ArchiveSearchHit {
   rank: number
 }
 
+export type ArchiveSearchSort = 'relevance' | 'recent' | 'frequency'
+
+export interface ArchiveConversationSearchOptions {
+  /** 最多返回多少个不同 Conversation。 */
+  limit?: number
+  /** 每个 Conversation 最多返回多少条代表性正文命中；命中总数仍通过 hitCount 单独返回。 */
+  snippetsPerConversation?: number
+  /** relevance=最佳匹配优先；recent=最新聊天优先；frequency=正文命中次数优先。 */
+  sort?: ArchiveSearchSort
+}
+
+export interface ArchiveConversationSearchResult {
+  conversationId: string
+  title: string
+  capturedAt: number
+  /** 只统计正文 message 命中数；标题命中通过 titleMatched 单独表示，避免标题被每条 FTS 行重复计算。 */
+  hitCount: number
+  /** FTS5 bm25 的最佳正文命中排名；仅标题命中时为 null。数值越小（通常越负）越相关。 */
+  bestRank: number | null
+  titleMatched: boolean
+  /** Bridge 用这两个内部元数据计算 lifecycleState，HTTP 返回前会将它们隐藏。 */
+  terminalState: string | null
+  lastFinishType: string | null
+  snippets: ArchiveSearchHit[]
+}
+
+type ArchiveSearchIndex = 'message_fts' | 'message_fts_trigram'
+
+interface ArchiveSearchPlan {
+  table: ArchiveSearchIndex
+  expression: string
+}
+
+interface ArchiveSearchRankRow {
+  conversationId: string
+  messageId: string
+  rank: number
+}
+
+interface ArchiveSearchMetaRow {
+  id: string
+  title: string
+  capturedAt: number
+  terminalState: string | null
+  lastFinishType: string | null
+}
+
 export interface ArchiveConversationRow {
   id: string
   title: string
@@ -464,8 +511,8 @@ export class ChatArchiveDb {
         tokenize='unicode61'
       );
 
-      -- unicode61 适合英文单词，但不会把连续中文切成任意可搜索短语。
-      -- trigram 专门补中文/任意子串；两字符查询再由 LIKE fallback 兜底。
+      -- unicode61 适合英文/数字，也能高效处理真实库中的一字/两字 CJK token 查询。
+      -- trigram 专门补 3+ 字符连续子串；不要再把短 CJK 直接降级成无界 LIKE 全表扫描。
       CREATE VIRTUAL TABLE IF NOT EXISTS message_fts_trigram USING fts5(
         conversation_id UNINDEXED,
         message_id UNINDEXED,
@@ -3018,75 +3065,221 @@ export class ChatArchiveDb {
     }
   }
 
-  search(query: string, limit = 20): ArchiveSearchHit[] {
+  /**
+   * 为普通用户查询选择最快且语义最合适的 FTS 索引。
+   *
+   * - 3+ CJK 先走 trigram：它能做连续子串匹配，例如“长江三峡”。
+   * - 其他查询先走 unicode61：英文/数字以及“两字中文”都能在现有真实库中毫秒级命中。
+   * - 3+ 非 CJK 若 unicode61 没有结果，再尝试 trigram，兼容 `Ops` 命中 `LifeOps` 这类子串。
+   *
+   * 旧实现把两字 CJK 直接丢到 `%LIKE%` 全表扫描；真实库中“搜索”超过 60 秒仍未结束，
+   * 而 unicode61 同一查询只有几十毫秒，因此这里明确禁止把短 CJK 直接送进无界 LIKE。
+   */
+  private resolveSearchPlan(query: string): ArchiveSearchPlan | null {
+    const codepointLength = Array.from(query).length
+    const hasCjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(query)
+    const indexOrder: ArchiveSearchIndex[] = hasCjk && codepointLength >= 3
+      ? ['message_fts_trigram', 'message_fts']
+      : codepointLength >= 3
+        ? ['message_fts', 'message_fts_trigram']
+        : ['message_fts']
+
+    // 默认允许调用者使用 FTS5 的 AND/OR/引号等语法；若语法不完整，再把整段当普通字面短语重试。
+    const rawExpression = `{text} : (${query})`
+    const literalExpression = `{text} : "${query.replaceAll('"', '""')}"`
+
+    for (const table of indexOrder) {
+      for (const expression of [rawExpression, literalExpression]) {
+        try {
+          const row = this.db.prepare(`SELECT 1 AS found FROM ${table} WHERE ${table} MATCH ? LIMIT 1`).get(expression)
+          if (row) return { table, expression }
+        }
+        catch {
+          // 当前表达式不是合法 FTS5 语法时继续尝试字面短语或下一索引；搜索本身不能因此崩溃。
+        }
+      }
+    }
+    return null
+  }
+
+  /** 读取 FTS 命中的轻量排名行；这里只拿 ID/rank，不生成正文 snippet，因此即使高频词也很轻。 */
+  private readSearchRankRows(plan: ArchiveSearchPlan): ArchiveSearchRankRow[] {
+    return this.db.prepare(`
+      SELECT
+        conversation_id AS conversationId,
+        message_id AS messageId,
+        bm25(${plan.table}) AS rank
+      FROM ${plan.table}
+      WHERE ${plan.table} MATCH ?
+    `).all(plan.expression) as unknown as ArchiveSearchRankRow[]
+  }
+
+  /** 批量读取 Conversation 元数据；分块避免未来聊天数增大后撞 SQLite 参数数量上限。 */
+  private readSearchConversationMeta(conversationIds: string[]): Map<string, ArchiveSearchMetaRow> {
+    const result = new Map<string, ArchiveSearchMetaRow>()
+    for (let offset = 0; offset < conversationIds.length; offset += 400) {
+      const chunk = conversationIds.slice(offset, offset + 400)
+      if (chunk.length === 0) continue
+      const placeholders = chunk.map(() => '?').join(',')
+      const rows = this.db.prepare(`
+        SELECT
+          id,
+          title,
+          captured_at AS capturedAt,
+          terminal_state AS terminalState,
+          last_finish_type AS lastFinishType
+        FROM conversations
+        WHERE id IN (${placeholders})
+      `).all(...chunk) as unknown as ArchiveSearchMetaRow[]
+      for (const row of rows) result.set(row.id, row)
+    }
+    return result
+  }
+
+  /**
+   * Archive 的默认搜索语义：Conversation-first。
+   *
+   * 全部 message 命中先只用于统计/排名，不做任何全局 message LIMIT；
+   * 真正的 limit 作用在“不同 Conversation”上。入选后才读取少量 snippets，
+   * 因此一个超长聊天即使命中 1000 次，也只占一个 Conversation 席位。
+   */
+  searchConversations(query: string, options: ArchiveConversationSearchOptions = {}): ArchiveConversationSearchResult[] {
     const normalized = query.trim()
     if (!normalized) return []
-    const safeLimit = Math.max(1, Math.min(200, limit))
-    const codepointLength = Array.from(normalized).length
-    const hasCjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(normalized)
 
-    // 3+ 字符中文/日文/韩文优先走 trigram，支持“长江三峡”这类连续文本子串。
-    if (hasCjk && codepointLength >= 3) {
+    const safeLimit = Math.max(1, Math.min(200, Math.trunc(options.limit ?? 20)))
+    const snippetsPerConversation = Math.max(1, Math.min(10, Math.trunc(options.snippetsPerConversation ?? 3)))
+    const sort: ArchiveSearchSort = options.sort ?? 'relevance'
+    const plan = this.resolveSearchPlan(normalized)
+    const rankRows = plan ? this.readSearchRankRows(plan) : []
+
+    const aggregates = new Map<string, { hitCount: number, bestRank: number | null, titleMatched: boolean }>()
+    for (const row of rankRows) {
+      const current = aggregates.get(row.conversationId) ?? { hitCount: 0, bestRank: null, titleMatched: false }
+      current.hitCount += 1
+      current.bestRank = current.bestRank === null ? row.rank : Math.min(current.bestRank, row.rank)
+      aggregates.set(row.conversationId, current)
+    }
+
+    // 标题只有几千行，直接 LIKE 非常轻；标题命中单独记布尔值，绝不按每条 message 重复计数。
+    const pattern = `%${normalized.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`
+    const titleRows = this.db.prepare(`
+      SELECT
+        id,
+        title,
+        captured_at AS capturedAt,
+        terminal_state AS terminalState,
+        last_finish_type AS lastFinishType
+      FROM conversations
+      WHERE title LIKE ? ESCAPE '\\'
+    `).all(pattern) as unknown as ArchiveSearchMetaRow[]
+    for (const row of titleRows) {
+      const current = aggregates.get(row.id) ?? { hitCount: 0, bestRank: null, titleMatched: false }
+      current.titleMatched = true
+      aggregates.set(row.id, current)
+    }
+
+    if (aggregates.size === 0) return []
+
+    const meta = this.readSearchConversationMeta([...aggregates.keys()])
+    // titleRows 已经读过一次元数据，直接复用，避免标题命中项再查一遍。
+    for (const row of titleRows) meta.set(row.id, row)
+
+    const candidates = [...aggregates.entries()]
+      .map(([conversationId, aggregate]) => {
+        const row = meta.get(conversationId)
+        if (!row) return null
+        return { conversationId, ...aggregate, ...row }
+      })
+      .filter((row): row is NonNullable<typeof row> => row !== null)
+
+    const rankValue = (value: number | null) => value ?? Number.POSITIVE_INFINITY
+    const relevanceCompare = (left: typeof candidates[number], right: typeof candidates[number]) =>
+      Number(right.titleMatched) - Number(left.titleMatched)
+      || rankValue(left.bestRank) - rankValue(right.bestRank)
+      || right.hitCount - left.hitCount
+      || right.capturedAt - left.capturedAt
+
+    candidates.sort((left, right) => {
+      if (sort === 'recent') {
+        return right.capturedAt - left.capturedAt || relevanceCompare(left, right)
+      }
+      if (sort === 'frequency') {
+        return right.hitCount - left.hitCount
+          || Number(right.titleMatched) - Number(left.titleMatched)
+          || rankValue(left.bestRank) - rankValue(right.bestRank)
+          || right.capturedAt - left.capturedAt
+      }
+      return relevanceCompare(left, right)
+    })
+
+    const selected = candidates.slice(0, safeLimit)
+    const snippets = new Map<string, ArchiveSearchHit[]>()
+    if (plan && selected.length > 0) {
+      const selectedIds = selected.map(row => row.conversationId)
+      const placeholders = selectedIds.map(() => '?').join(',')
       const rows = this.db.prepare(`
         SELECT
           conversation_id AS conversationId,
           message_id AS messageId,
           title,
           role,
-          snippet(message_fts_trigram, 4, '[', ']', ' … ', 24) AS text,
-          bm25(message_fts_trigram, 2.5, 1.0) AS rank
-        FROM message_fts_trigram
-        WHERE message_fts_trigram MATCH ?
+          snippet(${plan.table}, 4, '[', ']', ' … ', 24) AS text,
+          bm25(${plan.table}) AS rank
+        FROM ${plan.table}
+        WHERE ${plan.table} MATCH ?
+          AND conversation_id IN (${placeholders})
         ORDER BY rank
-        LIMIT ?
-      `).all(normalized, safeLimit) as unknown as ArchiveSearchHit[]
-      if (rows.length > 0) return rows
-    }
+      `).all(plan.expression, ...selectedIds) as unknown as ArchiveSearchHit[]
 
-    // 英文/数字/较长分词查询继续用 unicode61，保留单词级 FTS 排名。
-    if (!hasCjk) {
-      try {
-        const rows = this.db.prepare(`
-          SELECT
-            conversation_id AS conversationId,
-            message_id AS messageId,
-            title,
-            role,
-            snippet(message_fts, 4, '[', ']', ' … ', 24) AS text,
-            bm25(message_fts, 2.5, 1.0) AS rank
-          FROM message_fts
-          WHERE message_fts MATCH ?
-          ORDER BY rank
-          LIMIT ?
-        `).all(normalized, safeLimit) as unknown as ArchiveSearchHit[]
-        if (rows.length > 0) return rows
-      }
-      catch {
-        // 用户输入包含 FTS 运算符/未闭合引号时，不让搜索直接失败，下面 LIKE 仍能工作。
+      for (const row of rows) {
+        const bucket = snippets.get(row.conversationId) ?? []
+        if (bucket.length < snippetsPerConversation) bucket.push(row)
+        snippets.set(row.conversationId, bucket)
       }
     }
 
-    // FTS5 trigram 最小 token 长度是 3；“三峡”“英国”等高频两字词必须能搜。
-    // LIKE 只扫我们已经筛过的可读 User/Assistant messages，不扫巨大 tool result。
-    const pattern = `%${normalized.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`
-    const rows = this.db.prepare(`
+    return selected.map(row => ({
+      conversationId: row.conversationId,
+      title: row.title,
+      capturedAt: row.capturedAt,
+      hitCount: row.hitCount,
+      bestRank: row.bestRank,
+      titleMatched: row.titleMatched,
+      terminalState: row.terminalState,
+      lastFinishType: row.lastFinishType,
+      snippets: snippets.get(row.conversationId) ?? [],
+    }))
+  }
+
+  /** 默认 `search()` 已迁移为 Conversation-first，便于旧调用方自然获得正确语义。 */
+  search(query: string, limit = 20): ArchiveConversationSearchResult[] {
+    return this.searchConversations(query, { limit })
+  }
+
+  /**
+   * 原始 message-level 搜索只作为调试/展开入口保留。
+   * 它不再被 Conversation 搜索拿来做全局 LIMIT，因此不会影响 Conversation recall。
+   */
+  searchMessages(query: string, limit = 20): ArchiveSearchHit[] {
+    const normalized = query.trim()
+    if (!normalized) return []
+    const safeLimit = Math.max(1, Math.min(200, Math.trunc(limit)))
+    const plan = this.resolveSearchPlan(normalized)
+    if (!plan) return []
+    return this.db.prepare(`
       SELECT
-        m.conversation_id AS conversationId,
-        m.message_id AS messageId,
-        c.title AS title,
-        m.role AS role,
-        substr(m.text, max(1, instr(m.text, ?) - 80), 260) AS text,
-        0.0 AS rank
-      FROM messages m
-      JOIN conversations c ON c.id = m.conversation_id
-      WHERE m.hidden = 0
-        AND m.recipient = 'all'
-        AND m.role IN ('user', 'assistant')
-        AND (m.text LIKE ? ESCAPE '\\' OR c.title LIKE ? ESCAPE '\\')
-      ORDER BY m.create_time DESC, m.ordinal DESC
+        conversation_id AS conversationId,
+        message_id AS messageId,
+        title,
+        role,
+        snippet(${plan.table}, 4, '[', ']', ' … ', 24) AS text,
+        bm25(${plan.table}) AS rank
+      FROM ${plan.table}
+      WHERE ${plan.table} MATCH ?
+      ORDER BY rank
       LIMIT ?
-    `).all(normalized, pattern, pattern, safeLimit) as unknown as ArchiveSearchHit[]
-    return rows
+    `).all(plan.expression, safeLimit) as unknown as ArchiveSearchHit[]
   }
 
   list(limit = 50): ArchiveConversationRow[] {

@@ -41,7 +41,8 @@ export interface ArchiveBridgeDataSource {
   getMessages(conversationId: string): Array<Record<string, unknown>>
   getDevSpaceRecoveryMessages?(conversationId: string): Array<Record<string, unknown>>
   getResources?(conversationId: string): Array<Record<string, unknown>>
-  search?(query: string, limit?: number): Array<Record<string, unknown>>
+  searchConversations?(query: string, options?: { limit?: number, snippetsPerConversation?: number, sort?: 'relevance' | 'recent' | 'frequency' }): Array<Record<string, unknown>>
+  searchMessages?(query: string, limit?: number): Array<Record<string, unknown>>
   listIncidents?(options?: { status?: 'open' | 'resolved', limit?: number }): Array<Record<string, unknown>>
   listActiveWatchdogs?(limit?: number): Array<Record<string, unknown>>
 }
@@ -603,14 +604,80 @@ export class ArchiveBridgeServer {
     }
 
     if (url.pathname === '/v1/search' && method === 'GET') {
-      if (!this.options.archive.search) {
+      if (!this.options.archive.searchConversations) {
         jsonResponse(res, 501, { error: 'search_not_supported' })
         return
       }
       const query = (url.searchParams.get('q') ?? '').trim()
+      const sortValue = url.searchParams.get('sort')
+      const sort = sortValue === 'recent' || sortValue === 'frequency' ? sortValue : 'relevance'
+      const conversationLimit = parseLimit(url.searchParams.get('limit'), 20)
+      const snippetsPerConversation = Math.max(1, Math.min(10, parseLimit(url.searchParams.get('snippets_per_conversation'), 3)))
+      const startedAt = performance.now()
+      const searchStartedAt = performance.now()
+      const rows = query
+        ? this.options.archive.searchConversations(query, {
+            limit: conversationLimit,
+            snippetsPerConversation,
+            sort,
+          })
+        : []
+      const searchFinishedAt = performance.now()
+
+      const activeIds = new Set(
+        (this.options.archive.listActiveWatchdogs?.(1000) ?? [])
+          .map(row => typeof row.conversationId === 'string' ? row.conversationId : '')
+          .filter(Boolean),
+      )
+      const openIncidentIds = new Set(
+        (this.options.archive.listIncidents?.({ status: 'open', limit: 1000 }) ?? [])
+          .map(row => typeof row.conversationId === 'string' ? row.conversationId : '')
+          .filter(Boolean),
+      )
+      const conversations = rows.map(row => {
+        const conversationId = typeof row.conversationId === 'string' ? row.conversationId : ''
+        const terminalState = typeof row.terminalState === 'string' ? row.terminalState : null
+        const lastFinishType = typeof row.lastFinishType === 'string' ? row.lastFinishType : null
+        const { terminalState: _terminalState, lastFinishType: _lastFinishType, ...publicRow } = row
+        return {
+          ...publicRow,
+          lifecycleState: openIncidentIds.has(conversationId)
+            ? 'aborted'
+            : activeIds.has(conversationId)
+              ? 'running'
+              : terminalState || lastFinishType
+                ? 'completed'
+                : 'idle',
+        }
+      })
+      const enrichFinishedAt = performance.now()
       jsonResponse(res, 200, {
         query,
-        hits: query ? this.options.archive.search(query, parseLimit(url.searchParams.get('limit'), 50)) : [],
+        sort,
+        conversationLimit,
+        snippetsPerConversation,
+        conversations,
+        timing: {
+          searchMs: Math.round((searchFinishedAt - searchStartedAt) * 100) / 100,
+          enrichMs: Math.round((enrichFinishedAt - searchFinishedAt) * 100) / 100,
+          totalMs: Math.round((enrichFinishedAt - startedAt) * 100) / 100,
+        },
+      })
+      return
+    }
+
+    if (url.pathname === '/v1/search/messages' && method === 'GET') {
+      if (!this.options.archive.searchMessages) {
+        jsonResponse(res, 501, { error: 'message_search_not_supported' })
+        return
+      }
+      const query = (url.searchParams.get('q') ?? '').trim()
+      const startedAt = performance.now()
+      const hits = query ? this.options.archive.searchMessages(query, parseLimit(url.searchParams.get('limit'), 20)) : []
+      jsonResponse(res, 200, {
+        query,
+        hits,
+        timing: { totalMs: Math.round((performance.now() - startedAt) * 100) / 100 },
       })
       return
     }

@@ -48,7 +48,8 @@ Usage:
   chatgpt-archive recover <recovery-json-file...> [--db <path>]
   chatgpt-archive import-official <chatgpt-export.zip...> [--db <path>]
   chatgpt-archive list [--limit N] [--db <path>]
-  chatgpt-archive search <fts-query> [--limit N] [--db <path>]
+  chatgpt-archive search <fts-query> [--limit N] [--sort relevance|recent|frequency] [--snippets-per-conversation N] [--db <path>]
+  chatgpt-archive search-messages <fts-query> [--limit N] [--db <path>]
   chatgpt-archive show <conversation-id> [--format md|json|resources] [--db <path>]
   chatgpt-archive stats [--db <path>]
   chatgpt-archive sources [--db <path>]
@@ -899,7 +900,24 @@ async function main() {
     if (command === 'search') {
       if (positionals.length === 0) throw new Error('search requires an FTS query')
       const query = positionals.join(' ')
-      console.log(JSON.stringify(archive.search(query, limit(flags, 20)), null, 2))
+      const sortFlag = String(flags.get('sort') || 'relevance')
+      if (!['relevance', 'recent', 'frequency'].includes(sortFlag)) {
+        throw new Error(`Unknown --sort ${sortFlag}; use relevance|recent|frequency`)
+      }
+      const snippetsFlag = Number(flags.get('snippets-per-conversation') || 3)
+      const snippetsPerConversation = Number.isFinite(snippetsFlag) ? Math.max(1, Math.min(10, Math.trunc(snippetsFlag))) : 3
+      console.log(JSON.stringify(archive.searchConversations(query, {
+        limit: limit(flags, 20),
+        sort: sortFlag,
+        snippetsPerConversation,
+      }), null, 2))
+      return
+    }
+
+    if (command === 'search-messages') {
+      if (positionals.length === 0) throw new Error('search-messages requires an FTS query')
+      const query = positionals.join(' ')
+      console.log(JSON.stringify(archive.searchMessages(query, limit(flags, 20)), null, 2))
       return
     }
 

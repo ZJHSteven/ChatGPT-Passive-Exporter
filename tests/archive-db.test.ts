@@ -629,22 +629,66 @@ describe('ChatArchiveDb', () => {
     }
   })
 
-  test('中文两字短词走 fallback，长中文短语走 trigram，英文走 unicode FTS', () => {
+  test('Conversation-first 搜索：两字中文不再全表 LIKE，长中文走 trigram，英文走 unicode FTS', () => {
     const db = tempDb()
     try {
       db.importRaw(payload())
 
-      const shortCn = db.search('三峡')
+      const shortCn = db.searchConversations('三峡')
       expect(shortCn.length).toBeGreaterThan(0)
       expect(shortCn.some(hit => hit.conversationId === 'conversation-cn')).toBe(true)
+      expect(shortCn[0]).toMatchObject({ hitCount: 2, titleMatched: true })
+      expect(shortCn[0]?.snippets.length).toBeGreaterThan(0)
 
-      const longCn = db.search('长江三峡')
+      const longCn = db.searchConversations('长江三峡')
       expect(longCn.length).toBeGreaterThan(0)
-      expect(longCn[0]?.text).toContain('[长江三峡]')
+      expect(longCn[0]?.snippets[0]?.text).toContain('[长江三峡]')
 
-      const english = db.search('Trip')
+      const english = db.searchConversations('Trip')
       expect(english.length).toBeGreaterThan(0)
-      expect(english[0]?.text).toContain('[Trip]')
+      expect(english[0]?.snippets[0]?.text).toContain('[Trip]')
+
+      const rawMessages = db.searchMessages('Trip', 1)
+      expect(rawMessages).toHaveLength(1)
+      expect(rawMessages[0]?.text).toContain('[Trip]')
+    }
+    finally {
+      db.close()
+    }
+  })
+
+  test('Conversation limit 不会被单个高频聊天的 message hit 吃光，并支持 frequency/recent 排序', () => {
+    const db = tempDb()
+    try {
+      const makeConversation = (id: string, title: string, capturedAt: number, count: number) => ({
+        title,
+        conversation_id: id,
+        create_time: capturedAt,
+        update_time: capturedAt,
+        current_node: `${id}-a-${count - 1}`,
+        messages: Array.from({ length: count }, (_, index) => ({
+          id: `${id}-a-${index}`,
+          author: { role: 'assistant' },
+          recipient: 'all',
+          create_time: capturedAt + index,
+          content: { content_type: 'text', parts: [`共同关键词 LifeOps 第 ${index} 条`] },
+          metadata: {},
+        })),
+      })
+      db.importRaw(makeConversation('many-hits', '高频聊天', 100, 12))
+      db.importRaw(makeConversation('few-new', '较新聊天', 300, 2))
+      db.importRaw(makeConversation('few-old', '较旧聊天', 200, 1))
+
+      const relevance = db.searchConversations('LifeOps', { limit: 3, snippetsPerConversation: 2 })
+      expect(relevance.map(row => row.conversationId)).toEqual(expect.arrayContaining(['many-hits', 'few-new', 'few-old']))
+      expect(relevance.find(row => row.conversationId === 'many-hits')).toMatchObject({ hitCount: 12 })
+      expect(relevance.find(row => row.conversationId === 'many-hits')?.snippets).toHaveLength(2)
+
+      const frequency = db.searchConversations('LifeOps', { limit: 3, sort: 'frequency' })
+      expect(frequency[0]?.conversationId).toBe('many-hits')
+
+      const recent = db.searchConversations('LifeOps', { limit: 3, sort: 'recent' })
+      expect(recent[0]?.conversationId).toBe('few-new')
     }
     finally {
       db.close()
@@ -655,7 +699,7 @@ describe('ChatArchiveDb', () => {
     const db = tempDb()
     try {
       db.importRaw(payload())
-      expect(db.search('query')).toHaveLength(0)
+      expect(db.searchConversations('query')).toHaveLength(0)
       expect(db.getMessages('conversation-cn')).toHaveLength(3)
       expect(db.getResources('conversation-cn').some(item => item.kind === 'tool-call')).toBe(true)
       expect(db.getResources('conversation-cn').some(item => item.kind === 'image-group')).toBe(true)

@@ -46,16 +46,30 @@ function mockArchive(): ArchiveBridgeDataSource {
         lastReasoningStatus: 'finished',
       }].slice(0, limit)
     },
-    search(query: string, limit = 20) {
+    searchConversations(query: string, options: { limit?: number, snippetsPerConversation?: number, sort?: 'relevance' | 'recent' | 'frequency' } = {}) {
       if (!query.includes('测试')) return []
       return [{
         conversationId: 'cid-1',
-        messageId: 'm2',
         title: '测试会话',
-        role: 'assistant',
-        text: '你好！',
-        rank: 0,
-      }].slice(0, limit)
+        capturedAt: 200,
+        hitCount: 1,
+        bestRank: -1,
+        titleMatched: true,
+        terminalState: 'final',
+        lastFinishType: 'stop',
+        snippets: [{
+          conversationId: 'cid-1',
+          messageId: 'm2',
+          title: '测试会话',
+          role: 'assistant',
+          text: '你好！',
+          rank: -1,
+        }].slice(0, options.snippetsPerConversation ?? 3),
+      }].slice(0, options.limit ?? 20)
+    },
+    searchMessages(query: string, limit = 20) {
+      if (!query.includes('测试')) return []
+      return [{ conversationId: 'cid-1', messageId: 'm2', title: '测试会话', role: 'assistant', text: '你好！', rank: -1 }].slice(0, limit)
     },
     listIncidents() {
       return []
@@ -372,12 +386,27 @@ describe('Archive Bridge', () => {
   test('search 和 worksite resolve 返回可供 LifeOps 使用的脱敏工作现场', async () => {
     const { base, headers } = await startBridge()
 
-    const search = await fetch(`${base}/v1/search?q=${encodeURIComponent('测试')}&limit=10`, { headers })
+    const search = await fetch(`${base}/v1/search?q=${encodeURIComponent('测试')}&limit=10&sort=frequency&snippets_per_conversation=2`, { headers })
     expect(search.status).toBe(200)
     expect(await search.json()).toMatchObject({
       query: '测试',
-      hits: [{ conversationId: 'cid-1', title: '测试会话' }],
+      sort: 'frequency',
+      conversationLimit: 10,
+      snippetsPerConversation: 2,
+      conversations: [{
+        conversationId: 'cid-1',
+        title: '测试会话',
+        capturedAt: 200,
+        lifecycleState: 'completed',
+        hitCount: 1,
+        snippets: [{ messageId: 'm2' }],
+      }],
+      timing: { searchMs: expect.any(Number), enrichMs: expect.any(Number), totalMs: expect.any(Number) },
     })
+
+    const rawSearch = await fetch(`${base}/v1/search/messages?q=${encodeURIComponent('测试')}&limit=1`, { headers })
+    expect(rawSearch.status).toBe(200)
+    expect(await rawSearch.json()).toMatchObject({ hits: [{ conversationId: 'cid-1', messageId: 'm2' }] })
 
     const resolved = await fetch(
       `${base}/v1/worksites/resolve?conversation_id=cid-1&turn_exchange_id=turn-1`,
