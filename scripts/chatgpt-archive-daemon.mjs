@@ -2263,7 +2263,7 @@ async function main() {
   let passiveCatalogPagesReused = 0
   let guardianProtocolBodyReadsInFlight = 0
   let guardianProtocolBodyReadsSkipped = 0
-  let guardianConversationRestBlocked = false
+  let guardianConversationRestBlockedPatterns = []
   let guardianConversationRestBlockUncertain = true
   // catalogActive 只表示“低频 conversation list 曾看见 async_status=3/5”。它不是可靠
   // turn start；若没有更强证据，activeTurns 可以用“首次观察时刻”作为保守 late-start 下界，
@@ -3362,7 +3362,8 @@ async function main() {
         catalogCacheEntries: passiveCatalogPages.size,
         guardianProtocolBodyReadsInFlight,
         guardianProtocolBodyReadsSkipped,
-        guardianConversationRestBlocked,
+        guardianConversationRestBlocked: guardianConversationRestBlockedPatterns.length > 0,
+        guardianConversationRestBlockedPatterns,
         guardianConversationRestBlockUncertain,
       },
     },
@@ -3386,9 +3387,11 @@ async function main() {
       checkpointMaxErrors,
       checkpointPollingEnabled,
     },
+    // legacy 顶层字段只为旧消费者/旧 state 迁移保留；新版 429 状态见 rateLimits。
     cooldownUntil: cooldownUntil || null,
     cooldownRecoveryPending,
     recoveryProbeRemaining,
+    rateLimits,
     notification: {
       enabled: Boolean(notificationConfig),
       provider: notificationConfig?.provider ?? null,
@@ -4153,64 +4156,104 @@ async function main() {
     }
   }
 
+  const requestFamilyForKind = (kind) => {
+    if (kind === 'catalog') return 'catalog'
+    if (kind === 'mapping') return 'mapping'
+    return 'body'
+  }
+
+  const routeFamily = (route) => {
+    if (route?.kind === 'catalog') return 'catalog'
+    if (route?.kind === 'mapping') return 'mapping'
+    return 'body'
+  }
+
   const tripCooldown = async (reason, details = {}) => {
     const now = Date.now()
-    const previousCooldownUntil = Number(cooldownUntil || 0)
+    const family = details.family || 'body'
+    const previous = rateLimits.families[family]
+    const previousCooldownUntil = Number(previous?.backoffUntil || 0)
     const wasAlreadyCooling = previousCooldownUntil > now
-    const requestedCooldownUntil = cooldownDeadlineFromRetryAfter(details.retryAfter, {
+    const retryAfter = String(details.retryAfter ?? '').trim()
+    const requestedCooldownUntil = retryAfter
+      ? cooldownDeadlineFromRetryAfter(retryAfter, {
+          now,
+          fallbackMs: cooldownMinutes * 60_000,
+        })
+      : null
+
+    const next = recordFamily429(rateLimits, family, {
       now,
+      retryAfter: retryAfter || null,
+      requestedDeadline: requestedCooldownUntil,
       fallbackMs: cooldownMinutes * 60_000,
     })
-    // 已经在 cooldown 时只允许向后延长；后续较短的 Retry-After 不能反向缩短已有熔断。
-    cooldownUntil = Math.max(
-      wasAlreadyCooling ? previousCooldownUntil : 0,
-      requestedCooldownUntil,
-    )
-    cooldownRecoveryPending = true
-    recoveryProbeRemaining = 0
-    // 429 本身就是“现在不适合做主动扫描”的强证据。把 periodic 基准推进到本次 429，
-    // 防止 daemon 已运行很久时在 cooldown 一结束就因为旧 lastReconcileAt 立即深扫 catalog。
-    lastReconcileAt = now
+    const familyCooldownUntil = Number(next.backoffUntil || 0)
+
+    // catalog 429 只推进 catalog periodic 基准；body/mapping/actor 不再把 catalog 深扫时钟一起改写。
+    if (family === 'catalog') lastReconcileAt = now
     await log('active API cooldown armed', {
       reason,
-      cooldownUntil,
+      family,
+      cooldownUntil: familyCooldownUntil,
       wasAlreadyCooling,
       previousCooldownUntil: previousCooldownUntil > 0 ? previousCooldownUntil : null,
-      extensionMs: wasAlreadyCooling ? Math.max(0, cooldownUntil - previousCooldownUntil) : null,
-      retryAfterDriven: String(details.retryAfter ?? '').trim().length > 0,
+      extensionMs: wasAlreadyCooling ? Math.max(0, familyCooldownUntil - previousCooldownUntil) : null,
+      retryAfterDriven: Boolean(retryAfter),
+      backoffStage: next.stage,
+      probationRemaining: next.probationRemaining,
       ...details,
     })
     if (!wasAlreadyCooling) {
       dispatchCooldownNotification({
         reason,
-        cooldownUntil,
+        cooldownUntil: familyCooldownUntil,
         route: details.route ?? null,
         retryAfter: details.retryAfter ?? null,
       })
     }
-    await setGuardianConversationRestBlocked(true).catch(async (error) => {
+    await syncGuardianRateLimitBlocks().catch(async (error) => {
       await log('Guardian REST cooldown block failed', {
+        family,
         error: error instanceof Error ? error.message : String(error),
       })
     })
-    // Actor/Bridge 也会直接读取 daemon state 判断 cooldown；因此 429 熔断一旦建立，
+    // Actor/Bridge 会直接读取 daemon state 的 actor family；因此 429 熔断一旦建立，
     // 必须立即落盘，不能等到 5 秒主循环末尾才让其它入口看见。
     await fs.writeFile(statePath, JSON.stringify(state(), null, 2)).catch(() => {})
-    return cooldownUntil
+    return familyCooldownUntil
   }
 
-  const requireRequestWindow = () => {
-    if (Date.now() < cooldownUntil) throw new Error(`active API cooldown until ${new Date(cooldownUntil).toISOString()}`)
+  const requireRequestWindow = (family) => {
+    const now = Date.now()
+    // legacy 全局 cooldown 到期前仍保持旧版 fail-closed；之后所有新限流都走 family state。
+    if (cooldownRecoveryPending && now < cooldownUntil) {
+      throw new Error(`legacy active API cooldown until ${new Date(cooldownUntil).toISOString()}`)
+    }
+    if (!familyRateLimitAllowed(rateLimits, family, now)) {
+      const until = familyBackoffUntil(rateLimits, family, now)
+      throw new Error(`active ${family} API cooldown until ${new Date(until).toISOString()}`)
+    }
     if (cooldownRecoveryPending) throw new Error('active API cooldown recovery pending')
     if (guardianConversationRestBlockUncertain) throw new Error('Guardian conversation REST block state is uncertain')
-    if (guardianConversationRestBlocked) throw new Error('Guardian conversation REST is still blocked')
     if (!authHeaders) throw new Error('no captured first-party auth context yet')
     if (!guardian?.page || guardian.page.closed) throw new Error('guardian page unavailable')
   }
 
   const waitForRequestSlot = async (kind) => {
-    const configuredGap = kind === 'catalog' ? reconcileDelayMs : syncDelayMs
-    const baseGap = effectiveActiveRequestGap(configuredGap, recoveryProbeRemaining, recoveryProbeGapMs)
+    const family = requestFamilyForKind(kind)
+    const configuredGap = family === 'catalog' ? reconcileDelayMs : syncDelayMs
+    const familyProbeRemaining = familyProbationRemaining(
+      rateLimits,
+      family,
+      Date.now(),
+      recoveryProbeSuccesses,
+    )
+    const baseGap = effectiveActiveRequestGap(
+      configuredGap,
+      Math.max(recoveryProbeRemaining, familyProbeRemaining),
+      recoveryProbeGapMs,
+    )
     const jitter = requestJitterMs > 0 ? Math.floor(Math.random() * (requestJitterMs + 1)) : 0
     if (lastActiveRequestAt > 0) {
       const waitMs = lastActiveRequestAt + baseGap + jitter - Date.now()
