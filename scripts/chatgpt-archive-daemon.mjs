@@ -3613,7 +3613,7 @@ async function main() {
         lastEventAt: active.lastEventAt ?? null,
         startType: active.startType ?? null,
         lastDiagnosticTurnKey: active.lastDiagnosticTurnKey ?? null,
-        cooldownUntil: Number(cooldownUntil || 0) || null,
+        cooldownUntil: familyBackoffUntil(rateLimits, 'body', now) || null,
       },
     })
   }
@@ -3712,7 +3712,7 @@ async function main() {
 
   const dispatchWatchdogDeferredNotification = (conversationId, active, now = Date.now()) => {
     if (!notificationConfig || !conversationId || !active) return false
-    if (activeApiAllowed(cooldownUntil, now)) return false
+    if (familyRateLimitAllowed(rateLimits, 'body', now)) return false
     const startedAt = Number(active.startedAt || now)
     const turnKey = typeof active.lastDiagnosticTurnKey === 'string' && active.lastDiagnosticTurnKey
       ? active.lastDiagnosticTurnKey
@@ -3722,7 +3722,7 @@ async function main() {
       title: conversationTitle(conversationId),
       startedAt,
       now,
-      cooldownUntil,
+      cooldownUntil: familyBackoffUntil(rateLimits, 'body', now),
     })
     return dispatchPersistentNotification({
       notificationKey: `watchdog-deferred-cooldown:${conversationId}:${startedAt}`,
@@ -3732,7 +3732,7 @@ async function main() {
       payload,
       successLog: 'watchdog cooldown-deferred notification sent',
       failureLog: 'watchdog cooldown-deferred notification failed',
-      logFields: { startedAt, cooldownUntil },
+      logFields: { startedAt, cooldownUntil: familyBackoffUntil(rateLimits, 'body', now) },
     })
   }
 
@@ -4092,7 +4092,10 @@ async function main() {
     if (!allowActiveImageResolver) return
     const activeCandidate = archive.listPendingGeneratedImageAssets(1)[0]
     if (!activeCandidate?.fileId) return
-    if (!authHeaders || !guardian?.page || guardian.page.closed || !activeApiAllowed(cooldownUntil)) return
+    if (!authHeaders
+      || !guardian?.page
+      || guardian.page.closed
+      || !familyRateLimitAllowed(rateLimits, 'body')) return
 
     const resolverPath = `/backend-api/files/download/${encodeURIComponent(activeCandidate.fileId)}`
     activeImageResolverAttempts += 1
@@ -4320,7 +4323,8 @@ async function main() {
     }
     const now = Date.now()
     const normalDueAt = now + resumeRetryDelayMs(nextAttemptNumber)
-    const dueAt = Math.max(normalDueAt, Number(cooldownUntil || 0) > now ? Number(cooldownUntil) + 1000 : 0)
+    const bodyBackoffUntil = familyBackoffUntil(rateLimits, 'body', now)
+    const dueAt = Math.max(normalDueAt, bodyBackoffUntil > now ? bodyBackoffUntil + 1000 : 0)
     const timer = setTimeout(() => {
       resumeRetryTimers.delete(key)
       void (async () => {
@@ -4791,7 +4795,7 @@ async function main() {
                 url: singularPath,
                 targetPath: singularPath,
                 targetRoute: '/backend-api/conversation/{conversation_id}',
-                kind: 'body',
+                kind: 'mapping',
               })
               if (!mappingPayload?.mapping || typeof mappingPayload.mapping !== 'object') {
                 throw new Error(`conversation ${conversationId} singular response has no mapping`)
@@ -4917,10 +4921,14 @@ async function main() {
     }
 
     // cooldown/auth/Guardian 不可用不是协议错误，只延期；不要把正常熔断累加成“3 次失败后停监控”。
-    if (!authHeaders || !guardian?.page || guardian.page.closed || !activeApiAllowed(cooldownUntil, now)) {
+    if (!authHeaders
+      || !guardian?.page
+      || guardian.page.closed
+      || !familyRateLimitAllowed(rateLimits, 'body', now)) {
+      const bodyBackoffUntil = familyBackoffUntil(rateLimits, 'body', now)
       const retryAt = Math.max(
         now + checkpointErrorRetryMs,
-        Number(cooldownUntil || 0) > now ? Number(cooldownUntil) + 1000 : 0,
+        bodyBackoffUntil > now ? bodyBackoffUntil + 1000 : 0,
       )
       current.nextProbeAt = retryAt
       checkpointWatches.set(conversationId, current)
@@ -5054,10 +5062,13 @@ async function main() {
       const message = error instanceof Error ? error.message : String(error)
       const latest = checkpointWatches.get(conversationId)
       if (latest) {
-        const cooldownError = message.includes('HTTP 429') || message.startsWith('active API cooldown until ')
+        const cooldownError = message.includes('HTTP 429')
+          || message.startsWith('active body API cooldown until ')
+          || message.startsWith('legacy active API cooldown until ')
         const authError = message.includes('auth context expired') || message.includes('no captured first-party auth context')
-        const retryDelayMs = cooldownError && cooldownUntil > Date.now()
-          ? Math.max(checkpointErrorRetryMs, cooldownUntil - Date.now() + 1000)
+        const bodyBackoffUntil = familyBackoffUntil(rateLimits, 'body', Date.now())
+        const retryDelayMs = cooldownError && bodyBackoffUntil > Date.now()
+          ? Math.max(checkpointErrorRetryMs, bodyBackoffUntil - Date.now() + 1000)
           : checkpointErrorRetryMs
         const next = recordCheckpointError({
           state: latest,
@@ -5074,7 +5085,7 @@ async function main() {
       await log('checkpoint refresh failed', {
         conversationId,
         error: message,
-        cooldownUntil: cooldownUntil || null,
+        cooldownUntil: familyBackoffUntil(rateLimits, 'body', Date.now()) || null,
       })
     }
     finally {
@@ -5087,7 +5098,7 @@ async function main() {
     if (maxSyncConversations > 0 && syncedConversations >= maxSyncConversations) return
     if (ready.size === 0) return
     const now = Date.now()
-    const activeWindowAvailable = activeApiAllowed(cooldownUntil, now)
+    const activeWindowAvailable = familyRateLimitAllowed(rateLimits, 'body', now)
       && Boolean(authHeaders)
       && Boolean(guardian?.page)
       && !guardian?.page?.closed
@@ -5318,8 +5329,12 @@ async function main() {
         await log('conversation sync failed', { conversationId, trigger, error: lastError })
         // 失败不能把 dirty 事实抹掉；同时保留 ready，等 auth/cooldown/页面恢复后再试。
         ready.set(conversationId, trigger)
-        if (lastError.startsWith('active API cooldown until ')) {
-          readyNotBefore.set(conversationId, Math.max(Date.now() + 5000, cooldownUntil))
+        if (lastError.startsWith('active body API cooldown until ')
+          || lastError.startsWith('legacy active API cooldown until ')) {
+          readyNotBefore.set(
+            conversationId,
+            Math.max(Date.now() + 5000, familyBackoffUntil(rateLimits, 'body', Date.now())),
+          )
         }
         else readyNotBefore.set(conversationId, Date.now() + 5000)
       }
@@ -6783,7 +6798,8 @@ async function main() {
     }
     const now = Date.now()
     const passiveSeed = reusablePassiveCatalogPage(0, 28, Number(pendingGapRepair.lastAt || now))
-    const activeWindowAvailable = Boolean(authHeaders) && activeApiAllowed(cooldownUntil, now)
+    const catalogBackoffUntil = familyBackoffUntil(rateLimits, 'catalog', now)
+    const activeWindowAvailable = Boolean(authHeaders) && familyRateLimitAllowed(rateLimits, 'catalog', now)
     const eligible = shouldRunDeferredGapRepair({
       now,
       pendingLastAt: pendingGapRepair.lastAt,
@@ -6792,7 +6808,7 @@ async function main() {
       minIntervalMs: gapRepairMinIntervalMs,
       activeSockets: activeSocketIds.size,
       authAvailable: Boolean(authHeaders),
-      cooldownUntil,
+      cooldownUntil: catalogBackoffUntil,
       reconcileInFlight,
       passiveCatalogAvailable: Boolean(passiveSeed),
     })
@@ -6806,7 +6822,7 @@ async function main() {
     if (reconcileInFlight) blockers.push('reconcile-in-flight')
     if (!activeWindowAvailable && !passiveSeed) {
       if (!authHeaders) blockers.push('no-auth')
-      if (!activeApiAllowed(cooldownUntil, now)) blockers.push('active-api-cooldown')
+      if (!familyRateLimitAllowed(rateLimits, 'catalog', now)) blockers.push('catalog-api-cooldown')
       blockers.push('no-passive-catalog-after-gap')
     }
     if (now < debounceDueAt) blockers.push('debounce')
@@ -6820,7 +6836,7 @@ async function main() {
       activeWindowAvailable,
       passiveCatalogAvailable: Boolean(passiveSeed),
       reconcileInFlight,
-      cooldownUntil: cooldownUntil || null,
+      cooldownUntil: catalogBackoffUntil || null,
       debounceDueAt,
       intervalDueAt: intervalDueAt || null,
       pendingFirstAt: pendingGapRepair.firstAt,
