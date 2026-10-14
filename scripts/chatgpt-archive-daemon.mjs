@@ -977,14 +977,14 @@ export function buildWatchdogStartNotificationPayload({
     : 45 * 60_000
   const watchdogMinutes = Math.round(safeWatchdogMs / 60_000)
   const subject = compactNotificationSubject(title)
+  const identityLine = subject.truncated
+    ? `会话：${subject.full} · CID：${conversationId}`
+    : `CID：${conversationId}`
+  const timingLine = `起点：${formatBeijingTime(safeStartedAt)} → 超时：${formatBeijingTime(safeStartedAt + safeWatchdogMs)}（${watchdogMinutes} 分钟）`
   return {
     title: notificationTitleWithSubject('Watchdog 开始', subject),
-    body: [
-      `会话：${subject.full || conversationId}`,
-      `CID：${conversationId}`,
-      `起点：${formatBeijingTime(safeStartedAt)}`,
-      `预计超时：${formatBeijingTime(safeStartedAt + safeWatchdogMs)}（${watchdogMinutes} 分钟）`,
-    ].join('\n'),
+    // 锁屏正文遵循 NOTIFICATION_STYLE.md：默认最多两行；标题已经完整表达短会话名时不再机械重复。
+    body: [identityLine, timingLine].join('\n'),
     group: BARK_NOTIFICATION_GROUPS.chatTimeout,
     url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
   }
