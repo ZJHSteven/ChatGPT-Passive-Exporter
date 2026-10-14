@@ -282,5 +282,66 @@ describe('ChatGPT single actor helpers', () => {
       await fs.rm(dir, { recursive: true, force: true })
     }
   })
+
+  test('catalog cooldown 不再阻止 Actor；只有 actor family/legacy cooldown 会阻止提交', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'actor-family-cooldown-'))
+    const statePath = path.join(dir, 'actor.json')
+    const daemonStatePath = path.join(dir, 'daemon.json')
+    const future = Date.now() + 60_000
+
+    try {
+      await fs.writeFile(daemonStatePath, JSON.stringify({
+        cooldownUntil: null,
+        rateLimits: {
+          version: 1,
+          legacyGlobalUntil: 0,
+          families: {
+            catalog: { backoffUntil: future },
+            body: { backoffUntil: 0 },
+            mapping: { backoffUntil: 0 },
+            actor: { backoffUntil: 0 },
+          },
+        },
+      }))
+
+      // catalog family 正在退避时，Actor 必须越过 cooldown gate。
+      // 测试环境没有真实 Guardian，因此正确的后续失败点应是 Guardian unavailable。
+      await expect(sendActorPrompt({
+        cdpHttp: 'http://127.0.0.1:1',
+        statePath,
+        daemonStatePath,
+        tracePath: path.join(dir, 'trace.jsonl'),
+        prompt: 'catalog-does-not-block-actor',
+        targetMode: 'guardian',
+        timeoutMs: 300,
+      })).rejects.toThrow(/Guardian target is unavailable/u)
+
+      await fs.writeFile(daemonStatePath, JSON.stringify({
+        cooldownUntil: null,
+        rateLimits: {
+          version: 1,
+          legacyGlobalUntil: 0,
+          families: {
+            catalog: { backoffUntil: 0 },
+            body: { backoffUntil: 0 },
+            mapping: { backoffUntil: 0 },
+            actor: { backoffUntil: future },
+          },
+        },
+      }))
+      await expect(sendActorPrompt({
+        cdpHttp: 'http://127.0.0.1:1',
+        statePath,
+        daemonStatePath,
+        tracePath: path.join(dir, 'trace.jsonl'),
+        prompt: 'actor-is-blocked-by-actor-family',
+        targetMode: 'guardian',
+        timeoutMs: 300,
+      })).rejects.toThrow(/active API cooldown until/u)
+    }
+    finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
 })
 
