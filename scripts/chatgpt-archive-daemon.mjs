@@ -2263,6 +2263,7 @@ async function main() {
   let passiveCatalogPagesReused = 0
   let guardianProtocolBodyReadsInFlight = 0
   let guardianProtocolBodyReadsSkipped = 0
+  let requestEventLedgerErrors = 0
   let guardianConversationRestBlockedPatterns = []
   let guardianConversationRestBlockUncertain = true
   // catalogActive 只表示“低频 conversation list 曾看见 async_status=3/5”。它不是可靠
@@ -4168,6 +4169,24 @@ async function main() {
     return 'body'
   }
 
+  const routeClassForObservation = (route) => {
+    if (!route) return 'unknown'
+    if (route.kind === 'catalog') return route.globalCatalog ? 'catalog-global' : 'catalog-native'
+    return String(route.kind || 'unknown')
+  }
+
+  const recordRequestEvent = (event) => {
+    void requestEventLedger.append(event).catch(async (error) => {
+      requestEventLedgerErrors += 1
+      if (requestEventLedgerErrors <= 3 || requestEventLedgerErrors % 100 === 0) {
+        await log('request event ledger append failed', {
+          errors: requestEventLedgerErrors,
+          error: error instanceof Error ? error.message : String(error),
+        }).catch(() => {})
+      }
+    })
+  }
+
   const tripCooldown = async (reason, details = {}) => {
     const now = Date.now()
     const family = details.family || 'body'
@@ -4326,7 +4345,7 @@ async function main() {
           resumeRetryTimers.set(key, retryTimer)
           return
         }
-        if (!activeApiAllowed(cooldownUntil)) {
+        if (!familyRateLimitAllowed(rateLimits, 'body')) {
           scheduleResumeRetry(conversationId, current.turnExchangeId, 'cooldown-active')
           return
         }
@@ -4348,11 +4367,15 @@ async function main() {
           status = Number(response.status || 0) || null
           if (status === 429) {
             await tripCooldown('live turn resume HTTP 429', {
+              family: 'body',
               route: '/backend-api/f/conversation/resume',
               retryAfter: response.headers?.['retry-after'] ?? null,
               requestId: response.headers?.['x-request-id'] ?? null,
               cfRay: response.headers?.['cf-ray'] ?? null,
             })
+          }
+          else if (status >= 200 && status < 300) {
+            recordFamilySuccess(rateLimits, 'body', Date.now())
           }
           if (status === 401 || status === 403) authHeaders = null
           if (status === null || status < 200 || status >= 300) {
@@ -4369,7 +4392,9 @@ async function main() {
           ? null
           : Math.max(
               Date.now() + resumeRetryDelayMs(attemptNumber + 1),
-              Number(cooldownUntil || 0) > Date.now() ? Number(cooldownUntil) + 1000 : 0,
+              familyBackoffUntil(rateLimits, 'body', Date.now()) > Date.now()
+                ? familyBackoffUntil(rateLimits, 'body', Date.now()) + 1000
+                : 0,
             )
         archive.markLiveResumeAttempt({
           conversationId,
@@ -4403,17 +4428,23 @@ async function main() {
   }
 
  const fetchChecked = async (request, options = {}) => {
-   requireRequestWindow()
+   const family = requestFamilyForKind(request.kind)
+   // backoff 到期后先把 Guardian 对应 URL pattern 解封，再真正发 probation probe。
+   // sync 后再次检查 gate，避免 CDP block 状态不确定时继续向外请求。
+   requireRequestWindow(family)
+   await syncGuardianRateLimitBlocks()
+   requireRequestWindow(family)
    // checkpoint fallback 的第一方行为是“先 stream_status，再几乎立即拉 latest body”。
    // 为了复刻这个**配对请求**而不是把两次请求都强行隔开 6 秒，调用方可以在已经
    // 占用过一次全局 request slot 后，仅对紧接着的 latest body 跳过第二次 wait。
    // 其它分页/cursor/mapping 仍会重新经过全局 gate，因此不会把这个选项变成绕过节流的后门。
    if (options.skipRequestSlot !== true) {
-     await waitForRequestSlot(request.kind === 'catalog' ? 'catalog' : 'body')
+     await waitForRequestSlot(request.kind)
  }
 
     activeReplayRequestUrl = relativeBackendUrl(request.url)
     let response
+    const requestStartedAt = Date.now()
     try {
       const headers = options.extraHeaders
         ? { ...authHeaders, ...options.extraHeaders }
@@ -4423,8 +4454,20 @@ async function main() {
     finally {
       activeReplayRequestUrl = null
     }
+    recordRequestEvent({
+      timestamp: Date.now(),
+      source: 'archive-active',
+      targetId: guardian?.targetId ?? null,
+      family,
+      routeClass: String(request.targetRoute || request.kind || 'unknown'),
+      status: Number(response?.status || 0) || null,
+      retryAfter: response?.headers?.['retry-after'] ?? null,
+      latencyMs: Date.now() - requestStartedAt,
+      backoffStage: rateLimits.families[family]?.stage ?? -1,
+    })
    if (response.status === 429) {
       await tripCooldown(`active ${request.kind || 'body'} HTTP 429`, {
+        family,
         route: relativeBackendUrl(request.url),
         retryAfter: response.headers?.['retry-after'] ?? null,
         requestId: response.headers?.['x-request-id'] ?? null,
@@ -4439,6 +4482,7 @@ async function main() {
     if (response.status < 200 || response.status >= 300 || !response.body) {
       throw new Error(`ChatGPT backend HTTP ${response.status}: ${response.text.slice(0, 240)}`)
     }
+    recordFamilySuccess(rateLimits, family, Date.now())
     if (recoveryProbeRemaining > 0) {
       recoveryProbeRemaining -= 1
       if (recoveryProbeRemaining === 0) {
@@ -6145,6 +6189,22 @@ async function main() {
 
       const route = classifyConversationBackendUrl(requestUrl)
       if (!route) return
+      const family = routeFamily(route)
+      const relativeUrl = relativeBackendUrl(requestUrl)
+      const isArchiveReplay = Boolean(activeReplayRequestUrl && relativeUrl === activeReplayRequestUrl)
+      if (!isArchiveReplay) {
+        recordRequestEvent({
+          timestamp: Date.now(),
+          source: 'native-page',
+          targetId: target.id,
+          family,
+          routeClass: routeClassForObservation(route),
+          status: status || null,
+          retryAfter: response?.headers?.['retry-after'] ?? response?.headers?.['Retry-After'] ?? null,
+          latencyMs: null,
+          backoffStage: rateLimits.families[family]?.stage ?? -1,
+        })
+      }
       if (status === 429) {
         passive429Responses += 1
         if (!shouldTripObserved429(requestUrl, activeReplayRequestUrl)) {
@@ -6153,6 +6213,7 @@ async function main() {
           return
         }
         void tripCooldown(`observed native ${route.kind} HTTP 429`, {
+          family,
           route: relativeBackendUrl(requestUrl),
           retryAfter: response?.headers?.['retry-after'] ?? response?.headers?.['Retry-After'] ?? null,
           requestId: response?.headers?.['x-request-id'] ?? response?.headers?.['X-Request-Id'] ?? null,
@@ -7012,9 +7073,13 @@ async function main() {
       }
      // Guardian 自己的 TPP/sidebar list 不属于 daemon replay；它若 429，必须让 daemon 也退避。
      // active replay 的 global list/body 429 已由 fetchChecked 处理，避免在这里重复续杯 cooldown。
-      if (route?.kind === 'catalog' && !route.globalCatalog && status === 429) {
+      if (route?.kind === 'catalog'
+        && !route.globalCatalog
+        && status === 429
+        && !passivePageObservers.has(guardian.targetId)) {
        passive429Responses += 1
        void tripCooldown('Guardian native catalog HTTP 429', {
+         family: 'catalog',
          route: relativeBackendUrl(response?.url),
          retryAfter: response?.headers?.['retry-after'] ?? response?.headers?.['Retry-After'] ?? null,
          requestId: response?.headers?.['x-request-id'] ?? response?.headers?.['X-Request-Id'] ?? null,
