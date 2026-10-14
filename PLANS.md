@@ -20,7 +20,7 @@
 - [done] 增加短标题、长标题、CID、北京时间起点/预计超时、45 分钟阈值以及 generation 去重 key 的回归测试；同步 `.d.mts` 声明。
 - [done] Archive daemon 定向 61/61、全量 27 files / 233 tests、TypeScript 和四套 build 全绿；Windows 计划任务已重载到 PID 21024，Bridge/WSS/Guardian/Bark 健康，且 ledger 验证启动恢复未补发任何历史 `watchdog-start`。
 - [done] 2026-10-15 00:40 真实 canary 暴露“通知早于 ChatGPT 自动命名”：同 CID 已有 DevSpace `displayTitle=排查 Watchdog 漏通知并新增开始通知`，但 Bark 仍显示 `New chat`。现已修正为：canonical 标题若仍是 `New chat / 新聊天 / CID` 占位符，则优先使用该 CID 最新的非空 DevSpace displayTitle；一旦存在正式 canonical 标题，则始终优先正式标题。定向 62/62、全量 27 files / 234 tests 与四套 build 全绿；生产 daemon 已受控重载到 PID 22612，Bridge/WSS/Guardian/Bark 健康，重载后 `watchdog-start` 总数仍为 7、无历史补发。
-- [doing] 调整 Watchdog 起点 Bark 的锁屏信息顺序：正文第一行固定放 `起点 → 超时（45分钟）`，第二行才放 CID；CID 只作为排障身份，不再抢占首屏。即使聊天名被标题截断，也不再把完整会话名塞进起点通知正文，优先保证无需长按即可看到计时信息。
+- [done] 调整 Watchdog 起点 Bark 的锁屏信息顺序：正文第一行固定放 `起点 → 超时（45分钟）`，第二行才放 CID；CID 只作为排障身份，不再抢占首屏。即使聊天名被标题截断，也不再把完整会话名塞进起点通知正文。定向 62/62、全量 27 files / 234 tests 与四套 build 全绿；生产 daemon 已重载到 PID 31748，Bridge/WSS/Guardian/Bark 健康，重载前后 `watchdog-start` 总数保持 9 且新 daemon 启动后新增 0 条，确认无历史补发。
 
 # 2026-10-14 Archive 429 分级 cooldown / 请求事件账本 ExecPlan
 
