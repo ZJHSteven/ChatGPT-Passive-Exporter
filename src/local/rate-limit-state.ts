@@ -209,10 +209,16 @@ export function recordFamily429(
     ? options.retryAfter.trim()
     : null
 
-  // 已处于 hard backoff 时只记录观测，不因为 native 页面继续重试而无限续杯。
-  if (current.backoffUntil > now) return current
-
   const requestedDeadline = Number(options.requestedDeadline ?? 0)
+  // 已处于 hard backoff 时，catalog/native 这种“没有 Retry-After 的重复 429”不升级、不续杯；
+  // 但服务端如果明确给出一个更晚的 Retry-After deadline，仍然必须尊重并向后延长。
+  if (current.backoffUntil > now) {
+    if (Number.isFinite(requestedDeadline) && requestedDeadline > current.backoffUntil) {
+      current.backoffUntil = requestedDeadline
+    }
+    return current
+  }
+
   if (Number.isFinite(requestedDeadline) && requestedDeadline > now) {
     current.backoffUntil = requestedDeadline
     current.probationRemaining = 0
@@ -300,9 +306,9 @@ export function guardianBlockedUrlPatterns(
   if (snapshot.families.body.backoffUntil > now) {
     patterns.push('https://chatgpt.com/backend-api/conversations/*')
   }
-  if (snapshot.families.mapping.backoffUntil > now) {
-    patterns.push('https://chatgpt.com/backend-api/conversation/*')
-  }
+  // singular /conversation/{cid} 与 /conversation/{cid}/stream_status 共用同一前缀；
+  // CDP blocked URL 无法安全表达“只挡 exact mapping、不挡 stream_status”，因此 mapping family
+  // 只在 daemon request gate 中限流，不在浏览器层做宽泛 block，避免误伤 body/checkpoint。
   return patterns
 }
 

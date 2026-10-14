@@ -46,6 +46,22 @@ describe('family rate-limit state', () => {
     expect(repeated.backoffUntil).toBe(originalUntil)
   })
 
+  test('已有 backoff 期间更长的 Retry-After 仍可向后延长', () => {
+    const state = restoreFamilyRateLimitSnapshot({}, 0)
+    const first = recordFamily429(state, 'body', {
+      now: 1000,
+      requestedDeadline: 31_000,
+      retryAfter: '7',
+    })
+    expect(first.backoffUntil).toBe(31_000)
+    const extended = recordFamily429(state, 'body', {
+      now: 2000,
+      requestedDeadline: 60_000,
+      retryAfter: '53',
+    })
+    expect(extended.backoffUntil).toBe(60_000)
+  })
+
   test('catalog 到期进入三次 probation，连续成功后恢复 HEALTHY', () => {
     const state = restoreFamilyRateLimitSnapshot({}, 0)
     const first = recordFamily429(state, 'catalog', { now: 1000 })
