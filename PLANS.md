@@ -1,3 +1,18 @@
+# 2026-10-14 Archive 429 分级 cooldown / 请求事件账本 ExecPlan
+
+目标：保留现有 Retry-After 已显著改善 body 429 恢复的优点，但拆掉“任一 family 429 就冻结全部主动 API”的全局耦合。catalog 429 只抑制 catalog，body/mapping/Actor 继续按各自状态工作；同时从现在开始持久化轻量逐请求事件，为后续 rolling-window 429 风险建模提供真实 time series。
+
+1. 保留旧 cooldownUntil 读取兼容，但新增持久化 family cooldown state。至少区分 catalog、body、mapping、actor；native sidebar catalog 与 Archive global catalog 共用 catalog family。
+2. body / mapping / actor 有 Retry-After 时继续服从服务端 deadline + 5s buffer / 30s 下限；无 Retry-After 时保守回退，但只冻结对应 family，不再连带 catalog/其它主动能力。
+3. catalog 无 Retry-After 时采用有上限的分级退避：5m → 10m → 20m → 30m → 60m。backoff 到期只允许 probation probe；连续 3 次成功、每次至少 30s 后恢复 HEALTHY。probation 中再次 429 则升一级，不回到 5m。
+4. 原有全局 recovery slow-start 拆成 family probation；request slot 仍保持全局最小间隔，避免 family 解耦后形成并发 burst。
+5. Guardian 本地 REST block 必须改为 family-aware，禁止 catalog 429 把 body 一并 block。若 Chrome Network.setBlockedURLs 无法安全表达分级语义，则只 block 具体 family pattern；不得用宽泛 conversation REST pattern。
+6. Actor/Bridge 只读取 actor（以及未来明确的 global circuit breaker）状态；catalog/body 429 不再阻止正式 turn 提交。Watchdog/body sync 只服从 body family，catalog reconcile/gap repair 只服从 catalog family。
+7. 新增轻量 request-event ledger（JSONL/轮转或等价低开销形式），逐次记录 timestamp/source/targetId/family/routeClass/status/retryAfter/latency/backoffStage，不保存正文、Cookie、Authorization、signed URL/token。native 与 active replay 继续去重归因。
+8. 兼容旧 daemon state：若重启时只存在旧 cooldownUntil，按保守 legacy global 恢复一次；新版本写出 family state 后不再把 catalog family 映射回全局 60min。
+9. 增加 helper/状态机单测：catalog 5/10/20/30/60 阶梯、probation 三次成功、probation 再 429 升级、Retry-After family 隔离、legacy state 迁移、Actor 不受 catalog cooldown、body 不受 catalog cooldown、native catalog 与 active catalog 共用同一 family。
+10. 跑 node --check、TypeScript、daemon 定向测试、全量 npm run check；更新 PROGRESS.md。生产重载必须继承当前 cooldown/family state，不能靠重启绕过限流。
+
 # Watchdog 分类来源解耦与诊断通知补全（2026-10-14）
 
 目标：恢复既定语义——Watchdog 只负责“到点后强制诊断”，不能用计时器从 catalog 还是 DevSpace 启动来决定 lifecycle。最终分类必须来自本轮可观测状态，并继续保留 lifecycle / terminal / tail / head / incident_evidence 的正交模型。
