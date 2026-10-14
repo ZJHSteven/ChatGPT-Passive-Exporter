@@ -6337,23 +6337,24 @@ async function main() {
     prunePassiveCaches()
   }
 
-  const setGuardianConversationRestBlocked = async (enabled) => {
+  const syncGuardianRateLimitBlocks = async () => {
     if (!guardian?.page || guardian.page.closed) return
-    if (!shouldApplyGuardianConversationRestBlockCommand(
-      enabled,
-      guardianConversationRestBlocked,
-      guardianConversationRestBlockUncertain,
-    )) return
+    const desiredPatterns = guardianBlockedUrlPatterns(rateLimits, Date.now())
+    const samePatterns = desiredPatterns.length === guardianConversationRestBlockedPatterns.length
+      && desiredPatterns.every((pattern, index) => pattern === guardianConversationRestBlockedPatterns[index])
+    if (samePatterns && !guardianConversationRestBlockUncertain) return
     try {
       await guardian.page.send('Network.setBlockedURLs', {
-        urls: enabled ? [
-          'https://chatgpt.com/backend-api/conversations*',
-          'https://chatgpt.com/backend-api/conversation/*',
-        ] : [],
+        urls: desiredPatterns,
       }, 3000)
-      guardianConversationRestBlocked = enabled
+      guardianConversationRestBlockedPatterns = desiredPatterns
       guardianConversationRestBlockUncertain = false
-      await log(enabled ? 'Guardian conversation REST blocked for cooldown' : 'Guardian conversation REST block released')
+      await log(
+        desiredPatterns.length > 0
+          ? 'Guardian conversation REST family blocks synchronized'
+          : 'Guardian conversation REST block released',
+        { patterns: desiredPatterns },
+      )
     }
     catch (error) {
       guardianConversationRestBlockUncertain = true
@@ -7214,7 +7215,7 @@ async function main() {
     guardian?.page?.close()
     guardian?.browser?.close()
     guardian = await ensureGuardian(cdpHttp)
-    guardianConversationRestBlocked = false
+    guardianConversationRestBlockedPatterns = []
     guardianConversationRestBlockUncertain = true
     guardianReadyAt = Date.now()
     guardianHealthFailures = 0
@@ -7240,10 +7241,10 @@ async function main() {
     await attachGuardianEvents()
     // 如果进程启动时继承了真实 429 cooldown，先在 reload/navigation 之前就挡住
     // Guardian 自己的 conversation REST。WSS 使用 wss://，不会命中这个 HTTPS block。
-    const shouldBlockForCooldown = Date.now() < cooldownUntil
-    await setGuardianConversationRestBlocked(shouldBlockForCooldown).catch(async (error) => {
+    const desiredPatterns = guardianBlockedUrlPatterns(rateLimits, Date.now())
+    await syncGuardianRateLimitBlocks().catch(async (error) => {
       await log('Guardian REST block state sync failed after attach', {
-        desiredBlocked: shouldBlockForCooldown,
+        desiredPatterns,
         error: error instanceof Error ? error.message : String(error),
       })
     })
@@ -7269,11 +7270,15 @@ async function main() {
     while (!authHeaders && Date.now() - waitStarted < 20_000 && !guardian.page.closed) {
       await new Promise(resolve => setTimeout(resolve, 100))
     }
-    if (Date.now() < cooldownUntil) await setGuardianConversationRestBlocked(true).catch(() => {})
+    await syncGuardianRateLimitBlocks().catch(() => {})
     // “daemon 已经 ready”和“首次补洞完成”是两个不同状态。先写 ready state，
     // 避免 CLI 因一次 5 页 startup reconcile 超过启动等待时间而误报 started:false。
     await writeState()
-    if (authHeaders && activeApiAllowed(cooldownUntil) && reconcileOnStart && lastReconcileAt === 0) {
+    if (authHeaders
+      && familyRateLimitAllowed(rateLimits, 'catalog')
+      && !cooldownRecoveryPending
+      && reconcileOnStart
+      && lastReconcileAt === 0) {
       // 冷启动补账属于主动 REST，与 Guardian 自身存活解耦。
       await reconcileCatalog('startup').catch(async (error) => {
         await log('startup reconciliation failed; passive Guardian remains online', {
@@ -7552,10 +7557,9 @@ async function main() {
 
       if (reconcileHours > 0
         && authHeaders
-        && activeApiAllowed(cooldownUntil)
+        && familyRateLimitAllowed(rateLimits, 'catalog')
         && !cooldownRecoveryPending
         && !guardianConversationRestBlockUncertain
-        && !guardianConversationRestBlocked
         && Date.now() - lastReconcileAt >= reconcileHours * 3600_000) {
         await reconcileCatalog('periodic').catch(async (error) => {
           await log('periodic reconciliation failed; passive Guardian remains online', {
@@ -7567,7 +7571,8 @@ async function main() {
       // 先保持 WSS 在线；已知 ready conversation 由 drainDirty 逐条补 body。
       if (cooldownRecoveryPending && activeApiAllowed(cooldownUntil)) {
         try {
-          await setGuardianConversationRestBlocked(false)
+          rateLimits.legacyGlobalUntil = 0
+          await syncGuardianRateLimitBlocks()
         }
         catch (error) {
           await log('Guardian REST block release failed after cooldown; recovery remains pending', {
