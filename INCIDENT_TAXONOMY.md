@@ -1,6 +1,6 @@
 # ChatGPT Archive Incident Taxonomy
 
-> 最后更新：2026-09-25  
+> 最后更新：2026-10-14  
 > 本文只描述 Archive 已有真实样本支持的分类。名称分为“正式持久化字段”和“取证/研究标签”；后者不能冒充 lifecycle class。
 
 ## 1. 为什么必须分轴
@@ -29,22 +29,30 @@ ui = hidden-canonical-tail
 
 | Lifecycle class | 状态 | 定义 | 典型证据 |
 |---|---|---|---|
-| `complete-no-final` | 正式 | 已有 WSS complete、catalog active→complete 或历史后续 turn 等结束证据，但该 turn 没有正常 final | `conversation-turn-complete + no final` |
-| `watchdog-timeout` | 正式 | 已有可靠 start，超过 watchdog 阈值仍未观察到 complete；这是“超时即立案并调查”，不是自动宣判根因 | actor/WSS/async-progress start → timeout |
-| `active-zombie` | **2026-09-25 新正式类型** | 没有可靠 start 时，catalog 首次看到 `async_status=3/5` 作为保守 late-start；超过 watchdog 阈值仍 active，body 也没有 final/明确终止 | catalog active 长期不收口 |
+| `complete-no-final` | 正式 | 已观察到该 turn 的 WSS complete、catalog active→complete 等明确完成证据，但该 turn 没有正常 final | `conversation-turn-complete + no final` |
+| `watchdog-timeout` | 正式 | 已到 Watchdog 硬阈值且强制 body 诊断仍无 final/明确终止，但当前又没有足够的独立 lifecycle 证据进一步归类；它是超时后的 fallback 分类，不代表 Watchdog 的启动来源 | threshold → forced diagnosis, lifecycle evidence insufficient |
+| `active-zombie` | **2026-09-25 新正式类型；2026-10-14 解耦触发来源** | Watchdog 超时诊断时，同一 conversation 仍有 catalog `async_status=3/5` active 正证据，且 body 仍没有 final/明确终止；Watchdog 最初可由 DevSpace、catalog 或其它可靠 start 启动 | catalog active 长期不收口 + body no terminal |
 | `explicit-interrupted` | 正式 | body 明确出现 `client_stopped` / `interrupted` | `finish_details` 等显式终止信息 |
 | `abnormal-terminal` | 正式兼容桶 | 旧迁移或尚未细分的异常终态；新代码应优先落到更具体 lifecycle | legacy / fallback |
 
 ### 2.1 `active-zombie` 与 `watchdog-timeout` 的区别
 
-两者都表示“运行时间异常长”，但证据等级不同：
+两者都表示“运行时间异常长”，但区别不再是 Watchdog 从哪里启动，而是**超时诊断时有没有独立的 catalog-active 正证据**：
 
-- `watchdog-timeout` 的计时起点来自较可靠的 turn start；
-- `active-zombie` 的计时起点只是 **第一次观察到 catalog active**，真实 POST 必然更早。
+- `active-zombie`：诊断时 catalog 仍明确 `async_status=3/5` active，body 又没有 final/明确终止；
+- `watchdog-timeout`：已经到硬阈值并完成强制诊断，但缺少足够证据进一步归为 `active-zombie`、`complete-no-final` 或 `explicit-interrupted`。
 
-因此 catalog late-start 只会让报警**更晚**，不会因为“把扫描时刻当发送时刻”导致提前 30 分钟误报。
+Watchdog 的计时起点仍优先使用可靠的真实 turn start；只有缺少可靠 start 时才退化到 catalog 首次 active 的 late-start。catalog late-start 只会让报警**更晚**，不会因为“把扫描时刻当发送时刻”导致提前误报。
 
 如果 body 后来明确 final / interrupted，late-start active 会被清理，不建立 zombie incident。
+
+### 2.2 历史 turn 补账不得改写既有 lifecycle
+
+“后面已经出现新的 user turn”只能证明旧 turn 已经被越过，不能反推出当时观察到了 `conversation-turn-complete`，也不能把已经由实时证据建立的 lifecycle 改写成 generic `abnormal-terminal`。
+
+- 若旧 turn 已有 `active-zombie` / `watchdog-timeout` / `complete-no-final` 等 incident：historical reconcile 只补 body 结构并将其标记 `resolved`，保留原 `incident_kind / lifecycle_class / source / reason / incident_evidence`；
+- 若历史 body 新出现明确 `client_stopped` / `interrupted`：允许升级为 `explicit-interrupted`；
+- 若此前没有 incident，历史 no-final 只能进入 generic `abnormal-terminal`，不能伪造 `complete-no-final`。
 
 ## 3. Tail Shape：不是根因
 

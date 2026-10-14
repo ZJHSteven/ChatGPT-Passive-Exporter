@@ -17,11 +17,11 @@
 
 目标：恢复既定语义——Watchdog 只负责“到点后强制诊断”，不能用计时器从 catalog 还是 DevSpace 启动来决定 lifecycle。最终分类必须来自本轮可观测状态，并继续保留 lifecycle / terminal / tail / head / incident_evidence 的正交模型。
 
-- [doing] 将 watchdog lifecycle 选择改为：超时诊断时若同一 conversation 仍有 catalog `async_status=3/5` active 证据，且 body 无 final/明确终止，则归 `active-zombie`；否则仅保留 `watchdog-timeout`。DevSpace-start 与 catalog-start 走同一规则。
-- [doing] 对已经先落成 `watchdog-timeout`、随后 catalog 仍持续 active 的同 turn open incident 做幂等 promotion 到 `active-zombie`，不新建第二条 incident，不抹掉 `canonical-tail-gap` 等 evidence；同时阻止后续 historical-turn 补账把已有强 lifecycle 再降级成 generic `abnormal-terminal`。
-- [doing] Watchdog 第二条 Bark 诊断通知显式展示 lifecycle、terminal、tail、head 与 evidenceTypes；不再只给一段 summary，让用户能直接看到多维错误分型。
-- [doing] 用《B站 OpenCLI能力需求》作为生产回归样本：当前已证实 Watchdog 前后 catalog 均为 active，body 为 `terminal=none / tail=tool-result-returned`，且存在 `canonical-tail-gap`，修复后应收口为 `active-zombie + canonical-tail-gap`。
-- [todo] 补 daemon/db/notification 回归，跑 `npm run check`；随后由 Windows 计划任务受控重载生产 daemon，确认该样本自动 promotion 且 WSS/Guardian/Bark 均健康。
+- [done] 将 watchdog lifecycle 选择改为：超时诊断时若同一 conversation 仍有 catalog `async_status=3/5` active 证据，且 body 无 final/明确终止，则归 `active-zombie`；否则仅保留 `watchdog-timeout`。DevSpace-start 与 catalog-start 走同一规则。
+- [done] 对已经先落成 `watchdog-timeout`、随后 catalog 仍持续 active 的同 turn open incident 做幂等 promotion 到 `active-zombie`，不新建第二条 incident，不抹掉 `canonical-tail-gap` 等 evidence；同时阻止后续 historical-turn 补账把已有强 lifecycle 再降级成 generic `abnormal-terminal`。
+- [done] Watchdog 第二条 Bark 诊断通知显式展示 lifecycle、terminal、tail、head 与 evidenceTypes；不再只给一段 summary，让用户能直接看到多维错误分型。
+- [done] 用《B站 OpenCLI能力需求》作为生产回归样本：已证实事故 turn `119180a3…` 在 Watchdog 前后 catalog 均为 active，body 为 `terminal=none / tail=tool-result-returned / head=aligned`，且存在 `canonical-tail-gap`；持久化分类已定点校正为 `resolved active-zombie + canonical-tail-gap`。后续另一个新 turn 正常 final，不改变该旧事故的分类，只负责把它 resolve。
+- [done] daemon/db/notification 回归与全量 `npm run check` 已通过（25 files / 222 tests + Chrome/Edge/Firefox/Userscript build）；Windows 计划任务已受控重载生产 daemon，当前 PID 16616、WSS=3、Guardian failures=0、Bridge=true、LifeOps pending=0、Bark/daemon lastError=null。
 
 # 2026-10-11 Archive Reader 长尾阻塞修复 ExecPlan
 
