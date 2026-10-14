@@ -654,12 +654,28 @@ export function shouldCloseWatchdogGenerationAfterSync(trigger, result) {
   return false
 }
 
-/** 把 daemon trigger 映射到持久化 incident kind。 */
-export function incidentKindForTrigger(trigger) {
+/**
+ * 把一次强制诊断映射到持久化 incident kind。
+ *
+ * Watchdog 的 trigger 只描述“为什么现在来查 body”，不能描述“错误是什么”。
+ * Active Zombie 必须来自独立的 catalog active 证据；无论计时器最初由 DevSpace 还是
+ * catalog 启动，只要超时诊断这一刻 conversation list 仍明确 active，就走同一分类。
+ */
+export function incidentKindForTrigger(trigger, { catalogStillActive = false } = {}) {
   const normalized = String(trigger || '').trim().toLowerCase()
-  if (normalized.startsWith('watchdog:catalog-active-timeout')) return 'active-zombie'
-  if (normalized.startsWith('watchdog:')) return 'watchdog-timeout'
+  if (normalized.startsWith('watchdog:')) {
+    return catalogStillActive ? 'active-zombie' : 'watchdog-timeout'
+  }
   return 'abnormal-terminal'
+}
+
+export function shouldPromoteWatchdogTimeoutToActiveZombie(active, incident, catalogStillActive = false) {
+  if (!catalogStillActive || !active || !incident) return false
+  if (!Number(active.lastWatchdogAt || 0)) return false
+  if (!active.lastDiagnosticTurnKey || active.lastDiagnosticTurnKey !== incident.turnKey) return false
+  if (incident.status !== 'open') return false
+  if (incident.lifecycleClass !== 'watchdog-timeout') return false
+  return String(incident.terminalEvidence || 'none') === 'none'
 }
 
 /**
@@ -933,6 +949,13 @@ export function buildWatchdogTimeoutNotificationPayload({
 export function buildWatchdogDiagnosisNotificationPayload({ conversationId, title, diagnostic, incident = null }) {
   const terminal = String(diagnostic?.terminalEvidence || 'none')
   const tail = String(diagnostic?.tailShape || 'unknown')
+  const head = String(incident?.headState || diagnostic?.headState || 'unknown')
+  const lifecycle = terminal === 'final'
+    ? 'normal-final'
+    : String(incident?.lifecycleClass || incident?.incidentKind || 'unclassified')
+  const evidenceTypes = Array.isArray(incident?.evidenceTypes)
+    ? [...new Set(incident.evidenceTypes.map(value => String(value || '').trim()).filter(Boolean))]
+    : []
   const reason = incident?.reason || (
     terminal === 'final'
       ? 'canonical body 已确认 final。'
@@ -941,12 +964,15 @@ export function buildWatchdogDiagnosisNotificationPayload({ conversationId, titl
   return {
     title: terminal === 'final'
       ? 'ChatGPT Watchdog 诊断完成 · 已有 Final'
-      : 'ChatGPT Watchdog 诊断完成',
+      : `ChatGPT Watchdog 诊断 · ${lifecycle}`,
     body: [
-      title || conversationId,
-      reason,
+      `会话：${title || conversationId}`,
+      `lifecycle：${lifecycle}`,
       `terminal：${terminal}`,
       `tail：${tail}`,
+      `head：${head}`,
+      `evidence：${evidenceTypes.length > 0 ? evidenceTypes.join(', ') : 'none'}`,
+      reason,
     ].join('\n'),
     group: terminal === 'final'
       ? BARK_NOTIFICATION_GROUPS.chatDone
@@ -3434,18 +3460,26 @@ async function main() {
     })
   }
 
-  const latestOpenIncident = (conversationId) => archive.db.prepare(`
-    SELECT i.id, i.turn_exchange_id AS turnExchangeId, i.turn_key AS turnKey,
-           i.incident_kind AS incidentKind, i.lifecycle_class AS lifecycleClass,
-           i.detected_at AS detectedAt, i.last_observed_at AS lastObservedAt, i.status,
-           i.reason, i.terminal_evidence AS terminalEvidence, i.tail_shape AS tailShape,
-           c.title
-    FROM incidents i
-    JOIN conversations c ON c.id = i.conversation_id
-    WHERE i.conversation_id = ? AND i.status = 'open'
-    ORDER BY i.detected_at DESC
-    LIMIT 1
-  `).get(conversationId) || null
+  const latestOpenIncident = (conversationId) => {
+    const incident = archive.db.prepare(`
+      SELECT i.id, i.turn_exchange_id AS turnExchangeId, i.turn_key AS turnKey,
+             i.incident_kind AS incidentKind, i.lifecycle_class AS lifecycleClass,
+             i.detected_at AS detectedAt, i.last_observed_at AS lastObservedAt, i.status,
+             i.reason, i.terminal_evidence AS terminalEvidence, i.tail_shape AS tailShape,
+             i.head_state AS headState, i.source, i.diagnostic_json AS diagnosticJson,
+             c.title
+      FROM incidents i
+      JOIN conversations c ON c.id = i.conversation_id
+      WHERE i.conversation_id = ? AND i.status = 'open'
+      ORDER BY i.detected_at DESC
+      LIMIT 1
+    `).get(conversationId) || null
+    if (!incident) return null
+    return {
+      ...incident,
+      evidenceTypes: archive.listIncidentEvidence(incident.id).map(evidence => evidence.evidenceType),
+    }
+  }
 
   const incidentSnapshots = (conversationId) => archive.db.prepare(`
     SELECT i.id, i.turn_exchange_id AS turnExchangeId, i.turn_key AS turnKey,
@@ -3458,6 +3492,60 @@ async function main() {
     WHERE i.conversation_id = ?
     ORDER BY i.detected_at ASC, i.id ASC
   `).all(conversationId)
+
+  const attachWatchdogDevSpaceTailGapEvidence = (conversationId, diagnostic, observedAt = Date.now()) => {
+    const turnExchangeId = diagnostic?.turnExchangeId ?? null
+    if (!turnExchangeId) return []
+    const incident = latestOpenIncident(conversationId)
+    if (!incident || incident.turnKey !== turnExchangeId) return []
+    const bindings = archive.db.prepare(`
+      SELECT metadata_id AS metadataId
+      FROM devspace_metadata_bindings
+      WHERE conversation_id=? AND last_turn_exchange_id=?
+      ORDER BY last_verified_at DESC, last_seen_at DESC
+    `).all(conversationId, turnExchangeId)
+    const attached = []
+    for (const binding of bindings) {
+      if (!binding?.metadataId) continue
+      const result = archive.attachCanonicalTailGapEvidence({
+        conversationId,
+        turnExchangeId,
+        turnKey: incident.turnKey,
+        lastMessageId: diagnostic?.lastMessageId ?? null,
+        metadataId: binding.metadataId,
+        terminalEvidence: diagnostic?.terminalEvidence ?? null,
+        observedAt,
+        beforeAt: observedAt,
+      })
+      if (result.summary.hasTailGap) attached.push(result.summary)
+    }
+    return attached
+  }
+
+  const promoteWatchdogTimeoutFromCatalog = (conversationId, observedAt = Date.now()) => {
+    const active = activeTurns.get(conversationId)
+    const incident = latestOpenIncident(conversationId)
+    if (!shouldPromoteWatchdogTimeoutToActiveZombie(active, incident, catalogActive.has(conversationId))) return null
+    let diagnostic = null
+    try {
+      diagnostic = JSON.parse(String(incident.diagnosticJson || 'null'))
+    }
+    catch {
+      return null
+    }
+    if (!diagnostic || typeof diagnostic !== 'object') return null
+    archive.updateIncidentFromDiagnostic(
+      conversationId,
+      diagnostic,
+      observedAt,
+      true,
+      true,
+      'active-zombie',
+      incident.source || 'catalog:post-watchdog-active',
+      true,
+    )
+    return latestOpenIncident(conversationId)
+  }
 
   /**
    * LifeOps 是 Archive 的旁路消费者；任何 enqueue 失败都只记在 outbox，不得影响归档主链。
@@ -4451,7 +4539,9 @@ async function main() {
     const syncReadyAt = Number(readySince.get(conversationId) || Date.now())
     const classifyTerminal = shouldClassifyTerminalForTrigger(trigger)
     const confirmedTerminal = isConfirmedTerminalTrigger(trigger)
-    const requestedIncidentKind = incidentKindForTrigger(trigger)
+    const requestedIncidentKind = incidentKindForTrigger(trigger, {
+      catalogStillActive: catalogActive.has(conversationId),
+    })
     let newIncident = null
     const incidentIdsBefore = new Set(incidentSnapshots(conversationId).map(incident => incident.id))
     const basePath = `/backend-api/conversations/${encodeURIComponent(conversationId)}`
@@ -4929,6 +5019,17 @@ async function main() {
         // body 一旦给出 turn_exchange_id，就可以把 earlier provisional metadata 做后验校验；
         // 该步骤只读局部时间窗，不扫描整库。
         reconcileDevSpaceBindingFromBody(conversationId, result.diagnostic)
+        if (String(trigger || '').startsWith('watchdog:')) {
+          const tailGaps = attachWatchdogDevSpaceTailGapEvidence(conversationId, result.diagnostic)
+          if (tailGaps.length > 0) {
+            await log('watchdog diagnosis attached DevSpace canonical tail gap evidence', {
+              conversationId,
+              trigger,
+              evidenceCount: tailGaps.length,
+              maxGapMs: Math.max(...tailGaps.map(gap => Number(gap.gapMs || 0))),
+            })
+          }
+        }
         // 5 分钟静默 probe 的结果必须在这次成功 body sync 后显式收口。即使真正拉 body 的
         // trigger 是 WSS complete / Watchdog，也复用同一个结果，不再额外请求。
         const idleDiagnoses = completePendingDevSpaceIdleDiagnoses(conversationId, result)
@@ -6380,6 +6481,16 @@ async function main() {
               asyncStatus: item.async_status,
               updateTime: nextUpdateTime,
             })
+            const promotedIncident = promoteWatchdogTimeoutFromCatalog(id, now)
+            if (promotedIncident) {
+              await log('watchdog-timeout promoted to active-zombie from persistent catalog active evidence', {
+                conversationId: id,
+                turnKey: promotedIncident.turnKey,
+                incidentId: promotedIncident.id,
+                lifecycleClass: promotedIncident.lifecycleClass,
+                evidenceTypes: promotedIncident.evidenceTypes,
+              })
+            }
             // 没有可靠 turn-start 时，把“第一次看到 active”作为保守 late-start 下界。
             // 真实 POST 一定发生得更早，所以 watchdog 只会更晚报警，不会提前误报。
             const archived = archive.db.prepare(`

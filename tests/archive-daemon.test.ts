@@ -63,6 +63,7 @@ import {
   shouldStartCatalogWatchdog,
   shouldNotifyHistoricalIncidentForTrigger,
   shouldNotifyIncidentTransition,
+  shouldPromoteWatchdogTimeoutToActiveZombie,
   shouldNotifyTurnFinal,
   shouldRebuildGuardianForMissingWss,
   shouldSupersedeDevSpaceBinding,
@@ -691,9 +692,29 @@ describe('ChatGPT Archive daemon WSS parser', () => {
 
     expect(watchdogTriggerForStartType('catalog:async-active:wss-reconnect')).toBe('watchdog:catalog-active-timeout')
     expect(watchdogTriggerForStartType('conversation-update:async-task-update-message')).toBe('watchdog:active-timeout')
-    expect(incidentKindForTrigger('watchdog:catalog-active-timeout')).toBe('active-zombie')
+    expect(incidentKindForTrigger('watchdog:catalog-active-timeout')).toBe('watchdog-timeout')
+    expect(incidentKindForTrigger('watchdog:catalog-active-timeout', { catalogStillActive: true })).toBe('active-zombie')
+    expect(incidentKindForTrigger('watchdog:active-timeout', { catalogStillActive: true })).toBe('active-zombie')
     expect(incidentKindForTrigger('watchdog:active-timeout')).toBe('watchdog-timeout')
     expect(incidentKindForTrigger('wss:conversation-turn-complete')).toBe('abnormal-terminal')
+  })
+
+  test('Watchdog 来源不决定 lifecycle；同 turn timeout + 后续 catalog active 才 promotion 为 Active Zombie', () => {
+    const active = {
+      lastWatchdogAt: 10_000,
+      lastDiagnosticTurnKey: 'turn-a',
+      startType: 'devspace:first-tool',
+    }
+    const incident = {
+      turnKey: 'turn-a',
+      status: 'open',
+      lifecycleClass: 'watchdog-timeout',
+      terminalEvidence: 'none',
+    }
+    expect(shouldPromoteWatchdogTimeoutToActiveZombie(active, incident, true)).toBe(true)
+    expect(shouldPromoteWatchdogTimeoutToActiveZombie(active, incident, false)).toBe(false)
+    expect(shouldPromoteWatchdogTimeoutToActiveZombie(active, { ...incident, turnKey: 'turn-b' }, true)).toBe(false)
+    expect(shouldPromoteWatchdogTimeoutToActiveZombie(active, { ...incident, terminalEvidence: 'final' }, true)).toBe(false)
   })
 
   test('catalog generation 已诊断后保持 tombstone；真实 progress 只能记证据，不能重新武装', () => {
@@ -930,12 +951,21 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     const diagnosis = buildWatchdogDiagnosisNotificationPayload({
       conversationId: 'conversation-a',
       title: '长任务',
-      diagnostic: { terminalEvidence: 'none', tailShape: 'tool-result-returned' },
-      incident: { reason: '最新工具结果已经回来，但尚无 final。' },
+      diagnostic: { terminalEvidence: 'none', tailShape: 'tool-result-returned', headState: 'aligned' },
+      incident: {
+        reason: '最新工具结果已经回来，但尚无 final。',
+        lifecycleClass: 'active-zombie',
+        headState: 'aligned',
+        evidenceTypes: ['canonical-tail-gap'],
+      },
     })
-    expect(diagnosis.title).toContain('诊断完成')
+    expect(diagnosis.title).toContain('active-zombie')
     expect(diagnosis.body).toContain('最新工具结果已经回来')
+    expect(diagnosis.body).toContain('lifecycle：active-zombie')
+    expect(diagnosis.body).toContain('terminal：none')
     expect(diagnosis.body).toContain('tool-result-returned')
+    expect(diagnosis.body).toContain('head：aligned')
+    expect(diagnosis.body).toContain('evidence：canonical-tail-gap')
     expect(diagnosis.group).toBe('Incident')
 
     const finalDiagnosis = buildWatchdogDiagnosisNotificationPayload({
