@@ -810,6 +810,38 @@ function compactNotificationSubject(value, maxChars = 18) {
   return { full, short: `${chars.slice(0, maxChars).join('')}…`, truncated: true }
 }
 
+/**
+ * Watchdog 起点通知会在 turn 刚建立时立刻发送，此时 ChatGPT 经常还没有完成自动命名，
+ * `conversations.title` 仍只是 `New chat` / `新聊天`。DevSpace metadata 反而通常已经知道本轮
+ * 工作主题，所以允许它只在 canonical 标题还是占位符时做一次“早期标题兜底”。
+ *
+ * 一旦 ChatGPT 已经有真实标题，canonical title 永远优先；这样不会让 DevSpace 内部工作名
+ * 覆盖用户最终在侧边栏看到的聊天名。
+ */
+export function preferredWatchdogStartTitle({
+  conversationId,
+  canonicalTitle,
+  devSpaceTitles = [],
+}) {
+  const cid = String(conversationId || '').trim()
+  const normalize = value => String(value || '').replace(/\s+/gu, ' ').trim()
+  const isPlaceholder = value => {
+    const title = normalize(value)
+    if (!title) return true
+    if (cid && title === cid) return true
+    return /^(?:new chat|新聊天)$/iu.test(title)
+  }
+
+  const canonical = normalize(canonicalTitle)
+  if (!isPlaceholder(canonical)) return canonical
+
+  for (const value of Array.isArray(devSpaceTitles) ? devSpaceTitles : []) {
+    const candidate = normalize(value)
+    if (!isPlaceholder(candidate)) return candidate
+  }
+  return canonical || cid || null
+}
+
 function notificationTitleWithSubject(prefix, subject) {
   return subject?.short ? `${prefix} · ${subject.short}` : prefix
 }
@@ -2493,6 +2525,23 @@ async function main() {
   }
 
   /**
+   * 新聊天刚起步时优先用 canonical 标题；若它仍是 `New chat/新聊天` 占位符，则从同 CID 的
+   * DevSpace binding 中挑最近一次非空 displayTitle。这个查询只发生在“新 generation 建立”
+   * 的低频路径，不进入主循环热路径。
+   */
+  const watchdogStartTitleForConversation = (conversationId, candidateTitle = null) => {
+    const devSpaceTitles = archive.getDevSpaceMetadataBindingsForConversation(conversationId)
+      .slice()
+      .sort((a, b) => Number(b.lastSeenAt || 0) - Number(a.lastSeenAt || 0))
+      .map(binding => binding.displayTitle)
+    return preferredWatchdogStartTitle({
+      conversationId,
+      canonicalTitle: candidateTitle || conversationTitle(conversationId),
+      devSpaceTitles,
+    })
+  }
+
+  /**
    * 所有 turn/incident 级 Bark 都从这里出站：
    * 1. 成功发送后才写持久 ledger；
    * 2. 发送失败不占坑，未来重复事实可以再次尝试；
@@ -2581,7 +2630,7 @@ async function main() {
       turnKey: `generation:${startedAt}`,
       payload: buildWatchdogStartNotificationPayload({
         conversationId,
-        title: title || conversationTitle(conversationId),
+        title: watchdogStartTitleForConversation(conversationId, title),
         startedAt,
         watchdogMs,
       }),

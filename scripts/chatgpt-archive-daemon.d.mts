@@ -237,6 +237,13 @@ export function buildWatchdogStartNotificationPayload(input: {
   watchdogMs?: number
 }): { title: string, body: string, group: string, url?: string }
 
+/** canonical 标题仍是 New chat/新聊天/CID 时，允许 DevSpace displayTitle 做早期兜底。 */
+export function preferredWatchdogStartTitle(input: {
+  conversationId?: unknown
+  canonicalTitle?: unknown
+  devSpaceTitles?: unknown[]
+}): string | null
+
 /** 同一 CID 的不同 Watchdog generation 以 startedAt 区分并持久去重。 */
 export function watchdogStartNotificationKey(conversationId: unknown, startedAt: unknown): string | null
 

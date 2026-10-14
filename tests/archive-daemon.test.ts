@@ -41,6 +41,7 @@ import {
   terminalStateSupersedesResumeCredential,
   sanitizeCapturedHeaders,
   passiveObservationMatchesReady,
+  preferredWatchdogStartTitle,
   recordCatalogWatchdogProgress,
   shouldBlockGuardianConversationRest,
   shouldApplyGuardianConversationRestBlockCommand,
@@ -1033,6 +1034,38 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(watchdogStartNotificationKey('conversation-a', 2_000))
       .toBe('watchdog-start:conversation-a:2000')
     expect(watchdogStartNotificationKey('', 1_000)).toBeNull()
+  })
+
+  test('Watchdog 起点标题只在 canonical 仍是占位符时使用 DevSpace displayTitle', () => {
+    expect(preferredWatchdogStartTitle({
+      conversationId: 'conversation-a',
+      canonicalTitle: 'New chat',
+      devSpaceTitles: ['排查 Watchdog 漏通知并新增开始通知'],
+    })).toBe('排查 Watchdog 漏通知并新增开始通知')
+
+    expect(preferredWatchdogStartTitle({
+      conversationId: 'conversation-a',
+      canonicalTitle: '新聊天',
+      devSpaceTitles: ['本轮工作主题'],
+    })).toBe('本轮工作主题')
+
+    expect(preferredWatchdogStartTitle({
+      conversationId: 'conversation-a',
+      canonicalTitle: '正式聊天标题',
+      devSpaceTitles: ['内部工作主题'],
+    })).toBe('正式聊天标题')
+
+    expect(preferredWatchdogStartTitle({
+      conversationId: 'conversation-a',
+      canonicalTitle: 'conversation-a',
+      devSpaceTitles: [null, ' ', '可读主题'],
+    })).toBe('可读主题')
+
+    expect(preferredWatchdogStartTitle({
+      conversationId: 'conversation-a',
+      canonicalTitle: 'New chat',
+      devSpaceTitles: [],
+    })).toBe('New chat')
   })
 
   test('未绑定 watchdog 不把 metadata ID 塞进标题', () => {
