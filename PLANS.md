@@ -19,6 +19,7 @@
 - [done] 使用 `turn_notification_ledger` 做持久幂等；Bark 发送失败不写成功 ledger，重复建立事实仍可安全重试。daemon restart 恢复的旧 generation 不主动补发 start，因为本功能只对上线后的新 generation 生效。
 - [done] 增加短标题、长标题、CID、北京时间起点/预计超时、45 分钟阈值以及 generation 去重 key 的回归测试；同步 `.d.mts` 声明。
 - [done] Archive daemon 定向 61/61、全量 27 files / 233 tests、TypeScript 和四套 build 全绿；Windows 计划任务已重载到 PID 21024，Bridge/WSS/Guardian/Bark 健康，且 ledger 验证启动恢复未补发任何历史 `watchdog-start`。
+- [doing] 2026-10-15 00:40 真实 canary 暴露“通知早于 ChatGPT 自动命名”：同 CID 已有 DevSpace `displayTitle=排查 Watchdog 漏通知并新增开始通知`，但 Bark 仍显示 `New chat`。修正为：canonical 标题若仍是 `New chat / 新聊天 / CID` 占位符，则优先使用该 CID 最新的非空 DevSpace displayTitle；一旦存在正式 canonical 标题，则始终优先正式标题，避免工作名覆盖用户可见聊天名。
 
 # 2026-10-14 Archive 429 分级 cooldown / 请求事件账本 ExecPlan
 
