@@ -3366,6 +3366,8 @@ async function main() {
         guardianConversationRestBlocked: guardianConversationRestBlockedPatterns.length > 0,
         guardianConversationRestBlockedPatterns,
         guardianConversationRestBlockUncertain,
+        requestEventLedgerPath,
+        requestEventLedgerErrors,
       },
     },
     limits: {
@@ -7396,10 +7398,25 @@ async function main() {
           mode: input.mode,
           targetMode: input.targetMode,
           onDomDrift: notifyActorDomDrift,
-          onRateLimit: async details => await tripCooldown('actor turn submit HTTP 429', {
-            route: details.requestUrl,
-            requestId: details.requestId,
-          }),
+          onRateLimit: async details => {
+            recordRequestEvent({
+              timestamp: Date.now(),
+              source: 'actor',
+              targetId: guardian?.targetId ?? null,
+              family: 'actor',
+              routeClass: details.mode === 'steer' ? 'actor-steer' : 'actor-conversation',
+              status: details.status,
+              retryAfter: details.retryAfter,
+              latencyMs: null,
+              backoffStage: rateLimits.families.actor.stage,
+            })
+            return await tripCooldown('actor turn submit HTTP 429', {
+              family: 'actor',
+              route: details.requestUrl,
+              requestId: details.requestId,
+              retryAfter: details.retryAfter,
+            })
+          },
         }),
       })
       await archiveBridge.start()
@@ -7517,6 +7534,9 @@ async function main() {
         continue
       }
       await refreshPassivePageObservers(targets)
+      // family backoff 到期后及时解除 Guardian 对应 URL pattern。
+      // 这一步不发 ChatGPT 请求；只是让页面/下一次 probation probe 不会被过期的本地 CDP block 卡住。
+      await syncGuardianRateLimitBlocks()
       retireIdleLiveTransports()
       if (!resumeStartupRecoveryDone && authHeaders) {
         const scheduled = recoverRecentOrphanedResumeCredentials()
@@ -7731,6 +7751,7 @@ async function main() {
     })
     lifeOpsSync = null
   }
+  await requestEventLedger.close()
   guardian?.page?.close()
   guardian?.browser?.close()
   await writeState()
