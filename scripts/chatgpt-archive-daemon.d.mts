@@ -142,8 +142,22 @@ export function shouldCloseWatchdogGenerationAfterSync(
   result: { watchdogTurnChanged?: unknown, watchdogTurnAlreadyTimedOut?: unknown } | null | undefined,
 ): boolean
 
-/** 把同步 trigger 映射成 incident kind。 */
-export function incidentKindForTrigger(trigger: unknown): 'active-zombie' | 'watchdog-timeout' | 'abnormal-terminal'
+/** Watchdog trigger 只表示诊断来源；catalogStillActive 才提供 Active Zombie 的 lifecycle 证据。 */
+export function incidentKindForTrigger(
+  trigger: unknown,
+  options?: { catalogStillActive?: boolean },
+): 'active-zombie' | 'watchdog-timeout' | 'abnormal-terminal'
+
+export function shouldPromoteWatchdogTimeoutToActiveZombie(
+  active: { lastWatchdogAt?: unknown, lastDiagnosticTurnKey?: unknown } | null | undefined,
+  incident: {
+    turnKey?: unknown
+    status?: unknown
+    lifecycleClass?: unknown
+    terminalEvidence?: unknown
+  } | null | undefined,
+  catalogStillActive?: boolean,
+): boolean
 
 /** 重启 daemon 时只继承仍未过期的 HTTP 429 circuit breaker。 */
 export function restoreCooldownUntil(previousState: unknown, now?: number): number
@@ -219,8 +233,14 @@ export function buildWatchdogTimeoutNotificationPayload(input: {
 export function buildWatchdogDiagnosisNotificationPayload(input: {
   conversationId: string
   title?: string | null
-  diagnostic?: { terminalEvidence?: unknown, tailShape?: unknown } | null
-  incident?: { reason?: unknown } | null
+  diagnostic?: { terminalEvidence?: unknown, tailShape?: unknown, headState?: unknown } | null
+  incident?: {
+    reason?: unknown
+    incidentKind?: unknown
+    lifecycleClass?: unknown
+    headState?: unknown
+    evidenceTypes?: unknown[]
+  } | null
 }): { title: string, body: string, group: string, url: string }
 
 export function buildUnboundWatchdogNotificationPayload(input: {
