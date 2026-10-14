@@ -11,6 +11,7 @@ import {
   buildUnboundWatchdogNotificationPayload,
   buildWatchdogDeferredNotificationPayload,
   buildWatchdogDiagnosisNotificationPayload,
+  buildWatchdogStartNotificationPayload,
   buildWatchdogTimeoutNotificationPayload,
   catalogStableOverlapTarget,
   classifyConversationBackendUrl,
@@ -58,6 +59,7 @@ import {
   guardianCdpFailureScope,
   shouldReadGuardianProtocolBody,
   watchdogDiagnosticTurnKey,
+  watchdogStartNotificationKey,
   watchdogTurnStartedAtFromPayload,
   reconcileWatchdogDiagnosticTurn,
   shouldStartCatalogWatchdog,
@@ -974,6 +976,37 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       diagnostic: { terminalEvidence: 'final', tailShape: 'final' },
     })
     expect(finalDiagnosis.group).toBe('Chat-Done')
+  })
+
+  test('Watchdog generation 建立时给出可直接估算超时点的起点通知', () => {
+    const start = buildWatchdogStartNotificationPayload({
+      conversationId: 'conversation-a',
+      title: '长任务',
+      startedAt: 1_000,
+      watchdogMs: 45 * 60_000,
+    })
+    expect(start.title).toBe('Watchdog 开始 · 长任务')
+    expect(start.body).toContain('会话：长任务')
+    expect(start.body).toContain('CID：conversation-a')
+    expect(start.body).toContain('起点：1970-01-01 08:00:01 北京时间')
+    expect(start.body).toContain('预计超时：1970-01-01 08:45:01 北京时间（45 分钟）')
+    expect(start.group).toBe('Chat-Timeout')
+    expect(start.url).toContain('/c/conversation-a')
+
+    const longTitle = '这是一个特别特别特别特别特别长的Watchdog聊天标题'
+    const longStart = buildWatchdogStartNotificationPayload({
+      conversationId: 'conversation-long',
+      title: longTitle,
+      startedAt: 1_000,
+    })
+    expect(longStart.title).toMatch(/^Watchdog 开始 · .+…$/u)
+    expect(longStart.body).toContain(`会话：${longTitle}`)
+
+    expect(watchdogStartNotificationKey('conversation-a', 1_000))
+      .toBe('watchdog-start:conversation-a:1000')
+    expect(watchdogStartNotificationKey('conversation-a', 2_000))
+      .toBe('watchdog-start:conversation-a:2000')
+    expect(watchdogStartNotificationKey('', 1_000)).toBeNull()
   })
 
   test('未绑定 watchdog 不把 metadata ID 塞进标题', () => {

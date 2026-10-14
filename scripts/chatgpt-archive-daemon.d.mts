@@ -230,6 +230,16 @@ export function buildWatchdogTimeoutNotificationPayload(input: {
   now?: number
 }): { title: string, body: string, group: string, url?: string }
 
+export function buildWatchdogStartNotificationPayload(input: {
+  conversationId: string
+  title?: string | null
+  startedAt: number
+  watchdogMs?: number
+}): { title: string, body: string, group: string, url?: string }
+
+/** 同一 CID 的不同 Watchdog generation 以 startedAt 区分并持久去重。 */
+export function watchdogStartNotificationKey(conversationId: unknown, startedAt: unknown): string | null
+
 export function buildWatchdogDiagnosisNotificationPayload(input: {
   conversationId: string
   title?: string | null
