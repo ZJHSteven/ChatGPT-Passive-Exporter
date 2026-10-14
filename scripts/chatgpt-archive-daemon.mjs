@@ -63,6 +63,16 @@ import {
 } from '../src/local/archive-bridge.ts'
 import { LifeOpsSyncClient, loadLifeOpsSyncConfig } from '../src/local/lifeops-sync.ts'
 import { sendActorPrompt } from '../src/local/chatgpt-actor.ts'
+import {
+  familyBackoffUntil,
+  familyProbationRemaining,
+  familyRateLimitAllowed,
+  guardianBlockedUrlPatterns,
+  recordFamily429,
+  recordFamilySuccess,
+  restoreFamilyRateLimitSnapshot,
+} from '../src/local/rate-limit-state.ts'
+import { RequestEventLedger } from '../src/local/request-event-ledger.ts'
 
 const DEFAULT_CDP = 'http://127.0.0.1:9222'
 const GUARDIAN_MARKER = 'chatgpt-archive-guardian'
@@ -73,6 +83,7 @@ const DEFAULT_LOG = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
 const DEFAULT_TURN_TRACE = path.join(PROJECT_ROOT, 'data', 'active-turn-trace.jsonl')
 const DEFAULT_NOTIFICATION_CONFIG = path.join(PROJECT_ROOT, 'data', 'archive-notification.local.json')
 const DEFAULT_PROTOCOL_LEDGER = path.join(PROJECT_ROOT, 'data', 'protocol-fingerprints.json')
+const DEFAULT_REQUEST_EVENT_LEDGER = path.join(PROJECT_ROOT, 'data', 'archive-request-events.jsonl')
 const DEFAULT_ACTOR_STATE = path.join(PROJECT_ROOT, 'data', 'archive-actor-state.json')
 const DEFAULT_ACTOR_SUBMISSION_QUEUE = path.join(PROJECT_ROOT, 'data', 'archive-actor-submissions.json')
 const DEFAULT_DOM_LEDGER = path.join(PROJECT_ROOT, 'data', 'dom-fingerprints.json')
@@ -2052,6 +2063,9 @@ async function main() {
   const protocolLedgerPath = flags.has('protocol-ledger')
     ? path.resolve(String(flags.get('protocol-ledger')))
     : DEFAULT_PROTOCOL_LEDGER
+  const requestEventLedgerPath = flags.has('request-event-ledger')
+    ? path.resolve(String(flags.get('request-event-ledger')))
+    : DEFAULT_REQUEST_EVENT_LEDGER
   // Phase 5 Bridge 默认只监听 loopback。即使用户显式传了其它 host，也必须再给
   // `--allow-remote-bridge` 才允许启动，避免一次参数误写把本地 Archive/Actor 控制面暴露出去。
   const bridgeEnabled = !flags.has('no-bridge')
@@ -2133,6 +2147,7 @@ async function main() {
     // 首次启动或损坏的旧 state 都不应阻止 daemon 启动。
   }
   const archive = new ChatArchiveDb(dbPath)
+  const requestEventLedger = new RequestEventLedger(requestEventLedgerPath)
   const devSpaceAuditBridge = new DevSpaceAuditBridge(devSpaceDbPath)
   const devSpaceAuditWakeListener = new DevSpaceAuditWakeListener()
   /** Bridge 失败不能拖死 Archive 核心；状态会明确暴露 lastError，后续可单独修复/重启。 */
@@ -2146,7 +2161,10 @@ async function main() {
   let guardianEstablishedOnce = false
   let authHeaders = null
   let lastAuthAt = null
-  let cooldownUntil = restoreCooldownUntil(previousDaemonState)
+  const rateLimits = restoreFamilyRateLimitSnapshot(previousDaemonState)
+  // cooldownUntil 仅保留为旧版 state 的一次性全局迁移闸门。
+  // 新发生的 429 全部写入 rateLimits.families，不再回写这个全局值。
+  let cooldownUntil = Number(rateLimits.legacyGlobalUntil || 0)
   let cooldownRecoveryPending = cooldownUntil > Date.now()
   let lastReconcileAt = 0
   let lastWssEventAt = null
