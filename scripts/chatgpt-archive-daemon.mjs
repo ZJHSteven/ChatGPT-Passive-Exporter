@@ -954,6 +954,53 @@ export function buildWatchdogTimeoutNotificationPayload({
 }
 
 /**
+ * Watchdog generation 真正建立时的“起点收据”。
+ *
+ * 这条通知不是异常告警，也不表示 turn 已经慢了；它只把 Archive 此后会使用的计时基准
+ * 明确告诉用户。这样用户看到手机上的起点后，就能直接推算 45 分钟硬边界，而不必等到
+ * `Watchdog 超时` 才反推本轮究竟从什么时候开始。
+ *
+ * 这里只接受已经知道 canonical Conversation ID 的 generation。DevSpace metadata 尚未绑定 CID
+ * 时仍在内部保留 provisional first-tool 时间；完成 exact binding 后再用这个原始时间发开始通知。
+ */
+export function buildWatchdogStartNotificationPayload({
+  conversationId,
+  title,
+  startedAt,
+  watchdogMs = 45 * 60_000,
+}) {
+  const safeStartedAt = Number.isFinite(Number(startedAt)) && Number(startedAt) > 0
+    ? Number(startedAt)
+    : Date.now()
+  const safeWatchdogMs = Number.isFinite(Number(watchdogMs)) && Number(watchdogMs) > 0
+    ? Number(watchdogMs)
+    : 45 * 60_000
+  const watchdogMinutes = Math.round(safeWatchdogMs / 60_000)
+  const subject = compactNotificationSubject(title)
+  return {
+    title: notificationTitleWithSubject('Watchdog 开始', subject),
+    body: [
+      `会话：${subject.full || conversationId}`,
+      `CID：${conversationId}`,
+      `起点：${formatBeijingTime(safeStartedAt)}`,
+      `预计超时：${formatBeijingTime(safeStartedAt + safeWatchdogMs)}（${watchdogMinutes} 分钟）`,
+    ].join('\n'),
+    group: BARK_NOTIFICATION_GROUPS.chatTimeout,
+    url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
+  }
+}
+
+/**
+ * Watchdog 开始通知的稳定持久去重 key。
+ * 同一 conversation 可以连续产生很多 turn，所以必须把 generation 的 startedAt 一并纳入身份。
+ */
+export function watchdogStartNotificationKey(conversationId, startedAt) {
+  const cid = String(conversationId || '').trim()
+  const start = Math.max(0, Math.trunc(Number(startedAt) || 0))
+  return cid && start > 0 ? `watchdog-start:${cid}:${start}` : null
+}
+
+/**
  * Watchdog 两阶段通知的第二条：只要 canonical body 成功完成诊断，就必须给用户一个结果。
  * 这里不能依赖“是否新建 incident”，否则已有 incident / 同一 incident 更新会造成静默漏报。
  */
