@@ -1,3 +1,13 @@
+# Bark 手机通知人因化规范与 Watchdog 诊断精简（2026-10-14）
+
+目标：把手机通知从“数据库字段展示器”恢复成锁屏上一眼可读的事件摘要。继承《Bark消息分组方案》中已经确定的 18 字聊天名截断、正文最多两行、长身份下沉正文、删除无信息增量套话等规则，并补充“诊断结论按用户关注顺序而不是 taxonomy 字段顺序展示”。
+
+- [doing] 新建长期文档 `NOTIFICATION_STYLE.md`，固化 Bark/手机通知规则，避免以后每加一种通知又重新发明文案。
+- [doing] Watchdog 第二阶段通知标题统一为 `Watchdog 诊断 · <短会话名>`，去掉 `ChatGPT` 前缀，也不再把 `active-zombie` / `watchdog-timeout` 塞进标题。
+- [doing] Watchdog 诊断正文最多两行；第一行只展示最强用户可见结论，优先级为 `canonical-tail-gap`（Body 尾部缺失） > confirmed Final > “未确认 Final、未发现尾部缺失”。若聊天名因 18 字限制被截断，第二行再放完整会话名；短会话名不重复写正文。
+- [doing] `watchdog-timeout` 继续保留为内部 lifecycle fallback，但不得冒充用户可见的“诊断根因”；`lifecycle / terminal / tail / head / reason / evidenceTypes` 完整保留在 SQLite/日志供排障。
+- [todo] 更新通知单测，覆盖短标题、长标题、tail-gap、Final、无 Final/无 gap 三类结果；跑定向测试与 `npm run check`，随后按 Windows 计划任务受控重载生产 daemon。
+
 # 2026-10-14 Watchdog 起点通知 ExecPlan
 
 目标：在每个新的 Watchdog generation 真正建立时立即发送一条轻量 Bark，让用户无需等到 45 分钟超时就能知道“这一轮从几点开始计时、预计几点触发 Watchdog”。通知沿用现有 Bark 标题截断、完整会话名、分组、URL 与持久去重机制，不改变 Watchdog 阈值、诊断、Incident 分类或现有超时通知语义。
