@@ -28,7 +28,7 @@ describe('family rate-limit state', () => {
     for (let index = 0; index < CATALOG_BACKOFF_MS.length; index += 1) {
       const current = recordFamily429(state, 'catalog', { now })
       expect(current.stage).toBe(index)
-      expect(current.backoffUntil).toBe(now + CATALOG_BACKOFF_MS[index])
+      expect(current.backoffUntil).toBe(now + CATALOG_BACKOFF_MS[index]!)
       now = current.backoffUntil + 1
     }
 

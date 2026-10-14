@@ -227,7 +227,7 @@ export function recordFamily429(
       CATALOG_BACKOFF_MS.length - 1,
     )
     current.stage = nextStage
-    current.backoffUntil = now + CATALOG_BACKOFF_MS[nextStage]
+    current.backoffUntil = now + CATALOG_BACKOFF_MS[nextStage]!
     current.probationRemaining = 0
     return current
   }
