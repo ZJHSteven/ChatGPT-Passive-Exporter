@@ -2571,6 +2571,38 @@ async function main() {
     return true
   }
 
+  /**
+   * 给一个刚刚建立的 canonical Watchdog generation 发送一次“起点收据”。
+   *
+   * 调用方必须只在 runtime 新建/切换 generation 时调用；daemon startup 恢复 active_watchdogs
+   * 的路径故意不调用这里，因此升级或重启不会把旧 generation 全部补发到手机。
+   */
+  const dispatchWatchdogStartNotification = (conversationId, active, title = null) => {
+    if (!notificationConfig || !conversationId || !active) return false
+    const startedAt = Number(active.startedAt || 0)
+    const notificationKey = watchdogStartNotificationKey(conversationId, startedAt)
+    if (!notificationKey) return false
+    return dispatchPersistentNotification({
+      notificationKey,
+      kind: 'watchdog-start',
+      conversationId,
+      turnKey: `generation:${startedAt}`,
+      payload: buildWatchdogStartNotificationPayload({
+        conversationId,
+        title: title || conversationTitle(conversationId),
+        startedAt,
+        watchdogMs,
+      }),
+      successLog: 'watchdog start notification sent',
+      failureLog: 'watchdog start notification failed',
+      logFields: {
+        startedAt,
+        watchdogAt: startedAt + watchdogMs,
+        startType: active.startType ?? null,
+      },
+    })
+  }
+
   const refreshDevSpaceIdleCandidate = (metadataId, now = Date.now()) => {
     const state = devSpaceAuditBridge.metadataToolState(metadataId)
     if (!state || state.runningTools > 0 || !state.latestFinishedAt || !state.lastFinishedAuditId) {
@@ -4749,6 +4781,11 @@ async function main() {
         activeTurns.set(conversationId, reconciled.nextActive)
         persistActiveTurn(conversationId, reconciled.nextActive)
         if (watchdogTurnChanged) {
+          // 诊断旧 generation 时才发现同一 CID 已切入新 turn：若新 turn 尚未再次超时，
+          // 补发它自己的起点收据；若它已经超时则直接交给现有 timeout 链，避免“开始+超时”连发。
+          if (!watchdogTurnAlreadyTimedOut) {
+            dispatchWatchdogStartNotification(conversationId, reconciled.nextActive, first.title)
+          }
           void log('watchdog body belongs to a newer turn; reconciled turn start', {
             conversationId,
             trigger,
@@ -5456,6 +5493,7 @@ async function main() {
       const nextActive = devSpaceFirstToolWatchdogState(auditAt)
       activeTurns.set(conversationId, nextActive)
       persistActiveTurn(conversationId, nextActive)
+      dispatchWatchdogStartNotification(conversationId, nextActive)
       void log('DevSpace first tool started watchdog', {
         conversationId,
         startedAt: auditAt,
@@ -6505,6 +6543,7 @@ async function main() {
       const current = activeTurns.get(event.conversationId)
       const explicitNewTurn = Boolean(behavior.explicitTurnStart)
       const latched = isWatchdogLatched(current)
+      const createdGeneration = !current || (latched && explicitNewTurn)
       const nextActive = latched && explicitNewTurn
         ? {
             startedAt: now,
@@ -6524,6 +6563,7 @@ async function main() {
           }
       activeTurns.set(event.conversationId, nextActive)
       persistActiveTurn(event.conversationId, nextActive)
+      if (createdGeneration) dispatchWatchdogStartNotification(event.conversationId, nextActive)
     }
     else if (activeTurns.has(event.conversationId)) {
       const current = activeTurns.get(event.conversationId)
@@ -6708,6 +6748,7 @@ async function main() {
               }
               activeTurns.set(id, nextActive)
               persistActiveTurn(id, nextActive)
+              dispatchWatchdogStartNotification(id, nextActive)
             }
             else if (catalogProgressed) {
               const active = activeTurns.get(id)
