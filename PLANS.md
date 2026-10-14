@@ -12,13 +12,13 @@
 
 目标：在每个新的 Watchdog generation 真正建立时立即发送一条轻量 Bark，让用户无需等到 45 分钟超时就能知道“这一轮从几点开始计时、预计几点触发 Watchdog”。通知沿用现有 Bark 标题截断、完整会话名、分组、URL 与持久去重机制，不改变 Watchdog 阈值、诊断、Incident 分类或现有超时通知语义。
 
-1. 新增 `Watchdog 开始 · <聊天名>` payload builder：标题继续使用现有 18 Unicode 字符压缩规则；正文显示完整会话名、canonical Conversation ID、北京时间起点、预计超时点和当前 Watchdog 分钟数；归入 `Chat-Timeout`。
-2. 只在**新的 CID 已知 Watchdog generation** 建立时发送，不在 daemon 启动恢复 `active_watchdogs` 时补发历史开始通知，避免部署/重启后一次轰炸所有旧 generation。
-3. DevSpace first-tool、WSS 明确新 turn、catalog late-active 三条 generation 建立路径统一接入；同一 active generation 的后续 tool/progress 不重复发送。
-4. Watchdog body 诊断若发现同 conversation 已切到更新 turn，仅当该新 turn 尚未再次跨过 Watchdog 阈值时补发一次该 generation 的开始通知；若已经超时则直接走现有超时/诊断链，避免同一瞬间连续“开始+超时”。
-5. 使用 `turn_notification_ledger` 做持久幂等；通知发送失败不占坑，后续同一 generation 再观察到时仍可重试。daemon restart 恢复的旧 generation 不主动重试 start，因为本功能只对上线后的新 generation 生效。
-6. 增加短标题、长标题、CID、北京时间起点/预计超时、45 分钟阈值以及 generation 去重 key 的回归测试；同步 `.d.mts` 声明。
-7. 跑 Archive daemon 定向测试、TypeScript 与全量 `npm run check`；随后通过现有 Windows 计划任务受控重载生产 daemon，确认 Bridge/WSS/Guardian/Bark/429 family state 健康且没有向恢复中的旧 generation 补发开始通知。
+- [done] 新增 `Watchdog 开始 · <聊天名>` payload builder：标题继续使用现有 18 Unicode 字符压缩规则；正文显示完整会话名、canonical Conversation ID、北京时间起点、预计超时点和当前 Watchdog 分钟数；归入 `Chat-Timeout`。
+- [done] 只在**新的 CID 已知 Watchdog generation** 建立时发送，不在 daemon 启动恢复 `active_watchdogs` 时补发历史开始通知，避免部署/重启后一次轰炸所有旧 generation。
+- [done] DevSpace first-tool、WSS 明确新 turn、catalog late-active 三条 generation 建立路径统一接入；同一 active generation 的后续 tool/progress 不重复发送。
+- [done] Watchdog body 诊断若发现同 conversation 已切到更新 turn，仅当该新 turn 尚未再次跨过 Watchdog 阈值时补发一次该 generation 的开始通知；若已经超时则直接走现有超时/诊断链，避免同一瞬间连续“开始+超时”。
+- [done] 使用 `turn_notification_ledger` 做持久幂等；Bark 发送失败不写成功 ledger，重复建立事实仍可安全重试。daemon restart 恢复的旧 generation 不主动补发 start，因为本功能只对上线后的新 generation 生效。
+- [done] 增加短标题、长标题、CID、北京时间起点/预计超时、45 分钟阈值以及 generation 去重 key 的回归测试；同步 `.d.mts` 声明。
+- [done] Archive daemon 定向 61/61、全量 27 files / 233 tests、TypeScript 和四套 build 全绿；Windows 计划任务已重载到 PID 21024，Bridge/WSS/Guardian/Bark 健康，且 ledger 验证启动恢复未补发任何历史 `watchdog-start`。
 
 # 2026-10-14 Archive 429 分级 cooldown / 请求事件账本 ExecPlan
 
