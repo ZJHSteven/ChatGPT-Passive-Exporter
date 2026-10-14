@@ -961,13 +961,13 @@ describe('ChatGPT Archive daemon WSS parser', () => {
         evidenceTypes: ['canonical-tail-gap'],
       },
     })
-    expect(diagnosis.title).toContain('active-zombie')
-    expect(diagnosis.body).toContain('最新工具结果已经回来')
-    expect(diagnosis.body).toContain('lifecycle：active-zombie')
-    expect(diagnosis.body).toContain('terminal：none')
-    expect(diagnosis.body).toContain('tool-result-returned')
-    expect(diagnosis.body).toContain('head：aligned')
-    expect(diagnosis.body).toContain('evidence：canonical-tail-gap')
+    expect(diagnosis.title).toBe('Watchdog 诊断 · 长任务')
+    expect(diagnosis.body).toBe('Body 尾部缺失 · DevSpace 审计晚于 canonical')
+    expect(diagnosis.body).not.toContain('active-zombie')
+    expect(diagnosis.body).not.toContain('watchdog-timeout')
+    expect(diagnosis.body).not.toContain('terminal：')
+    expect(diagnosis.body).not.toContain('tail：')
+    expect(diagnosis.body).not.toContain('head：')
     expect(diagnosis.group).toBe('Incident')
 
     const finalDiagnosis = buildWatchdogDiagnosisNotificationPayload({
@@ -975,7 +975,31 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       title: '长任务',
       diagnostic: { terminalEvidence: 'final', tailShape: 'final' },
     })
+    expect(finalDiagnosis.title).toBe('Watchdog 诊断 · 长任务')
+    expect(finalDiagnosis.body).toBe('已确认 Final · 未发现 Body 尾部缺失')
     expect(finalDiagnosis.group).toBe('Chat-Done')
+
+    const noFinalNoGap = buildWatchdogDiagnosisNotificationPayload({
+      conversationId: 'conversation-a',
+      title: '长任务',
+      diagnostic: { terminalEvidence: 'none', tailShape: 'reasoning-open' },
+      incident: { lifecycleClass: 'watchdog-timeout', evidenceTypes: [] },
+    })
+    expect(noFinalNoGap.title).toBe('Watchdog 诊断 · 长任务')
+    expect(noFinalNoGap.body).toBe('未确认 Final · 未发现 Body 尾部缺失')
+
+    const longDiagnosisTitle = '这是一个特别特别特别特别特别长的Watchdog聊天标题'
+    const longDiagnosis = buildWatchdogDiagnosisNotificationPayload({
+      conversationId: 'conversation-long',
+      title: longDiagnosisTitle,
+      diagnostic: { terminalEvidence: 'none', tailShape: 'tool-result-returned' },
+      incident: { lifecycleClass: 'active-zombie', evidenceTypes: ['canonical-tail-gap'] },
+    })
+    expect(longDiagnosis.title).toMatch(/^Watchdog 诊断 · .+…$/u)
+    expect(longDiagnosis.body).toBe(
+      `Body 尾部缺失 · DevSpace 审计晚于 canonical\n会话：${longDiagnosisTitle}`,
+    )
+    expect(longDiagnosis.body.split('\n')).toHaveLength(2)
   })
 
   test('Watchdog generation 建立时给出可直接估算超时点的起点通知', () => {

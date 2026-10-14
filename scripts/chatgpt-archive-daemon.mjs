@@ -1006,35 +1006,27 @@ export function watchdogStartNotificationKey(conversationId, startedAt) {
  */
 export function buildWatchdogDiagnosisNotificationPayload({ conversationId, title, diagnostic, incident = null }) {
   const terminal = String(diagnostic?.terminalEvidence || 'none')
-  const tail = String(diagnostic?.tailShape || 'unknown')
-  const head = String(incident?.headState || diagnostic?.headState || 'unknown')
-  const lifecycle = terminal === 'final'
-    ? 'normal-final'
-    : String(incident?.lifecycleClass || incident?.incidentKind || 'unclassified')
   const evidenceTypes = Array.isArray(incident?.evidenceTypes)
     ? [...new Set(incident.evidenceTypes.map(value => String(value || '').trim()).filter(Boolean))]
     : []
-  const reason = incident?.reason || (
-    terminal === 'final'
-      ? 'canonical body 已确认 final。'
-      : `canonical body 已完成诊断：terminal=${terminal}，tail=${tail}。`
-  )
+  const hasCanonicalTailGap = evidenceTypes.includes('canonical-tail-gap')
+  const subject = compactNotificationSubject(title)
+  const primaryResult = hasCanonicalTailGap
+    ? 'Body 尾部缺失 · DevSpace 审计晚于 canonical'
+    : terminal === 'final'
+      ? '已确认 Final · 未发现 Body 尾部缺失'
+      : '未确认 Final · 未发现 Body 尾部缺失'
+  const identityLine = subject.truncated
+    ? `会话：${subject.full}`
+    : !subject.full
+      ? `会话：${conversationId}`
+      : null
   return {
-    title: terminal === 'final'
-      ? 'ChatGPT Watchdog 诊断完成 · 已有 Final'
-      : `ChatGPT Watchdog 诊断 · ${lifecycle}`,
-    body: [
-      `会话：${title || conversationId}`,
-      `lifecycle：${lifecycle}`,
-      `terminal：${terminal}`,
-      `tail：${tail}`,
-      `head：${head}`,
-      `evidence：${evidenceTypes.length > 0 ? evidenceTypes.join(', ') : 'none'}`,
-      reason,
-    ].join('\n'),
-    group: terminal === 'final'
-      ? BARK_NOTIFICATION_GROUPS.chatDone
-      : BARK_NOTIFICATION_GROUPS.incident,
+    title: notificationTitleWithSubject('Watchdog 诊断', subject),
+    body: [primaryResult, identityLine].filter(Boolean).join('\n'),
+    group: hasCanonicalTailGap || terminal !== 'final'
+      ? BARK_NOTIFICATION_GROUPS.incident
+      : BARK_NOTIFICATION_GROUPS.chatDone,
     url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
   }
 }
@@ -5382,7 +5374,10 @@ async function main() {
             conversationId,
             watchdogGenerationStartedAt,
             result.diagnostic,
-            result.newIncident || latestOpenIncident(conversationId),
+            // Watchdog 诊断通知必须从“已落库后的最终 incident 视图”读取 evidence。
+            // result.newIncident 是 merge 返回的瞬时对象，可能早于 canonical-tail-gap 附着，
+            // 若优先使用它，手机通知会漏掉用户最关心的 Body 尾部缺失结论。
+            latestOpenIncident(conversationId) || result.newIncident,
           )
         }
         else {
