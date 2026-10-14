@@ -41,6 +41,22 @@ describe('RequestEventLedger', () => {
       'requestBody',
       'responseBody',
     ]))
+
+    await ledger.append({
+      timestamp: 123457,
+      source: 'native-page',
+      targetId: 'target-2',
+      family: 'catalog',
+      routeClass: 'catalog-native',
+      status: null,
+      retryAfter: null,
+      latencyMs: null,
+      backoffStage: -1,
+    })
+    await ledger.close()
+    const rowsWithNulls = (await fs.readFile(file, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+    expect(rowsWithNulls[1].status).toBeNull()
+    expect(rowsWithNulls[1].latencyMs).toBeNull()
   })
 })
 

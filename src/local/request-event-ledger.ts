@@ -54,11 +54,19 @@ export class RequestEventLedger {
       targetId: typeof event.targetId === 'string' && event.targetId ? event.targetId : null,
       family: event.family,
       routeClass: String(event.routeClass || 'unknown').slice(0, 120),
-      status: Number.isFinite(Number(event.status)) ? Number(event.status) : null,
+      status: event.status !== null
+        && event.status !== undefined
+        && Number.isFinite(Number(event.status))
+        ? Number(event.status)
+        : null,
       retryAfter: typeof event.retryAfter === 'string' && event.retryAfter.trim()
         ? event.retryAfter.trim().slice(0, 120)
         : null,
-      latencyMs: Number.isFinite(Number(event.latencyMs)) ? Math.max(0, Number(event.latencyMs)) : null,
+      latencyMs: event.latencyMs !== null
+        && event.latencyMs !== undefined
+        && Number.isFinite(Number(event.latencyMs))
+        ? Math.max(0, Number(event.latencyMs))
+        : null,
       backoffStage: Number.isFinite(Number(event.backoffStage))
         ? Math.trunc(Number(event.backoffStage))
         : -1,
