@@ -1904,6 +1904,96 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('历史 turn 补账只 resolve 已有 Active Zombie，不得把 lifecycle/source 降级成 abnormal-terminal', () => {
+    const db = tempDb()
+    try {
+      db.mergeLiveMessagesPage({
+        title: '历史 Active Zombie 保真',
+        conversation_id: 'historical-active-zombie-preserve',
+        current_node: 'tool-old',
+        messages: [
+          {
+            id: 'u-old', author: { role: 'user' }, recipient: 'all',
+            content: { content_type: 'text', parts: ['旧轮'] },
+            metadata: { turn_exchange_id: 'turn-old' },
+          },
+          {
+            id: 'call-old', author: { role: 'assistant' }, recipient: 'api_tool.call_tool',
+            content: { content_type: 'code', text: '{"tool":"demo"}' },
+            metadata: { turn_exchange_id: 'turn-old' },
+          },
+          {
+            id: 'tool-old', author: { role: 'tool' }, recipient: 'all',
+            content: { content_type: 'code', text: '{"ok":true}' },
+            metadata: { turn_exchange_id: 'turn-old' },
+          },
+        ],
+      }, {
+        observedAt: 1000,
+        classifyTerminal: true,
+        allowIncompleteTailIncident: true,
+        incidentKind: 'active-zombie',
+        observationKind: 'body-page:watchdog:active-timeout',
+      })
+
+      const before = db.listIncidents({ status: 'open' })[0]
+      expect(before).toMatchObject({
+        turnKey: 'turn-old',
+        incidentKind: 'active-zombie',
+        lifecycleClass: 'active-zombie',
+        source: 'body-page:watchdog:active-timeout',
+      })
+
+      db.mergeLiveMessagesPage({
+        title: '历史 Active Zombie 保真',
+        conversation_id: 'historical-active-zombie-preserve',
+        current_node: 'final-new',
+        messages: [
+          {
+            id: 'u-old', author: { role: 'user' }, recipient: 'all',
+            content: { content_type: 'text', parts: ['旧轮'] },
+            metadata: { turn_exchange_id: 'turn-old' },
+          },
+          {
+            id: 'tool-old', author: { role: 'tool' }, recipient: 'all',
+            content: { content_type: 'code', text: '{"ok":true}' },
+            metadata: { turn_exchange_id: 'turn-old' },
+          },
+          {
+            id: 'u-new', author: { role: 'user' }, recipient: 'all',
+            content: { content_type: 'text', parts: ['新轮'] },
+            metadata: { turn_exchange_id: 'turn-new' },
+          },
+          {
+            id: 'final-new', author: { role: 'assistant' }, recipient: 'all',
+            content: { content_type: 'text', parts: ['完成'] },
+            status: 'finished_successfully', end_turn: true,
+            metadata: { turn_exchange_id: 'turn-new', finish_details: { type: 'stop' } },
+          },
+        ],
+      }, {
+        observedAt: 2000,
+        classifyTerminal: true,
+        observationKind: 'passive-native',
+        updateCurrentState: true,
+      })
+
+      const resolved = db.listIncidents({ status: 'resolved' })
+        .find(incident => incident.turnKey === 'turn-old')
+      expect(resolved).toMatchObject({
+        id: before?.id,
+        incidentKind: 'active-zombie',
+        lifecycleClass: 'active-zombie',
+        source: 'body-page:watchdog:active-timeout',
+        status: 'resolved',
+      })
+      expect(resolved?.reason).toContain('conversation list 持续保持 active')
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('historical steering without explicit interruption does not become an incident', () => {
     const db = tempDb()
     try {

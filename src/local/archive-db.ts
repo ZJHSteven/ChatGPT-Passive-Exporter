@@ -2717,6 +2717,9 @@ export class ChatArchiveDb {
       reason: string | null
     } | undefined
 
+    const explicitAbnormal = diagnostic.terminalEvidence === 'client-stopped'
+      || diagnostic.terminalEvidence === 'interrupted'
+
     // head history 只有在 current_node 真正变化时才插一行；因此同一个 head 出现两次以上，
     // 就意味着中间至少去过另一个 head（A→B→A）。这里只记录证据，不把“主动切 branch”
     // 和“异常回退”擅自合并成同一个根因。
@@ -2727,6 +2730,36 @@ export class ChatArchiveDb {
           WHERE conversation_id = ? AND current_node = ?
         `).get(conversationId, diagnostic.currentNode) as { n: number }).n) >= 2
       : false
+
+    // 历史补账的职责是确认“这个旧 turn 后来已经被新 user turn 越过”，而不是重写当时已经
+    // 由更强实时证据建立的 lifecycle。尤其不能把 Watchdog/Active Zombie/complete-no-final
+    // 洗成 generic abnormal-terminal。若旧 incident 已存在且历史 body 没有新增明确 interrupted
+    // 证据，只刷新 body 结构并 resolve；kind/lifecycle/source/reason/evidence 全部保留。
+    // 显式 client_stopped/interrupted 仍允许继续走下面的升级逻辑，因为那是更强的新终态证据。
+    if (historicalEnded && currentIncident && !explicitAbnormal) {
+      this.db.prepare(`
+        UPDATE incidents
+        SET status='resolved',
+            resolved_at=COALESCE(resolved_at, ?),
+            last_observed_at=?,
+            tail_shape=?,
+            head_state=?,
+            head_rollback=?,
+            off_head_same_turn_count=?,
+            diagnostic_json=?
+        WHERE id=?
+      `).run(
+        observedAt,
+        observedAt,
+        diagnostic.tailShape,
+        diagnostic.headState,
+        headRollbackObserved ? 1 : 0,
+        diagnostic.offHeadSameTurnMessageCount,
+        json(diagnostic),
+        currentIncident.id,
+      )
+      return
+    }
 
     if (diagnostic.terminalEvidence === 'final' && currentIncident?.status === 'open') {
       this.db.prepare(`
@@ -2796,8 +2829,6 @@ export class ChatArchiveDb {
       )
     }
 
-    const explicitAbnormal = diagnostic.terminalEvidence === 'client-stopped'
-      || diagnostic.terminalEvidence === 'interrupted'
     const inferredAbnormal = diagnostic.terminalEvidence === 'none'
       && diagnostic.tailShape !== 'final'
       && (requestedKind === 'watchdog-timeout' || requestedKind === 'active-zombie' || !diagnostic.hasInTurnSteering)
