@@ -147,6 +147,7 @@ interface ActorSendOptions {
     requestUrl: string
     requestId: string
     status: number
+    retryAfter: string | null
   }) => number | null | void | Promise<number | null | void>) | null
 }
 
@@ -479,7 +480,10 @@ async function acquireActorTarget(
  */
 async function assertActorCooldownClear(daemonStatePath?: string | null): Promise<void> {
   const daemonState = await readJsonFile(daemonStatePath)
-  const cooldownUntil = Number(daemonState?.cooldownUntil || 0)
+  const cooldownUntil = Math.max(
+    Number(daemonState?.cooldownUntil || 0),
+    Number(daemonState?.rateLimits?.families?.actor?.backoffUntil || 0),
+  )
   if (Number.isFinite(cooldownUntil) && cooldownUntil > Date.now()) {
     const until = new Date(cooldownUntil).toISOString()
     throw new Error(`ChatGPT actor blocked by active API cooldown until ${until}`)
@@ -1432,9 +1436,10 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
     } = { requestId: null, status: null, respondedAt: null }
     // 和 submitState 一样，用显式 holder 表达“CDP 回调稍后填值”。
     // TypeScript 不会把跨回调赋值错误收窄成永远为 null/never，也更贴近运行时事实。
-    const responseState: { status: number | null; mimeType: string | null } = {
+    const responseState: { status: number | null; mimeType: string | null; retryAfter: string | null } = {
       status: null,
       mimeType: null,
+      retryAfter: null,
     }
     // 一旦正式 POST 已拿到 2xx + conversationId，就越过“不可自动重发”的提交点。
     // 后续本地诊断/neutralize/trace 即使失败，也只能降级记录，不能把整个 send 判失败后再次 POST。
@@ -1481,6 +1486,8 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
       if (!submitEvent || String(event?.requestId) !== submitEvent.requestId) return
       responseState.status = Number(event?.response?.status ?? 0) || null
       responseState.mimeType = typeof event?.response?.mimeType === 'string' ? event.response.mimeType : null
+      const retryAfter = event?.response?.headers?.['retry-after'] ?? event?.response?.headers?.['Retry-After']
+      responseState.retryAfter = typeof retryAfter === 'string' && retryAfter.trim() ? retryAfter.trim() : null
     })
     const offData = client.on('Network.dataReceived', (event) => {
       const submitEvent = submitState.event
@@ -1556,6 +1563,7 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
             requestUrl: formalRequestUrl,
             requestId: submitEvent.requestId,
             status: responseState.status,
+            retryAfter: responseState.retryAfter,
           })
           if (Number.isFinite(Number(cooldownUntil)) && Number(cooldownUntil) > Date.now()) {
             throw new Error(
