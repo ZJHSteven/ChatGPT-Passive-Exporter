@@ -1,6 +1,6 @@
 # 2026-10-15 第一方协议贴合审计与漂移判级修正 ExecPlan
 
-状态：**已完成并部署**。27/27 test files、239/239 tests、TypeScript 与四套构建通过；真实 ledger semantic actionable=0；生产 daemon 已由计划任务重载并恢复 WSS=3 / Bridge=true / Guardian healthy。
+状态：**已完成并部署**。27/27 test files、240/240 tests、TypeScript 与四套构建通过；真实 ledger semantic actionable=0；生产 daemon 最终由计划任务重载到 PID 16252，并恢复 WSS=3 / Bridge=true / Guardian healthy。
 
 目标：把 ChatGPT Archive 的协议验收标准从“请求还能成功”收紧为“生产主动请求尽可能复刻当前第一方 Web 的同语义请求”。只有强瞬态/强会话态、无法安全生成、或第一方本身多态且没有唯一正确形状的字段才允许不复刻，并必须在代码/测试中留下理由。与此同时，修正协议监控把不同语义的一方请求错误混成同一 baseline 的问题，避免既误报也漏报。
 
