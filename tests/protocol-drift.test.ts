@@ -7,6 +7,7 @@ import {
   buildProtocolResponseShape,
   classifyProtocolReplayCandidate,
   isArchiveProtocolRoute,
+  protocolContractFamily,
   ProtocolDriftLedger,
 } from '../src/local/protocol-drift.ts'
 
@@ -79,6 +80,34 @@ describe('protocol drift fingerprinting', () => {
       eligible: true,
       family: 'catalog-global',
     })
+    expect(protocolContractFamily(filtered)).toBe('catalog-tpp')
+    expect(protocolContractFamily(global)).toBe('catalog-global')
+  })
+
+  test('global catalog 不再拿 TPP sidebar baseline 做 query 漂移比较', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protocol-catalog-family-'))
+    const ledger = await ProtocolDriftLedger.open(path.join(dir, 'ledger.json'), {
+      now: 1_000,
+      baselineWindowMs: 60_000,
+    })
+    ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/conversations?conversation_origin=tpp&expand=false&hide_snorlax=false&is_archived=false&is_starred=false&limit=20&order=updated&offset=0',
+      method: 'GET',
+      observedAt: 2_000,
+    })
+    ledger.refreshBaselineLock(70_000)
+    const global = ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=false&is_starred=false',
+      method: 'GET',
+      observedAt: 71_000,
+    })!
+    expect(global.assessment).toMatchObject({
+      severity: 'info',
+      notify: false,
+      category: 'observation',
+      family: 'catalog-global',
+    })
+    expect(global.assessment?.details).toContain('baseline 中没有同家族请求')
   })
 
   test('learning window seeds baseline; later unseen request/response shapes become pending drift', async () => {
@@ -155,7 +184,7 @@ describe('protocol drift fingerprinting', () => {
     expect(drift.assessment?.details.join(' ')).toContain('message metadata')
   })
 
-  test('重复出现的新协议 header 升级 warning，并给出可读字段差异', async () => {
+  test('真正未覆盖的新协议 header 重复出现时升级 warning', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protocol-header-drift-'))
     const ledger = await ProtocolDriftLedger.open(path.join(dir, 'ledger.json'), {
       now: 1_000,
@@ -172,7 +201,7 @@ describe('protocol drift fingerprinting', () => {
     const first = ledger.observeRequest({
       url: 'https://chatgpt.com/backend-api/conversation/example',
       method: 'GET',
-      headers: { Authorization: 'a', 'OAI-DID': 'device', 'X-OAI-MCP-Form-Version': '2' },
+      headers: { Authorization: 'a', 'OAI-DID': 'device', 'X-OAI-New-Context': 'v1' },
       observedAt: 71_000,
     })!
     expect(first.assessment).toMatchObject({ severity: 'info', notify: false })
@@ -180,7 +209,7 @@ describe('protocol drift fingerprinting', () => {
     const second = ledger.observeRequest({
       url: 'https://chatgpt.com/backend-api/conversation/example',
       method: 'GET',
-      headers: { Authorization: 'a', 'OAI-DID': 'device', 'X-OAI-MCP-Form-Version': '2' },
+      headers: { Authorization: 'a', 'OAI-DID': 'device', 'X-OAI-New-Context': 'v1' },
       observedAt: 72_000,
     })!
     expect(second.assessment).toMatchObject({
@@ -188,7 +217,68 @@ describe('protocol drift fingerprinting', () => {
       notify: true,
       category: 'request-contract',
     })
-    expect(second.assessment?.details).toContain('新增协议 header: x-oai-mcp-form-version')
+    expect(second.assessment?.details).toContain('新增协议 header: x-oai-new-context')
+  })
+
+  test('白名单已动态继承的新增 header 与 session trace 不再误报人工改协议', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protocol-auto-inherited-header-'))
+    const ledger = await ProtocolDriftLedger.open(path.join(dir, 'ledger.json'), {
+      now: 1_000,
+      baselineWindowMs: 60_000,
+    })
+    ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/conversation/example',
+      method: 'GET',
+      headers: { Authorization: 'a', 'OAI-DID': 'device' },
+      observedAt: 2_000,
+    })
+    ledger.refreshBaselineLock(70_000)
+    const current = ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/conversation/example',
+      method: 'GET',
+      headers: {
+        Authorization: 'a',
+        'OAI-DID': 'device',
+        'X-OAI-MCP-Form-Version': '2',
+        'X-OAI-Turn-Trace-ID': 'session-uuid',
+      },
+      observedAt: 71_000,
+    })!
+    expect(current.assessment).toMatchObject({
+      severity: 'info',
+      notify: false,
+      category: 'optional-shape',
+    })
+  })
+
+  test('Turn Submit body 漂移由官方页面原生提交自动继承，只保留取证', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protocol-native-turn-submit-'))
+    const ledger = await ProtocolDriftLedger.open(path.join(dir, 'ledger.json'), {
+      now: 1_000,
+      baselineWindowMs: 60_000,
+    })
+    ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/f/conversation',
+      method: 'POST',
+      headers: { Authorization: 'a', 'Content-Type': 'application/json' },
+      postData: JSON.stringify({ action: 'next', messages: [] }),
+      observedAt: 2_000,
+    })
+    ledger.refreshBaselineLock(70_000)
+    const current = ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/f/conversation',
+      method: 'POST',
+      headers: { Authorization: 'a', 'Content-Type': 'application/json' },
+      postData: JSON.stringify({ action: 'next', messages: [], genui_state_snapshots: [] }),
+      observedAt: 71_000,
+    })!
+    expect(current.assessment).toMatchObject({
+      severity: 'info',
+      notify: false,
+      category: 'observation',
+      family: 'turn-submit',
+    })
+    expect(current.assessment?.summary).toContain('Actor 自动继承')
   })
 
   test('Conversation Body 核心 messages 消失第一次就判 critical', async () => {
