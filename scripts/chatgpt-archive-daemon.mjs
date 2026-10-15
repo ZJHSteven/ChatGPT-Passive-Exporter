@@ -73,6 +73,12 @@ import {
   restoreFamilyRateLimitSnapshot,
 } from '../src/local/rate-limit-state.ts'
 import { RequestEventLedger } from '../src/local/request-event-ledger.ts'
+import {
+  buildGlobalCatalogPath,
+  captureGlobalCatalogQueryTemplate,
+  FIRST_PARTY_REPLAY_HEADER_ALLOWLIST,
+  sanitizeFirstPartyReplayHeaders,
+} from '../src/core/first-party-request-context.ts'
 
 const DEFAULT_CDP = 'http://127.0.0.1:9222'
 const GUARDIAN_MARKER = 'chatgpt-archive-guardian'
@@ -1240,30 +1246,10 @@ function chatgptTime(value) {
  * turn-scoped `x-oai-turn-trace-id` 不在这里：它必须由每个 turn session 单独管理，绝不能
  * 从 A turn 的 native request 捕获后全局复用到 B conversation。
  */
-export const CAPTURED_HEADER_ALLOWLIST = [
-    'authorization',
-    'chatgpt-account-id',
-    'oai-did',
-    'oai-client-build-number',
-    'oai-client-version',
-    'oai-device-id',
-    'oai-language',
-    'oai-session-id',
-    'originator',
-    'x-oai-is-client-observation',
-    'x-oai-mcp-form-version',
-    'x-openai-codex-window-type',
-    'x-openai-web-frontend',
-  ]
+export const CAPTURED_HEADER_ALLOWLIST = [...FIRST_PARTY_REPLAY_HEADER_ALLOWLIST]
 
 export function sanitizeCapturedHeaders(headers) {
-  const allowed = new Set(CAPTURED_HEADER_ALLOWLIST)
-  const sanitized = {}
-  for (const [key, value] of Object.entries(headers || {})) {
-    const normalized = String(key).toLowerCase()
-    if (allowed.has(normalized)) sanitized[normalized] = value
-  }
-  return sanitized
+  return sanitizeFirstPartyReplayHeaders(headers)
 }
 
 /** 只从真正的 ChatGPT conversation tab URL 提取 conversation id；不会导航页面。 */
@@ -1970,8 +1956,22 @@ export function terminalStateSupersedesResumeCredential(row, credentialSeenAt) {
   return terminalSeenAt >= tokenSeenAt
 }
 
-function listPath(offset, limit) {
-  return `/backend-api/conversations?offset=${offset}&limit=${limit}&order=updated&is_archived=false&is_starred=false`
+export function listPath(offset, limit, template = null) {
+  return buildGlobalCatalogPath(offset, limit, template)
+}
+
+/**
+ * 同一次 conversation sync 的所有主动子请求都继承同一组 session-scoped extraHeaders。
+ * checkpoint 场景里 latest body、cursor body 与必要的 exact mapping 属于同一 polling session；
+ * x-oai-turn-trace-id 不能只加在其中一部分请求上。
+ */
+export function syncSubrequestFetchOptions(syncOptions = {}, { skipRequestSlot = false } = {}) {
+  const requestOptions = {}
+  if (skipRequestSlot) requestOptions.skipRequestSlot = true
+  if (syncOptions.extraHeaders && typeof syncOptions.extraHeaders === 'object') {
+    requestOptions.extraHeaders = syncOptions.extraHeaders
+  }
+  return requestOptions
 }
 
 /**
@@ -1993,14 +1993,19 @@ export function classifyConversationBackendUrl(input, base = 'https://chatgpt.co
      const origin = url.searchParams.get('conversation_origin')
       const excludeOrigin = url.searchParams.get('exclude_conversation_origin')
      const hideSnorlax = url.searchParams.get('hide_snorlax')
+     const order = url.searchParams.get('order')
+     const archived = url.searchParams.get('is_archived')
+     const starred = url.searchParams.get('is_starred')
+     // global catalog 的语义是“不启用额外过滤”。第一方可以显式传 false，也可以省略 false。
+     // 因此这里按语义判断，而不是把某一版 query 的“字段是否存在”写成永久协议。
      const globalCatalog = !origin
         && !excludeOrigin
        && Number.isFinite(offset)
         && Number.isFinite(limit)
-        && url.searchParams.get('order') === 'updated'
-        && url.searchParams.get('is_archived') === 'false'
-        && url.searchParams.get('is_starred') === 'false'
-        && (hideSnorlax === null || hideSnorlax === 'false')
+        && (order === null || order === 'updated')
+        && archived !== 'true'
+        && starred !== 'true'
+        && hideSnorlax !== 'true'
       return {
         kind: 'catalog',
         offset: Number.isFinite(offset) ? offset : 0,
@@ -2231,6 +2236,9 @@ async function main() {
   let guardianEstablishedOnce = false
   let authHeaders = null
   let lastAuthAt = null
+  // 只从第一方自然产生的 global conversation list 学 query 模板；主动 replay 自己不会反哺模板。
+  // 这样若上游新增稳定 query，可以自动继承，同时不会把 TPP/hide_snorlax=true 等过滤混入全量 catalog。
+  let globalCatalogQueryTemplate = null
   const rateLimits = restoreFamilyRateLimitSnapshot(previousDaemonState)
   // cooldownUntil 仅保留为旧版 state 的一次性全局迁移闸门。
   // 新发生的 429 全部写入 rateLimits.families，不再回写这个全局值。
@@ -4781,10 +4789,9 @@ async function main() {
       targetPath: basePath,
       targetRoute: '/backend-api/conversations/{conversation_id}',
       kind: 'body',
-    }, {
+    }, syncSubrequestFetchOptions(options, {
       skipRequestSlot: options.skipFirstRequestSlot === true,
-      extraHeaders: options.extraHeaders,
-    })
+    }))
     if (passiveFirst) passiveBodyPagesReused += 1
     if (!Array.isArray(first.messages)) throw new Error(`conversation ${conversationId} latest body has no messages[]`)
 
@@ -4922,7 +4929,7 @@ async function main() {
                 targetPath: singularPath,
                 targetRoute: '/backend-api/conversation/{conversation_id}',
                 kind: 'mapping',
-              })
+              }, syncSubrequestFetchOptions(options))
               if (!mappingPayload?.mapping || typeof mappingPayload.mapping !== 'object') {
                 throw new Error(`conversation ${conversationId} singular response has no mapping`)
               }
@@ -4999,9 +5006,7 @@ async function main() {
         targetPath: messagePath,
         targetRoute: '/backend-api/conversations/{conversation_id}/messages',
         kind: 'body',
-      }, {
-        extraHeaders: options.extraHeaders,
-      })
+      }, syncSubrequestFetchOptions(options))
       if (passivePageEntry) {
         passiveBodyPagesReused += 1
         passivePagesUsed += 1
@@ -6720,7 +6725,7 @@ async function main() {
         const body = passiveCatalog
           ? { items: passiveCatalog.items }
           : await fetchChecked({
-              url: listPath(offset, limit),
+              url: listPath(offset, limit, globalCatalogQueryTemplate),
               targetPath: route,
               targetRoute: route,
               kind: 'catalog',
