@@ -3,6 +3,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, test } from 'vitest'
 import {
+  buildGlobalCatalogPath,
+  captureGlobalCatalogQueryTemplate,
+} from '../src/core/first-party-request-context.ts'
+import {
   buildProtocolRequestShape,
   buildProtocolResponseShape,
   classifyProtocolReplayCandidate,
@@ -12,6 +16,20 @@ import {
 } from '../src/local/protocol-drift.ts'
 
 describe('protocol drift fingerprinting', () => {
+  test('global catalog 只自动继承已确认可重放的 query，未知 proof/nonce 不盲拷', () => {
+    const template = captureGlobalCatalogQueryTemplate(
+      'https://chatgpt.com/backend-api/conversations?offset=0&limit=28&order=updated&expand=false&hide_snorlax=false&pow=one-shot&nonce=abc',
+    )
+    expect(template).toEqual([
+      ['order', 'updated'],
+      ['expand', 'false'],
+      ['hide_snorlax', 'false'],
+    ])
+    expect(buildGlobalCatalogPath(28, 28, template)).toBe(
+      '/backend-api/conversations?offset=28&limit=28&order=updated&expand=false&hide_snorlax=false',
+    )
+  })
+
   test('conversation ids/cursors/signatures are normalized but semantic query values are preserved', () => {
     const shape = buildProtocolRequestShape({
       url: 'https://chatgpt.com/backend-api/conversations/6ab7cabd-dd70-83e9-bc4e-d3d6cbf55b00/messages?before=abc123&num_turns=10&include_has_versions=true',
