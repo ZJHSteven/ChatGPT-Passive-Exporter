@@ -1,6 +1,12 @@
 import { diagnoseLatestRun, type RunDiagnostic } from '../core/run-diagnostics'
 import { analyzeWidgetPressure, type WidgetPressureReport } from '../core/widget-pressure'
 import { assessConversationPayload, mergePluralConversationPages } from '../core/conversation-snapshot'
+import {
+  buildGlobalCatalogPath,
+  captureGlobalCatalogQueryTemplate,
+  FIRST_PARTY_REPLAY_HEADER_ALLOWLIST,
+  type GlobalCatalogQueryTemplate,
+} from '../core/first-party-request-context'
 import type { MessagesConversationPayload, RawConversationPayload } from '../core/types'
 
 /**
@@ -152,21 +158,7 @@ interface PerformanceWithMemory extends Performance {
 
 const STORAGE_KEY = 'chatgpt-passive-exporter/run-watch/latest/v1'
 const ACTIVE_API_BACKOFF_KEY = 'chatgpt-passive-exporter/active-api-backoff/v1'
-const AUTH_HEADER_ALLOWLIST = [
-  'authorization',
-  'chatgpt-account-id',
-  'oai-did',
-  'oai-session-id',
-  'oai-device-id',
-  'oai-client-version',
-  'oai-client-build-number',
-  'oai-language',
-  'originator',
-  'x-oai-is-client-observation',
-  'x-oai-mcp-form-version',
-  'x-openai-codex-window-type',
-  'x-openai-web-frontend',
-] as const
+const AUTH_HEADER_ALLOWLIST = FIRST_PARTY_REPLAY_HEADER_ALLOWLIST
 
 function now(): number {
   return Date.now()
@@ -307,6 +299,8 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
 
   // 只驻留内存的临时认证上下文。绝不进入 event / snapshot / localStorage。
   const ephemeralHeaders = new Map<string, string>()
+  // 同样只驻留内存：记录最近一次第一方 global list 的 query 形状，供主动 list 精确复用。
+  let globalCatalogQueryTemplate: GlobalCatalogQueryTemplate | null = null
 
   const pushEvent = (type: string, data?: Record<string, unknown>) => {
     events.push({ at: now(), type, conversationId: currentConversationId(), data })
@@ -329,6 +323,8 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
         const value = requestHeaders.get(name)
         if (value) ephemeralHeaders.set(name, value)
       }
+      const catalogTemplate = captureGlobalCatalogQueryTemplate(url, location.origin)
+      if (catalogTemplate) globalCatalogQueryTemplate = catalogTemplate
     }
 
     const shouldLog = interestingNetworkPath(url)
@@ -754,7 +750,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     // 历史审计沿用同一形状，只改变 offset；这样不会为了后台工具制造新的 query 结构。
     const safeOffset = Math.max(0, Math.trunc(offset))
     const safeLimit = Math.max(1, Math.min(28, Math.trunc(limit)))
-    const path = `/backend-api/conversations?offset=${safeOffset}&limit=28&order=updated&is_archived=false&is_starred=false`
+    const path = buildGlobalCatalogPath(safeOffset, 28, globalCatalogQueryTemplate)
     const result = await authenticatedJson(path, '/backend-api/conversations')
     if (!result.ok) return []
 
