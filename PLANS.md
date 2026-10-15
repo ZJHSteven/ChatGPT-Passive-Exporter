@@ -544,11 +544,11 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 
 ## 2026-09-22 浏览器内存尾段恢复 / conversation persistence gap ExecPlan
 
-- [pending] 扩展 UI observer，识别 `ui-virtualizer-blank-view`：同时采样可见 target 的 `visibilityState`、thread scroll container 几何、标准 message DOM 数量、可见文本节点与 canonical `current_node/final`。2026-09-24《漫画分镜设计》已出现 canonical 正常 final、DOM `innerText` 仍有完整消息，但 `[data-message-id]=0` 且内容树整体位于巨大负坐标的真实样本；这应作为 UI-only renderer 故障记录，不得建立新的 server lifecycle incident。
+- [done] 仅保留 `ui-virtualizer-blank-view` 作为历史取证分类，不再建立独立 UI observer 开发任务。2026-09-24《漫画分镜设计》曾出现 canonical 正常 final、DOM `innerText` 仍有完整消息，但 `[data-message-id]=0` 且内容树位于巨大负坐标的样本；该事实继续保留在 incident taxonomy / forensic 记录中，但用户并未把“自动识别这种 UI renderer 故障”列为产品需求，后续不主动推进。
 - [done] 对三个风险会话先做无刷新 CDP 抢救：保存 DOM HTML、纯文本、DOMSnapshot，以及可见 user/assistant 的真实 `data-message-id`；同时在停 daemon 前复制 SQLite/WAL/SHM/turn trace。
 - [done] 解锁 SQLite 后与浏览器现场逐项对账，确认三例都存在“执行/前端现场比 canonical conversation archive 更靠后”的 persistence gap：迁移与异常分析缺整轮执行尾段，Sidebery 至少缺长度上限终止节点，工具过程另存在于 DOM/audit。
 - [done] 当前接续聊天自身再次中断后形成第四个对照样本：canonical body 已有 491 节点且 `current_node` 指向真实 tool result，但 DOM 只显示 user + 合成 timeout error；将其单独命名为 `ui-hidden-canonical-tail`，明确它不是 persistence gap，也不是 confirmed head rollback。
-- [pending] Phase 3/UI observer 后续要把“当前 DOM 可见 message-id 集合”与 canonical body/current_node 同时采样；只有这样才能自动识别 `ui-hidden-canonical-tail`。现阶段只保存 DOM/DOMSnapshot/raw audit，不把 UI-only timeout placeholder 写进 canonical messages。
+- [done] `ui-hidden-canonical-tail` 只作为 2026-09-22 hidden-node/recovery 取证中得到的现象标签保留，不再转化为 Phase 3 独立待办。当前安全边界已经完成：DOM/DOMSnapshot/raw audit 可留存，但 UI-only timeout/length-cap 占位不进入 canonical messages；无需为此再建设常驻 UI observer。
 - [done] 增加只增量、不删除历史的 `chatgpt-archive recover` 入口：复用 `mergeLiveMessagesPage()`，强制 provenance=`browser-memory-recovery`、`updateCurrentState=false`、`updateIncidents=false`、`insertUnknownOnly=true`。assistant DOM 节点还要求真实 model slug，并排除 timeout/length-cap UI 合成错误卡片；这些 UI-only 证据只进入 raw observation，不污染 canonical messages。
 - [done] 已生成三份 recovery bundle 并对主库执行恢复。后续 hidden-node 对照证明 DOM 的 assistant error card 也可能带 `data-message-id` 却完全不存在于 server body，因此最终 canonical 恢复只保留能证明的消息：迁移聊天缺失 user `bcfba6d2…` 留在 union；三个 timeout/length-cap UI assistant 占位均从 canonical 删除但继续保留在 raw recovery observation。异常分析 user `9ef20fbc…` 已从 recovery 前的 first-party raw body observation 恢复完整 metadata。
 - [done] 已将 conversation length-cap、send-timeout、persistence gap 与 `ui-hidden-canonical-tail` 分层写入 PROGRESS；真实主库完成局部 FTS/Markdown/resource 重建和 message/head 核对。最新 recovery 代码定向数据库测试 20/20、TypeScript 通过，全量 Vitest 17 files / 93 tests 全过。

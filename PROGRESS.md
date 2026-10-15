@@ -128,6 +128,8 @@
 - 2026-10-10 passive reuse 复核：第一方 latest body 会立即 non-destructive merge 并进入 passive cache，cursor body 会缓存供 overlap 复用，singular mapping 会直接 merge exact tree，原始 `/f/conversation`/resume SSE 与 turn-WSS 也由 passive observer 接入 LiveTurn；当前 state 曾记录 `bodyResponses=30 / bodyPagesReused=2`。但网页原生 sidebar catalog 当前主要是 `conversation_origin=tpp` / `exclude_conversation_origin=tpp` 的 20-item 分片，而 `rememberPassiveCatalogResponse()` 只有 `globalCatalog && limit=28` 才缓存/驱动 item lifecycle，因此这些原生分片目前不能替代 global reconciliation，现场曾为 `catalogResponses=145 / catalogPagesReused=0`。后续应把“item-level active/watchdog discovery”和“global overlap completeness”拆开利用，不能把单个 origin 分片冒充全量目录。
 # 2026-10-10 DevSpace 5 分钟静默提前核验上线
 
+- 2026-10-15 任务语义复核：确认 `ui-hidden-canonical-tail` / `ui-virtualizer-blank-view` 来源于 9 月 22–24 日 hidden-node / recovery 取证，是我在分析 DOM 与 canonical body 差异时命名的 forensic 分类，不是用户下达的独立产品任务。此前 PLANS 中“扩展 UI observer 自动识别”的 pending 属于过度产品化，现已取消；incident taxonomy 与历史样本仍保留，Recovery 的安全边界也保持不变。真正需要继续研究的是 conversation length-cap 的可靠第一方证据，二者不再混为一谈。
+
 - Archive 原有 1/3/5 分钟 DevSpace idle Bark 保持不变；本轮只把 **5 分钟**阈值额外接成一次低成本主动核验，DevSpace tool_audit / UDP 发信端完全不改。
 - 已绑定 metadata：若当前没有更强的 ready sync，直接排 `devspace-idle:bound-probe`，只抓该 canonical conversation 的 latest body；body 中若已经有 final / interrupted / client_stopped 等显式终态，复用现有 terminal/incident 分析和 active generation 收口。
 - `devspace-idle:bound-probe` 被允许进入 terminal classifier，但明确**不是 confirmed complete trigger**。因此普通 reasoning/tool/in_progress 尾巴不会因为“5 分钟没工具调用”被误升级成 complete-no-final incident。
