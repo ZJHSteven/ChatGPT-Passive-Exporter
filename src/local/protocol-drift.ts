@@ -1,6 +1,10 @@
 import fs from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
+import {
+  FIRST_PARTY_REPLAY_HEADER_ALLOWLIST,
+  FIRST_PARTY_SESSION_SCOPED_PROTOCOL_HEADERS,
+} from '../core/first-party-request-context.ts'
 
 export interface ProtocolRequestInput {
   url: string
@@ -224,8 +228,19 @@ function queryValueIsVolatile(key: string): boolean {
  * 例如带 TPP filter 的 sidebar list 不能直接拿来 replay，但它仍属于 catalog 协议；
  * stream_status 不用于普通归档 replay，却是 Watchdog/Phase 3 的关键协议。
  */
-function protocolContractFamily(shape: ProtocolRequestShape): string {
-  if (shape.route === '/backend-api/conversations') return 'catalog'
+export function protocolContractFamily(shape: ProtocolRequestShape): string {
+  if (shape.route === '/backend-api/conversations') {
+    if (shape.query.conversation_origin === 'tpp') return 'catalog-tpp'
+    if (shape.query.exclude_conversation_origin === 'tpp') return 'catalog-non-tpp'
+    if (
+      'conversation_origin' in shape.query
+      || 'exclude_conversation_origin' in shape.query
+      || shape.query.hide_snorlax === 'true'
+      || shape.query.is_archived === 'true'
+      || shape.query.is_starred === 'true'
+    ) return 'catalog-filtered'
+    return 'catalog-global'
+  }
   if (shape.route === '/backend-api/conversations/{conversation_id}') return 'body-latest'
   if (shape.route === '/backend-api/conversations/{conversation_id}/messages') return 'body-cursor'
   if (shape.route === '/backend-api/conversation/{conversation_id}/stream_status') return 'stream-status'
@@ -241,8 +256,8 @@ function protocolContractFamily(shape: ProtocolRequestShape): string {
 }
 
 function familyIsOperationallyImportant(family: string): boolean {
+  if (family.startsWith('catalog-')) return true
   return [
-    'catalog',
     'body-latest',
     'body-cursor',
     'mapping',
@@ -256,7 +271,10 @@ function familyIsOperationallyImportant(family: string): boolean {
 
 function familyLabel(family: string): string {
   const labels: Record<string, string> = {
-    catalog: 'Conversation List',
+    'catalog-global': 'Conversation List（Global）',
+    'catalog-tpp': 'Conversation List（TPP）',
+    'catalog-non-tpp': 'Conversation List（非 TPP）',
+    'catalog-filtered': 'Conversation List（Filtered）',
     'body-latest': 'Conversation Body',
     'body-cursor': 'Conversation Body 分页',
     mapping: 'Conversation Mapping',
@@ -665,8 +683,17 @@ export class ProtocolDriftLedger {
     // 这两个 Target 头是 Archive 旧主动 replay/canary 曾经自行注入过的历史标记，
     // 不是当前第一方 Web 正常 GET 的稳定协议。它们继续留在 forensic ledger，不能反过来
     // 让“自己造的请求”伪装成上游协议漂移。
+    //
+    // 当前 production 对账户级 header 使用“捕获第一方真实值并动态继承”，所以 allowlist
+    // 已覆盖的新 header 不再意味着需要手工改协议；session-scoped header 则由同一 turn
+    // 显式向下传递，不能因为它出现就误导成应加入全局 allowlist。
+    const autoInheritedHeaders = new Set<string>(FIRST_PARTY_REPLAY_HEADER_ALLOWLIST)
+    const sessionScopedHeaders = new Set<string>(FIRST_PARTY_SESSION_SCOPED_PROTOCOL_HEADERS)
     const meaningfulAddedHeaders = addedHeaders.filter(header => (
-      header !== 'x-openai-target-path' && header !== 'x-openai-target-route'
+      header !== 'x-openai-target-path'
+      && header !== 'x-openai-target-route'
+      && !autoInheritedHeaders.has(header)
+      && !sessionScopedHeaders.has(header)
     ))
     if (meaningfulAddedHeaders.length > 0) details.push(`新增协议 header: ${meaningfulAddedHeaders.join(', ')}`)
     if (missingStableHeaders.length > 0) details.push(`缺少 baseline 稳定 header: ${missingStableHeaders.join(', ')}`)
@@ -740,6 +767,36 @@ export class ProtocolDriftLedger {
       }
     }
 
+    /**
+     * Actor 的正式 /f/conversation POST 完全由当前 ChatGPT React composer 生成。
+     * Archive 只负责 DOM 驱动与 Network 结果闭环，不手工构造 header/body/sentinel。
+     *
+     * 因此 genui_state_snapshots、conversation_mode、gizmo_id 等第一方 POST schema 演进
+     * 已经天然随官方页面更新；这里继续保留 forensic 证据，但不能误报成“生产 POST 模板落后”。
+     */
+    if (family === 'turn-submit') {
+      return {
+        severity: 'info',
+        notify: false,
+        category: 'observation',
+        summary: 'Turn Submit 第一方原生请求形状变化（Actor 自动继承）',
+        details,
+        impact: 'Actor 使用官方页面原生提交，不手工构造 /f/conversation payload；记录变化但无需同步自定义 POST 模板。',
+        dedupeKey: assessmentDedupeKey({
+          kind: 'native-owned-turn-submit',
+          addedHeaders,
+          addedPostKeys,
+          missingStableHeaders,
+          missingStablePostKeys,
+        }),
+        route: shape.route,
+        method: shape.method,
+        family,
+        requestSignature: signature,
+        count: variant.count,
+      }
+    }
+
     // 单次稀疏请求很容易来自某个特殊页面状态；至少重复两次再把 request contract 升成 warning。
     const repeated = variant.count >= 2
     const severity: ProtocolDriftSeverity = important && repeated ? 'warning' : 'info'
@@ -789,7 +846,7 @@ export class ProtocolDriftLedger {
     const variant = this.state.variants[signature]
     if (!variant) return null
     const family = protocolContractFamily(variant.shape)
-    const replayFamilies = new Set(['catalog', 'body-latest', 'body-cursor', 'mapping', 'stream-status'])
+    const replayFamilies = new Set(['catalog-global', 'body-latest', 'body-cursor', 'mapping', 'stream-status'])
     if (!replayFamilies.has(family)) return null
 
     const supported = new Set(supportedHeaderNames.map(value => value.toLowerCase()))
@@ -797,7 +854,7 @@ export class ProtocolDriftLedger {
       'accept',
       'content-type',
       // turn trace 必须由每个 turn session 自己建立/继承，禁止放进全局账户 header 捕获集合。
-      'x-oai-turn-trace-id',
+      ...FIRST_PARTY_SESSION_SCOPED_PROTOCOL_HEADERS,
       ...(options.ignoredHeaderNames || []).map(value => value.toLowerCase()),
     ])
     const uncovered = variant.shape.protocolHeaderNames
