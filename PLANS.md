@@ -1,3 +1,16 @@
+# 2026-10-15 第一方协议贴合审计与漂移判级修正 ExecPlan
+
+目标：把 ChatGPT Archive 的协议验收标准从“请求还能成功”收紧为“生产主动请求尽可能复刻当前第一方 Web 的同语义请求”。只有强瞬态/强会话态、无法安全生成、或第一方本身多态且没有唯一正确形状的字段才允许不复刻，并必须在代码/测试中留下理由。与此同时，修正协议监控把不同语义的一方请求错误混成同一 baseline 的问题，避免既误报也漏报。
+
+1. 复核 2026-10-07 以来历史协议漂移提交，确认旧 header/query 变化是否真实进入生产实现，而不是仅被“确认不影响”。
+2. 为 Conversation List 按语义拆分协议 family：global catalog、TPP include、TPP exclude/其它 filtered 不再互相当 baseline。生产 global replay 只和第一方 global list 比；sidebar filtered 仍单独监控。
+3. 保持当前 global catalog query 为第一方最新形状：`offset/limit/order/is_archived/is_starred`。不因为旧 sidebar baseline 带 `expand/hide_snorlax` 就把这两个字段错误加回 global replay。
+4. Header 继续采用“捕获第一方真实值并合并”的动态继承：`oai-client-version`、`x-oai-mcp-form-version` 等无需写死；监控需要区分“上游新增但生产已自动覆盖”和“生产白名单真正缺失”。
+5. `x-oai-turn-trace-id` 保持 session-scoped，禁止全局复制；但若一次 `syncConversation` 本来就在 checkpoint/turn session 内，则该轮后续 singular mapping 也继承同一个 extraHeaders/trace，和同 session 第一方行为贴齐。
+6. Turn Submit 继续由官方 React/DOM 触发，不手搓 `/f/conversation` payload。新增 `genui_state_snapshots / conversation_mode / gizmo_id` 等字段由当前第一方前端自动生成；协议 ledger 仍记录这些变化，但不把“native-owned payload 自动跟随”误报成需要手工改生产 POST 模板。
+7. 增加回归：catalog family 不交叉 baseline；global catalog 新形状不再因旧 TPP query 误报；checkpoint exact mapping 继承 turn trace；历史 header coverage 行为保持。
+8. 跑 TypeScript、协议/daemon 定向测试、全量 `npm run check`；更新 PROGRESS.md。若代码改变生产 daemon 路径，再受控重载并验证 WSS/Bridge/Guardian/协议状态。
+
 # Bark 手机通知人因化规范与 Watchdog 诊断精简（2026-10-14）
 
 目标：把手机通知从“数据库字段展示器”恢复成锁屏上一眼可读的事件摘要。继承《Bark消息分组方案》中已经确定的 18 字聊天名截断、正文最多两行、长身份下沉正文、删除无信息增量套话等规则，并补充“诊断结论按用户关注顺序而不是 taxonomy 字段顺序展示”。
