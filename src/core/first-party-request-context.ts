@@ -36,6 +36,19 @@ export const FIRST_PARTY_SESSION_SCOPED_PROTOCOL_HEADERS = [
 
 export type GlobalCatalogQueryTemplate = Array<[string, string]>
 
+/**
+ * 只自动复刻已经确认可重放的 global catalog query。
+ * 新出现的未知 key（尤其 nonce/proof/pow/签名/时间戳一类）必须先让 Protocol Drift 报警并人工审计，
+ * 不能因为“第一方出现过”就盲目把一次性值缓存后重放。
+ */
+export const FIRST_PARTY_GLOBAL_CATALOG_QUERY_ALLOWLIST = new Set([
+  'order',
+  'is_archived',
+  'is_starred',
+  'expand',
+  'hide_snorlax',
+])
+
 export function sanitizeFirstPartyReplayHeaders(
   headers: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> {
@@ -71,6 +84,7 @@ export function captureGlobalCatalogQueryTemplate(
 
   return [...url.searchParams.entries()]
     .filter(([key]) => key !== 'offset' && key !== 'limit')
+    .filter(([key]) => FIRST_PARTY_GLOBAL_CATALOG_QUERY_ALLOWLIST.has(key))
 }
 
 /**
