@@ -6268,6 +6268,8 @@ async function main() {
     client.on('Network.requestWillBeSent', ({ requestId, request }) => {
       startLiveTransport(requestId, request)
       if (!String(request?.url || '').includes('/backend-api/')) return
+      const catalogTemplate = captureGlobalCatalogQueryTemplate(String(request?.url || ''))
+      if (catalogTemplate) globalCatalogQueryTemplate = catalogTemplate
       const signature = observeProtocolRequest(request, 'user-page', target.id)
       if (signature) protocolRequestSignatures.set(requestId, signature)
     })
@@ -7206,6 +7208,8 @@ async function main() {
       const relativeUrl = relativeBackendUrl(request.url)
       const isArchiveReplay = Boolean(activeReplayRequestUrl && relativeUrl === activeReplayRequestUrl)
       if (!isArchiveReplay) {
+        const catalogTemplate = captureGlobalCatalogQueryTemplate(String(request?.url || ''))
+        if (catalogTemplate) globalCatalogQueryTemplate = catalogTemplate
         const signature = observeProtocolRequest(request, 'guardian-native', guardian.targetId)
         if (signature) guardianProtocolRequestSignatures.set(requestId, signature)
       }
