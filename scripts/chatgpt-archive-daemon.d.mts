@@ -408,6 +408,15 @@ export type ConversationBackendRoute =
   | { kind: 'body-cursor', conversationId: string, before: string | null }
   | { kind: 'mapping', conversationId: string }
 
+/** 使用最近一方 global catalog query 模板构造分页路径。 */
+export function listPath(offset: number, limit: number, template?: Array<[string, string]> | null): string
+
+/** 同一次 sync 的子请求统一继承 session-scoped extra headers。 */
+export function syncSubrequestFetchOptions(
+  syncOptions?: { extraHeaders?: Record<string, unknown> | null },
+  options?: { skipRequestSlot?: boolean },
+): { skipRequestSlot?: boolean, extraHeaders?: Record<string, unknown> }
+
 /** 归一化 ChatGPT conversation 私有 REST URL；不发网络请求。 */
 export function classifyConversationBackendUrl(input: unknown, base?: string): ConversationBackendRoute | null
 
