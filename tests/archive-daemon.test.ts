@@ -48,6 +48,7 @@ import {
   shouldRetryConversationPageFetch,
   shouldRebuildGuardianAfterHealthFailures,
   guardianUiFailureKind,
+  listPath,
   shouldRunDeferredGapRepair,
   shouldQueueWatchdogDiagnostic,
   shouldRetainSeenDevSpaceAudit,
@@ -74,7 +75,29 @@ import {
   shouldClassifyTerminalForTrigger,
   shouldDeferConfirmedTerminalIncident,
   watchdogTriggerForStartType,
+  syncSubrequestFetchOptions,
 } from '../scripts/chatgpt-archive-daemon.mjs'
+
+test('global catalog replay 继承第一方 query 模板，只覆盖分页参数', () => {
+  expect(listPath(28, 28, [
+    ['order', 'updated'],
+    ['is_archived', 'false'],
+    ['is_starred', 'false'],
+    ['expand', 'false'],
+    ['hide_snorlax', 'false'],
+  ])).toBe(
+    '/backend-api/conversations?offset=28&limit=28&order=updated&is_archived=false&is_starred=false&expand=false&hide_snorlax=false',
+  )
+})
+
+test('同一次 checkpoint sync 的子请求统一继承 turn-scoped extraHeaders', () => {
+  const extraHeaders = { 'x-oai-turn-trace-id': 'trace-session-1' }
+  expect(syncSubrequestFetchOptions({ extraHeaders })).toEqual({ extraHeaders })
+  expect(syncSubrequestFetchOptions({ extraHeaders }, { skipRequestSlot: true })).toEqual({
+    skipRequestSlot: true,
+    extraHeaders,
+  })
+})
 
 test('SSE 只有拿到 resume capability 且持续无任何 bytes 才判为 idle hang', () => {
   const state = {
@@ -1130,6 +1153,9 @@ describe('ChatGPT Archive daemon WSS parser', () => {
    expect(classifyConversationBackendUrl('/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=false&is_starred=false')).toEqual({
       kind: 'catalog', offset: 0, limit: 28, globalCatalog: true, conversationOrigin: null, excludeConversationOrigin: null, hideSnorlax: null,
    })
+    expect(classifyConversationBackendUrl('/backend-api/conversations?offset=0&limit=28&order=updated')).toMatchObject({
+      kind: 'catalog', globalCatalog: true,
+    })
    expect(classifyConversationBackendUrl('/backend-api/conversations?conversation_origin=tpp&expand=false&hide_snorlax=false&limit=20&order=updated&offset=0')).toMatchObject({
      kind: 'catalog', offset: 0, limit: 20, globalCatalog: false, conversationOrigin: 'tpp',
    })
