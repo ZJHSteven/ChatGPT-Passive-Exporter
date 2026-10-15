@@ -4,6 +4,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { gzipSync } from 'node:zlib'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
+import { sanitizeFirstPartyReplayHeaders } from '../src/core/first-party-request-context.ts'
 
 class CdpClient {
   constructor(url) {
@@ -79,27 +80,7 @@ function parseArgs(argv) {
 }
 
 function sanitizeCapturedHeaders(headers) {
-  const allowed = new Set([
-    'authorization',
-    'chatgpt-account-id',
-    'oai-did',
-    'oai-client-build-number',
-    'oai-client-version',
-    'oai-device-id',
-    'oai-language',
-    'oai-session-id',
-    'originator',
-    'x-oai-is-client-observation',
-    'x-oai-mcp-form-version',
-    'x-openai-codex-window-type',
-    'x-openai-web-frontend',
-  ])
-  const sanitized = {}
-  for (const [key, value] of Object.entries(headers || {})) {
-    const normalized = String(key).toLowerCase()
-    if (allowed.has(normalized)) sanitized[normalized] = value
-  }
-  return sanitized
+  return sanitizeFirstPartyReplayHeaders(headers)
 }
 
 /**
