@@ -1,3 +1,4 @@
+- 2026-10-16 最终部署前全量回归通过：28/28 test files、250/250 tests，TypeScript、Chrome、Edge、Firefox、Userscript build 全绿；其中 maintenance/permit/legacy VBS 真机用例 5/5。AdminBroker 同一真实 Archive 安装请求在完整源码、Git HEAD provenance、固定 canonical 路径与 payload SHA、完整 Effect 下 ReviewOnly 已 APPROVE，且 AdminBroker 原 policy 4/4 回归未退化。
 - 2026-10-16 定向回归首次执行抓到新增 legacy launcher 用例末尾多余一个 `})` 的测试文件语法错误；生产代码未受影响，已立即修正后重跑。
 - 2026-10-16 Archive startup 安装器进一步 fail-closed：Install 现在固定只允许任务名 `ChatGPT Archive Daemon`，ProjectRoot/daemon/launcher/db/maintenance/start-once 必须全部等于脚本所在仓库推导出的 canonical 路径；NodeExe 必须是现有 node.exe；管理员命令还必须携带 daemon/launcher 的当前 SHA256，安装前重新计算并精确匹配。这样审批器看到的是“固定项目固定 payload 的监督设置更新”，而不是可注册任意持久化任务的泛用脚本。
 - 2026-10-16 在计划任务新定义尚未获批前补了 launcher 向后兼容：当前生产任务仍按旧参数顺序传 node.exe + daemon.mjs；新版 VBS 现会识别该 legacy shape 并按旧语义直接启动，只有新定义才启用 maintenance/permit gate，避免“代码先更新、任务定义后更新”窗口里重登后参数错位。
