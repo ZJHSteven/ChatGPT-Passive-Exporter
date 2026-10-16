@@ -5668,6 +5668,106 @@ async function main() {
     setTimeout(() => { void drainDirty() }, delayMs)
   }
 
+  const clearSyncDemand = (conversationId) => {
+    dirty.delete(conversationId)
+    ready.delete(conversationId)
+    readySince.delete(conversationId)
+    readyNotBefore.delete(conversationId)
+  }
+
+  const recentLiveSseCanonicalSatisfied = (conversationId, now = Date.now()) => {
+    const state = liveSseCanonicalSatisfied.get(conversationId)
+    if (!state) return null
+    if (now - Number(state.at || 0) <= liveSseSatisfiedTtlMs) return state
+    liveSseCanonicalSatisfied.delete(conversationId)
+    return null
+  }
+
+  /**
+   * 尝试把一条已经完整结束的 v1 SSE 晋升为 Archive canonical messages。
+   *
+   * 这里是严格 fail-closed：accumulator 必须同时证明 v1、message_stream_complete、[DONE]、
+   * delta 全部可解码，并找到 finished_successfully + end_turn=true 的最终 assistant。
+   * 任何条件不满足都只记录 fallback，现有 body sync 路径完全不变。
+   */
+  const promoteCompleteLiveSse = (accumulator, source = {}) => {
+    accumulator.finish()
+    const snapshot = accumulator.snapshot()
+    if (!snapshot.complete || !snapshot.conversationId) {
+      liveSseCanonicalFallbacks += 1
+      void log('live SSE canonical promotion skipped', {
+        targetId: source.targetId ?? null,
+        requestId: source.requestId ?? null,
+        transport: source.transport ?? null,
+        conversationId: snapshot.conversationId,
+        protocolVersion: snapshot.protocolVersion,
+        messageStreamComplete: snapshot.messageStreamComplete,
+        doneSeen: snapshot.doneSeen,
+        decodeErrors: snapshot.decodeErrors.slice(0, 4),
+        messages: snapshot.messages.length,
+      }).catch(() => {})
+      return null
+    }
+
+    try {
+      const existing = archive.getConversationSummary(snapshot.conversationId)
+      const fallbackTitle = snapshot.title || existing?.title || 'ChatGPT Conversation'
+      const payload = accumulator.canonicalPayload(fallbackTitle)
+      if (!payload) throw new Error('complete SSE did not produce canonical payload')
+      const observedAt = Date.now()
+      const merged = archive.mergeLiveMessagesPage(payload, {
+        observedAt,
+        endpoint: source.endpoint ?? null,
+        observationKind: 'live-sse-complete',
+        classifyTerminal: false,
+        updateCurrentState: true,
+        updateIncidents: false,
+        allowIncompleteTailIncident: false,
+      })
+
+      liveSseCanonicalPromoted += 1
+      liveSseCanonicalSatisfied.set(snapshot.conversationId, {
+        at: observedAt,
+        turnExchangeId: snapshot.turnExchangeId,
+        requestId: snapshot.requestId,
+        sourceRequestId: source.requestId ?? null,
+        transport: source.transport ?? null,
+      })
+      clearSyncDemand(snapshot.conversationId)
+      clearActiveTurn(snapshot.conversationId)
+      catalogActive.delete(snapshot.conversationId)
+      stopCheckpointWatch(snapshot.conversationId, 'live-sse-complete', observedAt)
+      archive.updateDevSpaceBindingTurn({
+        conversationId: snapshot.conversationId,
+        turnExchangeId: snapshot.turnExchangeId,
+        requestId: snapshot.requestId,
+        observedAt,
+        lifecycleState: 'closed',
+      })
+      void log('live SSE promoted to canonical messages', {
+        conversationId: snapshot.conversationId,
+        turnExchangeId: snapshot.turnExchangeId,
+        requestId: source.requestId ?? null,
+        transport: source.transport ?? null,
+        messages: snapshot.messages.length,
+        newMessages: merged.newMessageCount,
+        currentNode: snapshot.currentNode,
+      }).catch(() => {})
+      return { snapshot, merged }
+    }
+    catch (error) {
+      liveSseCanonicalFallbacks += 1
+      void log('live SSE canonical promotion failed; body fallback retained', {
+        targetId: source.targetId ?? null,
+        requestId: source.requestId ?? null,
+        transport: source.transport ?? null,
+        conversationId: snapshot.conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => {})
+      return null
+    }
+  }
+
   const mirrorDevSpaceBinding = (binding) => {
     if (!binding?.conversationId) return false
     try {
