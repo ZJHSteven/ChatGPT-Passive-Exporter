@@ -157,6 +157,11 @@ test('daemon 启动立即发布新 PID bootstrap state，resume 只接受本轮�
   expect(daemon.indexOf("startupPhase: 'initializing'")).toBeLessThan(
     daemon.indexOf('const archive = new ChatArchiveDb(dbPath)'),
   )
+  expect(daemon).toContain('devSpaceAuditBridge.pollAfter({')
+  expect(daemon).toContain('archive.advanceDevSpaceAuditCursor({')
+  expect(daemon).toContain('bootstrapDevSpaceAuditCursor()')
+  expect(daemon).toContain('refreshPendingDevSpaceRecoveryAudits()')
+  expect(daemon).not.toContain('Date.now() - DEVSPACE_INITIAL_LOOKBACK_MS')
   expect(cli).toContain('while (Date.now() - probeStartedAt < 90_000)')
   expect(cli).toContain('nextDemandStartAt = Date.now() + 750')
   expect(cli).toContain('Date.now() - probeStartedAt < 10_000')

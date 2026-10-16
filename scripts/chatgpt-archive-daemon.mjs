@@ -8260,8 +8260,23 @@ async function main() {
     })
   }
 
-  // 启动时先做一次 durable catch-up；之后以 DevSpace UDP 门铃为主，
-  // 每 60 秒才做一次极低频兜底扫描，防止 daemon 重启窗口/UDP 丢包留下最后一条 audit。
+  // 第一次升级 durable cursor 时，以“当前 DevSpace 头部”为一次性 bootstrap 边界；今天已经发生的
+  // 历史缺口由独立 repair/backfill 补齐。此后每次重启都从 SQLite 持久 cursor 续读，离线多久都不丢。
+  const cursorBeforeBootstrap = devSpaceAuditCursor
+  bootstrapDevSpaceAuditCursor()
+  if (!cursorBeforeBootstrap && devSpaceAuditCursor) {
+    await log('DevSpace durable audit cursor bootstrapped at current head', {
+      consumerKey: DEVSPACE_AUDIT_CONSUMER_KEY,
+      startedAt: devSpaceAuditCursor.startedAt,
+      auditId: devSpaceAuditCursor.auditId,
+    })
+  }
+  const pendingRecoveryRefreshedAtStartup = refreshPendingDevSpaceRecoveryAudits()
+  if (pendingRecoveryRefreshedAtStartup > 0) {
+    await log('pending DevSpace recovery audits refreshed after startup', {
+      refreshed: pendingRecoveryRefreshedAtStartup,
+    })
+  }
   pollDevSpaceAudits()
   // 重启恢复只看最近 6 分钟本地工具活动；候选的 lastCheckedIdleMs 从当前 idle 年龄
   // 起步，因此不会补发已经错过的历史 1/3 分钟，但仍可继续命中后续 3/5 分钟。
@@ -8273,11 +8288,10 @@ async function main() {
   devSpaceLastFallbackPollAt = Date.now()
   const devSpaceWakeListening = await devSpaceAuditWakeListener.start((signal) => {
     pollDevSpaceAudits()
-    // finish 与 start 使用同一 auditId；即使增量 poll 因 seen-id 去重不再进入 handler，
-    // 也必须按 signal.metadataId 重读当前 SQLite 状态，才能即时开始 idle 计时。
+    // finish 与 start 使用同一 auditId；finish 是原行 UPDATE，不会越过 started_at cursor，
+    // 因此仍按 signal.metadataId / auditId 重读最终状态。
     refreshDevSpaceIdleCandidate(signal.metadataId)
-    // recovery overlay 同样需要在 finish 门铃时按 auditId 重读最终 result/error；否则 start 阶段
-    // 已经见过该 id 后，seen-id 去重会让 provisional tool-result 永远停留在 running。
+    // recovery overlay 同样按 auditId 补最终 result/error/finished_at。
     refreshDevSpaceRecoveryAudit(signal.auditId)
   })
   await log('DevSpace audit wake listener ready', {
@@ -8314,8 +8328,8 @@ async function main() {
       // 它不是实时发现路径，成本也从“每 5 秒一次”降到“每 60 秒一次”。
       if (Date.now() - devSpaceLastFallbackPollAt >= DEVSPACE_FALLBACK_POLL_MS) {
         pollDevSpaceAudits()
-        // 若 finish UDP 丢失，started_at 游标本身不会再次看到旧 audit；这里对极少数
-        // 已追踪 metadata 做一次本机状态重读，作为 durable finish catch-up。
+        refreshPendingDevSpaceRecoveryAudits()
+        // idle 状态本身也按 metadata 重读，作为 finish 门铃丢失时的低频兜底。
         refreshTrackedDevSpaceIdleCandidates()
         devSpaceLastFallbackPollAt = Date.now()
       }
