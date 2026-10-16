@@ -274,7 +274,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shortDevSpaceMetadataAlias('')).toBe('meta/unknown')
   })
 
-  test('Conclusion 只接受非空字符串，并归入 Chat-Done 分组', () => {
+  test('Conclusion 只接受非空字符串；手机仅展示压缩结论并按会话分组', () => {
     expect(extractDevSpaceConclusion('{"conclusion":"  已完成受控重启  "}')).toBe('已完成受控重启')
     expect(extractDevSpaceConclusion('{"conclusion":"   "}')).toBeNull()
     expect(extractDevSpaceConclusion('{broken')).toBeNull()
@@ -287,11 +287,11 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       tool: 'exec_command',
       conclusion: '已经完成阶段一。',
     })
-    expect(bound.title).toContain('Conclusion')
-    expect(bound.body).toContain('聊天：需求梳理')
+    expect(bound.title).toBe('DevSpace · 结论')
+    expect(bound.subtitle).toBe('需求梳理')
     expect(bound.body).toContain('工具：exec_command')
     expect(bound.body).toContain('已经完成阶段一。')
-    expect(bound.group).toBe('Chat-Done')
+    expect(bound.group).toBe('Chat/conversation-a')
     expect(bound.url).toContain('/c/conversation-a')
 
     const titled = buildDevSpaceConclusionNotificationPayload({
@@ -300,7 +300,8 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       tool: 'read',
       conclusion: '已定位窗口坐标。',
     })
-    expect(titled.body).toContain('以“排查 Chrome 窗口”为主题')
+    expect(titled.subtitle).toBe('排查 Chrome 窗口 · 未绑定')
+    expect(titled.group).toBe('Chat/meta/abcdefgh')
     expect(titled).not.toHaveProperty('url')
 
     const unnamed = buildDevSpaceConclusionNotificationPayload({
@@ -308,11 +309,11 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       tool: 'write_stdin',
       conclusion: '进程结束。',
     })
-    expect(unnamed.body).toContain('meta/abcdefgh')
+    expect(unnamed.subtitle).toBe('meta/abcdefgh · 未绑定')
     expect(unnamed.body).not.toContain('v1/abcdefgh12345678')
   })
 
-  test('Checkpoint 解析 summary/next，并归入 Chat-Done 分组', () => {
+  test('Checkpoint 解析 summary/next；手机正文只保留两行压缩摘要', () => {
     expect(extractDevSpaceCheckpoint(JSON.stringify({
       summary: '  已确认虚拟 conversation 可以在 binding 前持续积累。  ',
       next: '  转入 canonical supersede 验证。  ',
@@ -330,11 +331,23 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       next: '开始生产 E2E。',
     })
     expect(payload.title).toContain('Checkpoint')
-    expect(payload.body).toContain('以“Archive 临时 Conversation”为主题')
+    expect(payload.subtitle).toBe('Archive 临时 Conversation · 未绑定')
     expect(payload.body).toContain('阶段一已经完成。')
-    expect(payload.body).toContain('下一阶段：开始生产 E2E。')
-    expect(payload.group).toBe('Chat-Done')
+    expect(payload.body).toContain('下一步：开始生产 E2E。')
+    expect(payload.body.split('\n')).toHaveLength(2)
+    expect(payload.group).toBe('Chat/meta/abcdefgh')
     expect(payload).not.toHaveProperty('url')
+  })
+
+  test('通知文本按 Unicode code point 安全压缩，不把换行带进锁屏单行摘要', () => {
+    expect(compactNotificationText('第一行\n  第二行', 20)).toBe('第一行 第二行')
+    expect(compactNotificationText('A😀BC', 4)).toBe('A😀BC')
+    expect(compactNotificationText('A😀BCD', 4)).toBe('A😀B…')
+  })
+
+  test('conversation Bark group 只承担通知线程身份，不再按事件类别跨会话堆叠', () => {
+    expect(conversationNotificationGroup({ conversationId: 'conversation-a' })).toBe('Chat/conversation-a')
+    expect(conversationNotificationGroup({ metadataId: 'v1/abcdefgh12345678' })).toBe('Chat/meta/abcdefgh')
   })
 
   test('DevSpace idle 只在 1/3/5 分钟边界穿越时触发，重启不会补轰炸旧阈值', () => {
