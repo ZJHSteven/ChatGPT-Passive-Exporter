@@ -6670,7 +6670,10 @@ async function main() {
         state.dataBytes += Number.isFinite(Number(dataLength)) ? Number(dataLength) : Buffer.from(data, 'base64').byteLength
       }
       if (!live.ready) live.pending.push(chunk)
-      else live.tracker.ingestBase64(data, chunk.at)
+      else {
+        appendJournalBase64(String(requestId), data)
+        live.tracker.ingestBase64(data, chunk.at)
+      }
     })
 
     client.on('Network.loadingFinished', ({ requestId }) => {
@@ -6679,6 +6682,7 @@ async function main() {
         const finish = () => {
           if (!liveTransports.has(requestId)) return
           live.tracker.finish(Date.now())
+          void finalizeLiveSseJournal(String(requestId), { event: 'stream-finished' })
           liveTransports.delete(requestId)
           activeLiveTransports.delete(live.liveKey)
         }
@@ -6775,6 +6779,10 @@ async function main() {
          const reason = [errorText, blockedReason, canceled === true ? 'canceled' : null].filter(Boolean).join('; ')
            || 'Network.loadingFailed'
          live.tracker.fail(reason, Date.now())
+         void finalizeLiveSseJournal(String(requestId), {
+           event: 'stream-failed',
+           detail: { reason: String(reason).slice(0, 240) },
+         })
          liveTransports.delete(requestId)
          activeLiveTransports.delete(live.liveKey)
        }
