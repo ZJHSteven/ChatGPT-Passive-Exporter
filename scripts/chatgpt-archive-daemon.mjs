@@ -41,6 +41,7 @@ import {
 import { diagnoseLatestRun } from '../src/core/run-diagnostics.ts'
 import { LiveTurnTransportTracker } from '../src/local/live-turn-transport.ts'
 import { LiveSseJournalStream } from '../src/local/live-sse-journal.ts'
+import { LiveSseCanonicalAccumulator } from '../src/local/live-sse-canonical.ts'
 import {
   checkpointProbeDelayMs,
   createCheckpointWatch,
@@ -2404,6 +2405,13 @@ async function main() {
   let liveSseJournalFinalized = 0
   let liveSseJournalBytes = 0
   let liveSseJournalErrors = 0
+  let liveSseCanonicalPromoted = 0
+  let liveSseCanonicalFallbacks = 0
+  let liveSseBodyRefreshesSkipped = 0
+  // 完整 SSE promotion 后给同一 CID 一个很短的“本 turn 已满足”窗口。新 turn 的明确 start
+  // 会立即删除它；TTL 只是防止极端缺失 lifecycle 时旧标记永久影响后续同步。
+  const liveSseCanonicalSatisfied = new Map()
+  const liveSseSatisfiedTtlMs = 5 * 60_000
   // Remote/跨设备 turn 没有本机原始 SSE 时，使用第一方 Web 已验证的
   // `stream_status + canonical body` checkpoint fallback。它只在明确 active CID 上建立，
   // 并和 LiveTurn transport 分开：一旦本机已经有真正 live transport，就暂停主动 checkpoint。
