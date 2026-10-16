@@ -40,6 +40,7 @@ import {
 } from '../src/local/protocol-drift.ts'
 import { diagnoseLatestRun } from '../src/core/run-diagnostics.ts'
 import { LiveTurnTransportTracker } from '../src/local/live-turn-transport.ts'
+import { LiveSseJournalStream } from '../src/local/live-sse-journal.ts'
 import {
   checkpointProbeDelayMs,
   createCheckpointWatch,
@@ -87,6 +88,7 @@ const DEFAULT_DB = path.join(PROJECT_ROOT, 'data', 'chatgpt-archive.sqlite')
 const DEFAULT_STATE = path.join(PROJECT_ROOT, 'data', 'archive-daemon-state.json')
 const DEFAULT_LOG = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
 const DEFAULT_TURN_TRACE = path.join(PROJECT_ROOT, 'data', 'active-turn-trace.jsonl')
+const DEFAULT_LIVE_SSE_DIR = path.join(PROJECT_ROOT, 'data', 'live-sse')
 const DEFAULT_NOTIFICATION_CONFIG = path.join(PROJECT_ROOT, 'data', 'archive-notification.local.json')
 const DEFAULT_PROTOCOL_LEDGER = path.join(PROJECT_ROOT, 'data', 'protocol-fingerprints.json')
 const DEFAULT_REQUEST_EVENT_LEDGER = path.join(PROJECT_ROOT, 'data', 'archive-request-events.jsonl')
@@ -2176,6 +2178,9 @@ async function main() {
   const turnTracePath = flags.has('turn-trace')
     ? path.resolve(String(flags.get('turn-trace')))
     : DEFAULT_TURN_TRACE
+  const liveSseDir = flags.has('live-sse-dir')
+    ? path.resolve(String(flags.get('live-sse-dir')))
+    : DEFAULT_LIVE_SSE_DIR
   const notificationConfigPath = flags.has('notification-config')
     ? path.resolve(String(flags.get('notification-config')))
     : DEFAULT_NOTIFICATION_CONFIG
