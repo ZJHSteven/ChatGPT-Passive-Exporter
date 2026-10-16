@@ -5881,7 +5881,7 @@ async function main() {
       const nextActive = devSpaceFirstToolWatchdogState(auditAt)
       activeTurns.set(conversationId, nextActive)
       persistActiveTurn(conversationId, nextActive)
-      dispatchWatchdogStartNotification(conversationId, nextActive)
+      dispatchWatchdogStartNotification(conversationId, nextActive, null, binding.metadataId)
       void log('DevSpace first tool started watchdog', {
         conversationId,
         startedAt: auditAt,
