@@ -375,11 +375,16 @@ export class ActorSubmissionQueue {
             await this.options.onAttemptError?.(cloneRecord(record))
           }
           catch (callbackError) {
-            await this.options.log?.('actor submission attempt-error callback failed', {
-              submissionId: record.id,
-              idempotencyKey: record.idempotencyKey,
-              error: callbackError instanceof Error ? callbackError.message : String(callbackError),
-            }).catch(() => {})
+            try {
+              await this.options.log?.('actor submission attempt-error callback failed', {
+                submissionId: record.id,
+                idempotencyKey: record.idempotencyKey,
+                error: callbackError instanceof Error ? callbackError.message : String(callbackError),
+              })
+            }
+            catch {
+              // 连日志本身都失败时也必须吞掉：队列终态已经持久化，不能让可观测性分支反向破坏 drain。
+            }
           }
         }
       }
