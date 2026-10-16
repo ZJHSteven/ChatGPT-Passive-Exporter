@@ -165,10 +165,14 @@ test('daemon 启动立即发布新 PID bootstrap state，resume 只接受本轮�
   // Guardian 的页面导航只是“触发页面开始工作”，不是 daemon readiness 证据。
   // 如果这里重新变回同步 await，一次 CDP command ACK 抖动就会把首次 writeState 卡在
   // supervisor 的 90 秒窗口之外；因此用源码护栏明确禁止回归。
-  expect(daemon).toContain("void guardian.page.send('Page.navigate'")
-  expect(daemon).toContain("void guardian.page.send('Page.reload'")
-  expect(daemon).not.toContain("await guardian.page.send('Page.navigate'")
-  expect(daemon).not.toContain("await guardian.page.send('Page.reload'")
+  const guardianStartupNavigation = daemon.slice(
+    daemon.indexOf('guardianEstablishedOnce = true'),
+    daemon.indexOf('const waitStarted = Date.now()'),
+  )
+  expect(guardianStartupNavigation).toContain("void guardian.page.send('Page.navigate'")
+  expect(guardianStartupNavigation).toContain("void guardian.page.send('Page.reload'")
+  expect(guardianStartupNavigation).not.toContain("await guardian.page.send('Page.navigate'")
+  expect(guardianStartupNavigation).not.toContain("await guardian.page.send('Page.reload'")
   expect(cli).toContain('while (Date.now() - probeStartedAt < 90_000)')
   expect(cli).toContain('nextDemandStartAt = Date.now() + 750')
   expect(cli).toContain('Date.now() - probeStartedAt < 10_000')
