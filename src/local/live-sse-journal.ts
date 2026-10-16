@@ -67,20 +67,24 @@ export class LiveSseJournalStream {
     const dir = path.join(rootDir, utcDay(identity.startedAt))
     const key = safeFileToken(`${identity.targetId}\0${identity.cdpRequestId}\0${identity.startedAt}`)
     const base = `${identity.startedAt}-${identity.transport}-${key}`
-    this.filePath = path.join(dir, `${base}.sse`)
-    this.metaPath = path.join(dir, `${base}.meta.jsonl`)
+    // 用局部常量喂给下面的异步初始化闭包。虽然实例字段在语义上已经先赋值，
+    // TypeScript 对 constructor 内嵌 async closure 的 definite-assignment 分析不会做这层时序推断。
+    const filePath = path.join(dir, `${base}.sse`)
+    const metaPath = path.join(dir, `${base}.meta.jsonl`)
+    this.filePath = filePath
+    this.metaPath = metaPath
 
     this.ready = (async () => {
       await fs.mkdir(dir, { recursive: true })
-      const handle = await fs.open(this.filePath, 'a')
-      await fs.appendFile(this.metaPath, `${JSON.stringify({
+      const handle = await fs.open(filePath, 'a')
+      await fs.appendFile(metaPath, `${JSON.stringify({
         version: 1,
         event: 'stream-start',
         at: identity.startedAt,
         targetId: identity.targetId,
         cdpRequestId: identity.cdpRequestId,
         transport: identity.transport,
-        file: path.basename(this.filePath),
+        file: path.basename(filePath),
       })}\n`)
       return handle
     })()
