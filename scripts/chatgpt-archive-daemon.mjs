@@ -6301,6 +6301,26 @@ async function main() {
         state.bytesObserved = event?.bytesObserved ?? state.bytesObserved ?? 0
         state.pingCount = event?.pingCount ?? state.pingCount ?? 0
       }
+      const journal = liveSseJournals.get(String(event?.cdpRequestId ?? ''))
+      if (journal && event?.event) {
+        // meta 只保存控制面；resume token/正文仍只存在专门的本地 SSE 文件或 SQLite credential。
+        void journal.mark({
+          event: String(event.event),
+          at: Number(event?.at || Date.now()),
+          conversationId: typeof event?.conversationId === 'string' ? event.conversationId : null,
+          turnExchangeId: typeof event?.turnExchangeId === 'string' ? event.turnExchangeId : null,
+          bytesObserved: Number(event?.bytesObserved || 0),
+          ...(event?.loadingFailedReason ? { detail: { reason: String(event.loadingFailedReason).slice(0, 240) } } : {}),
+        }).catch(async (error) => {
+          liveSseJournalErrors += 1
+          await log('live SSE journal mark failed', {
+            targetId: target.id,
+            requestId: event?.cdpRequestId ?? null,
+            event: event?.event ?? null,
+            error: error instanceof Error ? error.message : String(error),
+          }).catch(() => {})
+        })
+      }
       if (
         event?.event === 'resume-token'
         && typeof event?.conversationId === 'string'
