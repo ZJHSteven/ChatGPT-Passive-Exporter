@@ -1,7 +1,60 @@
 # Bark / 手机通知文案规范
 
-> 最后更新：2026-10-14  
+> 最后更新：2026-10-16  
 > 适用范围：Archive / DevSpace / Watchdog 等发往 Bark 的手机通知。本文只规定“人看到什么”，不改变内部日志、SQLite、taxonomy 或取证字段。
+
+## 0. 2026-10-16 真机修订：title / subtitle / body 三层 + 每会话分组
+
+10 月 16 日 iPhone 通知中心真机截图证明，旧版“事件主题 + 18 字会话名”虽然已经比早期版本短，
+但高频场景仍有两个明显问题：title 经常横向截断，正文又重复会话名；同时按
+`Chat-Latency / Chat-Timeout / Chat-Done` 全局分组会把多个不同聊天压成 13、36 条的大栈。
+以下新规则优先级高于本文后面的旧示例；旧章节保留作为设计演进记录。
+
+### 0.1 三层信息各司其职
+
+```text
+title:    <事件主题> · <结论/状态>
+subtitle: <会话名>
+body:     <一个最重要的补充事实>
+```
+
+例如：
+
+```text
+Watchdog · Body 缺口
+B站 OpenCLI能力需求
+DevSpace 审计晚于 canonical
+
+Watchdog · 超时
+Archive故障修复 and通知
+45m · 起点 16:08
+
+Turn · 完成
+医学统计学课堂笔记
+Final 已确认
+```
+
+- title 不再携带会话名，优先控制在 10～16 个汉字以内。
+- subtitle 独占会话身份；完整名称随 Bark payload 保留，iOS 首屏需要时自然截断。
+- body 默认一行，checkpoint / conclusion 最多两行；title/subtitle 已经说过的信息禁止重复。
+- 秒级完整时间、CID、完整 metadata、taxonomy、节点计数等继续保存在 SQLite / 日志，不抢锁屏空间。
+- checkpoint / conclusion 只截断“手机显示副本”；DevSpace SQLite 与 Archive ledger 的完整原文不得修改。
+
+### 0.2 Bark group 改成“会话线程”，不再承担业务分类
+
+- conversation-scoped 通知：`group = Chat/<conversationId>`。
+- 尚未绑定 Conversation：`group = Chat/meta/XXXXXXXX`。
+- 同一聊天的 idle、Watchdog start/timeout/diagnosis、Final、checkpoint、conclusion、ImageGen、lifecycle incident
+  全部进入同一个手机栈；业务分类继续由 `turn_notification_ledger.kind` 和 title 保存。
+- DOM drift、协议漂移、429 cooldown 等不属于具体聊天的基础设施事件，仍使用 `Archive-Warning` 等固定 group。
+
+这样**不减少任何通知**，但不会再形成跨会话的 `Chat-Latency ×36` / `Chat-Timeout ×13` 大栈。
+
+### 0.3 横幅驻留与通知中心历史必须分开理解
+
+Archive 的 Bark 请求不设置 iOS temporary/persistent banner 样式。顶部横幅是否自动收回由 iPhone
+对 Bark App 的通知显示设置决定；而锁屏/通知中心是送达后的通知历史，本来就会保留直到用户清除。
+因此“顶部横幅一直挂着”应改 iOS 的横幅样式，“通知中心卡片没有自己消失”则不是发送端 Bug。
 
 ## 1. 目标：锁屏上一眼就知道“发生了什么、是哪一个会话、最重要结论是什么”
 
