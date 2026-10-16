@@ -255,7 +255,15 @@ async function stopDaemonProcess(flags) {
   while (isPidAlive(pid) && Date.now() - started < 5000) {
     await new Promise(resolve => setTimeout(resolve, 100))
   }
-  if (isPidAlive(pid)) process.kill(pid, 'SIGKILL')
+  if (isPidAlive(pid)) {
+    process.kill(pid, 'SIGKILL')
+    // Windows TerminateProcess 通常很快，但不能在发出 SIGKILL 的同一个 tick
+    // 就把“信号已发送”误当成“进程已经消失”。给内核一个很短的确认窗口。
+    const forcedAt = Date.now()
+    while (isPidAlive(pid) && Date.now() - forcedAt < 2000) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+  }
   return { stopped: !isPidAlive(pid), pid, statePath: current.statePath }
 }
 
@@ -351,20 +359,31 @@ async function daemonCommand(positionals, flags) {
   if (action === 'resume') {
     if (process.platform !== 'win32') throw new Error('daemon resume is currently Windows-only')
 
+    const previous = await readDaemonState(flags)
+    const previousPid = previous.alive ? Number(previous.state?.pid) : null
     await enterArchiveDaemonMaintenance(DEFAULT_DAEMON_MAINTENANCE_PATH, 'resume-probe')
     await clearArchiveDaemonStartOnce(DEFAULT_DAEMON_START_ONCE_PATH)
     await stopDaemonProcess(flags)
     await grantArchiveDaemonStartOnce(DEFAULT_DAEMON_START_ONCE_PATH)
 
     try {
+      const probeStartedAt = Date.now()
       await runArchiveScheduledTask()
-      const started = Date.now()
       let stableSamples = 0
       let observed = null
-      while (Date.now() - started < 15_000) {
+      while (Date.now() - probeStartedAt < 45_000) {
         await new Promise(resolve => setTimeout(resolve, 500))
         observed = await readDaemonState(flags)
-        if (archiveDaemonSupervisorReady(observed)) {
+        const observedPid = Number(observed.state?.pid)
+        const observedStartedAt = Number(observed.state?.startedAt)
+        const isNewProbeIdentity = (
+          observed.alive
+          && Number.isInteger(observedPid)
+          && observedPid !== previousPid
+          && Number.isFinite(observedStartedAt)
+          && observedStartedAt >= probeStartedAt - 5000
+        )
+        if (isNewProbeIdentity && archiveDaemonSupervisorReady(observed)) {
           stableSamples += 1
           if (stableSamples >= 4) {
             await leaveArchiveDaemonMaintenance(DEFAULT_DAEMON_MAINTENANCE_PATH)
@@ -386,8 +405,11 @@ async function daemonCommand(positionals, flags) {
 
       await clearArchiveDaemonStartOnce(DEFAULT_DAEMON_START_ONCE_PATH)
       await enterArchiveDaemonMaintenance(DEFAULT_DAEMON_MAINTENANCE_PATH, 'resume-health-check-failed')
-      await stopDaemonProcess(flags)
-      throw new Error('Scheduled Archive daemon did not become healthy within 15 seconds; maintenance remains active')
+      const stopResult = await stopDaemonProcess(flags)
+      if (!stopResult.stopped && stopResult.reason !== 'daemon not running') {
+        throw new Error('Scheduled Archive daemon failed health check and could not be stopped; maintenance remains active')
+      }
+      throw new Error('Scheduled Archive daemon did not become healthy within 45 seconds; maintenance remains active')
     }
     catch (error) {
       await clearArchiveDaemonStartOnce(DEFAULT_DAEMON_START_ONCE_PATH).catch(() => {})

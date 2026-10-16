@@ -2265,6 +2265,50 @@ async function main() {
   catch {
     // 首次启动或损坏的旧 state 都不应阻止 daemon 启动。
   }
+  const startedAt = Date.now()
+  // 进程一拿到 statePath 就先覆盖“旧 daemon 的 PID 身份”，不要等到历史 seed、
+  // DevSpace catch-up、Bridge/WSS 等较重初始化完成以后才第一次写 state。
+  //
+  // 这份 bootstrap state 有两个目的：
+  // 1. daemon status 在启动窗口里看到的是“新进程正在初始化”，而不是已经死亡的旧 PID；
+  // 2. daemon resume 若健康探针失败，可以准确终止本次刚启动的新 PID，真正 fail-closed。
+  //
+  // 这里只写最小、明确为 initializing 的结构；完整状态会在后续正常 writeState() 覆盖。
+  await fs.writeFile(statePath, JSON.stringify({
+    pid: process.pid,
+    startedAt,
+    updatedAt: startedAt,
+    startupPhase: 'initializing',
+    database: dbPath,
+    turnTrace: turnTracePath,
+    cdp: cdpHttp,
+    bridge: {
+      enabled: bridgeEnabled,
+      listening: false,
+      host: bridgeHost,
+      port: bridgePort,
+      clients: 0,
+      startedAt: null,
+      authPath: bridgeAuthPath,
+      lastError: null,
+    },
+    guardian: null,
+    wss: {
+      activeSockets: 0,
+      gapStartedAt: null,
+    },
+    devspace: {
+      dbPath: devSpaceDbPath,
+      wake: {
+        listening: false,
+        received: 0,
+        invalid: 0,
+        handlerErrors: 0,
+        lastError: null,
+      },
+    },
+    lastError: null,
+  }, null, 2)).catch(() => {})
   const archive = new ChatArchiveDb(dbPath)
   const requestEventLedger = new RequestEventLedger(requestEventLedgerPath)
   const devSpaceAuditBridge = new DevSpaceAuditBridge(devSpaceDbPath)
@@ -3353,6 +3397,7 @@ async function main() {
     pid: process.pid,
     startedAt: startedAt,
     updatedAt: Date.now(),
+    startupPhase: guardian ? 'running' : 'initializing',
     database: dbPath,
     turnTrace: turnTracePath,
     cdp: cdpHttp,
@@ -3590,7 +3635,6 @@ async function main() {
   })
 
   const writeState = async () => fs.writeFile(statePath, JSON.stringify(state(), null, 2)).catch(() => {})
-  const startedAt = Date.now()
   // `--no-reconcile-on-start` 的含义必须是“启动后先纯监听”。旧实现保留
   // lastReconcileAt=0，导致第一轮主循环把 periodic 当成“已经超过 6 小时”而立刻扫 list。
   if (!reconcileOnStart) lastReconcileAt = startedAt

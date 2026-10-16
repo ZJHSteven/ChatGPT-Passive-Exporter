@@ -143,6 +143,25 @@ test('Windows Archive supervision updater 只能原位升级固定既有任务',
   expect(helper).not.toContain('Set-ScheduledTask @setParams')
 })
 
+test('daemon 启动立即发布新 PID bootstrap state，resume 只接受本轮新实例', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+  const cli = await fs.readFile(
+    new URL('../scripts/chatgpt-archive.mjs', import.meta.url),
+    'utf8',
+  )
+  expect(daemon.indexOf("startupPhase: 'initializing'")).toBeGreaterThan(-1)
+  expect(daemon.indexOf("startupPhase: 'initializing'")).toBeLessThan(
+    daemon.indexOf('const archive = new ChatArchiveDb(dbPath)'),
+  )
+  expect(cli).toContain('while (Date.now() - probeStartedAt < 45_000)')
+  expect(cli).toContain('observedPid !== previousPid')
+  expect(cli).toContain('observedStartedAt >= probeStartedAt - 5000')
+  expect(cli).toContain('could not be stopped; maintenance remains active')
+})
+
 test('global catalog replay 继承第一方 query 模板，只覆盖分页参数', () => {
   expect(listPath(28, 28, [
     ['order', 'updated'],
