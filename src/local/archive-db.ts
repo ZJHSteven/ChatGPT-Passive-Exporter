@@ -1731,6 +1731,14 @@ export class ChatArchiveDb {
        */
       insertUnknownOnly?: boolean
       /**
+       * live 传输可能领先于随后到达的 canonical body checkpoint。
+       * 若同一 message_id 已观察到更长文本，而新 payload 只携带其严格前缀，
+       * 保留更长的 content/text；status/end_turn/metadata/current_node 等其余字段仍以
+       * 新 payload 为准。双方文本并非 prefix 时仍按新 payload 更新，避免把真实 replace/edit
+       * 错当成“回退”。
+       */
+      preserveObservedTextPrefix?: boolean
+      /**
        * 是否已有外部证据确认这一轮已经结束。
        * false 时仍可记录 explicit client_stopped/interrupted，但不能把 open reasoning/tool 尾巴
        * 单独解释成异常终止；这用于 watchdog / gap repair 防止误报仍在正常运行的长任务。
@@ -1810,6 +1818,11 @@ export class ChatArchiveDb {
         content_json=excluded.content_json,
         raw_json=excluded.raw_json,
         source_observed_at=max(COALESCE(messages.source_observed_at, 0), excluded.source_observed_at)
+    `)
+    const getExistingMessageContent = this.db.prepare(`
+      SELECT text, content_json AS contentJson
+      FROM messages
+      WHERE conversation_id = ? AND message_id = ?
     `)
     const insertPart = this.db.prepare(`
       INSERT INTO message_parts (
@@ -1895,11 +1908,39 @@ export class ChatArchiveDb {
       conversation.messages.forEach((message, pageOrdinal) => {
         if (options.insertUnknownOnly === true && knownBefore.has(message.id)) return
         const rawMessage = record(message.raw)
+        let effectiveRawMessage = rawMessage
+        let effectiveText = message.text
         const author = record(rawMessage.author)
-        const content = record(rawMessage.content)
+        let content = record(rawMessage.content)
         const metadata = record(rawMessage.metadata)
         const finishDetails = record(metadata.finish_details)
         const parentId = stringValue(metadata.parent_id)
+
+        if (options.preserveObservedTextPrefix === true) {
+          const existing = getExistingMessageContent.get(conversationId, message.id) as {
+            text?: unknown
+            contentJson?: unknown
+          } | undefined
+          const existingText = typeof existing?.text === 'string' ? existing.text : ''
+          const incomingText = typeof message.text === 'string' ? message.text : ''
+          if (
+            existingText.length > incomingText.length
+            && existingText.startsWith(incomingText)
+            && typeof existing?.contentJson === 'string'
+          ) {
+            try {
+              const existingContent = record(JSON.parse(existing.contentJson))
+              effectiveText = existingText
+              content = existingContent
+              effectiveRawMessage = { ...rawMessage, content: existingContent }
+            }
+            catch {
+              // content_json 理论上始终由本库 JSON.stringify 生成；若历史库损坏，宁可退回新 payload，
+              // 也不要让“保留更长证据”这条辅助规则阻塞整个 canonical merge。
+            }
+          }
+        }
+
         upsertMessage.run(
           conversationId,
           message.id,
@@ -1908,8 +1949,8 @@ export class ChatArchiveDb {
           message.authorName ?? null,
           message.recipient,
           message.channel ?? null,
-          message.contentType,
-          message.text,
+          stringValue(content.content_type) ?? message.contentType,
+          effectiveText,
           message.hidden ? 1 : 0,
           numberValue(rawMessage.create_time),
           json(metadata),
@@ -1927,7 +1968,7 @@ export class ChatArchiveDb {
           stringValue(metadata.reasoning_status),
           json(author),
           json(content),
-          json(rawMessage),
+          json(effectiveRawMessage),
           observedAt,
           observedAt,
           observedAt,
