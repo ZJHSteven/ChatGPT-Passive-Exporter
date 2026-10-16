@@ -1081,7 +1081,9 @@ export function buildWatchdogStartNotificationPayload({
     // 因此固定把 timing 放第一行；Title 太长时按其它通知的一致规则把完整 Title 下沉正文。
     body: [timingLine, fullTitleLine, identityLine].filter(Boolean).join('\n'),
     group: BARK_NOTIFICATION_GROUPS.chatTimeout,
-    url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
+    ...(conversationId
+      ? { url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` }
+      : {}),
   }
 }
 

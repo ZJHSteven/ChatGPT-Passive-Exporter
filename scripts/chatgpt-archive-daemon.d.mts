@@ -240,7 +240,8 @@ export function buildWatchdogTimeoutNotificationPayload(input: {
 }): { title: string, body: string, group: string, url?: string }
 
 export function buildWatchdogStartNotificationPayload(input: {
-  conversationId: string
+  conversationId?: string | null
+  metadataId?: string | null
   title?: string | null
   startedAt: number
   watchdogMs?: number
@@ -255,6 +256,9 @@ export function preferredWatchdogStartTitle(input: {
 
 /** 同一 CID 的不同 Watchdog generation 以 startedAt 区分并持久去重。 */
 export function watchdogStartNotificationKey(conversationId: unknown, startedAt: unknown): string | null
+
+/** metadata 尚未绑定 canonical CID 时，以 metadata + startedAt 作为稳定 generation key。 */
+export function unboundWatchdogStartNotificationKey(metadataId: unknown, startedAt: unknown): string | null
 
 export function buildWatchdogDiagnosisNotificationPayload(input: {
   conversationId: string
