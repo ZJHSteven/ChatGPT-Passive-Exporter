@@ -1,17 +1,17 @@
 # 2026-10-16 Watchdog 无声死亡与自愈加固 ExecPlan
 
-状态：**进行中**。
+状态：**根因已完整复现，修复与生产回归进行中**。
 
 现象：2026-10-16 08:47:32 ChatGPT Archive Daemon 以退出码 1（Task Scheduler 记录为 0x80070001）异常退出；此后新 turn 全部失去 Watchdog。此前 10/14、10/15 同类退出会由 RestartOnFailure 自动拉起，但本次发生在 AC 供电、屏幕关闭的低功耗会话中，Task Scheduler 没有再发出 325/110/100 重启事件。与此同时，daemon 顶层 fatal 只写 stderr，隐藏 wscript launcher 不保存 stderr，导致真正异常栈不可追溯。
 
 目标：让 Archive daemon 即使再次遇到顶层/事件回调 fatal 也能留下明确异常栈；并增加独立于 RestartOnFailure 的低频自愈触发，避免低功耗/调度边界导致 daemon 长时间静默死亡。保持 MultipleInstances=IgnoreNew，不得因自愈触发产生重复 daemon。
 
-1. 在 daemon CLI 入口增加 fatal 记录器，覆盖 main() reject、uncaughtException、unhandledRejection；把 source + stack 追加到结构化 daemon log 后再以 code 1 退出，不吞异常、不尝试在未知状态继续运行。
-2. Windows startup helper 显式关闭“电池上禁止启动/切电池停止”的 Task Scheduler 默认条件，因为 Archive 属于持续监控服务；同时增加 5 分钟一次的低频 health trigger。任务已 Running 时由 IgnoreNew 丢弃重复触发；daemon 已死时下一次 trigger 可重新拉起。
-3. 保留原有 AtLogOn + RestartOnFailure(1min/999) 主恢复链；5 分钟 trigger 只作为第二道保险，不替代失败重启。
-4. 增加/更新回归，至少验证 startup helper 文本包含 battery=false、自愈 repetition、IgnoreNew/RestartOnFailure；fatal helper 能把 Error stack/非 Error rejection 格式化并写到指定 log。
-5. 跑 daemon 定向测试、TypeScript、全量 npm check；重新安装计划任务并验证：Running、两个 trigger、battery 条件关闭、RestartCount=999、Repetition=5min。
-6. 生产重载后验证 Node/Task/state/Bridge/WSS/Guardian/notification；LifeOps 同步当前事故结论。
+1. 生产时间线已锁定：08:47:30.727 另一聊天启动 chatgpt-archive daemon status + 多次 search；08:47:32.484 DevSpace UDP wake 收到 write_stdin audit；08:47:32.785 Task Scheduler 记录 Archive daemon code 1；该 audit 没有进入 recovery 表。
+2. 隔离复现已完成：另一个连接持有 Archive 写事务时，旧版 busy_timeout=0 会让 observeDevSpaceMetadata 0ms 直接抛 database is locked；异常经 DevSpaceAuditWakeListener 裸 onWake 从 UDP Socket 回调冒泡，Node 与生产一样 exit code 1。
+3. 根因修复：Archive DB busy_timeout=5000；migrate 中两条历史 incidents UPDATE 改为先 SELECT EXISTS、只有确有旧数据时才写；最新 schema 下即使另一个 writer 已持锁，再次构造 ChatArchiveDb 仍可约 3ms 完成，不再为普通 search/read 制造稳态写事务。
+4. DevSpace UDP wake handler 增加异常隔离，记录 handlerErrors/lastError；门铃处理失败只等待下一次门铃或 60s durable poll 补账，任何单次 SQLite/解析异常都不得杀 daemon。
+5. 顶层 fatal 日志继续保留，覆盖 main reject、uncaughtException、unhandledRejection；Windows RestartOnFailure / 5 分钟 health trigger 仅作为最后 fallback，不作为根因解释。AC 息屏/Modern Standby 已明确排除为本次原因。
+6. 增加 busy timeout、writer 持锁下稳态 reopen、wake handler throw-survival 等回归；跑全量 npm check，随后重装计划任务并受控重载生产 daemon，做并发 search + DevSpace wake canary。
 
 # 2026-10-15 第一方协议贴合审计与漂移判级修正 ExecPlan
 
