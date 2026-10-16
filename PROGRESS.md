@@ -1,3 +1,4 @@
+- 2026-10-16 maintenance 门禁定向回归通过：`archive-daemon-supervision.test.ts` 4/4（含真实 cscript/VBS：maintenance 阻断、one-shot permit 仅消费一次、解除 maintenance 恢复启动），`archive-daemon.test.ts` 66/66，TypeScript 通过。
 - 2026-10-16 CLI 已接入维护态语义：daemon stop 先 maintenance 再停进程；daemon start 作为直接开发启动会保持 maintenance，避免计划任务竞争；新增 daemon resume，通过 one-shot permit 让同名 Task Scheduler 任务只启动一次，连续 4 个 500ms 样本满足 alive + Bridge + DevSpace wake + Guardian + no lastError 后才解除 maintenance。15 秒内不健康则停掉失败实例并继续 maintenance，禁止坏部署循环自启。
 - 2026-10-16 Windows startup helper / VBS launcher 已接入 maintenance + one-shot permit：计划任务 action 会把两个 flag 路径传给隐藏 launcher；maintenance 存在且无 permit 时 launcher 直接退出 0，不启动 Node；resume permit 被启动前原子消费，最多放行一次；解除 maintenance 后恢复普通周期启动。
 - 2026-10-16 开始实现 Archive daemon 开发期 maintenance 两阶段门禁：新增可测试的维护态/one-shot permit/基础健康判定模块，并增加 Windows VBS launcher 的端到端门禁回归，目标是让人为 stop/部署与意外崩溃的自愈语义彻底分离。
