@@ -1,3 +1,4 @@
+- 2026-10-16 在计划任务新定义尚未获批前补了 launcher 向后兼容：当前生产任务仍按旧参数顺序传 node.exe + daemon.mjs；新版 VBS 现会识别该 legacy shape 并按旧语义直接启动，只有新定义才启用 maintenance/permit gate，避免“代码先更新、任务定义后更新”窗口里重登后参数错位。
 - 2026-10-16 maintenance / one-shot / resume 改造全量回归通过：28/28 test files、249/249 tests，TypeScript 与 Chrome/Edge/Firefox/Userscript build 全绿；VBS 真机门禁回归仍通过。adminreq 直接审阅 startup PowerShell、去掉 ExecutionPolicy Bypass 后 ReviewOnly 已 APPROVE。
 - 2026-10-16 adminreq 审批拒绝链已继续收窄：改为直接审阅 `windows-archive-startup.ps1` 后，provenance 不再报缺失，Luna 改为明确 DENY `ExecutionPolicy Bypass`。本机 PowerShell 7 实际 LocalMachine=RemoteSigned，版本库脚本不加 Bypass 也能正常执行 Status，因此已从 Archive startup helper 调用中移除多余的 `-ExecutionPolicy Bypass`；这不是审批器 bug，而是原 CLI 带了不必要的安全绕过参数。
 - 2026-10-16 maintenance 门禁定向回归通过：`archive-daemon-supervision.test.ts` 4/4（含真实 cscript/VBS：maintenance 阻断、one-shot permit 仅消费一次、解除 maintenance 恢复启动），`archive-daemon.test.ts` 66/66，TypeScript 通过。

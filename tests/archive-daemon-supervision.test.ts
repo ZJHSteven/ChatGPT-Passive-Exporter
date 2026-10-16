@@ -108,4 +108,20 @@ describe('Archive daemon maintenance gate', () => {
     execFileSync('cscript.exe', ['//nologo', launcher, maintenance, permit, process.execPath, child, output])
     expect(await fs.readFile(output, 'utf8')).toBe('ran')
   })
+
+  test.skipIf(process.platform !== 'win32')('VBS launcher keeps the legacy node + daemon argument shape working', async () => {
+    const root = await tempRoot()
+    const output = path.join(root, 'legacy-child-ran.txt')
+    const child = path.join(root, 'legacy-child.mjs')
+    const launcher = fileURLToPath(new URL('../scripts/windows-archive-daemon-launcher.vbs', import.meta.url))
+
+    await fs.writeFile(child, [
+      "import fs from 'node:fs'",
+      "fs.writeFileSync(process.argv[2], 'legacy-ran')",
+    ].join('\n'))
+
+    execFileSync('cscript.exe', ['//nologo', launcher, process.execPath, child, output])
+    expect(await fs.readFile(output, 'utf8')).toBe('legacy-ran')
+  })
+})
 })
