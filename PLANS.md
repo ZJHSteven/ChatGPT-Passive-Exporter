@@ -1,6 +1,6 @@
 # 2026-10-16 Watchdog 无声死亡与自愈加固 ExecPlan
 
-状态：**根因修复已生产上线并验证；监督层设计已纠正，待重注册生产计划任务并验收**。
+状态：**根因修复已生产上线并验证；监督层代码与全量回归已完成，待重注册生产计划任务并做真实自动拉起验收**。
 
 现象：2026-10-16 08:47:32 ChatGPT Archive Daemon 以退出码 1（Task Scheduler 记录为 0x80070001）异常退出；此后新 turn 全部失去 Watchdog。重新核对 DevSpace audit 后确认，10/14、10/15 那些数秒后重新起来的实例都来自当时聊天显式执行的 schtasks /Run / Start-ScheduledTask，并非 RestartOnFailure 自动拉起。进一步用隔离临时任务验证：合法 RestartCount=2、RestartInterval=PT1M、action=cmd /c exit 1，等待 70 秒也没有自动重启；本机 Task Scheduler 不会把“action 已成功启动、子进程随后返回非零 exit code”当成需要 retry 的任务级失败。
 
