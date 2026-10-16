@@ -915,5 +915,6 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 3. daemon 对 terminal `failed` 立即发 Bark；对 Project/sidebar 瞬态不可见的首次 `retry_waiting` 发一次去重提醒，说明会自动重试；DOM drift 继续使用现有专用通知，避免重复。
 4. 增加回归测试，跑 Archive 全套相关测试/类型检查；重启 daemon 后验证旧 failed submission 会按升级恢复逻辑进入 retry 并成功。
 5. Archive submission accepted 后，通过 ClassFlow 现有精细恢复接口让今天失败的 Notes 重新进入正常流水线，确认 conversation、Notes、摘要邮件最终闭环。
+6. 生产 canary 发现当前近期 DevSpace binding backfill 实际可占约 50 秒，超过 `daemon resume` 固定 45 秒健康窗口；将“部署恢复等待上限”放宽到 90 秒（仅影响人工 resume 的 fail-closed 等待，不改变 Task Scheduler 的 1 分钟自动监督周期），避免健康但启动较慢的 daemon 被误杀。
 
 
