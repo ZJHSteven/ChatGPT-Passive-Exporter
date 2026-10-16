@@ -23,6 +23,15 @@
 4. adminreq 只审这个小脚本，因为本次管理员动作确实只是修改既有任务监督设置；daemon 大型业务代码不是本次管理员变更。
 5. 更新后再做生产三段验收：健康 IgnoreNew、maintenance stop 不复活、无 maintenance 的意外 kill <=1min 自愈。
 
+状态：**已完成并通过三段生产验收**。
+
+生产结果：
+- 任务定义已原位升级成功：固定同名任务、Interactive/Limited、supervised action、AtLogOn + PT1M repetition、IgnoreNew、battery=false、ExecutionTimeLimit=0，旧 RestartOnFailure XML 已完全移除。
+- 健康态：12:07:28 周期 tick 产生 Event 322，Node PID 24780 不变、daemon 进程数始终为 1，Bridge/Wake/WSS 正常，证明 IgnoreNew 不启动第二实例、不打断现有实例。
+- 人工维护态：12:07:54 `daemon stop` 先写 maintenance 并成功停止 PID 24780；12:08:28 周期 trigger 仍会进入 Task Scheduler，但 launcher 约 53ms 即 exit 0，没有启动 Node；12:08:44 NodeDaemonCount=0，证明开发部署停机不会被误复活。
+- 未知崩溃态：恢复到 supervised 后，于 12:10:19.181 直接 `Stop-Process -Force` 杀死 PID 18884，不写 maintenance、不调用任何 Start-ScheduledTask；12:10:28.345 下一个周期 trigger 由 Task Scheduler 自己触发，12:10:29.319 已观察到新 PID 8456，恢复新进程耗时 10.138s。12:10:58 新实例已达到 startupPhase=running、Bridge=true、DevSpace wake=true/handlerErrors=0、Guardian failures=0、WSS=3/gap=null、syncErrors=0、notification/daemon lastError=null、maintenance=false。
+- 因此最终责任边界已经闭环：Task Scheduler 是唯一外部监督者；launcher 只是该任务 action 的瞬时 gate，不是常驻 helper；maintenance/one-shot 明确区分主动部署与意外掉线。
+
 ### 生产 resume 首次 canary 暴露的启动身份窗口
 
 - 新 Task Definition 已成功上线；第一次 daemon resume 在 15 秒健康窗口内报失败，但实际新 Node PID 25884 随后健康运行，maintenance 正确保持 active。
