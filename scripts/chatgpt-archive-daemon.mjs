@@ -3653,6 +3653,8 @@ async function main() {
       dbPath: devSpaceDbPath,
       wake: devSpaceAuditWakeListener.stats(),
       fallbackPollMs: DEVSPACE_FALLBACK_POLL_MS,
+      auditCursor: devSpaceAuditCursor,
+      auditCursorBootstrapped: devSpaceAuditCursorBootstrapped,
       lastPollAt: devSpaceLastPollAt,
       lastAuditAt: devSpaceLastAuditAt,
       lastError: devSpaceLastError,
