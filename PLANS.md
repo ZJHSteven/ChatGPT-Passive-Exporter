@@ -922,5 +922,9 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 6. 生产 canary 发现当前近期 DevSpace binding backfill 实际可占约 50 秒，超过 `daemon resume` 固定 45 秒健康窗口；将“部署恢复等待上限”放宽到 90 秒（仅影响人工 resume 的 fail-closed 等待，不改变 Task Scheduler 的 1 分钟自动监督周期），避免健康但启动较慢的 daemon 被误杀。
 7. 修正 Project 导航的首层瞬态恢复：先在不改变 UI 状态的前提下以 50–100ms 粒度等待 Project action 重挂载；只有明确观察到“项目”分组 `aria-expanded=false` 时才点击展开，绝不在 `true`/未知状态下盲点 toggle。durable submission queue 保留为第二层跨秒/跨进程兜底。
 8. 收紧 ClassFlow/Archive 边界：`queued/processing/retry_waiting` 只表示 Archive 已接管，不再把 Archive 内部 `lastError` 镜像进 ClassFlow 的业务 `last_error`；真正 `failed` 只记录粗粒度“Archive submission 已终止，需要查 Archive”的引用信息。
+9. 用户确认 ClassFlow 保留 Archive 内部 `lastError` 对排障有价值，因此第 8 条取消，不改 ClassFlow 现状；恢复责任仍全部留在 Archive。
+10. 将页面原生 `/f/conversation`、`/resume` 以及 turn-WSS `encoded_item` 的 SSE 原文升级为本地耐久证据：按 stream 独立追加写入，收到多少落多少，daemon/页面/网络异常中断后也保留已到达部分；控制面 tracker 继续独立解析 resume/handoff/done，避免“诊断日志”和“正文证据”互相污染。
+11. 用一条受控 Actor canary 捕获当前第一方完整 SSE fixture，确认 message snapshot / delta_encoding / tool / reasoning 的真实 shape。只有拿到直接证据后才实现 SSE→canonical promotion，禁止凭历史印象猜协议。
+12. promotion 的安全边界：只有 SSE 自己具备完整终止证据（DONE/message_stream_complete，且所需 delta 可完整重建）时，才允许直接把 SSE 消息 union/upsert 到 Archive 并跳过同 turn 的主动 body refresh；若 SSE 截断、解码不完整、协议未知或只拿到残片，则残片仍永久保留作 forensic/recovery evidence，但 canonical body fallback 继续存在。
 
 
