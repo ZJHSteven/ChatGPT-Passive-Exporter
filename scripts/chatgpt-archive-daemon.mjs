@@ -3550,6 +3550,13 @@ async function main() {
     },
     liveTransport: {
       active: activeLiveTransports.size,
+      journal: {
+        rootDir: liveSseDir,
+        started: liveSseJournalStarted,
+        finalized: liveSseJournalFinalized,
+        bytes: liveSseJournalBytes,
+        errors: liveSseJournalErrors,
+      },
       streams: [...activeLiveTransports.values()]
         .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))
         .slice(-32),
