@@ -6211,10 +6211,84 @@ async function main() {
    await client.send('Network.enable')
    const pendingBodies = new Map()
    const pendingImages = new Map()
-    const liveTransports = new Map()
-    const turnWssTrackers = new Map()
-    const protocolRequestSignatures = new Map()
-    const pendingProtocolResponses = new Map()
+   const liveTransports = new Map()
+   const turnWssTrackers = new Map()
+   const protocolRequestSignatures = new Map()
+   const pendingProtocolResponses = new Map()
+    // 完整 SSE 正文与轻量 ActiveTurn trace 分离。这里按 cdpRequestId 保存当前 observer 自己的
+    // append-only journal；HTTP SSE 和 turn-WSS synthetic request id 共用一套接口。
+    const liveSseJournals = new Map()
+
+    const openLiveSseJournal = (cdpRequestId, transport, startedAt = Date.now()) => {
+      const key = String(cdpRequestId)
+      const existing = liveSseJournals.get(key)
+      if (existing) return existing
+      const journal = new LiveSseJournalStream(liveSseDir, {
+        targetId: String(target.id),
+        cdpRequestId: key,
+        transport,
+        startedAt,
+      })
+      liveSseJournals.set(key, journal)
+      liveSseJournalStarted += 1
+      return journal
+    }
+
+    const appendJournalBase64 = (cdpRequestId, data) => {
+      const journal = liveSseJournals.get(String(cdpRequestId))
+      if (!journal || typeof data !== 'string' || !data) return
+      void journal.appendBase64(data).catch(async (error) => {
+        liveSseJournalErrors += 1
+        await log('live SSE journal append failed', {
+          targetId: target.id,
+          requestId: String(cdpRequestId),
+          error: error instanceof Error ? error.message : String(error),
+        }).catch(() => {})
+      })
+    }
+
+    const appendJournalText = (cdpRequestId, text) => {
+      const journal = liveSseJournals.get(String(cdpRequestId))
+      if (!journal || typeof text !== 'string' || !text) return
+      void journal.appendText(text).catch(async (error) => {
+        liveSseJournalErrors += 1
+        await log('live SSE journal append failed', {
+          targetId: target.id,
+          requestId: String(cdpRequestId),
+          error: error instanceof Error ? error.message : String(error),
+        }).catch(() => {})
+      })
+    }
+
+    const finalizeLiveSseJournal = async (cdpRequestId, mark) => {
+      const key = String(cdpRequestId)
+      const journal = liveSseJournals.get(key)
+      if (!journal) return null
+      liveSseJournals.delete(key)
+      try {
+        const snapshot = await journal.finalize(mark)
+        liveSseJournalFinalized += 1
+        liveSseJournalBytes += Number(snapshot.bytesWritten || 0)
+        return snapshot
+      }
+      catch (error) {
+        liveSseJournalErrors += 1
+        await log('live SSE journal finalize failed', {
+          targetId: target.id,
+          requestId: key,
+          error: error instanceof Error ? error.message : String(error),
+        }).catch(() => {})
+        return null
+      }
+    }
+
+    const cleanupLiveSseJournals = async (reason = 'observer-detached') => {
+      const entries = [...liveSseJournals.entries()]
+      await Promise.all(entries.map(([requestId]) => finalizeLiveSseJournal(requestId, {
+        event: 'stream-observer-detached',
+        detail: { reason },
+      })))
+    }
 
     const appendLiveTransport = (event) => {
       const key = `${target.id}:${event?.cdpRequestId ?? ''}`
