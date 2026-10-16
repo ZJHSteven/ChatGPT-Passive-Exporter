@@ -19,6 +19,8 @@ import {
   catalogStableOverlapTarget,
   classifyConversationBackendUrl,
   cooldownDeadlineFromRetryAfter,
+  compactNotificationText,
+  conversationNotificationGroup,
   crossedDevSpaceIdleThresholds,
   classifyCatalogAsyncStatus,
   effectiveActiveRequestGap,
@@ -63,6 +65,7 @@ import {
   shouldRepairConversationTransport,
   shouldRetireWssSocketsForFrameNavigation,
   shouldAttachPassivePageObserver,
+  shouldProbePassivePageObserver,
   passiveObserverRetryDelayMs,
   guardianCdpFailureScope,
   shouldReadGuardianProtocolBody,
@@ -510,6 +513,33 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(passiveObserverRetryDelayMs(2, 300_000, 3_600_000)).toBe(300_000)
     expect(passiveObserverRetryDelayMs(5, 300_000, 3_600_000)).toBe(300_000)
     expect(passiveObserverRetryDelayMs(99, 300_000, 3_600_000)).toBe(300_000)
+  })
+
+  test('passive observer 仅在空闲且超过健康间隔时探测，active SSE 不被打扰', () => {
+    expect(shouldProbePassivePageObserver({
+      now: 100_000,
+      lastHealthAt: 60_000,
+      hasActiveTransport: false,
+      clientClosed: false,
+    }, 30_000)).toBe(true)
+    expect(shouldProbePassivePageObserver({
+      now: 100_000,
+      lastHealthAt: 80_000,
+      hasActiveTransport: false,
+      clientClosed: false,
+    }, 30_000)).toBe(false)
+    expect(shouldProbePassivePageObserver({
+      now: 100_000,
+      lastHealthAt: 0,
+      hasActiveTransport: true,
+      clientClosed: false,
+    }, 30_000)).toBe(false)
+    expect(shouldProbePassivePageObserver({
+      now: 100_000,
+      lastHealthAt: 0,
+      hasActiveTransport: false,
+      clientClosed: true,
+    }, 30_000)).toBe(false)
   })
 
   test('Guardian CDP timeout 可区分 target 与 browser 层级', () => {
