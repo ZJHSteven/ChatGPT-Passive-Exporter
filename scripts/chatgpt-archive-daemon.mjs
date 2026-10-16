@@ -6024,8 +6024,6 @@ async function main() {
   }
 
   const handleDevSpaceAuditEvent = (event) => {
-    if (seenDevSpaceAuditIds.has(event.id)) return
-    seenDevSpaceAuditIds.set(event.id, event.startedAtMs)
     devSpaceAuditsObserved += 1
     devSpaceLastAuditAt = Math.max(Number(devSpaceLastAuditAt || 0), event.startedAtMs)
     const metadataState = devSpaceAuditBridge.metadataToolState(event.metadataId)
