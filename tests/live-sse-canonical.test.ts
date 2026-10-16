@@ -104,6 +104,14 @@ describe('LiveSseCanonicalAccumulator', () => {
     expect(snapshot.doneSeen).toBe(false)
     expect(snapshot.complete).toBe(false)
     expect(accumulator.canonicalPayload()).toBeNull()
+    expect(accumulator.evidencePayload()).toMatchObject({
+      conversation_id: 'cid-1',
+      title: 'Canary',
+      messages: expect.arrayContaining([
+        expect.objectContaining({ id: 'assistant-1' }),
+      ]),
+    })
+    expect(accumulator.evidencePayload()).not.toHaveProperty('current_node')
   })
 
   test('未知 delta operation fail-closed，不把猜测结果写 canonical', () => {
@@ -118,6 +126,36 @@ describe('LiveSseCanonicalAccumulator', () => {
     expect(snapshot.decodeErrors.some(error => /unsupported SSE delta operation/u.test(error))).toBe(true)
     expect(snapshot.complete).toBe(false)
     expect(accumulator.canonicalPayload()).toBeNull()
+    expect(accumulator.evidencePayload()).not.toBeNull()
+  })
+
+  test('delta 解码出错后不继续在失真的 root 上套 patch，但保留此前可信消息', () => {
+    const accumulator = new LiveSseCanonicalAccumulator()
+    accumulator.ingestText([
+      event(JSON.stringify('v1')),
+      event({
+        v: {
+          conversation_id: 'cid-partial',
+          message: {
+            id: 'assistant-partial',
+            author: { role: 'assistant' },
+            content: { content_type: 'text', parts: ['safe-prefix'] },
+            status: 'in_progress',
+            end_turn: null,
+            metadata: { turn_exchange_id: 'turn-partial' },
+            recipient: 'all',
+          },
+        },
+      }),
+      event({ p: '/message/content/parts/0', o: 'mystery', v: 'X' }),
+      event({ p: '/message/content/parts/0', o: 'append', v: '-SHOULD-NOT-APPLY' }),
+    ].join(''))
+    accumulator.finish()
+
+    const evidence = accumulator.evidencePayload() as Record<string, unknown>
+    const messages = evidence.messages as Array<{ id: string; content?: { parts?: unknown[] } }>
+    expect(messages.find(message => message.id === 'assistant-partial')?.content?.parts).toEqual(['safe-prefix'])
+    expect(accumulator.snapshot().decodeErrors.length).toBeGreaterThanOrEqual(2)
   })
 
   test('base64 入口与 text 入口语义一致', () => {

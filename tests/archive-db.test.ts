@@ -1316,6 +1316,109 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('同一 message_id 的滞后 body 只带更短文本前缀时，不得回吃 SSE 已观察到的更长正文', () => {
+    const db = tempDb()
+    try {
+      db.mergeLiveMessagesPage({
+        title: 'Monotonic live evidence fixture',
+        conversation_id: 'monotonic-live-evidence',
+        messages: [
+          {
+            id: 'assistant-1',
+            author: { role: 'assistant' },
+            recipient: 'all',
+            channel: 'final',
+            status: 'in_progress',
+            end_turn: null,
+            content: { content_type: 'text', parts: ['已经由 SSE 看到的完整一些的正文'] },
+            metadata: { turn_exchange_id: 'turn-1', request_id: 'req-1' },
+          },
+        ],
+      }, {
+        observedAt: 1000,
+        observationKind: 'live-sse-partial',
+        updateCurrentState: false,
+        updateIncidents: false,
+        preserveObservedTextPrefix: true,
+      })
+
+      db.mergeLiveMessagesPage({
+        title: 'Monotonic live evidence fixture',
+        conversation_id: 'monotonic-live-evidence',
+        current_node: 'assistant-1',
+        messages: [
+          {
+            id: 'assistant-1',
+            author: { role: 'assistant' },
+            recipient: 'all',
+            channel: 'final',
+            status: 'finished_successfully',
+            end_turn: true,
+            content: { content_type: 'text', parts: ['已经由 SSE 看到的'] },
+            metadata: { turn_exchange_id: 'turn-1', request_id: 'req-1', body_checkpoint: true },
+          },
+        ],
+      }, {
+        observedAt: 2000,
+        observationKind: 'body-page:test',
+        preserveObservedTextPrefix: true,
+      })
+
+      const row = db.db.prepare(`
+        SELECT text, status, end_turn AS endTurn, content_json AS contentJson, metadata_json AS metadataJson
+        FROM messages
+        WHERE conversation_id = 'monotonic-live-evidence' AND message_id = 'assistant-1'
+      `).get() as {
+        text: string
+        status: string
+        endTurn: number
+        contentJson: string
+        metadataJson: string
+      }
+      expect(row.text).toBe('已经由 SSE 看到的完整一些的正文')
+      expect(row.status).toBe('finished_successfully')
+      expect(row.endTurn).toBe(1)
+      expect(JSON.parse(row.contentJson)).toMatchObject({
+        parts: ['已经由 SSE 看到的完整一些的正文'],
+      })
+      expect(JSON.parse(row.metadataJson)).toMatchObject({ body_checkpoint: true })
+      expect(db.list(10).find(item => item.id === 'monotonic-live-evidence')?.currentNode).toBe('assistant-1')
+
+      // 新 payload 若真正比现有正文更长，应正常前进，不被“保护旧证据”反向锁死。
+      db.mergeLiveMessagesPage({
+        title: 'Monotonic live evidence fixture',
+        conversation_id: 'monotonic-live-evidence',
+        current_node: 'assistant-1',
+        messages: [
+          {
+            id: 'assistant-1',
+            author: { role: 'assistant' },
+            recipient: 'all',
+            channel: 'final',
+            status: 'finished_successfully',
+            end_turn: true,
+            content: { content_type: 'text', parts: ['已经由 SSE 看到的完整一些的正文，以及后来 Body 新增的结尾'] },
+            metadata: { turn_exchange_id: 'turn-1', request_id: 'req-1' },
+          },
+        ],
+      }, {
+        observedAt: 3000,
+        preserveObservedTextPrefix: true,
+      })
+      expect(
+        db.db.prepare(`
+          SELECT text FROM messages
+          WHERE conversation_id = 'monotonic-live-evidence' AND message_id = 'assistant-1'
+        `).get(),
+      ).toMatchObject({
+        text: '已经由 SSE 看到的完整一些的正文，以及后来 Body 新增的结尾',
+      })
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('singular mapping 会把 edit/regenerate sibling 精确回填为 branch tree', () => {
     const db = tempDb()
     try {
