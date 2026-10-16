@@ -198,6 +198,27 @@ export class LiveSseCanonicalAccumulator {
     }
   }
 
+  /**
+   * 返回“截至目前已可靠解码出的消息证据”。
+   *
+   * 与 canonicalPayload() 不同，这里**不要求** message_stream_complete / [DONE] / final assistant，
+   * 也故意不携带 current_node。调用方只能把它作为 provisional union 证据合并，
+   * 不能据此更新 conversation head、关闭 turn 或抑制 Body fallback。
+   */
+  evidencePayload(fallbackTitle = 'ChatGPT Conversation'): JsonRecord | null {
+    const snapshot = this.snapshot()
+    if (
+      snapshot.protocolVersion !== 'v1'
+      || !snapshot.conversationId
+      || snapshot.messages.length === 0
+    ) return null
+    return {
+      conversation_id: snapshot.conversationId,
+      title: snapshot.title || fallbackTitle,
+      messages: snapshot.messages,
+    }
+  }
+
   private ingestBlock(block: string): void {
     const trimmed = block.trim()
     if (!trimmed || trimmed.startsWith(':')) return
@@ -263,6 +284,9 @@ export class LiveSseCanonicalAccumulator {
     }
     catch (error) {
       this.fail(error instanceof Error ? error.message : String(error))
+      // 当前 root 已无法证明仍与服务器 delta 状态一致。保留此前已经 capture 的 message，
+      // 但后续 patch 必须等下一份完整 root snapshot 才能重新建立可信基线。
+      this.currentRoot = null
     }
   }
 
