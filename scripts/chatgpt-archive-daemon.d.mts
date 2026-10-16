@@ -210,7 +210,13 @@ export function shouldTripObserved429(
 
 /** 将绝对时间戳格式化为人类可读的北京时间字符串；内部存储仍保持 epoch/UTC。 */
 export function formatBeijingTime(value: unknown): string
+export function formatBeijingClock(value: unknown): string
 export function formatDurationMs(value: unknown): string
+export function compactNotificationText(value: unknown, maxChars?: number): string
+export function conversationNotificationGroup(input?: {
+  conversationId?: unknown
+  metadataId?: unknown
+}): string
 
 /** 生成一次“首次进入 429 cooldown”的独立运行状态通知文案。 */
 export function buildCooldownNotificationPayload(input: {
@@ -230,14 +236,14 @@ export function buildWatchdogDeferredNotificationPayload(input: {
   startedAt: number
   now?: number
   cooldownUntil: number
-}): { title: string, body: string, group: string, url?: string }
+}): { title: string, subtitle: string, body: string, group: string, url?: string }
 
 export function buildWatchdogTimeoutNotificationPayload(input: {
   conversationId: string
   title?: string | null
   startedAt: number
   now?: number
-}): { title: string, body: string, group: string, url?: string }
+}): { title: string, subtitle: string, body: string, group: string, url?: string }
 
 export function buildWatchdogStartNotificationPayload(input: {
   conversationId?: string | null
@@ -245,7 +251,7 @@ export function buildWatchdogStartNotificationPayload(input: {
   title?: string | null
   startedAt: number
   watchdogMs?: number
-}): { title: string, body: string, group: string, url?: string }
+}): { title: string, subtitle: string, body: string, group: string, url?: string }
 
 /** canonical 标题仍是 New chat/新聊天/CID 时，允许 DevSpace displayTitle 做早期兜底。 */
 export function preferredWatchdogStartTitle(input: {
@@ -271,20 +277,20 @@ export function buildWatchdogDiagnosisNotificationPayload(input: {
     headState?: unknown
     evidenceTypes?: unknown[]
   } | null
-}): { title: string, body: string, group: string, url: string }
+}): { title: string, subtitle: string, body: string, group: string, url: string }
 
 export function buildUnboundWatchdogNotificationPayload(input: {
   metadataId: string
   title?: string | null
   startedAt: number
   now?: number
-}): { title: string, body: string, group: string }
+}): { title: string, subtitle: string, body: string, group: string }
 
 export function buildTurnFinalNotificationPayload(input: {
   conversationId: string
   title?: string | null
   diagnostic?: { hasImageGenerationFinal?: unknown, imageGenerationCount?: unknown } | null
-}): { title: string, body: string, group: string, url: string }
+}): { title: string, subtitle: string, body: string, group: string, url: string }
 
 /** 返回本轮主循环刚跨过的 DevSpace 工具静默阈值（当前固定为 1/3/5 分钟）。 */
 export function crossedDevSpaceIdleThresholds(
@@ -306,6 +312,7 @@ export function buildDevSpaceIdleNotificationPayload(input: {
   thresholdMs: unknown
 }): {
   title: string
+  subtitle: string
   body: string
   group: string
   url?: string
@@ -325,7 +332,7 @@ export function buildDevSpaceIdleDiagnosisNotificationPayload(input: {
     hasTailGap?: boolean
   } | null
   canonicalMessageCount?: number | null
-}): { title: string, body: string, group: string, url?: string }
+}): { title: string, subtitle: string, body: string, group: string, url?: string }
 
 export function buildDevSpaceIdleUnboundDiagnosisNotificationPayload(input: {
   metadataId: string
@@ -333,7 +340,7 @@ export function buildDevSpaceIdleUnboundDiagnosisNotificationPayload(input: {
   recoveryAuditCount?: number
   recoveryToolCount?: number
   checkpointCount?: number
-}): { title: string, body: string, group: string }
+}): { title: string, subtitle: string, body: string, group: string }
 
 /** 把完整 DevSpace metadata 压缩成可口述、可前缀回查的 meta/XXXXXXXX。 */
 export function shortDevSpaceMetadataAlias(metadataId: unknown): string
@@ -356,6 +363,7 @@ export function buildDevSpaceConclusionNotificationPayload(input: {
   conclusion?: unknown
 }): {
   title: string
+  subtitle: string
   body: string
   group: string
   url?: string
@@ -370,6 +378,7 @@ export function buildDevSpaceCheckpointNotificationPayload(input: {
   next?: unknown
 }): {
   title: string
+  subtitle: string
   body: string
   group: string
   url?: string

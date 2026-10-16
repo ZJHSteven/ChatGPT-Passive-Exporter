@@ -31,6 +31,13 @@ export interface BarkIncidentNotificationConfig {
 
 export interface IncidentNotification {
   title: string
+  /**
+   * Bark 会把 subtitle 原样映射到 iOS 通知副标题。
+   *
+   * 手机端把“发生了什么”放 title、把“哪一个会话”放 subtitle，
+   * 可以避免过去 title 同时塞事件名和聊天名后在锁屏上被横向截断。
+   */
+  subtitle?: string
   body: string
   /** 点击 Bark 通知后打开的地址；通常指向对应 ChatGPT conversation。 */
   url?: string
@@ -105,6 +112,7 @@ export function buildBarkIncidentRequest(
     title: notification.title,
     body: notification.body,
   }
+  if (notification.subtitle?.trim()) payload.subtitle = notification.subtitle.trim()
   const group = notification.group?.trim() || config.group
   if (group) payload.group = group
   if (notification.url) payload.url = notification.url

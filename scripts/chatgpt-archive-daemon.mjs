@@ -869,17 +869,74 @@ export function formatDurationMs(value) {
 }
 
 /**
- * 手机锁屏标题只保留一小段可辨认的聊天名。
+ * 手机通知中的时刻只显示 HH:mm。
  *
- * 这里按 Unicode code point 截断，而不是按 UTF-16 code unit，避免中文/emoji 在中间被切坏。
- * 完整名称仍由各 payload builder 放进正文，所以标题压缩不会丢失可检索信息。
+ * 秒级时间仍保存在 SQLite/日志，锁屏没有必要重复展示年月日、秒和“北京时间”后缀。
+ * 这里仍固定 Asia/Shanghai，避免运行机器当前时区影响用户看到的时间。
+ *
+ * @param {unknown} value epoch milliseconds
  */
-function compactNotificationSubject(value, maxChars = 18) {
-  const full = String(value || '').replace(/\s+/gu, ' ').trim()
-  if (!full) return { full: null, short: null, truncated: false }
-  const chars = Array.from(full)
-  if (chars.length <= maxChars) return { full, short: full, truncated: false }
-  return { full, short: `${chars.slice(0, maxChars).join('')}…`, truncated: true }
+export function formatBeijingClock(value) {
+  const ms = Number(value)
+  if (!Number.isFinite(ms) || ms <= 0) return '??:??'
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(ms))
+  const pick = type => parts.find(part => part.type === type)?.value ?? ''
+  return `${pick('hour')}:${pick('minute')}`
+}
+
+/**
+ * 把长诊断/Checkpoint 压成适合锁屏的一行文本。
+ *
+ * 完整原文从不在这里改写：DevSpace SQLite、Archive ledger、日志仍保留原始内容；
+ * 这里只压缩 Bark 的“显示副本”。按 code point 截断可避免把 emoji/代理对从中间切坏。
+ */
+export function compactNotificationText(value, maxChars = 160) {
+  const normalized = String(value || '').replace(/\s+/gu, ' ').trim()
+  if (!normalized) return ''
+  const chars = Array.from(normalized)
+  const limit = Math.max(1, Math.trunc(Number(maxChars) || 1))
+  return chars.length <= limit
+    ? normalized
+    : `${chars.slice(0, Math.max(1, limit - 1)).join('')}…`
+}
+
+/**
+ * Bark 的 group 在手机上承担“通知线程”而不是业务 taxonomy。
+ *
+ * 旧版按 Chat-Latency / Chat-Timeout / Chat-Done 全局分组，真实手机会把几十个不同会话
+ * 折成一个 13/36 条的大栈。现在 conversation-scoped 通知统一按会话分组；
+ * 业务类别仍由 ledger.kind / title 完整保留。未绑定 metadata 使用可口述短别名。
+ */
+export function conversationNotificationGroup({
+  conversationId = null,
+  metadataId = null,
+} = {}) {
+  const cid = String(conversationId || '').trim()
+  if (cid) return `Chat/${cid}`
+  const metadata = String(metadataId || '').trim()
+  if (metadata) return `Chat/${shortDevSpaceMetadataAlias(metadata)}`
+  return BARK_NOTIFICATION_GROUPS.incident
+}
+
+/**
+ * iOS subtitle 专门承载“是哪一个聊天”。
+ * title 只保留事件/结论，body 只保留一个补充事实，三层信息各司其职。
+ */
+function notificationConversationSubtitle({
+  title = null,
+  conversationId = null,
+  metadataId = null,
+  unbound = false,
+}) {
+  const readable = String(title || '').replace(/\s+/gu, ' ').trim()
+  const fallback = String(conversationId || '').trim()
+    || (metadataId ? shortDevSpaceMetadataAlias(metadataId) : '未命名会话')
+  return `${readable || fallback}${unbound ? ' · 未绑定' : ''}`
 }
 
 /**
@@ -914,10 +971,6 @@ export function preferredWatchdogStartTitle({
   return canonical || cid || null
 }
 
-function notificationTitleWithSubject(prefix, subject) {
-  return subject?.short ? `${prefix} · ${subject.short}` : prefix
-}
-
 /** 5 分钟 DevSpace 静默 probe 的最终诊断通知：扫完必须给结果。 */
 export function buildDevSpaceIdleDiagnosisNotificationPayload({
   conversationId,
@@ -927,38 +980,22 @@ export function buildDevSpaceIdleDiagnosisNotificationPayload({
   canonicalMessageCount = null,
 }) {
   const terminal = String(diagnostic?.terminalEvidence || 'none')
-  const tail = String(diagnostic?.tailShape || 'unknown')
-  const lines = [
-    title || conversationId,
-    `canonical：terminal=${terminal}；tail=${tail}`,
-    Number.isFinite(Number(canonicalMessageCount))
-      ? `Archive 当前累计 canonical 节点：${Number(canonicalMessageCount)}`
-      : null,
-  ]
-  if (tailGap?.canonicalTailAt) lines.push(`Body 当前 turn 最后节点：${formatBeijingTime(tailGap.canonicalTailAt)}`)
-  if (tailGap?.recoveryAuditCount > 0) {
-    lines.push(
-      `Body 尾部之后仍有 DevSpace 审计：${tailGap.recoveryAuditCount} 条（tool ${tailGap.recoveryToolCount}；checkpoint ${tailGap.checkpointCount}）`,
-      `DevSpace 最后审计：${formatBeijingTime(tailGap.recoveryLastAt)}`,
-      `canonical Body 落后执行事实：${formatDurationMs(tailGap.gapMs)}`,
-    )
-  }
-  else {
-    lines.push('当前没有发现 canonical Body 尾部之后仍未被吸收的 DevSpace recovery audit。')
-  }
-  lines.push(
-    tailGap?.hasTailGap
-      ? '判定：已记录 canonical-tail-gap 证据；它描述 Body/持久化尾部缺失，可与 Active Zombie 等生命周期状态同时存在。'
-      : terminal === 'final'
-        ? '判定：本次 5 分钟核验已看到 Final，没有 canonical-tail-gap。'
-        : '判定：本次核验未发现 canonical-tail-gap；5 分钟静默本身仍不等于 turn 已结束。',
-  )
+  const hasTailGap = Boolean(tailGap?.hasTailGap)
+  const recoveryCount = Number(tailGap?.recoveryAuditCount || 0)
+  const body = hasTailGap
+    ? `Body 落后 ${formatDurationMs(tailGap?.gapMs)} · recovery ${recoveryCount}`
+    : terminal === 'final'
+      ? 'Final 已确认 · 无 Body 缺口'
+      : '未确认 Final · 无 Body 缺口'
   return {
-    title: tailGap?.hasTailGap
-      ? 'DevSpace 5 分钟诊断 · Body 尾部缺失'
-      : 'DevSpace 5 分钟诊断完成',
-    body: lines.filter(Boolean).join('\n'),
-    group: BARK_NOTIFICATION_GROUPS.chatLatency,
+    title: hasTailGap
+      ? '5m 核验 · Body 缺口'
+      : terminal === 'final'
+        ? '5m 核验 · Final'
+        : '5m 核验 · 未结束',
+    subtitle: notificationConversationSubtitle({ title, conversationId }),
+    body,
+    group: conversationNotificationGroup({ conversationId }),
     url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
   }
 }
@@ -970,18 +1007,11 @@ export function buildDevSpaceIdleUnboundDiagnosisNotificationPayload({
   recoveryToolCount = 0,
   checkpointCount = 0,
 }) {
-  const subject = title
-    ? `聊天：以“${title}”为主题（仍未绑定 canonical Conversation）`
-    : `聊天：${shortDevSpaceMetadataAlias(metadataId)}（仍未绑定 canonical Conversation）`
   return {
-    title: 'DevSpace 5 分钟诊断 · 会话仍未绑定',
-    body: [
-      subject,
-      'Archive 已完成本轮 catalog gap-repair，但仍没有足够证据把该 metadata 安全绑定到一个 canonical conversation。',
-      `DevSpace recovery 审计：${Number(recoveryAuditCount || 0)} 条（tool ${Number(recoveryToolCount || 0)}；checkpoint ${Number(checkpointCount || 0)}）`,
-      '因此本轮无法做 Body vs DevSpace 尾部对账；不会猜 CID，也不会把“未绑定”误报成 canonical-tail-gap。',
-    ].join('\n'),
-    group: BARK_NOTIFICATION_GROUPS.chatLatency,
+    title: '5m 核验 · 未绑定',
+    subtitle: notificationConversationSubtitle({ title, metadataId, unbound: true }),
+    body: `catalog repair 后仍未匹配 · recovery ${Number(recoveryAuditCount || 0)}`,
+    group: conversationNotificationGroup({ metadataId }),
   }
 }
 
@@ -1020,16 +1050,10 @@ export function buildWatchdogDeferredNotificationPayload({
 }) {
   const activeForMs = Math.max(0, Number(now) - Number(startedAt || now))
   return {
-    title: 'ChatGPT Watchdog 已超时 · 等待诊断',
-    body: [
-      title || conversationId,
-      `Watchdog 已运行 ${Math.floor(activeForMs / 60_000)} 分钟，达到超时阈值。`,
-      '当前主动 body 请求处于 HTTP 429 cooldown，且尚无本次超时后的被动 body 可用于错误归因。',
-      `本轮起点：${formatBeijingTime(startedAt || now)}`,
-      `冷却至：${formatBeijingTime(cooldownUntil || now)}`,
-      '冷却解除后会继续诊断；若随后确认异常，再发送最终诊断通知。',
-    ].join('\n'),
-    group: BARK_NOTIFICATION_GROUPS.chatTimeout,
+    title: 'Watchdog · 超时待诊断',
+    subtitle: notificationConversationSubtitle({ title, conversationId }),
+    body: `${Math.floor(activeForMs / 60_000)}m · 429 冷却至 ${formatBeijingClock(cooldownUntil || now)}`,
+    group: conversationNotificationGroup({ conversationId }),
     url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
   }
 }
@@ -1045,14 +1069,11 @@ export function buildWatchdogTimeoutNotificationPayload({
   now = Date.now(),
 }) {
   const activeForMs = Math.max(0, Number(now) - Number(startedAt || now))
-  const subject = compactNotificationSubject(title)
   return {
-    title: notificationTitleWithSubject('Watchdog 超时', subject),
-    body: [
-      `会话：${subject.full || conversationId}`,
-      `已运行 ${Math.floor(activeForMs / 60_000)} 分钟；起点：${formatBeijingTime(startedAt || now)}`,
-    ].join('\n'),
-    group: BARK_NOTIFICATION_GROUPS.chatTimeout,
+    title: 'Watchdog · 超时',
+    subtitle: notificationConversationSubtitle({ title, conversationId }),
+    body: `${Math.floor(activeForMs / 60_000)}m · 起点 ${formatBeijingClock(startedAt || now)}`,
+    group: conversationNotificationGroup({ conversationId }),
     url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
   }
 }
@@ -1081,24 +1102,16 @@ export function buildWatchdogStartNotificationPayload({
     ? Number(watchdogMs)
     : 45 * 60_000
   const watchdogMinutes = Math.round(safeWatchdogMs / 60_000)
-  const subject = compactNotificationSubject(title)
-  const timingLine = `起点：${formatBeijingTime(safeStartedAt)} → 超时：${formatBeijingTime(safeStartedAt + safeWatchdogMs)}（${watchdogMinutes} 分钟）`
-  const identityLine = conversationId
-    ? `CID：${conversationId}`
-    : subject.full
-      ? '状态：等待绑定 canonical Conversation'
-      : `Title 缺失（异常） · ${shortDevSpaceMetadataAlias(metadataId)}`
-  const fullTitleLine = subject.truncated
-    ? `会话：${subject.full}${conversationId ? '' : ' · 未绑定'}`
-    : null
   return {
-    title: subject.short
-      ? notificationTitleWithSubject('Watchdog 开始', subject)
-      : 'Watchdog 开始 · Title 缺失',
-    // 锁屏第一屏最重要的是“这一轮从几点开始、几点会触发 Watchdog”。CID 只是排障身份，
-    // 因此固定把 timing 放第一行；Title 太长时按其它通知的一致规则把完整 Title 下沉正文。
-    body: [timingLine, fullTitleLine, identityLine].filter(Boolean).join('\n'),
-    group: BARK_NOTIFICATION_GROUPS.chatTimeout,
+    title: 'Watchdog · 开始',
+    subtitle: notificationConversationSubtitle({
+      title,
+      conversationId,
+      metadataId,
+      unbound: !conversationId,
+    }),
+    body: `${formatBeijingClock(safeStartedAt)} → ${formatBeijingClock(safeStartedAt + safeWatchdogMs)} · ${watchdogMinutes}m`,
+    group: conversationNotificationGroup({ conversationId, metadataId }),
     ...(conversationId
       ? { url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` }
       : {}),
@@ -1132,23 +1145,17 @@ export function buildWatchdogDiagnosisNotificationPayload({ conversationId, titl
     ? [...new Set(incident.evidenceTypes.map(value => String(value || '').trim()).filter(Boolean))]
     : []
   const hasCanonicalTailGap = evidenceTypes.includes('canonical-tail-gap')
-  const subject = compactNotificationSubject(title)
-  const primaryResult = hasCanonicalTailGap
-    ? 'Body 尾部缺失 · DevSpace 审计晚于 canonical'
-    : terminal === 'final'
-      ? '已确认 Final · 未发现 Body 尾部缺失'
-      : '未确认 Final · 未发现 Body 尾部缺失'
-  const identityLine = subject.truncated
-    ? `会话：${subject.full}`
-    : !subject.full
-      ? `会话：${conversationId}`
-      : null
   return {
-    title: notificationTitleWithSubject('Watchdog 诊断', subject),
-    body: [primaryResult, identityLine].filter(Boolean).join('\n'),
-    group: hasCanonicalTailGap || terminal !== 'final'
-      ? BARK_NOTIFICATION_GROUPS.incident
-      : BARK_NOTIFICATION_GROUPS.chatDone,
+    title: hasCanonicalTailGap
+      ? 'Watchdog · Body 缺口'
+      : terminal === 'final'
+        ? 'Watchdog · Final 已确认'
+        : 'Watchdog · 未确认 Final',
+    subtitle: notificationConversationSubtitle({ title, conversationId }),
+    body: hasCanonicalTailGap
+      ? 'DevSpace 审计晚于 canonical'
+      : '未发现 Body 缺口',
+    group: conversationNotificationGroup({ conversationId }),
     url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
   }
 }
@@ -1168,34 +1175,24 @@ export function shortDevSpaceMetadataAlias(metadataId) {
 
 export function buildUnboundWatchdogNotificationPayload({ metadataId, title = null, startedAt, now = Date.now() }) {
   const activeForMs = Math.max(0, Number(now) - Number(startedAt || now))
-  const subject = compactNotificationSubject(title)
   return {
-    title: subject.short
-      ? notificationTitleWithSubject('Watchdog 超时', subject)
-      : 'Watchdog 超时 · 未绑定会话',
-    body: [
-      subject.full
-        ? `会话：${subject.full} · 未绑定`
-        : `未绑定 · ${shortDevSpaceMetadataAlias(metadataId)}`,
-      `已运行 ${Math.floor(activeForMs / 60_000)} 分钟；起点：${formatBeijingTime(startedAt || now)}`,
-    ].join('\n'),
-    group: BARK_NOTIFICATION_GROUPS.chatTimeout,
+    title: 'Watchdog · 超时未绑定',
+    subtitle: notificationConversationSubtitle({ title, metadataId, unbound: true }),
+    body: `${Math.floor(activeForMs / 60_000)}m · 起点 ${formatBeijingClock(startedAt || now)}`,
+    group: conversationNotificationGroup({ metadataId }),
   }
 }
 
 /** 正常 final 也作为 turn 的最终可见结果发送，和异常 incident 对称。 */
 export function buildTurnFinalNotificationPayload({ conversationId, title, diagnostic }) {
-  const subject = compactNotificationSubject(title)
   const finalLine = diagnostic?.hasImageGenerationFinal
-    ? `已确认 Final · ${Number(diagnostic?.imageGenerationCount || 0)} 张图片`
-    : '已确认 Final'
+    ? `Final 已确认 · ${Number(diagnostic?.imageGenerationCount || 0)} 张图片`
+    : 'Final 已确认'
   return {
-    title: notificationTitleWithSubject('Turn 正常完成', subject),
-    body: [
-      `会话：${subject.full || conversationId}`,
-      finalLine,
-    ].join('\n'),
-    group: BARK_NOTIFICATION_GROUPS.chatDone,
+    title: 'Turn · 完成',
+    subtitle: notificationConversationSubtitle({ title, conversationId }),
+    body: finalLine,
+    group: conversationNotificationGroup({ conversationId }),
     url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
   }
 }
@@ -1450,17 +1447,16 @@ export function buildDevSpaceIdleNotificationPayload({
   thresholdMs,
 }) {
   const minutes = Math.round(Number(thresholdMs) / 60_000)
-  const subject = compactNotificationSubject(title)
   const payload = {
-    title: notificationTitleWithSubject(`工具静默 ${minutes} 分钟`, subject),
-    body: [
-      subject.full
-        ? `会话：${subject.full}${conversationId ? '' : ' · 未绑定'}`
-        : conversationId
-          ? `会话：${conversationId}`
-          : `未绑定 · ${shortDevSpaceMetadataAlias(metadataId)}`,
-    ].join('\n'),
-    group: BARK_NOTIFICATION_GROUPS.chatLatency,
+    title: `工具静默 · ${minutes}m`,
+    subtitle: notificationConversationSubtitle({
+      title,
+      conversationId,
+      metadataId,
+      unbound: !conversationId,
+    }),
+    body: conversationId ? '仍在观察' : '等待绑定 canonical',
+    group: conversationNotificationGroup({ conversationId, metadataId }),
   }
   if (conversationId) payload.url = `https://chatgpt.com/c/${conversationId}`
   return payload
@@ -1525,19 +1521,19 @@ export function buildDevSpaceConclusionNotificationPayload({
   tool,
   conclusion,
 }) {
-  const subject = title
-    ? conversationId
-      ? `聊天：${title}`
-      : `聊天：以“${title}”为主题（尚未绑定 Conversation）`
-    : `聊天：未命名（${shortDevSpaceMetadataAlias(metadataId)}，尚未绑定 Conversation）`
   const payload = {
-    title: 'DevSpace Conclusion · 阶段性结论',
+    title: 'DevSpace · 结论',
+    subtitle: notificationConversationSubtitle({
+      title,
+      conversationId,
+      metadataId,
+      unbound: !conversationId,
+    }),
     body: [
-      subject,
-      `工具：${String(tool || 'unknown')}`,
-      String(conclusion || '').trim(),
+      compactNotificationText(conclusion, 180),
+      `工具：${compactNotificationText(tool || 'unknown', 50)}`,
     ].filter(Boolean).join('\n'),
-    group: BARK_NOTIFICATION_GROUPS.chatDone,
+    group: conversationNotificationGroup({ conversationId, metadataId }),
   }
   if (conversationId) payload.url = `https://chatgpt.com/c/${conversationId}`
   return payload
@@ -1550,19 +1546,19 @@ export function buildDevSpaceCheckpointNotificationPayload({
   summary,
   next = null,
 }) {
-  const subject = title
-    ? conversationId
-      ? `聊天：${title}`
-      : `聊天：以“${title}”为主题（尚未绑定 Conversation）`
-    : `聊天：未命名（${shortDevSpaceMetadataAlias(metadataId)}，尚未绑定 Conversation）`
   const payload = {
-    title: 'DevSpace Checkpoint · 阶段进展',
+    title: 'DevSpace · Checkpoint',
+    subtitle: notificationConversationSubtitle({
+      title,
+      conversationId,
+      metadataId,
+      unbound: !conversationId,
+    }),
     body: [
-      subject,
-      String(summary || '').trim(),
-      next ? `下一阶段：${String(next).trim()}` : null,
+      compactNotificationText(summary, 180),
+      next ? `下一步：${compactNotificationText(next, 90)}` : null,
     ].filter(Boolean).join('\n'),
-    group: BARK_NOTIFICATION_GROUPS.chatDone,
+    group: conversationNotificationGroup({ conversationId, metadataId }),
   }
   if (conversationId) payload.url = `https://chatgpt.com/c/${conversationId}`
   return payload
@@ -4047,22 +4043,26 @@ async function main() {
    */
   const dispatchIncidentNotification = (conversationId, incident) => {
     if (!notificationConfig || !incident) return
-    const body = [
-      incident.title || conversationId,
+    const body = compactNotificationText(
       incident.reason || `${incident.terminalEvidence || 'abnormal'} / ${incident.tailShape || 'unknown tail'}`,
-    ].filter(Boolean).join('\n')
+      180,
+    )
     const payload = {
       title: incident.lifecycleClass === 'watchdog-timeout'
-        ? 'ChatGPT Watchdog 超时'
+        ? 'Incident · Watchdog 超时'
         : incident.lifecycleClass === 'active-zombie'
-          ? 'ChatGPT Watchdog 超时 · Active Zombie'
+          ? 'Incident · Active Zombie'
         : incident.lifecycleClass === 'complete-no-final'
-          ? 'ChatGPT Complete · 无 Final'
+          ? 'Incident · 无 Final'
         : incident.lifecycleClass === 'explicit-interrupted'
-          ? 'ChatGPT 运行中断'
-          : 'ChatGPT 异常结束',
+          ? 'Incident · 运行中断'
+          : 'Incident · 异常结束',
+      subtitle: notificationConversationSubtitle({
+        title: incident.title || conversationTitle(conversationId),
+        conversationId,
+      }),
       body,
-      group: BARK_NOTIFICATION_GROUPS.incident,
+      group: conversationNotificationGroup({ conversationId }),
       url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
     }
     dispatchPersistentNotification({
@@ -4265,9 +4265,10 @@ async function main() {
     const conversation = archive.db.prepare('SELECT title FROM conversations WHERE id=?').get(conversationId)
     const conversationTitle = conversation?.title || conversationId
     const result = await sendIncidentNotification(notificationConfig, {
-      title: 'ChatGPT 图片节点',
-      body: `${conversationTitle}\n本轮已进入并完成 ImageGen，归档识别到 ${event.imageCount} 张图片。`,
-      group: BARK_NOTIFICATION_GROUPS.chatDone,
+      title: 'ImageGen · 完成',
+      subtitle: conversationTitle,
+      body: `${event.imageCount} 张图片`,
+      group: conversationNotificationGroup({ conversationId }),
       url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`,
     })
     if (result.ok) {
@@ -7125,6 +7126,10 @@ async function main() {
       client,
       url: target.url,
       cleanupLiveSseJournals,
+      lastHealthAt: Date.now(),
+      lastHealthSuccessAt: Date.now(),
+      healthFailures: 0,
+      lastHealthError: null,
     })
     await log('passive ChatGPT page observer attached', { targetId: target.id, url: target.url })
   }
@@ -7135,9 +7140,50 @@ async function main() {
     // cooldown 的 blocked URLs 仍由 Guardian 主 session 维护。
     const eligible = targets.filter(shouldAttachPassivePageObserver)
     const liveIds = new Set(eligible.map(target => target.id))
+    const now = Date.now()
 
     for (const [targetId, observer] of passivePageObservers) {
-      if (!liveIds.has(targetId) || observer.client.closed) {
+      let detachReason = null
+      let healthError = null
+
+      if (!liveIds.has(targetId)) detachReason = 'target-missing'
+      else if (observer.client.closed) detachReason = 'client-closed'
+      else {
+        const hasActiveTransport = [...activeLiveTransports.values()]
+          .some(stream => String(stream?.targetId || '') === String(targetId))
+        if (shouldProbePassivePageObserver({
+          now,
+          lastHealthAt: observer.lastHealthAt,
+          hasActiveTransport,
+          clientClosed: observer.client.closed,
+        })) {
+          observer.lastHealthAt = now
+          try {
+            // Network.enable 是幂等、本地 CDP 控制命令，不产生任何 ChatGPT HTTP 请求。
+            // 它既能证明这个 observer session 还会回答命令，也顺手重新声明 Network 观察能力。
+            await observer.client.send('Network.enable', {}, PASSIVE_OBSERVER_HEALTH_TIMEOUT_MS)
+            observer.healthFailures = 0
+            observer.lastHealthSuccessAt = Date.now()
+            observer.lastHealthError = null
+          }
+          catch (error) {
+            healthError = error instanceof Error ? error.message : String(error)
+            observer.healthFailures = Number(observer.healthFailures || 0) + 1
+            observer.lastHealthError = healthError
+            await log('passive ChatGPT page observer health failed', {
+              targetId,
+              failureCount: observer.healthFailures,
+              threshold: PASSIVE_OBSERVER_HEALTH_FAILURE_THRESHOLD,
+              error: healthError,
+            })
+            if (observer.healthFailures >= PASSIVE_OBSERVER_HEALTH_FAILURE_THRESHOLD) {
+              detachReason = 'health-probe-failed'
+            }
+          }
+        }
+      }
+
+      if (detachReason) {
         await observer.cleanupLiveSseJournals?.('target-detached').catch(async (error) => {
           liveSseJournalErrors += 1
           await log('live SSE journal observer cleanup failed', {
@@ -7150,6 +7196,16 @@ async function main() {
         if (!liveIds.has(targetId)) {
           passiveObserverRetryAfter.delete(targetId)
           passiveObserverFailureCounts.delete(targetId)
+        }
+        else if (detachReason === 'health-probe-failed') {
+          // target 仍然存在，只是旧 observer session 已失明。下一轮主循环即可重挂；
+          // 不复用“睡眠 target 初次 attach 失败”的 5 分钟慢重试。
+          passiveObserverRetryAfter.set(targetId, Date.now() + PASSIVE_OBSERVER_ZOMBIE_RETRY_MS)
+          await log('passive ChatGPT page observer zombie detached', {
+            targetId,
+            retryAfterMs: PASSIVE_OBSERVER_ZOMBIE_RETRY_MS,
+            error: healthError ?? observer.lastHealthError ?? null,
+          })
         }
       }
     }

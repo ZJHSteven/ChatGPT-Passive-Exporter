@@ -27,6 +27,7 @@ describe('incident notifier', () => {
       group: 'ChatGPT Archive',
     }, {
       title: 'ChatGPT 异常结束',
+      subtitle: 'Archive 故障修复',
       body: '工具调用没有 final / 请检查',
       url: 'https://chatgpt.com/c/conversation-1',
     })
@@ -37,6 +38,7 @@ describe('incident notifier', () => {
     expect(body).toEqual({
       device_key: 'device token/with slash',
       title: 'ChatGPT 异常结束',
+      subtitle: 'Archive 故障修复',
       body: '工具调用没有 final / 请检查',
       group: 'ChatGPT Archive',
       url: 'https://chatgpt.com/c/conversation-1',
