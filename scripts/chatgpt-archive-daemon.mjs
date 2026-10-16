@@ -6617,6 +6617,7 @@ async function main() {
         requestStartedAt: startedAt,
         emit: appendLiveTransport,
       })
+      const canonical = new LiveSseCanonicalAccumulator()
       const liveKey = `${target.id}:${requestId}`
       const liveState = {
         targetId: target.id,
@@ -6635,6 +6636,7 @@ async function main() {
       }
       const live = {
         tracker,
+        canonical,
         liveKey,
         ready: false,
         pending: [],
@@ -6695,10 +6697,12 @@ async function main() {
               const bufferedAt = Date.now()
               appendJournalBase64(String(requestId), result?.bufferedData)
               live.tracker.ingestBase64(result?.bufferedData, bufferedAt)
+              live.canonical.ingestBase64(result?.bufferedData)
               live.ready = true
               for (const chunk of live.pending) {
                 appendJournalBase64(String(requestId), chunk.data)
                 live.tracker.ingestBase64(chunk.data, chunk.at)
+                live.canonical.ingestBase64(chunk.data)
               }
               live.pending = []
             })
@@ -6816,6 +6820,7 @@ async function main() {
       else {
         appendJournalBase64(String(requestId), data)
         live.tracker.ingestBase64(data, chunk.at)
+        live.canonical.ingestBase64(data)
       }
     })
 
@@ -6825,6 +6830,14 @@ async function main() {
         const finish = () => {
           if (!liveTransports.has(requestId)) return
           live.tracker.finish(Date.now())
+          promoteCompleteLiveSse(live.canonical, {
+            targetId: target.id,
+            requestId: String(requestId),
+            transport: live.tracker.transport,
+            endpoint: live.tracker.transport === 'resume'
+              ? '/backend-api/f/conversation/resume'
+              : '/backend-api/f/conversation',
+          })
           void finalizeLiveSseJournal(String(requestId), { event: 'stream-finished' })
           liveTransports.delete(requestId)
           activeLiveTransports.delete(live.liveKey)
