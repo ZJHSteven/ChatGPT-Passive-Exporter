@@ -2397,8 +2397,13 @@ async function main() {
   const passiveBodyPages = new Map()
   const passiveCatalogPages = new Map()
  const passivePageObservers = new Map()
-  // Phase 3 只在内存/state 暴露当前 in-flight transport 的生命体征；不保存正文或 token。
+  // activeLiveTransports 仍只暴露轻量生命体征；完整 SSE 正文另存到本地 live-sse journal，
+  // 不混进 state/log，避免普通诊断命令意外打印整段聊天正文。
   const activeLiveTransports = new Map()
+  let liveSseJournalStarted = 0
+  let liveSseJournalFinalized = 0
+  let liveSseJournalBytes = 0
+  let liveSseJournalErrors = 0
   // Remote/跨设备 turn 没有本机原始 SSE 时，使用第一方 Web 已验证的
   // `stream_status + canonical body` checkpoint fallback。它只在明确 active CID 上建立，
   // 并和 LiveTurn transport 分开：一旦本机已经有真正 live transport，就暂停主动 checkpoint。
