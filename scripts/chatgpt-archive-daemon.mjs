@@ -7037,6 +7037,10 @@ async function main() {
     const behavior = classifyConversationEvent(event.type, event.updateType)
     const now = Date.now()
     const activeBeforeIds = [...activeTurns.keys()]
+    // 明确的新 turn 必须立即废掉上一轮的 SSE satisfied 标记；同一 CID 可以在几秒内连续提问，
+    // 不能因为旧 turn 刚刚完整 promotion 就把新 turn 的 lifecycle 误认为“无需同步”。
+    if (behavior.startsTurn && behavior.explicitTurnStart) liveSseCanonicalSatisfied.delete(event.conversationId)
+    const sseSatisfied = recentLiveSseCanonicalSatisfied(event.conversationId, now)
     // 只记录生命周期元数据，不记录消息正文。并发实验需要精确知道每个
     // conversation 的 created/complete 时刻，否则 eventCounts 只能给总数，
     // 无法判断究竟是哪一条在高并发下被挤掉或漏掉。
@@ -7046,7 +7050,7 @@ async function main() {
       updateType: event.updateType || null,
       topic: event.topic || null,
     })
-    markDirty(event.conversationId, `wss:${event.type}`)
+    if (!sseSatisfied) markDirty(event.conversationId, `wss:${event.type}`)
     if (behavior.startsTurn) {
       const current = activeTurns.get(event.conversationId)
       const explicitNewTurn = Boolean(behavior.explicitTurnStart)
@@ -7088,7 +7092,18 @@ async function main() {
         observedAt: now,
         lifecycleState: 'closed',
       })
-      markSyncReady(event.conversationId, `wss:${event.type}`, nativeBodyGraceMs)
+      if (sseSatisfied) {
+        clearSyncDemand(event.conversationId)
+        liveSseBodyRefreshesSkipped += 1
+        void log('WSS complete satisfied by canonical SSE; body refresh skipped', {
+          conversationId: event.conversationId,
+          event: event.type,
+          turnExchangeId: sseSatisfied.turnExchangeId ?? null,
+          sourceRequestId: sseSatisfied.sourceRequestId ?? null,
+          transport: sseSatisfied.transport ?? null,
+        }).catch(() => {})
+      }
+      else markSyncReady(event.conversationId, `wss:${event.type}`, nativeBodyGraceMs)
     }
     const activeAfterIds = [...activeTurns.keys()]
     publishBridgeEvent({
