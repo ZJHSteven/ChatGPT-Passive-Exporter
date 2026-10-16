@@ -6398,10 +6398,12 @@ async function main() {
       const existing = turnWssTrackers.get(trackerKey)
       if (existing) return existing
       const cdpRequestId = `wss:${requestId}:${topic}`
+      const startedAt = Date.now()
+      openLiveSseJournal(cdpRequestId, 'turn-wss', startedAt)
       const tracker = new LiveTurnTransportTracker({
         cdpRequestId,
         transport: 'turn-wss',
-        requestStartedAt: Date.now(),
+        requestStartedAt: startedAt,
         emit: appendLiveTransport,
       })
       const liveKey = `${target.id}:${cdpRequestId}`
@@ -6409,7 +6411,7 @@ async function main() {
         targetId: target.id,
         cdpRequestId,
         transport: 'turn-wss',
-        startedAt: Date.now(),
+        startedAt,
         lastDataAt: null,
         dataEvents: 0,
         dataBytes: 0,
@@ -6420,7 +6422,7 @@ async function main() {
         bytesObserved: 0,
         pingCount: 0,
       })
-      const entry = { tracker, liveKey, requestId, topic, finished: false }
+      const entry = { tracker, liveKey, requestId, topic, cdpRequestId, finished: false }
       turnWssTrackers.set(trackerKey, entry)
       return entry
     }
