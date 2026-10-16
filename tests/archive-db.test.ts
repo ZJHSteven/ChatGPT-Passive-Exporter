@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, test } from 'vitest'
 import { ChatArchiveDb, devSpaceVirtualConversationId } from '../src/local/archive-db.ts'
 import { devSpaceToolArgsFingerprint } from '../src/local/devspace-audit-bridge.ts'
@@ -67,6 +68,34 @@ describe('ChatArchiveDb', () => {
     }
     finally {
       db.close()
+    }
+  })
+
+  test('最新 schema 的只读打开不会因另一个 writer 持锁而执行稳态 migration 写事务', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatgpt-archive-open-lock-'))
+    tempDirs.push(dir)
+    const file = path.join(dir, 'archive.sqlite')
+    const first = new ChatArchiveDb(file)
+    first.close()
+
+    const blocker = new DatabaseSync(file)
+    blocker.exec(`
+      PRAGMA journal_mode=WAL;
+      BEGIN IMMEDIATE;
+      INSERT INTO conversations (id, title, source_format, captured_at, imported_at)
+      VALUES ('lock-holder', 'lock-holder', 'test', 0, 0);
+    `)
+    let second: ChatArchiveDb | null = null
+    try {
+      // 若 migrate() 仍在稳态执行 UPDATE/DDL 写操作，这里会等待 busy_timeout 后失败；
+      // 最新 schema 下应只做 schema/数据检查，因此 WAL reader 可在 writer 持锁时立即打开。
+      second = new ChatArchiveDb(file)
+      expect(second.db.prepare('PRAGMA busy_timeout').get()).toEqual({ timeout: 5000 })
+    }
+    finally {
+      second?.close()
+      blocker.exec('ROLLBACK')
+      blocker.close()
     }
   })
 
