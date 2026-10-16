@@ -6430,6 +6430,7 @@ async function main() {
         event: 'stream-observer-detached',
         detail: { reason },
       })))
+      liveCanonicalDecoders.clear()
     }
 
     const registerLiveCanonicalDecoder = (requestId, canonical, source) => {
