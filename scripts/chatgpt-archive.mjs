@@ -368,11 +368,29 @@ async function daemonCommand(positionals, flags) {
 
     try {
       const probeStartedAt = Date.now()
-      await runArchiveScheduledTask()
+      let demandStartAttempts = 0
+      let nextDemandStartAt = 0
+      let sawNewProbeIdentity = false
       let stableSamples = 0
       let observed = null
       while (Date.now() - probeStartedAt < 45_000) {
-        await new Promise(resolve => setTimeout(resolve, 500))
+        // Windows 在 Node 子进程退出后，还需要几十毫秒让父级 wscript / Task Scheduler
+        // 实例从 Running 真正退场。此窗口里立刻 /Run 会被 IgnoreNew 正确忽略。
+        //
+        // 不用固定 sleep 猜时序：只要 one-shot permit 还未被新实例消费、且尚未看到
+        // 本轮新 PID，就短暂重发 demand start。旧实例退场后的第一个有效 /Run 会启动
+        // launcher 并消费 permit；一旦新 PID bootstrap state 出现，就立即停止重发。
+        if (
+          !sawNewProbeIdentity
+          && Date.now() - probeStartedAt < 10_000
+          && Date.now() >= nextDemandStartAt
+        ) {
+          demandStartAttempts += 1
+          await runArchiveScheduledTask()
+          nextDemandStartAt = Date.now() + 750
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 250))
         observed = await readDaemonState(flags)
         const observedPid = Number(observed.state?.pid)
         const observedStartedAt = Number(observed.state?.startedAt)
@@ -383,6 +401,7 @@ async function daemonCommand(positionals, flags) {
           && Number.isFinite(observedStartedAt)
           && observedStartedAt >= probeStartedAt - 5000
         )
+        if (isNewProbeIdentity) sawNewProbeIdentity = true
         if (isNewProbeIdentity && archiveDaemonSupervisorReady(observed)) {
           stableSamples += 1
           if (stableSamples >= 4) {
@@ -392,6 +411,7 @@ async function daemonCommand(positionals, flags) {
               resumed: true,
               supervised: true,
               stableSamples,
+              demandStartAttempts,
               ...observed,
               maintenance: await readArchiveDaemonMaintenance(DEFAULT_DAEMON_MAINTENANCE_PATH),
             }, null, 2))
