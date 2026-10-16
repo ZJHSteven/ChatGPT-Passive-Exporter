@@ -908,6 +908,10 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 - 2026-10-16 08:00–09:40《泌尿生殖系统》的 ClassFlow Notes 在 Archive Actor 正式 POST 之前终止；submission 错误为 `ChatGPT actor project not found or not visible in sidebar: 课堂录音→笔记`。
 - 2026-10-12 的课程出现过同一错误。当前 Guardian 的无障碍树已经再次能看到 `课堂录音→笔记` 以及 `在 课堂录音→笔记 中开启新聊天`，因此这是 Project/sidebar hydration 的瞬态就绪失败，不应按永久业务错误处理。
 - 当前 submission queue 的 retryable 分类漏掉了该错误，因此第一次失败即写成 `failed`；同时 submission queue 的 attempt error 没有接入 daemon Bark 通知，所以既不会自动恢复，也不会产生手机告警。ClassFlow 自己的 stage-event 通知目前仍因 `CLASSFLOW_NOTIFICATIONS_ENABLED=false` 关闭。
+- 进一步源码复核发现一个更具体的 UI race：`clickProjectNewChatSpa()` 在第一次找不到 Project action 时，会检查“项目”分组按钮并直接点击；但当前真实 DOM 的“项目”按钮带 `aria-expanded=true`。因此若 React 重渲染期间 Project 子项短暂消失、分组头仍存在，Actor 会把“已经展开但正在重挂载”误判成“折叠”，反而主动把 Project 区折叠掉，随后 2 秒内当然找不到目标 action。这是比 durable queue 分类更靠近根因的一层。
+- `terminal failed` 仅指 **Archive submission queue 的自动状态机终止自动重试**，不是 ChatGPT 模型回复的 terminal/final，也不是 SSE 结束。它应该只用于确定性的永久输入错误，或正式 POST 结果长期不确定、继续自动重发会有重复 turn 风险的 fail-closed 场景。
+- ClassFlow 的职责应继续保持“提交业务意图 + 查询 Archive submission 是否 accepted”；Archive 的 UI/CDP/429/Guardian 瞬态错误不应复制为 ClassFlow 业务 `last_error`。ClassFlow 只需在 Archive 真正给出 terminal failed 时以粗粒度方式停止业务流水线并指向 Archive 诊断。
+- 当前 SSE 架构也要与 supervisor 启动窗分开理解：Actor 在正式 `/f/conversation` POST 拿到 2xx + conversationId 后即视为 accepted，不等待模型完整生成；daemon 的 LiveTurn SSE parser 目前只持久化 lifecycle/resume 控制面，不直接把 assistant 正文写进 canonical message 表，最终正文仍由 `conversation-turn-complete` 后的 canonical body sync/被动 body reuse 收口。45/90 秒仅是 daemon 人工 resume 的基础设施健康探针窗口，与单次 Actor UI hydration、SSE 生成时长均无关。
 
 ### ExecPlan
 1. 将“Project 存在但当前 sidebar 未找到/不可见”的 Actor 错误归为可重试基础设施/UI 就绪错误；保留 `invalid projectName` 等真实输入错误为永久失败。
@@ -916,5 +920,7 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 4. 增加回归测试，跑 Archive 全套相关测试/类型检查；重启 daemon 后验证旧 failed submission 会按升级恢复逻辑进入 retry 并成功。
 5. Archive submission accepted 后，通过 ClassFlow 现有精细恢复接口让今天失败的 Notes 重新进入正常流水线，确认 conversation、Notes、摘要邮件最终闭环。
 6. 生产 canary 发现当前近期 DevSpace binding backfill 实际可占约 50 秒，超过 `daemon resume` 固定 45 秒健康窗口；将“部署恢复等待上限”放宽到 90 秒（仅影响人工 resume 的 fail-closed 等待，不改变 Task Scheduler 的 1 分钟自动监督周期），避免健康但启动较慢的 daemon 被误杀。
+7. 修正 Project 导航的首层瞬态恢复：先在不改变 UI 状态的前提下以 50–100ms 粒度等待 Project action 重挂载；只有明确观察到“项目”分组 `aria-expanded=false` 时才点击展开，绝不在 `true`/未知状态下盲点 toggle。durable submission queue 保留为第二层跨秒/跨进程兜底。
+8. 收紧 ClassFlow/Archive 边界：`queued/processing/retry_waiting` 只表示 Archive 已接管，不再把 Archive 内部 `lastError` 镜像进 ClassFlow 的业务 `last_error`；真正 `failed` 只记录粗粒度“Archive submission 已终止，需要查 Archive”的引用信息。
 
 
