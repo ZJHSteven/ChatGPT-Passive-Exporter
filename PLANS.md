@@ -944,5 +944,6 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 10. 将页面原生 `/f/conversation`、`/resume` 以及 turn-WSS `encoded_item` 的 SSE 原文升级为本地耐久证据：按 stream 独立追加写入，收到多少落多少，daemon/页面/网络异常中断后也保留已到达部分；控制面 tracker 继续独立解析 resume/handoff/done，避免“诊断日志”和“正文证据”互相污染。
 11. 用一条受控 Actor canary 捕获当前第一方完整 SSE fixture，确认 message snapshot / delta_encoding / tool / reasoning 的真实 shape。只有拿到直接证据后才实现 SSE→canonical promotion，禁止凭历史印象猜协议。
 12. promotion 的安全边界：只有 SSE 自己具备完整终止证据（DONE/message_stream_complete，且所需 delta 可完整重建）时，才允许直接把 SSE 消息 union/upsert 到 Archive 并跳过同 turn 的主动 body refresh；若 SSE 截断、解码不完整、协议未知或只拿到残片，则残片仍永久保留作 forensic/recovery evidence，但 canonical body fallback 继续存在。
+13. 生产部署最终验收时暴露独立 startup 门闩：新 daemon 已完成 Bridge、DevSpace seed/cursor、wake listener，并在日志中到达 `guardian ready`，但 state 仍停在 initializing，90 秒 supervisor 最终 fail-closed。源码确认 `establishGuardian()` 在 `guardian ready` 后会同步 await `Page.navigate/Page.reload` 的 CDP command ACK，第一次 `writeState()` 在其后；该 ACK 不是 Guardian readiness 证据，不应阻塞整个 daemon。改为 listener 已挂载后 fire-and-observe 发起导航/reload，command reject/timeout 仅记录日志；仍保留最多 20 秒 auth 等待和后续 Guardian/WSS health gate。这样 supervisor 不会被一个非必要 CDP ACK 卡死，但也不会绕过真正健康检查。
 
 
