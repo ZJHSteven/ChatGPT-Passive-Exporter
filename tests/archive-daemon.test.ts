@@ -1,3 +1,6 @@
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, test } from 'vitest'
 import {
   activeApiAllowed,
@@ -19,6 +22,9 @@ import {
   crossedDevSpaceIdleThresholds,
   classifyCatalogAsyncStatus,
   effectiveActiveRequestGap,
+  appendDaemonFatalLog,
+  daemonFatalLogPath,
+  formatDaemonFatalError,
   formatBeijingTime,
   isConversationTransportTopic,
   classifyConversationEvent,
@@ -77,6 +83,37 @@ import {
   watchdogTriggerForStartType,
   syncSubrequestFetchOptions,
 } from '../scripts/chatgpt-archive-daemon.mjs'
+
+test('daemon fatal 记录 Error stack 与任意 rejection，并尊重 --log', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-daemon-fatal-'))
+  const logPath = path.join(root, 'fatal.log')
+  try {
+    const error = new Error('fatal-smoke')
+    const line = await appendDaemonFatalLog(logPath, 'uncaughtException', error, Date.UTC(2026, 9, 16, 2, 0, 0))
+    expect(line).toContain('daemon fatal')
+    expect(line).toContain('uncaughtException')
+    expect(line).toContain('fatal-smoke')
+    expect(await fs.readFile(logPath, 'utf8')).toBe(line)
+    expect(formatDaemonFatalError({ code: 'E_SMOKE' })).toBe('{"code":"E_SMOKE"}')
+    expect(daemonFatalLogPath(['--log', logPath])).toBe(path.resolve(logPath))
+  }
+  finally {
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Windows Archive startup task 保留失败重启并增加五分钟自愈和电池常驻', async () => {
+  const helper = await fs.readFile(
+    new URL('../scripts/windows-archive-startup.ps1', import.meta.url),
+    'utf8',
+  )
+  expect(helper).toContain("MultipleInstances = 'IgnoreNew'")
+  expect(helper).toContain('RestartCount = 999')
+  expect(helper).toContain('RepetitionInterval (New-TimeSpan -Minutes 5)')
+  expect(helper).toContain('DisallowStartIfOnBatteries = $false')
+  expect(helper).toContain('StopIfGoingOnBatteries = $false')
+  expect(helper).toContain('Trigger = @($logonTrigger, $healthTrigger)')
+})
 
 test('global catalog replay 继承第一方 query 模板，只覆盖分页参数', () => {
   expect(listPath(28, 28, [

@@ -14,6 +14,7 @@ param(
 # Windows 登录自启动只负责“进程级高可用”，不参与 ChatGPT 协议逻辑：
 # - AtLogOn 启动 daemon；
 # - daemon 非正常退出时，Task Scheduler 每 1 分钟重试，最多 999 次；
+# - 另加 5 分钟一次的低频 health trigger；Running 时由 IgnoreNew 丢弃，死亡时补拉起；
 # - daemon 自己再负责 Chrome/Guardian/WSS/SQLite 的恢复。
 # 这样把 Windows 进程监督与业务逻辑分层，后续即使改用 AHK 做二次健康监视也不会互相绑死。
 
@@ -77,7 +78,14 @@ $actionParams = @{
 }
 $taskAction = New-ScheduledTaskAction @actionParams
 
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+
+# RestartOnFailure 在普通前台状态下可靠，但真实生产曾出现“屏幕关闭低功耗阶段 daemon
+# 退出后没有排队 restart”的样本。增加一个低频重复 trigger 作为独立第二道保险：
+# - daemon 正常运行：MultipleInstances=IgnoreNew，不会创建第二个实例；
+# - daemon 已退出：最迟下一次 5 分钟 tick 重新拉起；
+# - 不依赖应用自己还能发 heartbeat，因此能覆盖真正的进程死亡。
+$healthTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 5)
 
 # 任务本身就是 daemon，因此可直接使用 Task Scheduler 原生失败重启。
 # ExecutionTimeLimit=0 表示允许无限运行；StartWhenAvailable 处理登录瞬间调度服务尚未准备好的情况。
@@ -87,6 +95,9 @@ $settingsParams = @{
   RestartCount = 999
   RestartInterval = (New-TimeSpan -Minutes 1)
   ExecutionTimeLimit = [TimeSpan]::Zero
+  # Archive 是持续监控服务，不能继承 New-ScheduledTaskSettingsSet 的默认电池停机条件。
+  DisallowStartIfOnBatteries = $false
+  StopIfGoingOnBatteries = $false
 }
 $settings = New-ScheduledTaskSettingsSet @settingsParams
 
@@ -99,7 +110,7 @@ $principal = New-ScheduledTaskPrincipal @principalParams
 
 $taskParams = @{
   Action = $taskAction
-  Trigger = $trigger
+  Trigger = @($logonTrigger, $healthTrigger)
   Settings = $settings
   Principal = $principal
 }

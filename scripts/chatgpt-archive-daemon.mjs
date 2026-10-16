@@ -112,6 +112,50 @@ const DEFAULT_CHROME_SHORTCUT = process.platform === 'win32' && process.env.USER
   ? path.join(process.env.USERPROFILE, 'Desktop', 'Chrome CDP 日常版.lnk')
   : null
 
+/**
+ * 把任何顶层 fatal 原因规范化成可落盘文本。
+ *
+ * 这里不能假设 rejection 一定是 Error：第三方回调、事件监听器或裸 Promise
+ * 都可能 reject 任意对象。JSON.stringify 失败时再退回 String，保证“记录 fatal”
+ * 本身永远不会因为异常值而再次抛错。
+ */
+export function formatDaemonFatalError(error) {
+  if (error instanceof Error) return error.stack || error.message
+  if (typeof error === 'string') return error
+  try {
+    const serialized = JSON.stringify(error)
+    if (serialized) return serialized
+  }
+  catch {
+    // 循环引用等不可 JSON 化对象继续走 String fallback。
+  }
+  return String(error)
+}
+
+/**
+ * 追加一条不会污染正常结构化日志格式的 fatal 记录。
+ *
+ * 正常 loop error 已由 main 内部 catch 自愈并写 archive-daemon.log；这里只覆盖
+ * main() reject / uncaughtException / unhandledRejection 这种“进程将退出”的边界。
+ */
+export async function appendDaemonFatalLog(logPath, source, error, now = Date.now()) {
+  const resolvedLogPath = path.resolve(String(logPath || DEFAULT_LOG))
+  const payload = {
+    source: String(source || 'unknown'),
+    error: formatDaemonFatalError(error),
+  }
+  const line = '[' + new Date(Number(now) || Date.now()).toISOString() + '] daemon fatal ' + JSON.stringify(payload) + '\n'
+  await fs.mkdir(path.dirname(resolvedLogPath), { recursive: true }).catch(() => {})
+  await fs.appendFile(resolvedLogPath, line).catch(() => {})
+  return line
+}
+
+/** 从 CLI 参数解析 fatal 日志位置；与 main() 的 --log 语义保持一致。 */
+export function daemonFatalLogPath(argv = process.argv.slice(2)) {
+  const flags = parseArgs(argv)
+  return flags.has('log') ? path.resolve(String(flags.get('log'))) : DEFAULT_LOG
+}
+
 class CdpClient {
   constructor(url) {
     this.url = url
@@ -7901,10 +7945,30 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  main().catch((error) => {
-    console.error(error instanceof Error ? error.stack || error.message : String(error))
-    process.exitCode = 1
-  })
+  const fatalLogPath = daemonFatalLogPath()
+  let fatalExitStarted = false
+
+  /**
+   * 顶层 fatal 必须“先落盘，再退出”。
+   *
+   * 安装 uncaughtException handler 后 Node 不会再自动退出，所以这里显式 process.exit(1)；
+   * 不能在未知状态下继续跑 daemon。fatalExitStarted 同时避免 main reject 与进程事件
+   * 竞争时重复写同一个异常。
+   */
+  const exitOnFatal = (source, error) => {
+    if (fatalExitStarted) return
+    fatalExitStarted = true
+    const rendered = formatDaemonFatalError(error)
+    void appendDaemonFatalLog(fatalLogPath, source, error)
+      .finally(() => {
+        console.error(rendered)
+        process.exit(1)
+      })
+  }
+
+  process.once('uncaughtException', error => exitOnFatal('uncaughtException', error))
+  process.once('unhandledRejection', reason => exitOnFatal('unhandledRejection', reason))
+  main().catch(error => exitOnFatal('main', error))
 }
 
 

@@ -1,3 +1,12 @@
+export declare function formatDaemonFatalError(error: unknown): string
+export declare function appendDaemonFatalLog(
+  logPath: string,
+  source: string,
+  error: unknown,
+  now?: number,
+): Promise<string>
+export declare function daemonFatalLogPath(argv?: string[]): string
+
 /**
  * `chatgpt-archive-daemon.mjs` 保持为可直接由 Node 执行的 ESM daemon。
  * 测试只导入其纯函数 WSS parser，因此用旁路声明维持严格 TypeScript 检查，
