@@ -6676,7 +6676,25 @@ async function main() {
         state.dataEvents += 1
         state.dataBytes += Number.isFinite(Number(dataLength)) ? Number(dataLength) : Buffer.from(data, 'base64').byteLength
       }
-      if (!live.ready) live.pending.push(chunk)
+      if (!live.ready) {
+        // streamResourceContent() 返回前，dataReceived 已经是真实到达本机的字节。最终 `.sse` 仍要
+        // 等 bufferedData 后按正确顺序拼接，所以这里不能直接写主文件；但必须立即进 pre-ready
+        // WAL，避免这几秒内 daemon/Chrome 异常退出时连已经看到的残片都丢掉。
+        const journal = liveSseJournals.get(String(requestId))
+        if (journal) {
+          const sequence = live.pending.length
+          void journal.appendPreReadyBase64(data, { at: chunk.at, sequence }).catch(async (error) => {
+            liveSseJournalErrors += 1
+            await log('live SSE pre-ready WAL append failed', {
+              targetId: target.id,
+              requestId: String(requestId),
+              sequence,
+              error: error instanceof Error ? error.message : String(error),
+            }).catch(() => {})
+          })
+        }
+        live.pending.push(chunk)
+      }
       else {
         appendJournalBase64(String(requestId), data)
         live.tracker.ingestBase64(data, chunk.at)
