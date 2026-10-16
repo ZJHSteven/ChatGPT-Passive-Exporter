@@ -6521,6 +6521,7 @@ async function main() {
         requestStartedAt: startedAt,
         emit: appendLiveTransport,
       })
+      const canonical = new LiveSseCanonicalAccumulator()
       const liveKey = `${target.id}:${cdpRequestId}`
       activeLiveTransports.set(liveKey, {
         targetId: target.id,
@@ -6537,7 +6538,7 @@ async function main() {
         bytesObserved: 0,
         pingCount: 0,
       })
-      const entry = { tracker, liveKey, requestId, topic, cdpRequestId, finished: false }
+      const entry = { tracker, canonical, liveKey, requestId, topic, cdpRequestId, finished: false }
       turnWssTrackers.set(trackerKey, entry)
       return entry
     }
@@ -6547,6 +6548,14 @@ async function main() {
       entry.finished = true
       if (failedReason) entry.tracker.fail(failedReason, Date.now())
       else entry.tracker.finish(Date.now())
+      if (!failedReason) {
+        promoteCompleteLiveSse(entry.canonical, {
+          targetId: target.id,
+          requestId: entry.cdpRequestId,
+          transport: 'turn-wss',
+          endpoint: 'turn-wss',
+        })
+      }
       void finalizeLiveSseJournal(entry.cdpRequestId, {
         event: failedReason ? 'stream-failed' : 'stream-finished',
         ...(failedReason ? { detail: { reason: String(failedReason).slice(0, 240) } } : {}),
@@ -6582,6 +6591,7 @@ async function main() {
         const receivedAt = Date.now()
         appendJournalText(entry.cdpRequestId, item.encodedItem)
         entry.tracker.ingestText(item.encodedItem, receivedAt)
+        entry.canonical.ingestText(item.encodedItem)
         const state = activeLiveTransports.get(entry.liveKey)
         if (state) {
           state.lastDataAt = receivedAt
