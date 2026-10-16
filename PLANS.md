@@ -1,3 +1,21 @@
+## 2026-10-16 Watchdog 启动覆盖与 DevSpace durable replay
+
+### 目标
+- 所有 DevSpace metadata 一旦出现首个工具调用，就必须立即进入一个明确的 Watchdog generation；是否已绑定 canonical Conversation 不能决定“有没有 Watchdog”。
+- unbound generation 也必须立即发启动收据：优先使用 metadata 注册 Title；绑定后再使用 canonical Conversation title，避免用不可辨识的 metadata ID 作为正常展示。
+- Archive daemon 无论离线多久，重启后都必须从 durable 消费游标继续 replay DevSpace tool_audit，不能依赖固定 2 分钟 lookback。
+- 对 2026-10-16 已发生的 daemon 离线窗口做一次历史补洞：区分“只漏 Watchdog/审计镜像但 canonical Body 已由 WSS/final 补回”与“Body/terminal/incident 真缺失”，仅补真实缺口。
+
+### ExecPlan
+1. 统计 10-16 DevSpace tool_audit 与 Archive devspace_recovery_audits 的差集，按 metadata、时间段、绑定 conversation 聚合；逐个确认对应 canonical turn/body 是否已存在。
+2. 梳理所有通知的 title fallback：Conversation title → metadata Title → metadata ID（仅 Title 异常缺失时的故障兜底）；确认历史 metadata ID 通知来自哪些旧/异常路径。
+3. 在 Archive DB 增加 durable DevSpace audit cursor/high-water 状态，游标至少包含可稳定排序的 started_at + audit id；poll/replay 分页直到追平，成功消费后才推进游标。
+4. daemon startup 不再用 Date.now()-2min 作为唯一 catch-up 边界；首次升级时安全 bootstrap，之后严格从 durable cursor 续读。UDP wake 仍做低延迟门铃，60s poll 仍做兜底。
+5. unbound metadata 首次被观察时立即创建 provisional Watchdog start receipt；用 metadata Title 显示，不等待 Conversation ID。绑定后沿用同一 startedAt generation，避免第二条重复开始通知。
+6. 增加单元/集成测试：长时间离线 replay、同毫秒多 audit、分页、重启幂等、unbound title、缺 Title 故障兜底、bind 后去重、已有 active_watchdogs 恢复。
+7. 对今天历史缺口执行一次受控 replay/repair，验证 canonical Body/terminal/incident 完整性；不能因旧 tool audit 把已完成 turn 错误复活。
+8. 全量 typecheck/test/build 后受控重启生产 daemon，做真实新 metadata canary：首个 DevSpace 调用即收到 Title 可辨识的 Watchdog 开始通知；再绑定 Conversation 验证不重复发通知。
+
 # 2026-10-16 Watchdog 无声死亡与自愈加固 ExecPlan
 
 状态：**根因修复已生产上线并验证；监督层代码与全量回归已完成，但生产计划任务重注册再次被管理员 PI 拒绝，尚未部署自动拉起新定义**。
