@@ -197,6 +197,10 @@ describe('DevSpace audit bridge', () => {
         tool: 'read',
         argsJson: '{"path":"note.txt"}',
       })
+      expect(bridge.latestAuditCursor()).toEqual({
+        startedAt: '2026-10-03T06:02:00.000Z',
+        auditId: 'audit-2',
+      })
       expect(bridge.metadataSummaries()).toEqual([{
         metadataId: 'meta-1',
         firstAt: Date.parse('2026-10-03T06:00:00.000Z'),
@@ -234,14 +238,47 @@ describe('DevSpace audit bridge', () => {
           '2026-10-03T06:02:30.000Z',
           null,
         )
+        // 同一 started_at 再插一条，专门验证 durable cursor 的第二排序键不会漏兄弟记录。
+        writer.prepare(`
+          INSERT INTO tool_audit
+            (id, metadata_id, request_meta_json, tool, args_json, started_at, finished_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          'audit-4',
+          'meta-1',
+          '{"keys":[]}',
+          'read',
+          '{"path":"same-millisecond.txt"}',
+          '2026-10-03T06:02:30.000Z',
+          '2026-10-03T06:02:31.000Z',
+        )
       }
       finally {
         writer.close()
       }
       expect(bridge.metadataToolState('meta-1')).toMatchObject({
         runningTools: 1,
-        latestAuditId: 'audit-3',
-        lastFinishedAuditId: 'audit-2',
+        latestAuditId: 'audit-4',
+        lastFinishedAuditId: 'audit-4',
+      })
+
+      const firstPage = bridge.pollAfter({
+        startedAt: '2026-10-03T06:02:00.000Z',
+        auditId: 'audit-2',
+      }, 1)
+      expect(firstPage.map(row => row.id)).toEqual(['audit-3'])
+      const secondPage = bridge.pollAfter({
+        startedAt: firstPage[0].startedAt,
+        auditId: firstPage[0].id,
+      }, 1)
+      expect(secondPage.map(row => row.id)).toEqual(['audit-4'])
+      expect(bridge.pollAfter({
+        startedAt: secondPage[0].startedAt,
+        auditId: secondPage[0].id,
+      })).toEqual([])
+      expect(bridge.latestAuditCursor()).toEqual({
+        startedAt: '2026-10-03T06:02:30.000Z',
+        auditId: 'audit-4',
       })
       expect(bridge.mirrorBinding({
         metadataId: 'meta-1',

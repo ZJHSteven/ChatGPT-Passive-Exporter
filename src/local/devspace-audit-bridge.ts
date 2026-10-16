@@ -25,6 +25,15 @@ export interface DevSpaceAuditEvent {
   requestMetaJson: string | null
 }
 
+/**
+ * DevSpace tool_audit 的稳定分页游标。
+ * startedAt 保留 SQLite 原始 ISO 字符串；auditId 负责区分同一毫秒内的多条记录。
+ */
+export interface DevSpaceAuditCursor {
+  startedAt: string
+  auditId: string
+}
+
 export interface DevSpaceMetadataActivity {
   metadataId: string
   firstAt: number
@@ -432,6 +441,67 @@ export class DevSpaceAuditBridge {
         startedAtMs,
       }]
     })
+  }
+
+  /**
+   * 从 durable `(started_at, id)` 高水位之后严格续读。
+   *
+   * 与旧 pollSince(time) 最大的区别是：这里不会因为 daemon 离线超过固定 lookback 而漏行，
+   * 也不会在同一毫秒有多条 audit 时只靠时间戳跳过兄弟记录。调用方可以反复按最后一条
+   * 返回记录分页，直到结果少于 limit，即表示已经追平当前 DevSpace SQLite 头部。
+   */
+  pollAfter(cursor: DevSpaceAuditCursor, limit = 250): DevSpaceAuditEvent[] {
+    if (!this.open() || !this.db) return []
+    const requestMetaExpr = this.hasRequestMetaJson ? 'request_meta_json' : 'NULL'
+    const resultJsonExpr = this.hasResultJson ? 'result_json' : 'NULL'
+    const errorExpr = this.hasError ? 'error' : 'NULL'
+    const rows = this.db.prepare(`
+      SELECT id, metadata_id AS metadataId, tool, args_json AS argsJson,
+             ${resultJsonExpr} AS resultJson, ${errorExpr} AS error,
+             started_at AS startedAt, finished_at AS finishedAt,
+             ${requestMetaExpr} AS requestMetaJson
+      FROM tool_audit
+      WHERE metadata_id IS NOT NULL
+        AND metadata_id <> ''
+        AND (
+          started_at > ?
+          OR (started_at = ? AND id > ?)
+        )
+      ORDER BY started_at ASC, id ASC
+      LIMIT ?
+    `).all(
+      cursor.startedAt,
+      cursor.startedAt,
+      cursor.auditId,
+      Math.max(1, Math.trunc(limit)),
+    ) as Array<{
+      id: string
+      metadataId: string
+      tool: string
+      argsJson: string
+      resultJson: string | null
+      error: string | null
+      startedAt: string
+      finishedAt: string | null
+      requestMetaJson: string | null
+    }>
+    return rows.flatMap((row) => {
+      const startedAtMs = Date.parse(row.startedAt)
+      return Number.isFinite(startedAtMs) ? [{ ...row, startedAtMs }] : []
+    })
+  }
+
+  /** 当前 DevSpace audit 头部；首次升级 durable cursor 时用于建立明确 bootstrap 边界。 */
+  latestAuditCursor(): DevSpaceAuditCursor | null {
+    if (!this.open() || !this.db) return null
+    const row = this.db.prepare(`
+      SELECT started_at AS startedAt, id AS auditId
+      FROM tool_audit
+      WHERE metadata_id IS NOT NULL AND metadata_id <> ''
+      ORDER BY started_at DESC, id DESC
+      LIMIT 1
+    `).get() as DevSpaceAuditCursor | undefined
+    return row ?? null
   }
 
   /**
