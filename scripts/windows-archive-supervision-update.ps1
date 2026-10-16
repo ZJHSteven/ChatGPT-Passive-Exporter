@@ -32,6 +32,9 @@ $maintenance = [IO.Path]::GetFullPath((Join-Path $projectRoot 'data\archive-daem
 $startOnce = [IO.Path]::GetFullPath((Join-Path $projectRoot 'data\archive-daemon-start-once.flag'))
 $nodeExe = [IO.Path]::GetFullPath('D:\App\nodejs\nodejs\node.exe')
 $wscriptExe = [IO.Path]::GetFullPath((Join-Path $env:WINDIR 'System32\wscript.exe'))
+$currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$currentUserName = [string]$currentIdentity.Name
+$currentUserSid = [string]$currentIdentity.User.Value
 
 foreach ($requiredFile in @($launcher, $daemon, $nodeExe)) {
   if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
@@ -104,10 +107,17 @@ function Assert-ExistingArchiveTask {
 
   $principal = $task.Principal
   $principalUser = [string]$principal.UserId
-  $expectedUser = [string]$env:USERNAME
+  $principalSid = try {
+    (New-Object System.Security.Principal.NTAccount($principalUser)).
+      Translate([System.Security.Principal.SecurityIdentifier]).
+      Value
+  }
+  catch {
+    $null
+  }
   $userMatches = (
-    [string]::Equals($principalUser, $expectedUser, [StringComparison]::OrdinalIgnoreCase) -or
-    $principalUser.EndsWith('\' + $expectedUser, [StringComparison]::OrdinalIgnoreCase)
+    -not [string]::IsNullOrWhiteSpace($principalSid) -and
+    [string]::Equals($principalSid, $currentUserSid, [StringComparison]::OrdinalIgnoreCase)
   )
   if (-not $userMatches) {
     throw '现有任务 UserId 已漂移，不允许原位升级'
@@ -150,7 +160,7 @@ $newActionParams = @{
 }
 $newAction = New-ScheduledTaskAction @newActionParams
 
-$logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUserName
 $healthTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
 
 $settingsParams = @{
@@ -163,7 +173,7 @@ $settings.DisallowStartIfOnBatteries = $false
 $settings.StopIfGoingOnBatteries = $false
 
 $principalParams = @{
-  UserId = $env:USERNAME
+  UserId = $currentUserName
   LogonType = 'Interactive'
   RunLevel = 'Limited'
 }

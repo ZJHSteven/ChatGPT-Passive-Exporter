@@ -120,6 +120,8 @@ test('Windows Archive startup task 由每分钟重复触发承担进程级自愈
   expect(helper).toContain('ExpectedDaemonSha256')
   expect(helper).toContain('ExpectedLauncherSha256')
   expect(helper).toContain('Get-FileHash -LiteralPath $canonicalDaemon -Algorithm SHA256')
+  expect(helper).toContain('$currentUserName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name')
+  expect(helper).not.toContain('New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME')
 })
 
 test('Windows Archive supervision updater 只能原位升级固定既有任务', async () => {
@@ -131,6 +133,9 @@ test('Windows Archive supervision updater 只能原位升级固定既有任务',
   expect(helper).toContain('CurrentArgumentsMode = $validated.ArgumentsMode')
   expect(helper).toContain("throw '现有任务 Arguments 已漂移，不允许原位升级'")
   expect(helper).toContain("throw '现有任务 RunLevel 不是 Limited，不允许原位升级'")
+  expect(helper).toContain('$currentUserSid = [string]$currentIdentity.User.Value')
+  expect(helper).toContain('Translate([System.Security.Principal.SecurityIdentifier])')
+  expect(helper).not.toContain('-AtLogOn -User $env:USERNAME')
   expect(helper).toContain('RepetitionInterval (New-TimeSpan -Minutes 1)')
   expect(helper).toContain("MultipleInstances = 'IgnoreNew'")
   expect(helper).toContain('Set-ScheduledTask @setParams')

@@ -118,6 +118,7 @@ if ($actualLauncherSha256 -ne $ExpectedLauncherSha256.ToLowerInvariant()) {
 }
 
 $wscriptExe = Join-Path $env:WINDIR 'System32\wscript.exe'
+$currentUserName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 # 计划任务本体执行 wscript，而不是直接执行 node.exe：wscript 会隐藏 Node 的控制台，
 # 并等待 Node 退出后把退出码原样传回 Task Scheduler，因此失败重启语义仍然成立。
@@ -143,7 +144,7 @@ $actionParams = @{
 }
 $taskAction = New-ScheduledTaskAction @actionParams
 
-$logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUserName
 
 # 本机实测证明：action 已经成功启动后，即使子进程最终返回 exit code 1，
 # Task Scheduler 仍会把该 action 记为“已完成”，不会触发 RestartOnFailure。
@@ -172,7 +173,7 @@ $settings.DisallowStartIfOnBatteries = $false
 $settings.StopIfGoingOnBatteries = $false
 
 $principalParams = @{
-  UserId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+  UserId = $currentUserName
   LogonType = 'Interactive'
   RunLevel = 'Limited'
 }
