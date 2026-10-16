@@ -2751,10 +2751,14 @@ async function main() {
    * 调用方必须只在 runtime 新建/切换 generation 时调用；daemon startup 恢复 active_watchdogs
    * 的路径故意不调用这里，因此升级或重启不会把旧 generation 全部补发到手机。
    */
-  const dispatchWatchdogStartNotification = (conversationId, active, title = null) => {
+  const dispatchWatchdogStartNotification = (conversationId, active, title = null, metadataId = null) => {
     if (!notificationConfig || !conversationId || !active) return false
     const startedAt = Number(active.startedAt || 0)
-    const notificationKey = watchdogStartNotificationKey(conversationId, startedAt)
+    // DevSpace generation 在未绑定阶段已经可能发过起点收据。绑定后继续使用同一个
+    // metadata+startedAt key，成功过就去重；若未绑定通知此前发送失败，则这里会自然重试。
+    const notificationKey = metadataId
+      ? unboundWatchdogStartNotificationKey(metadataId, startedAt)
+      : watchdogStartNotificationKey(conversationId, startedAt)
     if (!notificationKey) return false
     return dispatchPersistentNotification({
       notificationKey,
@@ -2773,6 +2777,40 @@ async function main() {
         startedAt,
         watchdogAt: startedAt + watchdogMs,
         startType: active.startType ?? null,
+        metadataId,
+      },
+    })
+  }
+
+  /**
+   * metadata 尚未解析出 canonical CID 时也立即发 Watchdog 起点收据。
+   * Title 来自 DevSpace init 注册；Title 缺失不是正常分支，payload 会显式标为异常并只在
+   * 这种情况下展示短 metadata alias，便于排障。
+   */
+  const dispatchUnboundWatchdogStartNotification = (metadataId, candidate, title = null) => {
+    if (!notificationConfig || !metadataId || !candidate) return false
+    const startedAt = Number(candidate.startedAt || 0)
+    const notificationKey = unboundWatchdogStartNotificationKey(metadataId, startedAt)
+    if (!notificationKey) return false
+    return dispatchPersistentNotification({
+      notificationKey,
+      kind: 'watchdog-start',
+      conversationId: null,
+      turnKey: `generation:${startedAt}`,
+      payload: buildWatchdogStartNotificationPayload({
+        metadataId,
+        title,
+        startedAt,
+        watchdogMs,
+      }),
+      successLog: 'unbound watchdog start notification sent',
+      failureLog: 'unbound watchdog start notification failed',
+      logFields: {
+        metadataId,
+        startedAt,
+        watchdogAt: startedAt + watchdogMs,
+        startType: 'devspace:first-tool-unbound',
+        titlePresent: Boolean(String(title || '').trim()),
       },
     })
   }
