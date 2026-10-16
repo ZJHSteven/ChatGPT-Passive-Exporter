@@ -80,20 +80,23 @@ $taskAction = New-ScheduledTaskAction @actionParams
 
 $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 
-# RestartOnFailure 在普通前台状态下可靠，但真实生产曾出现“屏幕关闭低功耗阶段 daemon
-# 退出后没有排队 restart”的样本。增加一个低频重复 trigger 作为独立第二道保险：
-# - daemon 正常运行：MultipleInstances=IgnoreNew，不会创建第二个实例；
-# - daemon 已退出：最迟下一次 5 分钟 tick 重新拉起；
-# - 不依赖应用自己还能发 heartbeat，因此能覆盖真正的进程死亡。
-$healthTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 5)
+# 本机实测证明：action 已经成功启动后，即使子进程最终返回 exit code 1，
+# Task Scheduler 仍会把该 action 记为“已完成”，不会触发 RestartOnFailure。
+# 因此不能把 RestartOnFailure 当成 daemon 的进程级监督器。
+#
+# 正确做法仍然完全由 Task Scheduler 自己负责：
+# - 登录时立即启动一次；
+# - 之后每分钟再触发一次同一个任务；
+# - daemon 正常运行时，MultipleInstances=IgnoreNew 会忽略新 tick，不会创建第二实例；
+# - daemon 已退出时，下一分钟 tick 会重新启动它。
+# 这样没有外置 watchdog/helper，也不依赖应用自己还能发 heartbeat。
+$healthTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
 
-# 任务本身就是 daemon，因此可直接使用 Task Scheduler 原生失败重启。
-# ExecutionTimeLimit=0 表示允许无限运行；StartWhenAvailable 处理登录瞬间调度服务尚未准备好的情况。
+# ExecutionTimeLimit=0 表示允许 daemon 无限运行；
+# StartWhenAvailable 处理登录瞬间调度服务尚未准备好的情况。
 $settingsParams = @{
   StartWhenAvailable = $true
   MultipleInstances = 'IgnoreNew'
-  RestartCount = 999
-  RestartInterval = (New-TimeSpan -Minutes 1)
   ExecutionTimeLimit = [TimeSpan]::Zero
 }
 $settings = New-ScheduledTaskSettingsSet @settingsParams

@@ -1,18 +1,18 @@
 # 2026-10-16 Watchdog 无声死亡与自愈加固 ExecPlan
 
-状态：**根因修复已生产上线并验证；监督层增强待管理员审批，不影响根因修复**。
+状态：**根因修复已生产上线并验证；监督层设计已纠正，待重注册生产计划任务并验收**。
 
-现象：2026-10-16 08:47:32 ChatGPT Archive Daemon 以退出码 1（Task Scheduler 记录为 0x80070001）异常退出；此后新 turn 全部失去 Watchdog。此前 10/14、10/15 同类退出会由 RestartOnFailure 自动拉起，但本次发生在 AC 供电、屏幕关闭的低功耗会话中，Task Scheduler 没有再发出 325/110/100 重启事件。与此同时，daemon 顶层 fatal 只写 stderr，隐藏 wscript launcher 不保存 stderr，导致真正异常栈不可追溯。
+现象：2026-10-16 08:47:32 ChatGPT Archive Daemon 以退出码 1（Task Scheduler 记录为 0x80070001）异常退出；此后新 turn 全部失去 Watchdog。重新核对 DevSpace audit 后确认，10/14、10/15 那些数秒后重新起来的实例都来自当时聊天显式执行的 schtasks /Run / Start-ScheduledTask，并非 RestartOnFailure 自动拉起。进一步用隔离临时任务验证：合法 RestartCount=2、RestartInterval=PT1M、action=cmd /c exit 1，等待 70 秒也没有自动重启；本机 Task Scheduler 不会把“action 已成功启动、子进程随后返回非零 exit code”当成需要 retry 的任务级失败。
 
-目标：让 Archive daemon 即使再次遇到顶层/事件回调 fatal 也能留下明确异常栈；并增加独立于 RestartOnFailure 的低频自愈触发，避免低功耗/调度边界导致 daemon 长时间静默死亡。保持 MultipleInstances=IgnoreNew，不得因自愈触发产生重复 daemon。
+目标：让 Archive daemon 即使再次遇到顶层/事件回调 fatal 也能留下明确异常栈；进程级自愈完全由 Task Scheduler 本身承担，不引入外置 helper：AtLogOn 负责首次启动，每 1 分钟 repetition trigger 负责存活兜底，MultipleInstances=IgnoreNew 保证健康 daemon 不会产生第二实例。
 
 1. 生产时间线已锁定：08:47:30.727 另一聊天启动 chatgpt-archive daemon status + 多次 search；08:47:32.484 DevSpace UDP wake 收到 write_stdin audit；08:47:32.785 Task Scheduler 记录 Archive daemon code 1；该 audit 没有进入 recovery 表。
 2. 隔离复现已完成：另一个连接持有 Archive 写事务时，旧版 busy_timeout=0 会让 observeDevSpaceMetadata 0ms 直接抛 database is locked；异常经 DevSpaceAuditWakeListener 裸 onWake 从 UDP Socket 回调冒泡，Node 与生产一样 exit code 1。
 3. 根因修复：Archive DB busy_timeout=5000；migrate 中两条历史 incidents UPDATE 改为先 SELECT EXISTS、只有确有旧数据时才写；最新 schema 下即使另一个 writer 已持锁，再次构造 ChatArchiveDb 仍可约 3ms 完成，不再为普通 search/read 制造稳态写事务。
 4. DevSpace UDP wake handler 增加异常隔离，记录 handlerErrors/lastError；门铃处理失败只等待下一次门铃或 60s durable poll 补账，任何单次 SQLite/解析异常都不得杀 daemon。
-5. 顶层 fatal 日志继续保留，覆盖 main reject、uncaughtException、unhandledRejection；Windows RestartOnFailure / 5 分钟 health trigger 仅作为最后 fallback，不作为根因解释。AC 息屏/Modern Standby 已明确排除为本次原因。
+5. 顶层 fatal 日志继续保留，覆盖 main reject、uncaughtException、unhandledRejection。监督层不再依赖 RestartOnFailure；改为 Task Scheduler 每 1 分钟重复触发同一任务 + IgnoreNew。AC 息屏/Modern Standby 已明确排除为本次原因。
 6. 已完成 busy timeout、writer 持锁下稳态 reopen、wake handler throw-survival 等回归；全量 27/27 test files、245/245 tests、TypeScript 与四套 build 通过。生产 daemon 已重载为 PID 13176；当前真实 DevSpace wake 已消费 44 次，handlerErrors=0、WSS=3、Bridge=true、Guardian failures=0、syncErrors=0、notification/daemon lastError=null，且没有 daemon fatal。
-7. startup helper 的 5 分钟 health trigger / battery 条件增强代码已完成，但重注册现有计划任务需要管理员权限；普通注册被 Windows 拒绝，adminreq 又因持久化 provenance 审批不足被 PI 拒绝。现有旧任务仍保持 RestartOnFailure=1min/999 并成功启动新 daemon。该监督层增强只作为 fallback，不能也不会替代本次 SQLite/UDP 根因修复。
+7. startup helper 已纠正为 1 分钟 repetition trigger + battery 条件关闭，并移除误导性的 RestartOnFailure 配置。重注册现有生产计划任务仍需要管理员权限；完成代码/测试后走 adminreq 正常审批，不绕过策略。生产验收必须包含：健康时一分钟 tick 不产生第二实例；受控停止 daemon 后 <=1 分钟由 Task Scheduler 自身重新启动。
 
 # 2026-10-15 第一方协议贴合审计与漂移判级修正 ExecPlan
 

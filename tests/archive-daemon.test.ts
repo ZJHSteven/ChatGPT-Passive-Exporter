@@ -102,14 +102,15 @@ test('daemon fatal 记录 Error stack 与任意 rejection，并尊重 --log', as
   }
 })
 
-test('Windows Archive startup task 保留失败重启并增加五分钟自愈和电池常驻', async () => {
+test('Windows Archive startup task 由每分钟重复触发承担进程级自愈并保持单实例', async () => {
   const helper = await fs.readFile(
     new URL('../scripts/windows-archive-startup.ps1', import.meta.url),
     'utf8',
   )
   expect(helper).toContain("MultipleInstances = 'IgnoreNew'")
-  expect(helper).toContain('RestartCount = 999')
-  expect(helper).toContain('RepetitionInterval (New-TimeSpan -Minutes 5)')
+  expect(helper).not.toContain('RestartCount =')
+  expect(helper).not.toContain('RestartInterval =')
+  expect(helper).toContain('RepetitionInterval (New-TimeSpan -Minutes 1)')
   expect(helper).toContain('$settings.DisallowStartIfOnBatteries = $false')
   expect(helper).toContain('$settings.StopIfGoingOnBatteries = $false')
   expect(helper).toContain('Trigger = @($logonTrigger, $healthTrigger)')
