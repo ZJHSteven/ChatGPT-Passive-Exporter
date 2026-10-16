@@ -6053,6 +6053,15 @@ async function main() {
       repairQueuedAt: generationRestarted ? null : (current?.repairQueuedAt ?? null),
     }
     unboundDevSpaceTurns.set(event.metadataId, nextCandidate)
+    if (!current || generationRestarted) {
+      const title = binding.displayTitle ?? metadataState?.title ?? null
+      dispatchUnboundWatchdogStartNotification(event.metadataId, nextCandidate, title)
+      void log('DevSpace first tool started unbound watchdog', {
+        metadataId: event.metadataId,
+        startedAt: nextCandidate.startedAt,
+        titlePresent: Boolean(String(title || '').trim()),
+      })
+    }
   }
 
   const pollDevSpaceAudits = () => {
