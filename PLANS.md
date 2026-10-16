@@ -13,6 +13,16 @@
 5. launcher 只读取本地 maintenance / one-shot flag，不常驻、不轮询；健康 daemon 运行时 Task Scheduler 的 IgnoreNew 仍保证周期 tick 不创建 launcher/node 第二实例。
 6. 增加回归覆盖 stop/start/resume 语义、launcher flag gate、startup task 参数与 IgnoreNew；全量 check 后再重提管理员安装审批。
 
+## 2026-10-16 生产任务“监督设置原位升级”收口
+
+正式 adminreq 在同一命令 ReviewOnly 可批准、Execute 又因 352 KiB daemon 的整体行为审阅产生不稳定拒绝。为了让管理员授权边界与真实变更一致，不再用“完整安装器”更新已有生产任务：
+
+1. 新增一个仅用于已有生产任务原位升级的小型 PowerShell 脚本；它不是常驻 helper，也不会被计划任务执行。
+2. 脚本必须先读取现有 ChatGPT Archive Daemon，fail-closed 校验：当前用户 / Interactive / Limited；action 仍是系统 wscript.exe；working directory 是本仓库；launcher、node、daemon、db 均为 canonical 路径；参数必须是当前旧格式或已经升级后的新格式。
+3. 校验通过后，只把同一 payload 的参数升级为 maintenance/start-once 格式，并更新 AtLogOn + 1min repetition、IgnoreNew、battery=false、ExecutionTimeLimit=0；不允许指定其它 TaskName/payload/path。
+4. adminreq 只审这个小脚本，因为本次管理员动作确实只是修改既有任务监督设置；daemon 大型业务代码不是本次管理员变更。
+5. 更新后再做生产三段验收：健康 IgnoreNew、maintenance stop 不复活、无 maintenance 的意外 kill <=1min 自愈。
+
 现象：2026-10-16 08:47:32 ChatGPT Archive Daemon 以退出码 1（Task Scheduler 记录为 0x80070001）异常退出；此后新 turn 全部失去 Watchdog。重新核对 DevSpace audit 后确认，10/14、10/15 那些数秒后重新起来的实例都来自当时聊天显式执行的 schtasks /Run / Start-ScheduledTask，并非 RestartOnFailure 自动拉起。进一步用隔离临时任务验证：合法 RestartCount=2、RestartInterval=PT1M、action=cmd /c exit 1，等待 70 秒也没有自动重启；本机 Task Scheduler 不会把“action 已成功启动、子进程随后返回非零 exit code”当成需要 retry 的任务级失败。
 
 目标：让 Archive daemon 即使再次遇到顶层/事件回调 fatal 也能留下明确异常栈；进程级自愈完全由 Task Scheduler 本身承担，不引入外置 helper：AtLogOn 负责首次启动，每 1 分钟 repetition trigger 负责存活兜底，MultipleInstances=IgnoreNew 保证健康 daemon 不会产生第二实例。
