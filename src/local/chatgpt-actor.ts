@@ -1003,32 +1003,45 @@ async function clickProjectNewChatSpa(client: ActorCdpClient, projectName: strin
         })
         || null
     }
+    const findSectionToggle = () => [...document.querySelectorAll('button')]
+      .filter(usableExactProjectAction)
+      .find((button) => {
+        const identity = [button.getAttribute('aria-label') || '', button.innerText || ''].join(' ')
+          .replace(/\s+/gu, ' ')
+          .trim()
+        return identity === '项目' || /^projects?$/iu.test(identity)
+      }) || null
+
+    // 后台 Guardian 中 React sidebar 可能出现短暂的“分组标题已存在，但 Project 子项正在重挂载”窗口。
+    // 第一次没找到目标时绝不能立刻点击双向 toggle：如果当前本来就是 expanded=true，这一点击反而会
+    // 主动把健康的 Project 区折叠起来。第一层恢复只做无副作用观察，给 React 一个很短的稳定窗口。
     let target = findTarget()
+    const transientDeadline = Date.now() + 750
+    while (!target && Date.now() < transientDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+      target = findTarget()
+    }
+
     if (!target) {
       const projectActionExistsInDom = [...document.querySelectorAll('button')].some((button) => {
         const aria = button.getAttribute('aria-label') || ''
         return aria === exactZh || (aria.includes(projectName) && /项目操作|project|开启新聊天|new chat/iu.test(aria))
       })
-      // ChatGPT 会把“项目”分组折叠起来；此时具体 Project 按钮根本不在 DOM，不能把它
-      // 误报成“Project 不存在”。但如果 Project 行已经在 DOM，只是 action 被旧的交互性
-      // 判据过滤掉，就绝不能再点一次分组标题——那会把已经展开的项目区反向折叠。
-      if (!projectActionExistsInDom) {
-        const sectionToggle = [...document.querySelectorAll('button')].filter(usableExactProjectAction).find((button) => {
-          const identity = [button.getAttribute('aria-label') || '', button.innerText || ''].join(' ')
-            .replace(/\s+/gu, ' ')
-            .trim()
-          return identity === '项目' || /^projects?$/iu.test(identity)
-        })
-        if (sectionToggle) {
-          sectionToggle.click()
-          // sidebar section 是异步 React hydration：固定 250ms 在后台 Guardian 上偶尔不够。
-          // 这里只等待 DOM 中出现精确 Project action，不发任何网络请求。
-          const deadline = Date.now() + 2_000
-          while (!target && Date.now() < deadline) {
-            await new Promise(resolve => setTimeout(resolve, 100))
-            target = findTarget()
-          }
-        }
+      const sectionToggle = findSectionToggle()
+      const sectionExpanded = sectionToggle?.getAttribute('aria-expanded')
+
+      // 只有浏览器明确报告 aria-expanded=false 时才允许展开。true 说明分组已经展开，此时 Project
+      // 子项缺失应继续按 hydration/rerender 瞬态处理；缺少 aria-expanded 也 fail-closed，不猜状态。
+      if (!projectActionExistsInDom && sectionToggle && sectionExpanded === 'false') {
+        sectionToggle.click()
+      }
+
+      // 无论刚刚是明确从 collapsed 展开，还是分组本来就 expanded 但子项仍在重挂载，
+      // 都只继续观察 DOM；这里不发网络请求、不 reload，也不触碰 composer。
+      const stableDeadline = Date.now() + 2_000
+      while (!target && Date.now() < stableDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        target = findTarget()
       }
     }
     if (!target) return false
