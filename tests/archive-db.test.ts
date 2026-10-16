@@ -603,6 +603,84 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('DevSpace audit durable cursor 以 started_at + audit id 单调推进并可跨重启读取', () => {
+    const db = tempDb()
+    try {
+      expect(db.getDevSpaceAuditCursor()).toBeNull()
+
+      expect(db.advanceDevSpaceAuditCursor({
+        startedAt: '2026-10-16T00:47:32.484Z',
+        auditId: 'audit-a',
+        updatedAt: 1000,
+      })).toEqual({
+        consumerKey: 'archive-daemon',
+        startedAt: '2026-10-16T00:47:32.484Z',
+        auditId: 'audit-a',
+        updatedAt: 1000,
+      })
+
+      // 同一毫秒内必须按 audit id 继续前进，不能因为时间戳相同而漏掉第二条。
+      expect(db.advanceDevSpaceAuditCursor({
+        startedAt: '2026-10-16T00:47:32.484Z',
+        auditId: 'audit-b',
+        updatedAt: 1100,
+      })).toMatchObject({ auditId: 'audit-b', updatedAt: 1100 })
+
+      // overlap/replay 提交旧游标时必须保持单调，不得把 durable 高水位倒退。
+      expect(db.advanceDevSpaceAuditCursor({
+        startedAt: '2026-10-16T00:47:31.999Z',
+        auditId: 'audit-z',
+        updatedAt: 9999,
+      })).toEqual({
+        consumerKey: 'archive-daemon',
+        startedAt: '2026-10-16T00:47:32.484Z',
+        auditId: 'audit-b',
+        updatedAt: 1100,
+      })
+    }
+    finally {
+      db.close()
+    }
+  })
+
+  test('未完成 DevSpace recovery audit 可在 daemon 重启后枚举并按 finish 回填', () => {
+    const db = tempDb()
+    try {
+      db.upsertDevSpaceRecoveryAudit({
+        auditId: 'audit-running',
+        conversationId: 'conversation-a',
+        metadataId: 'meta-a',
+        tool: 'exec_command',
+        toolFingerprint: 'exec_command\n{}',
+        argsJson: '{}',
+        resultJson: null,
+        error: null,
+        conclusion: null,
+        startedAt: 1000,
+        finishedAt: null,
+        observedAt: 1100,
+      })
+      db.upsertDevSpaceRecoveryAudit({
+        auditId: 'audit-done',
+        conversationId: 'conversation-a',
+        metadataId: 'meta-a',
+        tool: 'read',
+        toolFingerprint: 'read\n{}',
+        argsJson: '{}',
+        resultJson: '{"ok":true}',
+        error: null,
+        conclusion: null,
+        startedAt: 1200,
+        finishedAt: 1300,
+        observedAt: 1400,
+      })
+      expect(db.listPendingDevSpaceRecoveryAuditIds()).toEqual(['audit-running'])
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('turn notification ledger 只记录成功发送事实并可跨重启去重', () => {
     const db = tempDb()
     try {

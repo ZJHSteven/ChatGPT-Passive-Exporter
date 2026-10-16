@@ -293,6 +293,21 @@ export interface DevSpaceRecoveryAuditRow {
   supersededByMessageId: string | null
 }
 
+/**
+ * Archive 消费 DevSpace append-only tool_audit 的 durable 高水位。
+ *
+ * startedAt 使用 DevSpace SQLite 中原始 ISO 时间字符串，而不是重新格式化成 epoch：
+ * SQLite 对 ISO-8601 UTC 字符串可以稳定按字典序排序；同一毫秒出现多条 audit 时再用
+ * auditId 做第二排序键。这样 daemon 即使离线数小时，重启后也能从最后确认消费的位置
+ * 严格续读，而不是依赖“往回看几分钟”的脆弱时间窗。
+ */
+export interface DevSpaceAuditCursorRow {
+  consumerKey: string
+  startedAt: string
+  auditId: string
+  updatedAt: number
+}
+
 /** canonical Body 与 DevSpace recovery overlay 的尾部差异摘要。 */
 export interface DevSpaceTailGapSummary {
   conversationId: string
@@ -842,6 +857,16 @@ export class ChatArchiveDb {
 
       CREATE INDEX IF NOT EXISTS devspace_recovery_audits_fingerprint
         ON devspace_recovery_audits(conversation_id, tool_fingerprint, superseded_at, started_at);
+
+      -- DevSpace audit 的 durable 消费游标。
+      -- 一个 consumer 一行；Archive daemon 当前使用固定 consumer key。游标只在整条 audit
+      -- 已完成 observe/recovery/watchdog 处理后推进，因此进程崩溃最多造成安全重放，不会漏过。
+      CREATE TABLE IF NOT EXISTS devspace_audit_consumer_state (
+        consumer_key TEXT PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        audit_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
 
       -- Watchdog 属于 conversation/turn 生命周期，不属于某一个 metadata。
       -- 同一 conversation 可能先后出现多个 openai/session，因此把 active timer 独立持久化。
@@ -3863,6 +3888,79 @@ export class ChatArchiveDb {
       WHERE conversation_id = ? ${whereSuperseded}
       ORDER BY started_at ASC, audit_id ASC
     `).all(conversationId) as unknown as DevSpaceRecoveryAuditRow[]
+  }
+
+  /**
+   * 读取某个 DevSpace audit consumer 的 durable 高水位。
+   */
+  getDevSpaceAuditCursor(consumerKey = 'archive-daemon'): DevSpaceAuditCursorRow | null {
+    const row = this.db.prepare(`
+      SELECT consumer_key AS consumerKey,
+             started_at AS startedAt,
+             audit_id AS auditId,
+             updated_at AS updatedAt
+      FROM devspace_audit_consumer_state
+      WHERE consumer_key = ?
+      LIMIT 1
+    `).get(consumerKey) as DevSpaceAuditCursorRow | undefined
+    return row ?? null
+  }
+
+  /**
+   * 单调推进 durable DevSpace audit 游标。
+   *
+   * 网络/UDP 重复门铃、daemon overlap replay 都可能再次提交旧游标；这里在 SQLite 层保证
+   * `(started_at, audit_id)` 只能前进不能后退。这样调用方无需依赖进程内去重来保证持久正确性。
+   */
+  advanceDevSpaceAuditCursor(input: {
+    consumerKey?: string
+    startedAt: string
+    auditId: string
+    updatedAt?: number
+  }): DevSpaceAuditCursorRow {
+    const consumerKey = input.consumerKey?.trim() || 'archive-daemon'
+    const startedAt = input.startedAt.trim()
+    const auditId = input.auditId.trim()
+    if (!startedAt) throw new Error('DevSpace audit cursor startedAt must not be empty')
+    if (!auditId) throw new Error('DevSpace audit cursor auditId must not be empty')
+    const updatedAt = Math.max(0, Math.trunc(input.updatedAt ?? Date.now()))
+    this.db.prepare(`
+      INSERT INTO devspace_audit_consumer_state (
+        consumer_key, started_at, audit_id, updated_at
+      ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(consumer_key) DO UPDATE SET
+        started_at=CASE
+          WHEN excluded.started_at > devspace_audit_consumer_state.started_at
+            OR (excluded.started_at = devspace_audit_consumer_state.started_at
+              AND excluded.audit_id > devspace_audit_consumer_state.audit_id)
+          THEN excluded.started_at ELSE devspace_audit_consumer_state.started_at END,
+        audit_id=CASE
+          WHEN excluded.started_at > devspace_audit_consumer_state.started_at
+            OR (excluded.started_at = devspace_audit_consumer_state.started_at
+              AND excluded.audit_id > devspace_audit_consumer_state.audit_id)
+          THEN excluded.audit_id ELSE devspace_audit_consumer_state.audit_id END,
+        updated_at=CASE
+          WHEN excluded.started_at > devspace_audit_consumer_state.started_at
+            OR (excluded.started_at = devspace_audit_consumer_state.started_at
+              AND excluded.audit_id > devspace_audit_consumer_state.audit_id)
+          THEN excluded.updated_at ELSE devspace_audit_consumer_state.updated_at END
+    `).run(consumerKey, startedAt, auditId, updatedAt)
+    return this.getDevSpaceAuditCursor(consumerKey)!
+  }
+
+  /**
+   * daemon 可能在 audit start 已消费、finish UPDATE 尚未收到时崩溃。
+   * cursor 只负责“新 audit 行”不会漏；这些尚无 finished_at 的 recovery 行需要在重启后
+   * 按 audit id 再读 DevSpace SQLite 一次，补齐 result/error/finished_at。
+   */
+  listPendingDevSpaceRecoveryAuditIds(limit = 1000): string[] {
+    return (this.db.prepare(`
+      SELECT audit_id AS auditId
+      FROM devspace_recovery_audits
+      WHERE finished_at IS NULL
+      ORDER BY started_at ASC, audit_id ASC
+      LIMIT ?
+    `).all(Math.max(1, Math.trunc(limit))) as Array<{ auditId: string }>).map(row => row.auditId)
   }
 
   /**
