@@ -902,4 +902,18 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 - Chrome/Edge/Firefox 扩展均可构建；userscript 可构建。
 - 单元/fixture 测试全部通过。
 
+## 2026-10-16 ClassFlow Notes：Project 瞬态不可见导致静默终止
+
+### 现场结论
+- 2026-10-16 08:00–09:40《泌尿生殖系统》的 ClassFlow Notes 在 Archive Actor 正式 POST 之前终止；submission 错误为 `ChatGPT actor project not found or not visible in sidebar: 课堂录音→笔记`。
+- 2026-10-12 的课程出现过同一错误。当前 Guardian 的无障碍树已经再次能看到 `课堂录音→笔记` 以及 `在 课堂录音→笔记 中开启新聊天`，因此这是 Project/sidebar hydration 的瞬态就绪失败，不应按永久业务错误处理。
+- 当前 submission queue 的 retryable 分类漏掉了该错误，因此第一次失败即写成 `failed`；同时 submission queue 的 attempt error 没有接入 daemon Bark 通知，所以既不会自动恢复，也不会产生手机告警。ClassFlow 自己的 stage-event 通知目前仍因 `CLASSFLOW_NOTIFICATIONS_ENABLED=false` 关闭。
+
+### ExecPlan
+1. 将“Project 存在但当前 sidebar 未找到/不可见”的 Actor 错误归为可重试基础设施/UI 就绪错误；保留 `invalid projectName` 等真实输入错误为永久失败。
+2. 为 ActorSubmissionQueue 增加失败尝试回调，并由 Archive Bridge 透传给 daemon。
+3. daemon 对 terminal `failed` 立即发 Bark；对 Project/sidebar 瞬态不可见的首次 `retry_waiting` 发一次去重提醒，说明会自动重试；DOM drift 继续使用现有专用通知，避免重复。
+4. 增加回归测试，跑 Archive 全套相关测试/类型检查；重启 daemon 后验证旧 failed submission 会按升级恢复逻辑进入 retry 并成功。
+5. Archive submission accepted 后，通过 ClassFlow 现有精细恢复接口让今天失败的 Notes 重新进入正常流水线，确认 conversation、Notes、摘要邮件最终闭环。
+
 
