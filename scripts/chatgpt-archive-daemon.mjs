@@ -6464,10 +6464,12 @@ async function main() {
       if (direction !== 'received') return
       for (const item of extractTurnTopicEncodedItems(payloadData)) {
         const entry = ensureTurnWssTracker(String(requestId), item.topic)
-        entry.tracker.ingestText(item.encodedItem, Date.now())
+        const receivedAt = Date.now()
+        appendJournalText(entry.cdpRequestId, item.encodedItem)
+        entry.tracker.ingestText(item.encodedItem, receivedAt)
         const state = activeLiveTransports.get(entry.liveKey)
         if (state) {
-          state.lastDataAt = Date.now()
+          state.lastDataAt = receivedAt
           state.dataEvents = Number(state.dataEvents || 0) + 1
           state.dataBytes = Number(state.dataBytes || 0) + Buffer.byteLength(item.encodedItem, 'utf8')
         }
