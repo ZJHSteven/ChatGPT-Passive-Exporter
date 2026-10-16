@@ -185,6 +185,25 @@ test('daemon 启动立即发布新 PID bootstrap state，resume 只接受本轮�
   expect(cli).toContain('could not be stopped; maintenance remains active')
 })
 
+test('不完整 SSE 只做 provisional union，绝不据此关闭 turn 或取消 Body fallback', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+  const start = daemon.indexOf('const mergePartialLiveSseEvidence')
+  const end = daemon.indexOf('const mirrorDevSpaceBinding', start)
+  expect(start).toBeGreaterThan(-1)
+  expect(end).toBeGreaterThan(start)
+  const partial = daemon.slice(start, end)
+  expect(partial).toContain("observationKind: 'live-sse-partial'")
+  expect(partial).toContain('preserveObservedTextPrefix: true')
+  expect(partial).toContain('updateCurrentState: false')
+  expect(partial).toContain('updateIncidents: false')
+  expect(partial).not.toContain('clearSyncDemand(')
+  expect(partial).not.toContain('clearActiveTurn(')
+  expect(partial).not.toContain('liveSseCanonicalSatisfied.set(')
+})
+
 test('global catalog replay 继承第一方 query 模板，只覆盖分页参数', () => {
   expect(listPath(28, 28, [
     ['order', 'updated'],

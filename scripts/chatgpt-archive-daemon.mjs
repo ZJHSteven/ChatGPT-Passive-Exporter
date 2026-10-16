@@ -2441,6 +2441,8 @@ async function main() {
   let liveSseJournalErrors = 0
   let liveSseCanonicalPromoted = 0
   let liveSseCanonicalFallbacks = 0
+  let liveSsePartialEvidenceMerged = 0
+  let liveSsePartialMessagesMerged = 0
   let liveSseBodyRefreshesSkipped = 0
   // 完整 SSE promotion 后给同一 CID 一个很短的“本 turn 已满足”窗口。新 turn 的明确 start
   // 会立即删除它；TTL 只是防止极端缺失 lifecycle 时旧标记永久影响后续同步。
@@ -3642,6 +3644,8 @@ async function main() {
       canonical: {
         promoted: liveSseCanonicalPromoted,
         fallbacks: liveSseCanonicalFallbacks,
+        partialEvidenceMerged: liveSsePartialEvidenceMerged,
+        partialMessagesMerged: liveSsePartialMessagesMerged,
         bodyRefreshesSkipped: liveSseBodyRefreshesSkipped,
         satisfiedConversations: liveSseCanonicalSatisfied.size,
       },
@@ -5146,6 +5150,7 @@ async function main() {
         endpoint: pages === 0 ? basePath : `${basePath}/messages`,
         pageCursor: cursor,
         observationKind: `body-page:${trigger}`,
+        preserveObservedTextPrefix: true,
         updateCurrentState: pages === 0,
         classifyTerminal: pages === 0 && classifyTerminalNow,
         // watchdog 的语义是“已经超时，所以这个 turn 本身就是需要调查的 incident”。
@@ -5806,6 +5811,7 @@ async function main() {
         observedAt,
         endpoint: source.endpoint ?? null,
         observationKind: 'live-sse-complete',
+        preserveObservedTextPrefix: true,
         classifyTerminal: false,
         updateCurrentState: true,
         updateIncidents: false,
@@ -5849,6 +5855,68 @@ async function main() {
         requestId: source.requestId ?? null,
         transport: source.transport ?? null,
         conversationId: snapshot.conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => {})
+      return null
+    }
+  }
+
+  /**
+   * 把截断/中断 SSE 中“已经可靠解码出来”的 message 作为 provisional evidence 合并。
+   *
+   * 与 complete promotion 的边界必须严格分开：
+   * - 不更新 current_node / terminal / incident；
+   * - 不设置 liveSseCanonicalSatisfied；
+   * - 不 clear dirty/ready，不取消 Body fallback；
+   * - 只做 message-id union + 严格 prefix 单调正文保护。
+   *
+   * 因此它能保存“比当前 Body checkpoint 更往前”的 SSE 证据，但不能单独宣告 turn 完成。
+   */
+  const mergePartialLiveSseEvidence = (accumulator, source = {}, reason = 'incomplete-stream') => {
+    try {
+      accumulator.finish()
+      const snapshot = accumulator.snapshot()
+      const existing = snapshot.conversationId
+        ? archive.getConversationSummary(snapshot.conversationId)
+        : null
+      const payload = accumulator.evidencePayload(
+        snapshot.title || existing?.title || 'ChatGPT Conversation',
+      )
+      if (!payload || !snapshot.conversationId) return null
+
+      const observedAt = Date.now()
+      const merged = archive.mergeLiveMessagesPage(payload, {
+        observedAt,
+        endpoint: source.endpoint ?? null,
+        observationKind: 'live-sse-partial',
+        preserveObservedTextPrefix: true,
+        classifyTerminal: false,
+        updateCurrentState: false,
+        updateIncidents: false,
+        allowIncompleteTailIncident: false,
+      })
+      liveSsePartialEvidenceMerged += 1
+      liveSsePartialMessagesMerged += Number(snapshot.messages.length || 0)
+      void log('partial live SSE evidence merged', {
+        conversationId: snapshot.conversationId,
+        turnExchangeId: snapshot.turnExchangeId,
+        requestId: source.requestId ?? null,
+        transport: source.transport ?? null,
+        reason,
+        messages: snapshot.messages.length,
+        newMessages: merged.newMessageCount,
+        decodeErrors: snapshot.decodeErrors.slice(0, 4),
+        messageStreamComplete: snapshot.messageStreamComplete,
+        doneSeen: snapshot.doneSeen,
+      }).catch(() => {})
+      return { snapshot, merged }
+    }
+    catch (error) {
+      void log('partial live SSE evidence merge failed; body fallback retained', {
+        targetId: source.targetId ?? null,
+        requestId: source.requestId ?? null,
+        transport: source.transport ?? null,
+        reason,
         error: error instanceof Error ? error.message : String(error),
       }).catch(() => {})
       return null
@@ -6389,6 +6457,7 @@ async function main() {
         endpoint: `/backend-api/conversations/${conversationId}`,
         pageCursor: null,
         observationKind: 'body-page:passive-native',
+        preserveObservedTextPrefix: true,
         updateCurrentState: true,
         classifyTerminal: false,
         allowIncompleteTailIncident: false,
@@ -6535,6 +6604,9 @@ async function main() {
     }
 
     const cleanupLiveSseJournals = async (reason = 'observer-detached') => {
+      for (const requestId of [...liveCanonicalDecoders.keys()]) {
+        settleLiveCanonicalDecoder(requestId, reason)
+      }
       const entries = [...liveSseJournals.entries()]
       await Promise.all(entries.map(([requestId]) => finalizeLiveSseJournal(requestId, {
         event: 'stream-observer-detached',
@@ -6544,7 +6616,7 @@ async function main() {
     }
 
     const registerLiveCanonicalDecoder = (requestId, canonical, source) => {
-      const state = { canonical, source, promoted: false }
+      const state = { canonical, source, promoted: false, partialMerged: false }
       liveCanonicalDecoders.set(String(requestId), state)
       return state
     }
@@ -6560,6 +6632,22 @@ async function main() {
       if (!promoted) return false
       state.promoted = true
       return true
+    }
+
+    const mergePartialLiveCanonicalDecoder = (requestId, reason = 'incomplete-stream') => {
+      const key = String(requestId)
+      const state = liveCanonicalDecoders.get(key)
+      if (!state || state.promoted || state.partialMerged) return false
+      const merged = mergePartialLiveSseEvidence(state.canonical, state.source, reason)
+      if (!merged) return false
+      state.partialMerged = true
+      return true
+    }
+
+    const settleLiveCanonicalDecoder = (requestId, reason = 'stream-ended') => {
+      if (tryPromoteLiveCanonicalDecoder(requestId)) return 'complete'
+      if (mergePartialLiveCanonicalDecoder(requestId, reason)) return 'partial'
+      return 'none'
     }
 
     const appendLiveTransport = (event) => {
@@ -6718,7 +6806,10 @@ async function main() {
       entry.finished = true
       if (failedReason) entry.tracker.fail(failedReason, Date.now())
       else entry.tracker.finish(Date.now())
-      if (!failedReason) tryPromoteLiveCanonicalDecoder(entry.cdpRequestId)
+      settleLiveCanonicalDecoder(
+        entry.cdpRequestId,
+        failedReason ? `turn-wss:${failedReason}` : 'turn-wss-finished-incomplete',
+      )
       void finalizeLiveSseJournal(entry.cdpRequestId, {
         event: failedReason ? 'stream-failed' : 'stream-finished',
         ...(failedReason ? { detail: { reason: String(failedReason).slice(0, 240) } } : {}),
@@ -6818,12 +6909,14 @@ async function main() {
       // idle scanner 通过它把旧 SSE 送回 tracker.fail()，从而复用标准 stream-failed -> resume 链。
       liveState.retireIdle = (reason, at = Date.now()) => {
         if (!liveTransports.has(requestId)) return false
+        settleLiveCanonicalDecoder(String(requestId), `idle-retire:${reason}`)
         tracker.fail(reason, at)
         void finalizeLiveSseJournal(String(requestId), {
           event: 'stream-failed',
           at,
           detail: { reason: String(reason).slice(0, 240) },
         })
+        liveCanonicalDecoders.delete(String(requestId))
         liveTransports.delete(requestId)
         activeLiveTransports.delete(liveKey)
         return true
@@ -7004,7 +7097,7 @@ async function main() {
         const finish = () => {
           if (!liveTransports.has(requestId)) return
           live.tracker.finish(Date.now())
-          tryPromoteLiveCanonicalDecoder(String(requestId))
+          settleLiveCanonicalDecoder(String(requestId), 'network-loading-finished-incomplete')
           void finalizeLiveSseJournal(String(requestId), { event: 'stream-finished' })
           liveCanonicalDecoders.delete(String(requestId))
           liveTransports.delete(requestId)
@@ -7102,11 +7195,10 @@ async function main() {
          if (!liveTransports.has(requestId)) return
          const reason = [errorText, blockedReason, canceled === true ? 'canceled' : null].filter(Boolean).join('; ')
            || 'Network.loadingFailed'
-         const sseComplete = live.canonical.snapshot().complete
-         if (sseComplete) tryPromoteLiveCanonicalDecoder(String(requestId))
+         const settlement = settleLiveCanonicalDecoder(String(requestId), `network-loading-failed:${reason}`)
          live.tracker.fail(reason, Date.now())
          void finalizeLiveSseJournal(String(requestId), {
-           event: sseComplete ? 'stream-finished-after-network-abort' : 'stream-failed',
+           event: settlement === 'complete' ? 'stream-finished-after-network-abort' : 'stream-failed',
            detail: { reason: String(reason).slice(0, 240) },
          })
          liveCanonicalDecoders.delete(String(requestId))
