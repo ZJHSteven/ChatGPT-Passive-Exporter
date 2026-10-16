@@ -6795,7 +6795,11 @@ async function main() {
       protocolRequestSignatures.delete(requestId)
    })
 
-    passivePageObservers.set(target.id, { client, url: target.url })
+    passivePageObservers.set(target.id, {
+      client,
+      url: target.url,
+      cleanupLiveSseJournals,
+    })
     await log('passive ChatGPT page observer attached', { targetId: target.id, url: target.url })
   }
 
@@ -6808,6 +6812,13 @@ async function main() {
 
     for (const [targetId, observer] of passivePageObservers) {
       if (!liveIds.has(targetId) || observer.client.closed) {
+        await observer.cleanupLiveSseJournals?.('target-detached').catch(async (error) => {
+          liveSseJournalErrors += 1
+          await log('live SSE journal observer cleanup failed', {
+            targetId,
+            error: error instanceof Error ? error.message : String(error),
+          }).catch(() => {})
+        })
         observer.client.close()
         passivePageObservers.delete(targetId)
         if (!liveIds.has(targetId)) {
@@ -8166,7 +8177,16 @@ async function main() {
       }).catch(() => {})
     })
   }
- for (const observer of passivePageObservers.values()) observer.client.close()
+  for (const [targetId, observer] of passivePageObservers) {
+    await observer.cleanupLiveSseJournals?.('daemon-shutdown').catch(async (error) => {
+      liveSseJournalErrors += 1
+      await log('live SSE journal shutdown cleanup failed', {
+        targetId,
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => {})
+    })
+    observer.client.close()
+  }
   passivePageObservers.clear()
   if (archiveBridge) {
     await archiveBridge.stop().catch(async (error) => {
