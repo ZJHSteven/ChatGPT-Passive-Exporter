@@ -8,15 +8,19 @@ param(
   [string]$DaemonScript,
   [string]$LauncherScript,
   [string]$ProjectRoot,
-  [string]$DbPath
+  [string]$DbPath,
+  [string]$MaintenanceFlag,
+  [string]$StartOnceFlag
 )
 
 # Windows 登录自启动只负责“进程级高可用”，不参与 ChatGPT 协议逻辑：
 # - AtLogOn 启动 daemon；
-# - daemon 非正常退出时，Task Scheduler 每 1 分钟重试，最多 999 次；
-# - 另加 5 分钟一次的低频 health trigger；Running 时由 IgnoreNew 丢弃，死亡时补拉起；
+# - 每 1 分钟重复触发同一个任务，意外退出后最迟下一次 tick 拉起；
+# - Running 时由 IgnoreNew 丢弃新实例，不会重启/打断现有 daemon；
+# - 人为 stop / 部署期间用 maintenance flag 暂停自愈；
+# - resume 只下发一个 one-shot permit，健康通过后才解除 maintenance；
 # - daemon 自己再负责 Chrome/Guardian/WSS/SQLite 的恢复。
-# 这样把 Windows 进程监督与业务逻辑分层，后续即使改用 AHK 做二次健康监视也不会互相绑死。
+# Task Scheduler 是唯一外部监督者，不增加第二个 helper/watchdog 服务。
 
 $ErrorActionPreference = 'Stop'
 
@@ -54,6 +58,13 @@ foreach ($required in @('NodeExe', 'DaemonScript', 'LauncherScript', 'ProjectRoo
   }
 }
 
+if ([string]::IsNullOrWhiteSpace($MaintenanceFlag)) {
+  $MaintenanceFlag = Join-Path $ProjectRoot 'data\archive-daemon-maintenance.json'
+}
+if ([string]::IsNullOrWhiteSpace($StartOnceFlag)) {
+  $StartOnceFlag = Join-Path $ProjectRoot 'data\archive-daemon-start-once.flag'
+}
+
 $wscriptExe = Join-Path $env:WINDIR 'System32\wscript.exe'
 
 # 计划任务本体执行 wscript，而不是直接执行 node.exe：wscript 会隐藏 Node 的控制台，
@@ -62,6 +73,8 @@ $arguments = @(
   '//B',
   '//NoLogo',
   ('"{0}"' -f $LauncherScript),
+  ('"{0}"' -f $MaintenanceFlag),
+  ('"{0}"' -f $StartOnceFlag),
   ('"{0}"' -f $NodeExe),
   ('"{0}"' -f $DaemonScript),
   '--db', ('"{0}"' -f $DbPath),
@@ -131,4 +144,6 @@ Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
   DaemonScript = $DaemonScript
   WorkingDirectory = $ProjectRoot
   Database = $DbPath
+  MaintenanceFlag = $MaintenanceFlag
+  StartOnceFlag = $StartOnceFlag
 } | ConvertTo-Json -Compress

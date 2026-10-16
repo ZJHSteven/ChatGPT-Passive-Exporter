@@ -1,3 +1,4 @@
+- 2026-10-16 Windows startup helper / VBS launcher 已接入 maintenance + one-shot permit：计划任务 action 会把两个 flag 路径传给隐藏 launcher；maintenance 存在且无 permit 时 launcher 直接退出 0，不启动 Node；resume permit 被启动前原子消费，最多放行一次；解除 maintenance 后恢复普通周期启动。
 - 2026-10-16 开始实现 Archive daemon 开发期 maintenance 两阶段门禁：新增可测试的维护态/one-shot permit/基础健康判定模块，并增加 Windows VBS launcher 的端到端门禁回归，目标是让人为 stop/部署与意外崩溃的自愈语义彻底分离。
 - 2026-10-16 生产计划任务重注册再次走 `adminreq`，审批结果仍为 DENY：持久化 scheduled task 脚本 provenance 未满足策略要求。未绕过审批、未修改现有生产 Task Definition。当前状态必须明确区分：代码/测试已经改成 AtLogOn + 1 分钟 repetition + IgnoreNew，但生产计划任务仍是旧定义（仅 AtLogOn，RestartOnFailure=999）；因此当前 daemon 正常，但若再次进程级退出，自动拉起能力尚未生产生效。
 - 2026-10-16 Task Scheduler 自愈改造回归通过：定向 `tests/archive-daemon.test.ts` 66/66；全量 `npm run check` 为 27/27 test files、245/245 tests，TypeScript 与 Chrome/Edge/Firefox/Userscript build 全绿。安装脚本现在只使用 AtLogOn + 1 分钟 repetition trigger + MultipleInstances=IgnoreNew，已移除 RestartCount/RestartInterval。
