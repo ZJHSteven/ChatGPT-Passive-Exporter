@@ -23,6 +23,12 @@
 4. adminreq 只审这个小脚本，因为本次管理员动作确实只是修改既有任务监督设置；daemon 大型业务代码不是本次管理员变更。
 5. 更新后再做生产三段验收：健康 IgnoreNew、maintenance stop 不复活、无 maintenance 的意外 kill <=1min 自愈。
 
+### 生产 resume 首次 canary 暴露的启动身份窗口
+
+- 新 Task Definition 已成功上线；第一次 daemon resume 在 15 秒健康窗口内报失败，但实际新 Node PID 25884 随后健康运行，maintenance 正确保持 active。
+- 时间线确认：Node 11:59:04 已创建，daemon 因启动期历史 seed 到 11:59:23 才写新 state；resume 11:59:19 超时时仍读到旧 PID，因此失败清理无法定位新实例。
+- 修复要求：daemon 在读取旧 state 后、任何重型初始化前立即写 bootstrap state（新 pid/startedAt/startupPhase=initializing）；resume 只接受 pid 已换代且 startedAt 属于本次 probe 的 state，并把基础健康窗口放宽到 45 秒。失败清理必须等待 SIGKILL 真正生效并确认 PID 已退出。
+
 现象：2026-10-16 08:47:32 ChatGPT Archive Daemon 以退出码 1（Task Scheduler 记录为 0x80070001）异常退出；此后新 turn 全部失去 Watchdog。重新核对 DevSpace audit 后确认，10/14、10/15 那些数秒后重新起来的实例都来自当时聊天显式执行的 schtasks /Run / Start-ScheduledTask，并非 RestartOnFailure 自动拉起。进一步用隔离临时任务验证：合法 RestartCount=2、RestartInterval=PT1M、action=cmd /c exit 1，等待 70 秒也没有自动重启；本机 Task Scheduler 不会把“action 已成功启动、子进程随后返回非零 exit code”当成需要 retry 的任务级失败。
 
 目标：让 Archive daemon 即使再次遇到顶层/事件回调 fatal 也能留下明确异常栈；进程级自愈完全由 Task Scheduler 本身承担，不引入外置 helper：AtLogOn 负责首次启动，每 1 分钟 repetition trigger 负责存活兜底，MultipleInstances=IgnoreNew 保证健康 daemon 不会产生第二实例。
