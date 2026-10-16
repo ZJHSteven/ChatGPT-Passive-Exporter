@@ -1,3 +1,4 @@
+- 2026-10-16 startup bootstrap state / 45 秒 resume 新实例门禁全量回归通过：定向 73/73；全量 28/28 test files、252/252 tests，TypeScript 与 Chrome/Edge/Firefox/Userscript build 全绿。当前 PID 25884 虽由首次 resume 误判后留下，但 maintenance 仍 active、周期 trigger 只产生 IgnoreNew，不存在第二实例；下一步用新版 resume 受控切换并解除 maintenance。
 - 2026-10-16 resume 首次生产 canary 的误失败已定位：新 Node PID 25884 于 11:59:04 创建，但 daemon 在历史 seed 后到 11:59:23 才首次写新 state；15 秒探针 11:59:19 超时时仍读到旧 PID 13176，因此失败清理停错对象，PID 25884 随后正常完成启动。现已让 daemon 在读取旧 state 后、构造 Archive DB/历史 seed 前立即发布 startupPhase=initializing 的最小新 PID state；resume 延长为 45 秒，并要求 pid 已换代且 startedAt 属于本轮 probe 后才累计健康样本；强制终止后也会等待确认 PID 真正消失。
 - 2026-10-16 原位升级 COM 版本最终回归通过：只读 Validate=legacy/valid；定向 supervision+daemon 72/72；全量 28/28 test files、251/251 tests，TypeScript 与 Chrome/Edge/Firefox/Userscript build 全绿。
 - 2026-10-16 COM 改造后的首轮定向测试仅因静态断言过宽失败：测试禁止整个脚本出现字符串 Set-ScheduledTask，但脚本注释正用于记录“为什么不用该 cmdlet”。实际执行代码已无该调用；断言已收窄为禁止旧的 Set-ScheduledTask @setParams 调用。
