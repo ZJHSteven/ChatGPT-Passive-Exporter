@@ -1154,10 +1154,10 @@ describe('ChatGPT Archive daemon WSS parser', () => {
 
     const unbound = buildWatchdogStartNotificationPayload({
       metadataId: 'v1/abcdefgh12345678',
-      title: '排查 Archive Watchdog',
+      title: '排查 Watchdog',
       startedAt: 1_000,
     })
-    expect(unbound.title).toBe('Watchdog 开始 · 排查 Archive Watchdog')
+    expect(unbound.title).toBe('Watchdog 开始 · 排查 Watchdog')
     expect(unbound.body.split('\n')[1]).toBe('状态：等待绑定 canonical Conversation')
     expect(unbound.body).not.toContain('meta/abcdefgh')
     expect(unbound).not.toHaveProperty('url')
