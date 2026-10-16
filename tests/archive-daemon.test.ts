@@ -122,6 +122,21 @@ test('Windows Archive startup task 由每分钟重复触发承担进程级自愈
   expect(helper).toContain('Get-FileHash -LiteralPath $canonicalDaemon -Algorithm SHA256')
 })
 
+test('Windows Archive supervision updater 只能原位升级固定既有任务', async () => {
+  const helper = await fs.readFile(
+    new URL('../scripts/windows-archive-supervision-update.ps1', import.meta.url),
+    'utf8',
+  )
+  expect(helper).toContain("$taskName = 'ChatGPT Archive Daemon'")
+  expect(helper).toContain('CurrentArgumentsMode = $validated.ArgumentsMode')
+  expect(helper).toContain("throw '现有任务 Arguments 已漂移，不允许原位升级'")
+  expect(helper).toContain("throw '现有任务 RunLevel 不是 Limited，不允许原位升级'")
+  expect(helper).toContain('RepetitionInterval (New-TimeSpan -Minutes 1)')
+  expect(helper).toContain("MultipleInstances = 'IgnoreNew'")
+  expect(helper).toContain('Set-ScheduledTask @setParams')
+  expect(helper).not.toContain('Register-ScheduledTask')
+})
+
 test('global catalog replay 继承第一方 query 模板，只覆盖分页参数', () => {
   expect(listPath(28, 28, [
     ['order', 'updated'],
