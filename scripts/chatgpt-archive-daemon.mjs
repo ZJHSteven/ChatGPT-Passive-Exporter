@@ -6349,9 +6349,10 @@ async function main() {
    await client.send('Network.enable')
    const pendingBodies = new Map()
    const pendingImages = new Map()
-   const liveTransports = new Map()
-   const turnWssTrackers = new Map()
-   const protocolRequestSignatures = new Map()
+    const liveTransports = new Map()
+    const turnWssTrackers = new Map()
+    const liveCanonicalDecoders = new Map()
+    const protocolRequestSignatures = new Map()
    const pendingProtocolResponses = new Map()
     // 完整 SSE 正文与轻量 ActiveTurn trace 分离。这里按 cdpRequestId 保存当前 observer 自己的
     // append-only journal；HTTP SSE 和 turn-WSS synthetic request id 共用一套接口。
@@ -6428,6 +6429,25 @@ async function main() {
       })))
     }
 
+    const registerLiveCanonicalDecoder = (requestId, canonical, source) => {
+      const state = { canonical, source, promoted: false }
+      liveCanonicalDecoders.set(String(requestId), state)
+      return state
+    }
+
+    const tryPromoteLiveCanonicalDecoder = (requestId) => {
+      const key = String(requestId)
+      const state = liveCanonicalDecoders.get(key)
+      if (!state || state.promoted) return false
+      // 先只读 snapshot 判断是否已经具备完整 SSE 自证；不完整时绝不调用 promotion helper，
+      // 避免正常流中每个中间 chunk 都累计一条 fallback 遥测。
+      if (!state.canonical.snapshot().complete) return false
+      const promoted = promoteCompleteLiveSse(state.canonical, state.source)
+      if (!promoted) return false
+      state.promoted = true
+      return true
+    }
+
     const appendLiveTransport = (event) => {
       const key = `${target.id}:${event?.cdpRequestId ?? ''}`
       const state = activeLiveTransports.get(key)
@@ -6484,6 +6504,13 @@ async function main() {
         && event.conversationId
       ) {
         clearResumeRetry(event.conversationId, event.turnExchangeId ?? null)
+      }
+      if (event?.event === 'done' && event?.cdpRequestId) {
+        // tracker.emit() 发生在 tracker.ingest*() 的同步调用栈中，而 canonical accumulator
+        // 对同一 chunk 的 ingest 紧随其后。排一个 microtask，确保 `[DONE]` 已经先进入 accumulator，
+        // 然后立刻 promotion；不再依赖 Chrome 最后到底发 loadingFinished 还是 ERR_ABORTED。
+        const requestId = String(event.cdpRequestId)
+        queueMicrotask(() => { tryPromoteLiveCanonicalDecoder(requestId) })
       }
       if (
         event?.event === 'stream-failed'
