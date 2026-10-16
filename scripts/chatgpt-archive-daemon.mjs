@@ -8105,13 +8105,36 @@ async function main() {
     })
     guardianEstablishedOnce = true
     // listener 必须先于导航/reload 安装，才能捕获第一条真实 backend header 与 WSS 创建。
+    //
+    // 这里刻意只“发起”导航，不再 await CDP command ACK。生产现场已经出现过：页面/网络实际上
+    // 开始启动了，但 Page.navigate 的 command reply 因 renderer/CDP 抖动迟迟不回来；旧代码因此
+    // 一直卡在第一次 writeState() 之前，最终被 `daemon resume` 的 90 秒 supervisor fail-closed。
+    //
+    // Guardian readiness 的真正证据是下面的 auth/header、后续 Runtime health 与 WSS，而不是
+    // Page.navigate/Page.reload 这条命令本身的 ACK。CdpClient 自己仍有 10 秒 hard timeout；
+    // reject 只写日志，不能再把整个 daemon startup 当成失败。这样没有降低健康门槛，只移除了
+    // 一个与健康无关、且会放大 renderer 瞬态抖动的同步门闩。
     if (guardian.created) {
-      await guardian.page.send('Page.navigate', { url: `https://chatgpt.com/?${GUARDIAN_MARKER}=1` })
+      void guardian.page.send('Page.navigate', { url: `https://chatgpt.com/?${GUARDIAN_MARKER}=1` })
+        .catch(async (error) => {
+          await log('Guardian startup navigation command did not acknowledge; readiness observation continues', {
+            reason,
+            command: 'Page.navigate',
+            error: error instanceof Error ? error.message : String(error),
+          }).catch(() => {})
+        })
     }
     else {
       // 如果复用了旧 guardian，它不会因为 attach 自动产生网络请求；轻量 reload 一次只发生在
       // daemon 自己的专用页，用于重新挂全 WSS 生命周期并获得页面真实 request context。
-      await guardian.page.send('Page.reload', { ignoreCache: false })
+      void guardian.page.send('Page.reload', { ignoreCache: false })
+        .catch(async (error) => {
+          await log('Guardian startup reload command did not acknowledge; readiness observation continues', {
+            reason,
+            command: 'Page.reload',
+            error: error instanceof Error ? error.message : String(error),
+          }).catch(() => {})
+        })
     }
 
     const waitStarted = Date.now()
