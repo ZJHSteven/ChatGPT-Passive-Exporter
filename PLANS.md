@@ -2,6 +2,17 @@
 
 状态：**根因修复已生产上线并验证；监督层代码与全量回归已完成，但生产计划任务重注册再次被管理员 PI 拒绝，尚未部署自动拉起新定义**。
 
+## 2026-10-16 维护态 / 部署态补强
+
+用户确认自动自愈不能干扰正常开发部署。最终监督语义调整为：
+
+1. Task Scheduler 仍是唯一外部监督者：AtLogOn + 1 分钟 repetition + IgnoreNew，不增加第二个 helper/task。
+2. `daemon stop` 先进入 maintenance，再停止 Node。maintenance 存在时，计划任务 launcher 即使被周期触发也不得启动 daemon。
+3. `daemon start` 是开发期直接启动，保持 maintenance，避免计划任务下一 tick 在旁边再起第二实例。
+4. 新增 `daemon resume` 作为生产恢复：maintenance 下发一个 one-shot permit，允许同名计划任务只启动一次；CLI 观察新 daemon 基础健康一小段时间。健康后才清除 maintenance、正式 arm 自动自愈；失败则保留 maintenance 并停掉失败实例，禁止坏版本一分钟一次循环复活。
+5. launcher 只读取本地 maintenance / one-shot flag，不常驻、不轮询；健康 daemon 运行时 Task Scheduler 的 IgnoreNew 仍保证周期 tick 不创建 launcher/node 第二实例。
+6. 增加回归覆盖 stop/start/resume 语义、launcher flag gate、startup task 参数与 IgnoreNew；全量 check 后再重提管理员安装审批。
+
 现象：2026-10-16 08:47:32 ChatGPT Archive Daemon 以退出码 1（Task Scheduler 记录为 0x80070001）异常退出；此后新 turn 全部失去 Watchdog。重新核对 DevSpace audit 后确认，10/14、10/15 那些数秒后重新起来的实例都来自当时聊天显式执行的 schtasks /Run / Start-ScheduledTask，并非 RestartOnFailure 自动拉起。进一步用隔离临时任务验证：合法 RestartCount=2、RestartInterval=PT1M、action=cmd /c exit 1，等待 70 秒也没有自动重启；本机 Task Scheduler 不会把“action 已成功启动、子进程随后返回非零 exit code”当成需要 retry 的任务级失败。
 
 目标：让 Archive daemon 即使再次遇到顶层/事件回调 fatal 也能留下明确异常栈；进程级自愈完全由 Task Scheduler 本身承担，不引入外置 helper：AtLogOn 负责首次启动，每 1 分钟 repetition trigger 负责存活兜底，MultipleInstances=IgnoreNew 保证健康 daemon 不会产生第二实例。
