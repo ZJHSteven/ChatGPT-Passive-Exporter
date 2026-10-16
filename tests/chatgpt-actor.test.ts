@@ -10,6 +10,7 @@ import {
   actorResponseMimeAccepted,
   buildActorDomObservationExpression,
   conversationIdFromUrl,
+  enableActorNetworkDomain,
   isTransientActorDomObservation,
   normalizeActorProjectName,
   resolveActorStatusTarget,
@@ -70,6 +71,30 @@ describe('ChatGPT single actor helpers', () => {
     expect(actorSubmitGapDelayMs(10_000, 12_000)).toBe(3_000)
     expect(actorSubmitGapDelayMs(10_000, 15_000)).toBe(0)
     expect(actorSubmitGapDelayMs(10_000, 16_000)).toBe(0)
+  })
+
+  test('Network.enable 允许有限幂等重试，但连续失败必须 fail-closed', async () => {
+    const calls: Array<{ method: string; timeoutMs?: number }> = []
+    let remainingFailures = 1
+    const result = await enableActorNetworkDomain(async (method, _params, timeoutMs) => {
+      calls.push({ method, timeoutMs })
+      if (remainingFailures > 0) {
+        remainingFailures -= 1
+        throw new Error('transient timeout')
+      }
+      return {}
+    }, { attempts: 3, commandTimeoutMs: 750, retryDelayMs: 0 })
+
+    expect(result).toEqual({ attempts: 2 })
+    expect(calls).toEqual([
+      { method: 'Network.enable', timeoutMs: 750 },
+      { method: 'Network.enable', timeoutMs: 750 },
+    ])
+
+    await expect(enableActorNetworkDomain(async () => {
+      throw new Error('still unavailable')
+    }, { attempts: 3, commandTimeoutMs: 500, retryDelayMs: 0 }))
+      .rejects.toThrow(/could not enable CDP Network after 3 attempts.*still unavailable/u)
   })
 
   test('只把真实 /c/<uuid> 视为 conversation 绑定完成', () => {
