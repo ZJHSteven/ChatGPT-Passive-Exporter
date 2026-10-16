@@ -268,13 +268,13 @@ describe('DevSpace audit bridge', () => {
       }, 1)
       expect(firstPage.map(row => row.id)).toEqual(['audit-3'])
       const secondPage = bridge.pollAfter({
-        startedAt: firstPage[0].startedAt,
-        auditId: firstPage[0].id,
+        startedAt: firstPage[0]!.startedAt,
+        auditId: firstPage[0]!.id,
       }, 1)
       expect(secondPage.map(row => row.id)).toEqual(['audit-4'])
       expect(bridge.pollAfter({
-        startedAt: secondPage[0].startedAt,
-        auditId: secondPage[0].id,
+        startedAt: secondPage[0]!.startedAt,
+        auditId: secondPage[0]!.id,
       })).toEqual([])
       expect(bridge.latestAuditCursor()).toEqual({
         startedAt: '2026-10-03T06:02:30.000Z',
