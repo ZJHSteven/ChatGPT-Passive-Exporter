@@ -23,7 +23,9 @@ export interface LiveSseJournalMark {
 export interface LiveSseJournalSnapshot {
   filePath: string
   metaPath: string
+  preReadyChunkPath: string
   bytesWritten: number
+  preReadyBytesWritten: number
   closed: boolean
 }
 
@@ -54,12 +56,15 @@ function utcDay(at: number): string {
 export class LiveSseJournalStream {
   readonly filePath: string
   readonly metaPath: string
+  readonly preReadyChunkPath: string
   readonly identity: LiveSseJournalIdentity
 
   private readonly ready: Promise<fs.FileHandle>
   private writeTail: Promise<void>
   private metaTail: Promise<void>
+  private preReadyTail: Promise<void>
   private bytesWritten = 0
+  private preReadyBytesWritten = 0
   private closed = false
 
   constructor(rootDir: string, identity: LiveSseJournalIdentity) {
@@ -71,8 +76,10 @@ export class LiveSseJournalStream {
     // TypeScript 对 constructor 内嵌 async closure 的 definite-assignment 分析不会做这层时序推断。
     const filePath = path.join(dir, `${base}.sse`)
     const metaPath = path.join(dir, `${base}.meta.jsonl`)
+    const preReadyChunkPath = path.join(dir, `${base}.pre-ready.jsonl`)
     this.filePath = filePath
     this.metaPath = metaPath
+    this.preReadyChunkPath = preReadyChunkPath
 
     this.ready = (async () => {
       await fs.mkdir(dir, { recursive: true })
@@ -90,6 +97,7 @@ export class LiveSseJournalStream {
     })()
     this.writeTail = this.ready.then(() => undefined)
     this.metaTail = this.ready.then(() => undefined)
+    this.preReadyTail = this.ready.then(() => undefined)
   }
 
   /** 追加已经解码好的 SSE 文本。turn-WSS 的 encoded_item 走这里。 */
@@ -103,6 +111,34 @@ export class LiveSseJournalStream {
   appendBase64(data: unknown): Promise<void> {
     if (typeof data !== 'string' || data.length === 0 || this.closed) return Promise.resolve()
     return this.appendBytes(Buffer.from(data, 'base64'))
+  }
+
+  /**
+   * `Network.streamResourceContent()` 尚未完成时，Chrome 仍可能先发 `Network.dataReceived`。
+   * 这些 chunk 在最终字节序里位于 `bufferedData` 之后，不能抢先写入 `.sse`，否则顺序会倒置；
+   * 但如果只放内存 pending，daemon 在这几秒钟内崩溃又会丢掉已经观察到的字节。
+   *
+   * 所以 pre-ready chunk 立即写一份独立 WAL。每行只保存到达时间、顺序号、长度和 base64 原字节；
+   * `streamResourceContent()` 成功后，调用方仍按 `bufferedData -> pending chunks` 的正确顺序写 `.sse`。
+   * WAL 不参与正常解析，只用于 crash/recovery forensic；即使最终 `.sse` 完整，也保留它作为证据。
+   */
+  appendPreReadyBase64(data: unknown, input: { at?: number, sequence: number }): Promise<void> {
+    if (typeof data !== 'string' || data.length === 0 || this.closed) return Promise.resolve()
+    const bytes = Buffer.from(data, 'base64')
+    const line = `${JSON.stringify({
+      version: 1,
+      at: input.at ?? Date.now(),
+      sequence: input.sequence,
+      bytes: bytes.byteLength,
+      dataBase64: data,
+    })}\n`
+    const write = this.preReadyTail.then(async () => {
+      await this.ready
+      await fs.appendFile(this.preReadyChunkPath, line)
+      this.preReadyBytesWritten += bytes.byteLength
+    })
+    this.preReadyTail = write.catch(() => undefined)
+    return write
   }
 
   /**
@@ -131,6 +167,7 @@ export class LiveSseJournalStream {
     this.closed = true
     const handle = await this.ready
     await this.writeTail
+    await this.preReadyTail.catch(() => undefined)
     await this.mark({
       ...mark,
       bytesObserved: mark.bytesObserved ?? this.bytesWritten,
@@ -145,7 +182,9 @@ export class LiveSseJournalStream {
     return {
       filePath: this.filePath,
       metaPath: this.metaPath,
+      preReadyChunkPath: this.preReadyChunkPath,
       bytesWritten: this.bytesWritten,
+      preReadyBytesWritten: this.preReadyBytesWritten,
       closed: this.closed,
     }
   }
