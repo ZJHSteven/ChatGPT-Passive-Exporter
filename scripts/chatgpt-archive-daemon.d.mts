@@ -460,6 +460,12 @@ export function shouldAttachPassivePageObserver(target: {
   url?: unknown
   webSocketDebuggerUrl?: unknown
 } | null | undefined): boolean
+export function shouldProbePassivePageObserver(input: {
+  now?: unknown
+  lastHealthAt?: unknown
+  hasActiveTransport?: unknown
+  clientClosed?: unknown
+} | null | undefined, intervalMs?: unknown): boolean
 export function passiveObserverRetryDelayMs(
   failureCount: unknown,
   baseMs?: unknown,
