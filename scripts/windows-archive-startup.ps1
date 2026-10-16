@@ -95,11 +95,13 @@ $settingsParams = @{
   RestartCount = 999
   RestartInterval = (New-TimeSpan -Minutes 1)
   ExecutionTimeLimit = [TimeSpan]::Zero
-  # Archive 是持续监控服务，不能继承 New-ScheduledTaskSettingsSet 的默认电池停机条件。
-  DisallowStartIfOnBatteries = $false
-  StopIfGoingOnBatteries = $false
 }
 $settings = New-ScheduledTaskSettingsSet @settingsParams
+# Windows 11 当前 ScheduledTasks 模块并不把这两个字段暴露成 cmdlet 命名参数，
+# 但返回的 CIM settings 对象本身支持直接赋值。Archive 是持续监控服务，不能继承
+# 默认“电池上禁止启动 / 切电池停止”的行为。
+$settings.DisallowStartIfOnBatteries = $false
+$settings.StopIfGoingOnBatteries = $false
 
 $principalParams = @{
   UserId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name

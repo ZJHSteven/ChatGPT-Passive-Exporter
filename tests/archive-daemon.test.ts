@@ -110,8 +110,8 @@ test('Windows Archive startup task 保留失败重启并增加五分钟自愈和
   expect(helper).toContain("MultipleInstances = 'IgnoreNew'")
   expect(helper).toContain('RestartCount = 999')
   expect(helper).toContain('RepetitionInterval (New-TimeSpan -Minutes 5)')
-  expect(helper).toContain('DisallowStartIfOnBatteries = $false')
-  expect(helper).toContain('StopIfGoingOnBatteries = $false')
+  expect(helper).toContain('$settings.DisallowStartIfOnBatteries = $false')
+  expect(helper).toContain('$settings.StopIfGoingOnBatteries = $false')
   expect(helper).toContain('Trigger = @($logonTrigger, $healthTrigger)')
 })
 
