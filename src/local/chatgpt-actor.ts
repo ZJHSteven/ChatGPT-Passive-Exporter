@@ -340,6 +340,40 @@ class ActorCdpClient {
   }
 }
 
+/**
+ * Actor 真正依赖的 CDP domain 只有 Network：正式 `/f/conversation` POST、HTTP 状态、
+ * MIME 与首包 SSE 都必须由 Network 事件闭环确认。`Page.enable` / `Runtime.enable` 只是早期
+ * “习惯性初始化”，当前 Actor 既不监听 Page 事件，Runtime.evaluate 也无需先 enable。
+ *
+ * Chrome 后台/冻结 target 偶尔会出现“命令其实已经排进 renderer，但 ACK 超时”的短抖动。
+ * `Network.enable` 是幂等命令，因此这里允许有限重试；三次仍失败就 fail-closed，绝不能在
+ * 无法观察正式 POST/response 的情况下继续点击发送。
+ */
+export async function enableActorNetworkDomain(
+  send: (method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<any>,
+  options: { attempts?: number; commandTimeoutMs?: number; retryDelayMs?: number } = {},
+): Promise<{ attempts: number }> {
+  const attempts = Math.max(1, Math.trunc(options.attempts ?? 3))
+  const commandTimeoutMs = Math.max(250, Math.trunc(options.commandTimeoutMs ?? 5_000))
+  const retryDelayMs = Math.max(0, Math.trunc(options.retryDelayMs ?? 150))
+  let lastError: unknown = null
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await send('Network.enable', {}, commandTimeoutMs)
+      return { attempts: attempt }
+    }
+    catch (error) {
+      lastError = error
+      if (attempt >= attempts) break
+      await new Promise(resolve => setTimeout(resolve, retryDelayMs * attempt))
+    }
+  }
+
+  const message = lastError instanceof Error ? lastError.message : String(lastError ?? 'unknown error')
+  throw new Error(`ChatGPT actor could not enable CDP Network after ${attempts} attempts: ${message}`)
+}
+
 function normalizeCdpHttp(value: string): string {
   return value.replace(/\/$/u, '')
 }
