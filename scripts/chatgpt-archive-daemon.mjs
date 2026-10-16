@@ -110,6 +110,10 @@ const DEVSPACE_IDLE_ALERT_THRESHOLDS_MS = [60_000, 180_000, 300_000]
 const DEVSPACE_IDLE_STARTUP_LOOKBACK_MS = 6 * 60_000
 const IMAGE_ASSET_HYDRATE_INTERVAL_MS = 30_000
 const SLEEPING_TARGET_RETRY_MS = 5 * 60_000
+const PASSIVE_OBSERVER_HEALTH_INTERVAL_MS = 30_000
+const PASSIVE_OBSERVER_HEALTH_TIMEOUT_MS = 5_000
+const PASSIVE_OBSERVER_HEALTH_FAILURE_THRESHOLD = 2
+const PASSIVE_OBSERVER_ZOMBIE_RETRY_MS = 1_000
 const WINDOWS_HIDE_HELPER = path.join(PROJECT_ROOT, 'scripts', 'windows-hide-window.ps1')
 const DEFAULT_CDP_TIMEOUT_MS = 10_000
 const DEFAULT_CHROME_SHORTCUT = process.platform === 'win32' && process.env.USERPROFILE
@@ -518,6 +522,20 @@ export function passiveObserverRetryDelayMs(
 ) {
   const base = Math.max(1000, Number(baseMs) || SLEEPING_TARGET_RETRY_MS)
   return base
+}
+
+/**
+ * 长期 passive observer 可能出现“target 和 WebSocket 都还在，但这个 CDP session 已经不再
+ * 收到 renderer Network 事件”的 zombie。只有在没有正在收流的 LiveTurn 时才允许做本地
+ * liveness probe，避免为了健康检查打断一条仍在生成的 SSE。
+ */
+export function shouldProbePassivePageObserver(input, intervalMs = PASSIVE_OBSERVER_HEALTH_INTERVAL_MS) {
+  if (!input || input.clientClosed === true || input.hasActiveTransport === true) return false
+  const now = Number(input.now)
+  const lastHealthAt = Number(input.lastHealthAt || 0)
+  const interval = Math.max(1000, Number(intervalMs) || PASSIVE_OBSERVER_HEALTH_INTERVAL_MS)
+  if (!Number.isFinite(now) || now <= 0) return false
+  return lastHealthAt <= 0 || now - lastHealthAt >= interval
 }
 
 /** Guardian target 命令超时后，用浏览器级 CDP ping 区分故障层级。 */
