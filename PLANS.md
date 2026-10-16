@@ -1,3 +1,21 @@
+## 2026-10-16 Bark / Watchdog 手机通知第二轮人因化
+
+### 现场问题
+- iPhone 通知中心真机截图显示，当前“事件主题 + 会话名”都塞进 title 后，标题经常在首屏截断；正文再重复会话名，实际占用了最宝贵的两三行。
+- 生产 `turn_notification_ledger` 最近 24 小时约有 293 条成功 Bark：其中 `devspace-idle` 116、`turn-final` 67、`watchdog-start` 43，是主要高频来源。固定按 `Chat-Latency / Chat-Timeout / Chat-Done` 分类的 Bark group 会把不同会话堆成 10～30+ 条的大组，折叠后只剩数字角标，用户无法一眼知道新消息属于哪个会话。
+- 极端正文仍过长：`devspace-checkpoint` 最近 24h 平均约 704 字符、最大 1339；`5 分钟诊断 + canonical-tail-gap` 平均约 338。完整取证应留在 SQLite / DevSpace，不应搬到锁屏。
+- 当前 Bark POST 只发送 `title/body/group/url`，没有设置 `level`，也没有任何“persistent banner”字段；横幅是否临时/持续属于 iOS/Bark App 的通知展示设置，不应通过服务端伪造。
+
+### ExecPlan
+1. 保留全部现有通知触发频率和持久去重 key；本轮只做人因展示与分组，不擅自静默 1/3/5 分钟、Final、Watchdog start 等事件。
+2. Bark payload 新增标准 `subtitle`：title 专门表达“事件 + 结论”，subtitle 专门表达“会话身份”，body 只留一个最重要补充事实。conversation-scoped 通知不再把会话名同时塞进 title 和 body。
+3. 高频 conversation 通知的 Bark group 从“全局事件类别”改成“每个 conversation 一条 thread”；同一聊天的工具静默、Watchdog、Final 等折叠在一起，避免全局 `Chat-Latency 36` / `Chat-Timeout 13` 这种不可扫读的大堆。未绑定 metadata 使用稳定短别名 thread；基础设施告警继续使用 `Archive-Warning` 等固定分组。
+4. 重点精简：Watchdog start/timeout/diagnosis、1/3/5 分钟 idle、5 分钟诊断、Turn Final、DevSpace checkpoint/conclusion、未绑定 Watchdog。时间只显示 `HH:mm`，完整秒级时间、CID、metadata、taxonomy 留在持久化层。
+5. checkpoint/conclusion 的手机正文做 Unicode 安全截断并折叠换行；完整 summary/next/conclusion 不改写、仍保留在 DevSpace SQLite / Archive ledger。
+6. 更新 `NOTIFICATION_STYLE.md`，把旧“title=事件+18字会话名、group=事件类别”升级成“title=事件/结论、subtitle=会话、group=conversation thread”的新契约。
+7. 更新 notifier/daemon 单测和声明文件，跑定向测试 + `npm run check`。通过后受控重载生产 daemon，并确认 Bark、Bridge、WSS、Guardian 健康；不伪造大量手机 canary。
+8. iOS 侧单独说明：若用户说的是屏幕顶部横幅一直挂着，应将“设置→通知→Bark→横幅样式”改为临时；通知中心/锁屏历史本来就会保留，不能靠 Bark payload 设置成自动删除。
+
 ## 2026-10-16 Watchdog 启动覆盖与 DevSpace durable replay
 
 ### 目标
