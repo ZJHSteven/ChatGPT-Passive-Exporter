@@ -124,4 +124,3 @@ describe('Archive daemon maintenance gate', () => {
     expect(await fs.readFile(output, 'utf8')).toBe('legacy-ran')
   })
 })
-})
