@@ -103,7 +103,8 @@ const DEFAULT_BRIDGE_HOST = '127.0.0.1'
 const DEFAULT_BRIDGE_PORT = 47_832
 const DEFAULT_IMAGE_ASSET_DIR = path.join(PROJECT_ROOT, 'data', 'assets', 'chatgpt')
 const DEVSPACE_POLL_OVERLAP_MS = 10_000
-const DEVSPACE_INITIAL_LOOKBACK_MS = 2 * 60_000
+const DEVSPACE_AUDIT_CONSUMER_KEY = 'archive-daemon'
+const DEVSPACE_AUDIT_PAGE_SIZE = 250
 const DEVSPACE_FALLBACK_POLL_MS = 60_000
 const DEVSPACE_IDLE_ALERT_THRESHOLDS_MS = [60_000, 180_000, 300_000]
 const DEVSPACE_IDLE_STARTUP_LOOKBACK_MS = 6 * 60_000
@@ -2528,8 +2529,10 @@ async function main() {
   // binding 晚到以后仍以这个时间作为 watchdog.startedAt，不让发现延迟污染超时起点。
   const unboundDevSpaceTurns = new Map()
   const recentConversationComplete = new Map()
-  const seenDevSpaceAuditIds = new Map()
-  let devSpacePollSinceAt = Date.now() - DEVSPACE_INITIAL_LOOKBACK_MS
+  // DevSpace audit 从 durable (started_at, audit_id) 高水位续读。首次升级时会在 daemon
+  // startup 明确 bootstrap 到当时头部；之后无论离线多久都从持久游标继续，不再靠 2 分钟回看。
+  let devSpaceAuditCursor = archive.getDevSpaceAuditCursor(DEVSPACE_AUDIT_CONSUMER_KEY)
+  let devSpaceAuditCursorBootstrapped = Boolean(devSpaceAuditCursor)
   let devSpaceLastPollAt = null
   let devSpaceLastFallbackPollAt = 0
   let devSpaceLastAuditAt = null
@@ -6572,6 +6575,12 @@ async function main() {
         emit: appendLiveTransport,
       })
       const canonical = new LiveSseCanonicalAccumulator()
+      registerLiveCanonicalDecoder(cdpRequestId, canonical, {
+        targetId: target.id,
+        requestId: cdpRequestId,
+        transport: 'turn-wss',
+        endpoint: 'turn-wss',
+      })
       const liveKey = `${target.id}:${cdpRequestId}`
       activeLiveTransports.set(liveKey, {
         targetId: target.id,
@@ -6598,18 +6607,12 @@ async function main() {
       entry.finished = true
       if (failedReason) entry.tracker.fail(failedReason, Date.now())
       else entry.tracker.finish(Date.now())
-      if (!failedReason) {
-        promoteCompleteLiveSse(entry.canonical, {
-          targetId: target.id,
-          requestId: entry.cdpRequestId,
-          transport: 'turn-wss',
-          endpoint: 'turn-wss',
-        })
-      }
+      if (!failedReason) tryPromoteLiveCanonicalDecoder(entry.cdpRequestId)
       void finalizeLiveSseJournal(entry.cdpRequestId, {
         event: failedReason ? 'stream-failed' : 'stream-finished',
         ...(failedReason ? { detail: { reason: String(failedReason).slice(0, 240) } } : {}),
       })
+      liveCanonicalDecoders.delete(entry.cdpRequestId)
       activeLiveTransports.delete(entry.liveKey)
       turnWssTrackers.delete(`${entry.requestId}:${entry.topic}`)
     }
@@ -6668,6 +6671,14 @@ async function main() {
         emit: appendLiveTransport,
       })
       const canonical = new LiveSseCanonicalAccumulator()
+      registerLiveCanonicalDecoder(String(requestId), canonical, {
+        targetId: target.id,
+        requestId: String(requestId),
+        transport,
+        endpoint: transport === 'resume'
+          ? '/backend-api/f/conversation/resume'
+          : '/backend-api/f/conversation',
+      })
       const liveKey = `${target.id}:${requestId}`
       const liveState = {
         targetId: target.id,
@@ -6759,6 +6770,7 @@ async function main() {
             .catch(async (error) => {
               liveTransports.delete(requestId)
               activeLiveTransports.delete(live.liveKey)
+              liveCanonicalDecoders.delete(String(requestId))
               await finalizeLiveSseJournal(String(requestId), {
                 event: 'stream-capture-failed',
                 detail: { reason: error instanceof Error ? error.message : String(error) },
@@ -6774,6 +6786,7 @@ async function main() {
         else {
           liveTransports.delete(requestId)
           activeLiveTransports.delete(live.liveKey)
+          liveCanonicalDecoders.delete(String(requestId))
           void finalizeLiveSseJournal(String(requestId), {
             event: 'stream-rejected',
             detail: { status, mimeType: liveMimeType || null },
@@ -6880,15 +6893,9 @@ async function main() {
         const finish = () => {
           if (!liveTransports.has(requestId)) return
           live.tracker.finish(Date.now())
-          promoteCompleteLiveSse(live.canonical, {
-            targetId: target.id,
-            requestId: String(requestId),
-            transport: live.tracker.transport,
-            endpoint: live.tracker.transport === 'resume'
-              ? '/backend-api/f/conversation/resume'
-              : '/backend-api/f/conversation',
-          })
+          tryPromoteLiveCanonicalDecoder(String(requestId))
           void finalizeLiveSseJournal(String(requestId), { event: 'stream-finished' })
+          liveCanonicalDecoders.delete(String(requestId))
           liveTransports.delete(requestId)
           activeLiveTransports.delete(live.liveKey)
         }
@@ -6984,11 +6991,14 @@ async function main() {
          if (!liveTransports.has(requestId)) return
          const reason = [errorText, blockedReason, canceled === true ? 'canceled' : null].filter(Boolean).join('; ')
            || 'Network.loadingFailed'
+         const sseComplete = live.canonical.snapshot().complete
+         if (sseComplete) tryPromoteLiveCanonicalDecoder(String(requestId))
          live.tracker.fail(reason, Date.now())
          void finalizeLiveSseJournal(String(requestId), {
-           event: 'stream-failed',
+           event: sseComplete ? 'stream-finished-after-network-abort' : 'stream-failed',
            detail: { reason: String(reason).slice(0, 240) },
          })
+         liveCanonicalDecoders.delete(String(requestId))
          liveTransports.delete(requestId)
          activeLiveTransports.delete(live.liveKey)
        }
