@@ -373,7 +373,11 @@ async function daemonCommand(positionals, flags) {
       let sawNewProbeIdentity = false
       let stableSamples = 0
       let observed = null
-      while (Date.now() - probeStartedAt < 45_000) {
+      // 生产上近期 DevSpace binding backfill 已实测可能占用约 50 秒；45 秒会把
+      // “其实仍在正常初始化、稍后即可 healthy”的新实例误判失败并主动杀掉。
+      // 这里把人工 resume 的 fail-closed 观察窗放宽到 90 秒。它只影响部署/人工恢复
+      // 时最长等待多久，不改变 Task Scheduler 自身每 1 分钟的监督周期。
+      while (Date.now() - probeStartedAt < 90_000) {
         // Windows 在 Node 子进程退出后，还需要几十毫秒让父级 wscript / Task Scheduler
         // 实例从 Running 真正退场。此窗口里立刻 /Run 会被 IgnoreNew 正确忽略。
         //
@@ -429,7 +433,7 @@ async function daemonCommand(positionals, flags) {
       if (!stopResult.stopped && stopResult.reason !== 'daemon not running') {
         throw new Error('Scheduled Archive daemon failed health check and could not be stopped; maintenance remains active')
       }
-      throw new Error('Scheduled Archive daemon did not become healthy within 45 seconds; maintenance remains active')
+      throw new Error('Scheduled Archive daemon did not become healthy within 90 seconds; maintenance remains active')
     }
     catch (error) {
       await clearArchiveDaemonStartOnce(DEFAULT_DAEMON_START_ONCE_PATH).catch(() => {})
