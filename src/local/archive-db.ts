@@ -479,7 +479,11 @@ export class ChatArchiveDb {
     this.filePath = filePath
     ensureParentDir(filePath)
     this.db = new DatabaseSync(filePath)
-    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;')
+    // Archive 会被 daemon、CLI search/read、LifeOps 等多个本机进程同时打开。
+    // 生产事故已证实：瞬时写锁若在 busy_timeout=0 下直接抛 SQLITE_BUSY，
+    // 再叠加外层事件回调缺少隔离，就可能把常驻 daemon 整个打死。
+    // 5 秒只用于等待本机极短事务；真正长期锁仍会明确失败，不会无限挂起。
+    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;')
     this.migrate()
   }
 
@@ -957,39 +961,59 @@ export class ChatArchiveDb {
     // Incident 的稳定身份必须属于某一个 turn，而不是“这个 conversation 当前有一张红牌”。
     // 旧库已有少量 incident：优先沿用 turn_exchange_id；极少数没有 turn id 的历史行退化用自身 id，
     // 只为保证迁移唯一性。新写入会使用 turn_exchange_id/user message/last message 生成稳定 turn_key。
-    this.db.prepare(`
-      UPDATE incidents
-      SET turn_key = COALESCE(NULLIF(turn_key, ''), NULLIF(turn_exchange_id, ''), id),
-          last_observed_at = COALESCE(last_observed_at, resolved_at, detected_at),
-          lifecycle_class = COALESCE(NULLIF(lifecycle_class, ''), CASE
-            WHEN incident_kind = 'watchdog-timeout' THEN 'watchdog-timeout'
-            WHEN terminal_evidence IN ('client-stopped', 'interrupted') THEN 'explicit-interrupted'
-            WHEN source LIKE '%conversation-turn-complete%'
-              OR source LIKE '%async-complete%'
-            THEN 'complete-no-final'
-            ELSE 'abnormal-terminal'
-          END)
+    const incidentIdentityBackfillNeeded = this.db.prepare(`
+      SELECT 1 AS needed
+      FROM incidents
       WHERE turn_key IS NULL OR turn_key = ''
          OR last_observed_at IS NULL
          OR lifecycle_class IS NULL OR lifecycle_class = ''
-    `).run()
+      LIMIT 1
+    `).get()
+    if (incidentIdentityBackfillNeeded) {
+      this.db.prepare(`
+        UPDATE incidents
+        SET turn_key = COALESCE(NULLIF(turn_key, ''), NULLIF(turn_exchange_id, ''), id),
+            last_observed_at = COALESCE(last_observed_at, resolved_at, detected_at),
+            lifecycle_class = COALESCE(NULLIF(lifecycle_class, ''), CASE
+              WHEN incident_kind = 'watchdog-timeout' THEN 'watchdog-timeout'
+              WHEN terminal_evidence IN ('client-stopped', 'interrupted') THEN 'explicit-interrupted'
+              WHEN source LIKE '%conversation-turn-complete%'
+                OR source LIKE '%async-complete%'
+              THEN 'complete-no-final'
+              ELSE 'abnormal-terminal'
+            END)
+        WHERE turn_key IS NULL OR turn_key = ''
+           OR last_observed_at IS NULL
+           OR lifecycle_class IS NULL OR lifecycle_class = ''
+      `).run()
+    }
 
     // historical-turn 只证明“后面已经出现新的 user turn，因此旧轮已经结束”；它并不能证明
     // Archive 当时观察到了 conversation-turn-complete。过去把这类记录也归为 complete-no-final
     // 会污染 lifecycle 统计。只有显式 interrupted/client_stopped 例外，其余历史无-final 统一
     // 回收到 generic abnormal-terminal；source/reason/diagnostic 仍保留完整取证事实。
-    this.db.prepare(`
-      UPDATE incidents
-      SET lifecycle_class='abnormal-terminal',
-          reason=CASE
-            WHEN reason LIKE '历史 turn 后续已经出现更新的 user turn%'
-            THEN '历史 turn 后续已经出现更新的 user turn，可确认该轮已结束且没有 final；未观察到该 turn 的 conversation-turn-complete 证据。'
-            ELSE reason
-          END
+    const historicalLifecycleBackfillNeeded = this.db.prepare(`
+      SELECT 1 AS needed
+      FROM incidents
       WHERE source LIKE '%:historical-turn'
         AND terminal_evidence='none'
         AND lifecycle_class='complete-no-final'
-    `).run()
+      LIMIT 1
+    `).get()
+    if (historicalLifecycleBackfillNeeded) {
+      this.db.prepare(`
+        UPDATE incidents
+        SET lifecycle_class='abnormal-terminal',
+            reason=CASE
+              WHEN reason LIKE '历史 turn 后续已经出现更新的 user turn%'
+              THEN '历史 turn 后续已经出现更新的 user turn，可确认该轮已结束且没有 final；未观察到该 turn 的 conversation-turn-complete 证据。'
+              ELSE reason
+            END
+        WHERE source LIKE '%:historical-turn'
+          AND terminal_evidence='none'
+          AND lifecycle_class='complete-no-final'
+      `).run()
+    }
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS incidents_conversation_turn
       ON incidents(conversation_id, turn_key)

@@ -18,6 +18,7 @@ export interface DevSpaceAuditWakeStats {
   listening: boolean
   received: number
   invalid: number
+  handlerErrors: number
   lastReceivedAt: number | null
   lastSignalStartedAt: number | null
   lastLatencyMs: number | null
@@ -37,6 +38,7 @@ export class DevSpaceAuditWakeListener {
   private readonly host: string
   private received = 0
   private invalid = 0
+  private handlerErrors = 0
   private lastReceivedAt: number | null = null
   private lastSignalStartedAt: number | null = null
   private lastLatencyMs: number | null = null
@@ -69,7 +71,16 @@ export class DevSpaceAuditWakeListener {
       this.lastReceivedAt = receivedAt
       this.lastSignalStartedAt = startedAt
       this.lastLatencyMs = Math.max(0, receivedAt - startedAt)
-      onWake(signal)
+      try {
+        onWake(signal)
+      }
+      catch (error) {
+        // UDP 只是“门铃”，SQLite 才是 durable source of truth。
+        // 单次 wake 处理失败绝不能升级成进程级 fatal；60 秒 fallback poll
+        // 或下一次门铃会重新读取事实。把错误留在 stats/state 供排障。
+        this.handlerErrors += 1
+        this.lastError = error instanceof Error ? error.message : String(error)
+      }
     })
     socket.on('error', error => {
       this.lastError = error.message
@@ -110,6 +121,7 @@ export class DevSpaceAuditWakeListener {
       listening: Boolean(this.socket),
       received: this.received,
       invalid: this.invalid,
+      handlerErrors: this.handlerErrors,
       lastReceivedAt: this.lastReceivedAt,
       lastSignalStartedAt: this.lastSignalStartedAt,
       lastLatencyMs: this.lastLatencyMs,
