@@ -10,7 +10,9 @@ param(
   [string]$ProjectRoot,
   [string]$DbPath,
   [string]$MaintenanceFlag,
-  [string]$StartOnceFlag
+  [string]$StartOnceFlag,
+  [string]$ExpectedDaemonSha256,
+  [string]$ExpectedLauncherSha256
 )
 
 # Windows 登录自启动只负责“进程级高可用”，不参与 ChatGPT 协议逻辑：
@@ -52,17 +54,67 @@ if ($Action -eq 'Uninstall') {
   exit 0
 }
 
-foreach ($required in @('NodeExe', 'DaemonScript', 'LauncherScript', 'ProjectRoot', 'DbPath')) {
+foreach ($required in @(
+  'NodeExe',
+  'DaemonScript',
+  'LauncherScript',
+  'ProjectRoot',
+  'DbPath',
+  'ExpectedDaemonSha256',
+  'ExpectedLauncherSha256'
+)) {
   if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $required -ValueOnly))) {
     throw "Install 缺少参数：$required"
   }
 }
 
+$canonicalRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')).TrimEnd('\')
+$canonicalDaemon = [IO.Path]::GetFullPath((Join-Path $canonicalRoot 'scripts\chatgpt-archive-daemon.mjs'))
+$canonicalLauncher = [IO.Path]::GetFullPath((Join-Path $canonicalRoot 'scripts\windows-archive-daemon-launcher.vbs'))
+$canonicalDb = [IO.Path]::GetFullPath((Join-Path $canonicalRoot 'data\chatgpt-archive.sqlite'))
+$canonicalMaintenance = [IO.Path]::GetFullPath((Join-Path $canonicalRoot 'data\archive-daemon-maintenance.json'))
+$canonicalStartOnce = [IO.Path]::GetFullPath((Join-Path $canonicalRoot 'data\archive-daemon-start-once.flag'))
+
 if ([string]::IsNullOrWhiteSpace($MaintenanceFlag)) {
-  $MaintenanceFlag = Join-Path $ProjectRoot 'data\archive-daemon-maintenance.json'
+  $MaintenanceFlag = $canonicalMaintenance
 }
 if ([string]::IsNullOrWhiteSpace($StartOnceFlag)) {
-  $StartOnceFlag = Join-Path $ProjectRoot 'data\archive-daemon-start-once.flag'
+  $StartOnceFlag = $canonicalStartOnce
+}
+
+# 这是 Archive 项目的专用安装器，不允许被当成“任意计划任务注册器”复用。
+# 管理员审批看到的 command 虽然仍显式列出这些路径，但这里再做一次运行时 fail-closed：
+# 任何 TaskName / ProjectRoot / payload / DB / maintenance 路径漂移都拒绝注册。
+if ($TaskName -cne 'ChatGPT Archive Daemon') {
+  throw "Install 只允许固定任务名：ChatGPT Archive Daemon"
+}
+
+$pathChecks = @(
+  @{ Name = 'ProjectRoot'; Actual = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\'); Expected = $canonicalRoot },
+  @{ Name = 'DaemonScript'; Actual = [IO.Path]::GetFullPath($DaemonScript); Expected = $canonicalDaemon },
+  @{ Name = 'LauncherScript'; Actual = [IO.Path]::GetFullPath($LauncherScript); Expected = $canonicalLauncher },
+  @{ Name = 'DbPath'; Actual = [IO.Path]::GetFullPath($DbPath); Expected = $canonicalDb },
+  @{ Name = 'MaintenanceFlag'; Actual = [IO.Path]::GetFullPath($MaintenanceFlag); Expected = $canonicalMaintenance },
+  @{ Name = 'StartOnceFlag'; Actual = [IO.Path]::GetFullPath($StartOnceFlag); Expected = $canonicalStartOnce }
+)
+foreach ($check in $pathChecks) {
+  if (-not [string]::Equals($check.Actual, $check.Expected, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Install 路径校验失败：$($check.Name)"
+  }
+}
+
+if (-not (Test-Path -LiteralPath $NodeExe -PathType Leaf) -or
+    [IO.Path]::GetFileName($NodeExe) -ine 'node.exe') {
+  throw 'Install NodeExe 必须指向现有 node.exe'
+}
+
+$actualDaemonSha256 = (Get-FileHash -LiteralPath $canonicalDaemon -Algorithm SHA256).Hash.ToLowerInvariant()
+$actualLauncherSha256 = (Get-FileHash -LiteralPath $canonicalLauncher -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualDaemonSha256 -ne $ExpectedDaemonSha256.ToLowerInvariant()) {
+  throw 'Install daemon SHA256 与审批命令不一致'
+}
+if ($actualLauncherSha256 -ne $ExpectedLauncherSha256.ToLowerInvariant()) {
+  throw 'Install launcher SHA256 与审批命令不一致'
 }
 
 $wscriptExe = Join-Path $env:WINDIR 'System32\wscript.exe'
@@ -146,4 +198,6 @@ Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
   Database = $DbPath
   MaintenanceFlag = $MaintenanceFlag
   StartOnceFlag = $StartOnceFlag
+  DaemonSha256 = $actualDaemonSha256
+  LauncherSha256 = $actualLauncherSha256
 } | ConvertTo-Json -Compress

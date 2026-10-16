@@ -116,6 +116,10 @@ test('Windows Archive startup task 由每分钟重复触发承担进程级自愈
   expect(helper).toContain('Trigger = @($logonTrigger, $healthTrigger)')
   expect(helper).toContain('archive-daemon-maintenance.json')
   expect(helper).toContain('archive-daemon-start-once.flag')
+  expect(helper).toContain("Install 只允许固定任务名：ChatGPT Archive Daemon")
+  expect(helper).toContain('ExpectedDaemonSha256')
+  expect(helper).toContain('ExpectedLauncherSha256')
+  expect(helper).toContain('Get-FileHash -LiteralPath $canonicalDaemon -Algorithm SHA256')
 })
 
 test('global catalog replay 继承第一方 query 模板，只覆盖分页参数', () => {

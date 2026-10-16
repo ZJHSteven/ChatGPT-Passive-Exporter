@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
 import { importOfficialExportZips } from '../src/local/official-export.ts'
@@ -129,6 +130,11 @@ function parseArgs(argv) {
 function dbPath(flags) {
   const explicit = flags.get('db') ?? process.env.CHATGPT_ARCHIVE_DB
   return explicit === undefined ? DEFAULT_DB_PATH : path.resolve(String(explicit))
+}
+
+/** 计算安装审批需要绑定的本地 payload SHA256，避免审批后文件被悄悄替换。 */
+async function sha256File(filePath) {
+  return createHash('sha256').update(await fs.readFile(filePath)).digest('hex')
 }
 
 /**
@@ -291,14 +297,19 @@ async function daemonCommand(positionals, flags) {
       '-TaskName', WINDOWS_STARTUP_TASK,
     ]
     if (helperAction === 'Install') {
+      const daemonScript = path.join(PROJECT_ROOT, 'scripts', 'chatgpt-archive-daemon.mjs')
+      const daemonSha256 = await sha256File(daemonScript)
+      const launcherSha256 = await sha256File(WINDOWS_STARTUP_LAUNCHER)
       args.push(
         '-NodeExe', process.execPath,
-        '-DaemonScript', path.join(PROJECT_ROOT, 'scripts', 'chatgpt-archive-daemon.mjs'),
+        '-DaemonScript', daemonScript,
         '-LauncherScript', WINDOWS_STARTUP_LAUNCHER,
         '-ProjectRoot', PROJECT_ROOT,
         '-DbPath', dbPath(flags),
         '-MaintenanceFlag', DEFAULT_DAEMON_MAINTENANCE_PATH,
         '-StartOnceFlag', DEFAULT_DAEMON_START_ONCE_PATH,
+        '-ExpectedDaemonSha256', daemonSha256,
+        '-ExpectedLauncherSha256', launcherSha256,
       )
     }
     // Windows PowerShell 5.1 会按系统代码页误读无 BOM 的 UTF-8 中文脚本；本机已有
