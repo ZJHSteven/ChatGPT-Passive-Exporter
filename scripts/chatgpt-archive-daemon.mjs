@@ -6567,13 +6567,23 @@ async function main() {
         if (status >= 200 && status < 300 && liveMimeType.includes('text/event-stream')) {
           live.enablePromise = client.send('Network.streamResourceContent', { requestId }, 10_000)
             .then((result) => {
-              live.tracker.ingestBase64(result?.bufferedData, Date.now())
+              const bufferedAt = Date.now()
+              appendJournalBase64(String(requestId), result?.bufferedData)
+              live.tracker.ingestBase64(result?.bufferedData, bufferedAt)
               live.ready = true
-              for (const chunk of live.pending) live.tracker.ingestBase64(chunk.data, chunk.at)
+              for (const chunk of live.pending) {
+                appendJournalBase64(String(requestId), chunk.data)
+                live.tracker.ingestBase64(chunk.data, chunk.at)
+              }
               live.pending = []
             })
             .catch(async (error) => {
               liveTransports.delete(requestId)
+              activeLiveTransports.delete(live.liveKey)
+              await finalizeLiveSseJournal(String(requestId), {
+                event: 'stream-capture-failed',
+                detail: { reason: error instanceof Error ? error.message : String(error) },
+              })
               await log('live turn streamResourceContent unavailable', {
                 targetId: target.id,
                 requestId,
@@ -6584,6 +6594,11 @@ async function main() {
         }
         else {
           liveTransports.delete(requestId)
+          activeLiveTransports.delete(live.liveKey)
+          void finalizeLiveSseJournal(String(requestId), {
+            event: 'stream-rejected',
+            detail: { status, mimeType: liveMimeType || null },
+          })
         }
       }
       const protocolSignature = protocolRequestSignatures.get(requestId) || null
