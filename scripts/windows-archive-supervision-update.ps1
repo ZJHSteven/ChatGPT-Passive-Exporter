@@ -153,40 +153,65 @@ if ($Action -eq 'Validate') {
 }
 
 # Apply 只更新“同一个既有 payload”的监督元数据。
-$newActionParams = @{
-  Execute = $wscriptExe
-  Argument = $supervisedArguments
-  WorkingDirectory = $projectRoot
-}
-$newAction = New-ScheduledTaskAction @newActionParams
+#
+# 不使用 Set-ScheduledTask：
+# 本机已隔离复现，当旧任务存在 RestartOnFailure、而新 Settings 想移除它时，
+# ScheduledTasks PowerShell 模块会序列化出非法的 Count 节点并报 XML 错误。
+# Task Scheduler 原生 COM Definition 则能正确把 RestartCount=0 表达为“删除整个
+# RestartOnFailure 节点”，因此这里直接修改既有 Definition，再原位注册回同名任务。
+$TASK_ACTION_EXEC = 0
+$TASK_TRIGGER_TIME = 1
+$TASK_TRIGGER_LOGON = 9
+$TASK_CREATE_OR_UPDATE = 6
+$TASK_LOGON_INTERACTIVE_TOKEN = 3
+$TASK_RUNLEVEL_LUA = 0
+$TASK_INSTANCES_IGNORE_NEW = 2
 
-$logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUserName
-$healthTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
+$service = New-Object -ComObject 'Schedule.Service'
+$service.Connect()
+$rootFolder = $service.GetFolder('\')
+$registeredTask = $rootFolder.GetTask($taskName)
+$definition = $registeredTask.Definition
 
-$settingsParams = @{
-  StartWhenAvailable = $true
-  MultipleInstances = 'IgnoreNew'
-  ExecutionTimeLimit = [TimeSpan]::Zero
-}
-$settings = New-ScheduledTaskSettingsSet @settingsParams
-$settings.DisallowStartIfOnBatteries = $false
-$settings.StopIfGoingOnBatteries = $false
+$definition.Actions.Clear()
+$newAction = $definition.Actions.Create($TASK_ACTION_EXEC)
+$newAction.Path = $wscriptExe
+$newAction.Arguments = $supervisedArguments
+$newAction.WorkingDirectory = $projectRoot
 
-$principalParams = @{
-  UserId = $currentUserName
-  LogonType = 'Interactive'
-  RunLevel = 'Limited'
-}
-$principal = New-ScheduledTaskPrincipal @principalParams
+$definition.Triggers.Clear()
+$logonTrigger = $definition.Triggers.Create($TASK_TRIGGER_LOGON)
+$logonTrigger.UserId = $currentUserName
 
-$setParams = @{
-  TaskName = $taskName
-  Action = $newAction
-  Trigger = @($logonTrigger, $healthTrigger)
-  Settings = $settings
-  Principal = $principal
-}
-Set-ScheduledTask @setParams | Out-Null
+$healthTrigger = $definition.Triggers.Create($TASK_TRIGGER_TIME)
+$healthTrigger.StartBoundary = (Get-Date).AddMinutes(1).ToString('yyyy-MM-ddTHH:mm:ss')
+$healthTrigger.Repetition.Interval = 'PT1M'
+$healthTrigger.Repetition.StopAtDurationEnd = $false
+
+$definition.Settings.StartWhenAvailable = $true
+$definition.Settings.MultipleInstances = $TASK_INSTANCES_IGNORE_NEW
+$definition.Settings.ExecutionTimeLimit = 'PT0S'
+$definition.Settings.DisallowStartIfOnBatteries = $false
+$definition.Settings.StopIfGoingOnBatteries = $false
+
+# 旧定义中的 RestartOnFailure=999 在本机对“子进程 exit 1”本来就不会生效；
+# 设为 0 + 空 interval 会让 COM 正确移除整个 RestartOnFailure XML 节点。
+$definition.Settings.RestartCount = 0
+$definition.Settings.RestartInterval = ''
+
+$definition.Principal.UserId = $currentUserName
+$definition.Principal.LogonType = $TASK_LOGON_INTERACTIVE_TOKEN
+$definition.Principal.RunLevel = $TASK_RUNLEVEL_LUA
+
+$rootFolder.RegisterTaskDefinition(
+  $taskName,
+  $definition,
+  $TASK_CREATE_OR_UPDATE,
+  $null,
+  $null,
+  $TASK_LOGON_INTERACTIVE_TOKEN,
+  $null
+) | Out-Null
 
 # 写完后再次从系统读取并 fail-closed 验证，避免“命令成功但任务定义不是预期”。
 $after = Assert-ExistingArchiveTask
@@ -212,6 +237,8 @@ if (@($taskAfter.Triggers).Count -ne 2) {
   MultipleInstances = [string]$taskAfter.Settings.MultipleInstances
   DisallowStartIfOnBatteries = [bool]$taskAfter.Settings.DisallowStartIfOnBatteries
   StopIfGoingOnBatteries = [bool]$taskAfter.Settings.StopIfGoingOnBatteries
+  RestartCount = [int]$taskAfter.Settings.RestartCount
+  RestartInterval = [string]$taskAfter.Settings.RestartInterval
   LastRunTime = $infoAfter.LastRunTime
   LastTaskResult = $infoAfter.LastTaskResult
 } | ConvertTo-Json -Compress

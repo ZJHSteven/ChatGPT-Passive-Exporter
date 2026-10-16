@@ -136,10 +136,11 @@ test('Windows Archive supervision updater 只能原位升级固定既有任务',
   expect(helper).toContain('$currentUserSid = [string]$currentIdentity.User.Value')
   expect(helper).toContain('Translate([System.Security.Principal.SecurityIdentifier])')
   expect(helper).not.toContain('-AtLogOn -User $env:USERNAME')
-  expect(helper).toContain('RepetitionInterval (New-TimeSpan -Minutes 1)')
-  expect(helper).toContain("MultipleInstances = 'IgnoreNew'")
-  expect(helper).toContain('Set-ScheduledTask @setParams')
-  expect(helper).not.toContain('Register-ScheduledTask')
+  expect(helper).toContain("$definition.Settings.RestartCount = 0")
+  expect(helper).toContain("$definition.Settings.RestartInterval = ''")
+  expect(helper).toContain('$TASK_INSTANCES_IGNORE_NEW = 2')
+  expect(helper).toContain('$rootFolder.RegisterTaskDefinition(')
+  expect(helper).not.toContain('Set-ScheduledTask')
 })
 
 test('global catalog replay 继承第一方 query 模板，只覆盖分页参数', () => {
