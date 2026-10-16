@@ -3214,6 +3214,67 @@ async function main() {
   }
 
   /**
+   * Actor submission queue 的失败尝试属于“发起新 turn 之前/期间”的基础设施事件，
+   * 它不一定拥有 conversationId，因此不能硬塞进 conversation incident taxonomy。
+   *
+   * 这里采用两级策略：
+   * 1. 真正 terminal failed：立即提醒；
+   * 2. 已确认是 Project/sidebar 瞬态不可见：第一次进入 retry_waiting 就提醒一次，
+   *    因为它会直接延迟 ClassFlow Notes，且历史上已实际造成静默漏发。
+   *
+   * 其他普通网络瞬态重试不在第一次就 Bark，避免短抖动制造噪声；DOM drift 仍由上面的
+   * 专用通知负责，防止同一个漂移事件重复提醒。
+   */
+  const notifyActorSubmissionAttemptError = (record) => {
+    const status = String(record?.status || '')
+    const error = String(record?.lastError || '').trim()
+    const idempotencyKey = String(record?.idempotencyKey || '').trim()
+    const submissionId = String(record?.id || '').trim()
+    const attemptCount = Number(record?.attemptCount || 0)
+    const projectVisibilityRetry = status === 'retry_waiting'
+      && attemptCount === 1
+      && /project not found or not visible in sidebar/iu.test(error)
+    const terminalFailure = status === 'failed'
+    if (!submissionId || !error || (!terminalFailure && !projectVisibilityRetry)) return false
+
+    const source = idempotencyKey.startsWith('classflow:')
+      ? 'ClassFlow Notes'
+      : (idempotencyKey || '未命名 submission')
+    const title = terminalFailure
+      ? 'Archive Actor 提交失败'
+      : 'Archive Actor：Project 暂未就绪，已自动重试'
+    const body = [
+      `来源：${source}`,
+      `尝试次数：${attemptCount}`,
+      `状态：${status}`,
+      `原因：${error}`,
+      projectVisibilityRetry
+        ? '本次失败发生在正式提交前；队列已保留任务并按退避策略自动重试。'
+        : '任务已停止自动提交，需要检查持久化 submission 记录后决定恢复方式。',
+    ].join('\n')
+
+    return dispatchPersistentNotification({
+      notificationKey: `actor-submission:${terminalFailure ? 'failed' : 'project-retry'}:${submissionId}`,
+      kind: terminalFailure ? 'actor-submission-failed' : 'actor-submission-project-retry',
+      conversationId: record?.input?.conversationId ?? null,
+      turnKey: submissionId,
+      payload: {
+        title,
+        body,
+        group: BARK_NOTIFICATION_GROUPS.archiveWarning,
+      },
+      successLog: 'actor submission error notification sent',
+      failureLog: 'actor submission error notification failed',
+      logFields: {
+        submissionId,
+        idempotencyKey,
+        status,
+        attemptCount,
+      },
+    })
+  }
+
+  /**
    * HTTP protocol drift 不再等每天 12:00 批处理。真正 actionable 的语义 drift 在第二次稳定出现
    * （或第一次就已经是 critical）时进入这个 10 秒聚合窗口，然后立即 Bark。
    *
@@ -7614,6 +7675,8 @@ async function main() {
         host: bridgeHost,
         port: bridgePort,
         submissionQueuePath: actorSubmissionQueuePath,
+        submissionQueueLog: log,
+        onSubmissionAttemptError: notifyActorSubmissionAttemptError,
         submitTurn: async (input) => await sendActorPrompt({
           cdpHttp,
           statePath: actorStatePath,

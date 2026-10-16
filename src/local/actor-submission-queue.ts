@@ -63,6 +63,13 @@ export interface ActorSubmissionQueueOptions {
   retryMaxMs?: number
   log?: (message: string, extra?: Record<string, unknown>) => void | Promise<void>
   onAccepted?: (record: ActorSubmissionRecord) => void | Promise<void>
+  /**
+   * 每次真实提交尝试失败、并且新状态已经可靠写盘后触发。
+   *
+   * 这个回调只负责“可观测性”，绝不能反过来决定队列状态；因此 drain() 会把回调异常
+   * 吃掉并尽量写日志。上层可以据此做 Bark/监控，但通知服务挂掉不能拖死 Actor 队列。
+   */
+  onAttemptError?: (record: ActorSubmissionRecord) => void | Promise<void>
 }
 
 function requestHash(input: ActorSubmissionInput): string {
@@ -99,14 +106,14 @@ export function isRetryableInfrastructureError(message: string): boolean {
   // 正式 POST 已经观察到、但最终 HTTP 结果未知时绝不能盲目重发；
   // 否则一次 CDP timeout 可能把“其实已经送达”的 turn 重复提交。
   if (isSubmissionOutcomeUnknownError(message)) return false
-  return /cooldown|HTTP 429|unavailable|CDP|target.*closed|target.*unavailable|lease timeout|timed out|timeout|fetch failed|ECONN|socket|waiting for full answer|still live|DOM drift|prompt input not found|composer.*not found/iu.test(message)
+  return /cooldown|HTTP 429|unavailable|CDP|target.*closed|target.*unavailable|lease timeout|timed out|timeout|fetch failed|ECONN|socket|waiting for full answer|still live|DOM drift|prompt input not found|composer.*not found|project not found or not visible in sidebar/iu.test(message)
 }
 
 export class ActorSubmissionQueue {
   private readonly options: Required<Pick<
     ActorSubmissionQueueOptions,
     'filePath' | 'submitTurn' | 'pollIntervalMs' | 'retryBaseMs' | 'retryMaxMs'
-  >> & Pick<ActorSubmissionQueueOptions, 'confirmTurn' | 'log' | 'onAccepted'>
+  >> & Pick<ActorSubmissionQueueOptions, 'confirmTurn' | 'log' | 'onAccepted' | 'onAttemptError'>
 
   private readonly recordsByKey = new Map<string, ActorSubmissionRecord>()
   private started = false
@@ -130,6 +137,7 @@ export class ActorSubmissionQueue {
       retryMaxMs: Math.max(1000, options.retryMaxMs ?? 60_000),
       log: options.log,
       onAccepted: options.onAccepted,
+      onAttemptError: options.onAttemptError,
     }
   }
 
@@ -361,6 +369,18 @@ export class ActorSubmissionQueue {
             nextAttemptAt: record.nextAttemptAt,
             error: message,
           })
+          // 可观测性回调一定放在 persist() 之后：通知里看到的状态必须已经能从磁盘复核。
+          // 回调本身失败只影响告警，不允许让已经持久化的 submission 被误认为 drain 失败。
+          try {
+            await this.options.onAttemptError?.(cloneRecord(record))
+          }
+          catch (callbackError) {
+            await this.options.log?.('actor submission attempt-error callback failed', {
+              submissionId: record.id,
+              idempotencyKey: record.idempotencyKey,
+              error: callbackError instanceof Error ? callbackError.message : String(callbackError),
+            }).catch(() => {})
+          }
         }
       }
     }

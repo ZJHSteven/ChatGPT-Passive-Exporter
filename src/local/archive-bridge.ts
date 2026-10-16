@@ -115,6 +115,10 @@ export interface ArchiveBridgeOptions {
   maxBodyBytes?: number
   submissionQueuePath?: string | null
   submissionQueuePollIntervalMs?: number
+  /** 把持久化 submission queue 的状态日志汇入 daemon 主日志。 */
+  submissionQueueLog?: (message: string, extra?: Record<string, unknown>) => void | Promise<void>
+  /** submission 每次尝试失败后的只读通知钩子；不得改变队列状态。 */
+  onSubmissionAttemptError?: (record: ActorSubmissionRecord) => void | Promise<void>
 }
 
 export interface ArchiveBridgeAuthState {
@@ -512,7 +516,9 @@ export class ArchiveBridgeServer {
             this.options.archive,
             input as ArchiveBridgeTurnInput,
           ),
+          log: options.submissionQueueLog,
           onAccepted: async record => this.publishAcceptedSubmission(record),
+          onAttemptError: options.onSubmissionAttemptError,
         })
       : null
   }

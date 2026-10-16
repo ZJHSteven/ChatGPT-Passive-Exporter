@@ -14,7 +14,61 @@ import { ActorSubmissionQueue, isRetryableInfrastructureError, isSubmissionOutco
 test('Actor submission 把页面输入暂时缺失视为可重试基础设施错误', () => {
   expect(isRetryableInfrastructureError('ChatGPT actor prompt input not found')).toBe(true)
   expect(isRetryableInfrastructureError('ChatGPT actor composer element not found')).toBe(true)
+  expect(isRetryableInfrastructureError(
+    'ChatGPT actor project not found or not visible in sidebar: 课堂录音→笔记',
+  )).toBe(true)
   expect(isRetryableInfrastructureError('invalid projectName')).toBe(false)
+})
+
+test('Project sidebar 瞬态不可见会进入重试且暴露 attempt-error 回调', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-project-retry-'))
+  const queuePath = path.join(dir, 'queue.json')
+  let attempts = 0
+  const observedErrors: Array<{ status: string, attemptCount: number, lastError: string | null }> = []
+  const queue = new ActorSubmissionQueue({
+    filePath: queuePath,
+    pollIntervalMs: 10,
+    retryBaseMs: 100,
+    retryMaxMs: 1000,
+    submitTurn: async () => {
+      attempts += 1
+      if (attempts === 1) {
+        throw new Error('ChatGPT actor project not found or not visible in sidebar: 课堂录音→笔记')
+      }
+      return { conversationId: 'recovered-cid' }
+    },
+    onAttemptError: async record => {
+      observedErrors.push({
+        status: record.status,
+        attemptCount: record.attemptCount,
+        lastError: record.lastError,
+      })
+    },
+  })
+  await queue.start()
+  await queue.enqueue('project-retry', {
+    text: '完整课堂转写',
+    conversationId: null,
+    projectName: '课堂录音→笔记',
+    mode: 'new',
+    targetMode: 'guardian',
+  })
+
+  const deadline = Date.now() + 1800
+  while (Date.now() < deadline && queue.get('project-retry')?.status !== 'accepted') {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  const record = queue.get('project-retry')
+  expect(record?.status).toBe('accepted')
+  expect(record?.result?.conversationId).toBe('recovered-cid')
+  expect(attempts).toBe(2)
+  expect(observedErrors).toEqual([{
+    status: 'retry_waiting',
+    attemptCount: 1,
+    lastError: 'ChatGPT actor project not found or not visible in sidebar: 课堂录音→笔记',
+  }])
+  await queue.stop()
+  await fs.rm(dir, { recursive: true, force: true })
 })
 
 test('正式 POST 结果未知必须 fail-closed，不能按 timeout 自动重试', () => {
