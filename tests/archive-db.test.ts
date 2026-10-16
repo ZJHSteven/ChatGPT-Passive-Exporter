@@ -60,6 +60,16 @@ function payload() {
 }
 
 describe('ChatArchiveDb', () => {
+  test('本地并发访问使用有限 busy timeout，避免瞬时写锁立即抛错', () => {
+    const db = tempDb()
+    try {
+      expect(db.db.prepare('PRAGMA busy_timeout').get()).toEqual({ timeout: 5000 })
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('持久化 resume token 与自动恢复退避状态', () => {
     const db = tempDb()
     try {
