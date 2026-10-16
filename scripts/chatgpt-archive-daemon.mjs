@@ -6432,6 +6432,10 @@ async function main() {
       entry.finished = true
       if (failedReason) entry.tracker.fail(failedReason, Date.now())
       else entry.tracker.finish(Date.now())
+      void finalizeLiveSseJournal(entry.cdpRequestId, {
+        event: failedReason ? 'stream-failed' : 'stream-finished',
+        ...(failedReason ? { detail: { reason: String(failedReason).slice(0, 240) } } : {}),
+      })
       activeLiveTransports.delete(entry.liveKey)
       turnWssTrackers.delete(`${entry.requestId}:${entry.topic}`)
     }
