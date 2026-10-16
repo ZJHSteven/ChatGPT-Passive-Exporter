@@ -6484,10 +6484,12 @@ async function main() {
         ? 'conversation'
         : url.endsWith('/backend-api/f/conversation/resume') ? 'resume' : null
       if (!transport) return
+      const startedAt = Date.now()
+      openLiveSseJournal(String(requestId), transport, startedAt)
       const tracker = new LiveTurnTransportTracker({
         cdpRequestId: String(requestId),
         transport,
-        requestStartedAt: Date.now(),
+        requestStartedAt: startedAt,
         emit: appendLiveTransport,
       })
       const liveKey = `${target.id}:${requestId}`
@@ -6495,7 +6497,7 @@ async function main() {
         targetId: target.id,
         cdpRequestId: String(requestId),
         transport,
-        startedAt: Date.now(),
+        startedAt,
         lastDataAt: null,
         dataEvents: 0,
         dataBytes: 0,
@@ -6518,6 +6520,11 @@ async function main() {
       liveState.retireIdle = (reason, at = Date.now()) => {
         if (!liveTransports.has(requestId)) return false
         tracker.fail(reason, at)
+        void finalizeLiveSseJournal(String(requestId), {
+          event: 'stream-failed',
+          at,
+          detail: { reason: String(reason).slice(0, 240) },
+        })
         liveTransports.delete(requestId)
         activeLiveTransports.delete(liveKey)
         return true
