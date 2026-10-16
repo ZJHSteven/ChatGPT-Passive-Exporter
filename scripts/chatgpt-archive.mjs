@@ -15,6 +15,14 @@ import {
   formatProtocolDriftAssessment,
 } from '../src/local/protocol-drift.ts'
 import { loadIncidentNotificationConfig, sendIncidentNotification } from '../src/local/incident-notifier.ts'
+import {
+  archiveDaemonSupervisorReady,
+  clearArchiveDaemonStartOnce,
+  enterArchiveDaemonMaintenance,
+  grantArchiveDaemonStartOnce,
+  leaveArchiveDaemonMaintenance,
+  readArchiveDaemonMaintenance,
+} from '../src/local/archive-daemon-supervision.ts'
 
 /**
  * 全局 `chatgpt-archive` 通过 npm link/全局 shim 可以从任意工作目录启动。
@@ -27,6 +35,8 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const DEFAULT_DB_PATH = path.join(PROJECT_ROOT, 'data', 'chatgpt-archive.sqlite')
 const DEFAULT_DAEMON_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon-state.json')
 const DEFAULT_DAEMON_LOG_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon.log')
+const DEFAULT_DAEMON_MAINTENANCE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon-maintenance.json')
+const DEFAULT_DAEMON_START_ONCE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-daemon-start-once.flag')
 const DEFAULT_TURN_TRACE_PATH = path.join(PROJECT_ROOT, 'data', 'active-turn-trace.jsonl')
 const DEFAULT_ACTOR_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-actor-state.json')
 const DEFAULT_PROTOCOL_LEDGER_PATH = path.join(PROJECT_ROOT, 'data', 'protocol-fingerprints.json')
@@ -73,6 +83,7 @@ Usage:
   chatgpt-archive daemon start [--cdp URL] [--reconcile-hours N] [--db <path>] [--devspace-db <path>] [--allow-active-image-resolver] [--bridge-host HOST] [--bridge-port PORT] [--bridge-auth <path>] [--no-bridge] [--allow-remote-bridge]
   chatgpt-archive daemon status [--state <path>]
   chatgpt-archive daemon stop [--state <path>]
+  chatgpt-archive daemon resume [--state <path>]
   chatgpt-archive daemon install-startup
   chatgpt-archive daemon startup-status
   chatgpt-archive daemon uninstall-startup
@@ -221,9 +232,51 @@ async function readDaemonState(flags) {
   }
 }
 
+/**
+ * 停止当前 daemon 进程，但不改变 maintenance 状态。
+ *
+ * stop 会先进入 maintenance；resume 也会保持 maintenance，直到新版本通过健康门槛。
+ * 把真正的 PID 终止逻辑集中在这里，可以避免两个流程出现不同的 SIGTERM/SIGKILL 语义。
+ */
+async function stopDaemonProcess(flags) {
+  const current = await readDaemonState(flags)
+  const pid = Number(current.state?.pid)
+  if (!current.alive || !Number.isInteger(pid)) {
+    return { stopped: false, reason: 'daemon not running', ...current }
+  }
+  process.kill(pid, 'SIGTERM')
+  const started = Date.now()
+  while (isPidAlive(pid) && Date.now() - started < 5000) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  if (isPidAlive(pid)) process.kill(pid, 'SIGKILL')
+  return { stopped: !isPidAlive(pid), pid, statePath: current.statePath }
+}
+
+/** 请求现有 Windows 计划任务立即运行一次；只触发同名任务，不修改任务定义。 */
+async function runArchiveScheduledTask() {
+  const child = spawn('schtasks.exe', ['/Run', '/TN', WINDOWS_STARTUP_TASK], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.setEncoding('utf8')
+  child.stderr.setEncoding('utf8')
+  child.stdout.on('data', chunk => { stdout += chunk })
+  child.stderr.on('data', chunk => { stderr += chunk })
+  const exitCode = await new Promise((resolve, reject) => {
+    child.on('error', reject)
+    child.on('close', resolve)
+  })
+  if (exitCode !== 0) {
+    throw new Error('Failed to run scheduled Archive daemon: ' + (stderr.trim() || stdout.trim() || 'exit ' + exitCode))
+  }
+}
+
 async function daemonCommand(positionals, flags) {
   const action = positionals[0]
-  if (!action) throw new Error('daemon requires start|status|stop|install-startup|startup-status|uninstall-startup')
+  if (!action) throw new Error('daemon requires start|status|stop|resume|install-startup|startup-status|uninstall-startup')
 
   if (['install-startup', 'startup-status', 'uninstall-startup'].includes(action)) {
     if (process.platform !== 'win32') throw new Error(`${action} is currently Windows-only`)
@@ -245,6 +298,8 @@ async function daemonCommand(positionals, flags) {
         '-LauncherScript', WINDOWS_STARTUP_LAUNCHER,
         '-ProjectRoot', PROJECT_ROOT,
         '-DbPath', dbPath(flags),
+        '-MaintenanceFlag', DEFAULT_DAEMON_MAINTENANCE_PATH,
+        '-StartOnceFlag', DEFAULT_DAEMON_START_ONCE_PATH,
       )
     }
     // Windows PowerShell 5.1 会按系统代码页误读无 BOM 的 UTF-8 中文脚本；本机已有
@@ -270,25 +325,65 @@ async function daemonCommand(positionals, flags) {
 
   if (action === 'status') {
     const current = await readDaemonState(flags)
-    console.log(JSON.stringify(current, null, 2))
+    const maintenance = await readArchiveDaemonMaintenance(DEFAULT_DAEMON_MAINTENANCE_PATH)
+    console.log(JSON.stringify({ ...current, maintenance }, null, 2))
     return
   }
 
   if (action === 'stop') {
-    const current = await readDaemonState(flags)
-    const pid = Number(current.state?.pid)
-    if (!current.alive || !Number.isInteger(pid)) {
-      console.log(JSON.stringify({ stopped: false, reason: 'daemon not running', ...current }, null, 2))
-      return
-    }
-    process.kill(pid, 'SIGTERM')
-    const started = Date.now()
-    while (isPidAlive(pid) && Date.now() - started < 5000) {
-      await new Promise(resolve => setTimeout(resolve, 100))
-    }
-    if (isPidAlive(pid)) process.kill(pid, 'SIGKILL')
-    console.log(JSON.stringify({ stopped: !isPidAlive(pid), pid, statePath: current.statePath }, null, 2))
+    const maintenance = await enterArchiveDaemonMaintenance(DEFAULT_DAEMON_MAINTENANCE_PATH, 'manual-stop')
+    await clearArchiveDaemonStartOnce(DEFAULT_DAEMON_START_ONCE_PATH)
+    const result = await stopDaemonProcess(flags)
+    console.log(JSON.stringify({ ...result, maintenance }, null, 2))
     return
+  }
+
+  if (action === 'resume') {
+    if (process.platform !== 'win32') throw new Error('daemon resume is currently Windows-only')
+
+    await enterArchiveDaemonMaintenance(DEFAULT_DAEMON_MAINTENANCE_PATH, 'resume-probe')
+    await clearArchiveDaemonStartOnce(DEFAULT_DAEMON_START_ONCE_PATH)
+    await stopDaemonProcess(flags)
+    await grantArchiveDaemonStartOnce(DEFAULT_DAEMON_START_ONCE_PATH)
+
+    try {
+      await runArchiveScheduledTask()
+      const started = Date.now()
+      let stableSamples = 0
+      let observed = null
+      while (Date.now() - started < 15_000) {
+        await new Promise(resolve => setTimeout(resolve, 500))
+        observed = await readDaemonState(flags)
+        if (archiveDaemonSupervisorReady(observed)) {
+          stableSamples += 1
+          if (stableSamples >= 4) {
+            await leaveArchiveDaemonMaintenance(DEFAULT_DAEMON_MAINTENANCE_PATH)
+            await clearArchiveDaemonStartOnce(DEFAULT_DAEMON_START_ONCE_PATH)
+            console.log(JSON.stringify({
+              resumed: true,
+              supervised: true,
+              stableSamples,
+              ...observed,
+              maintenance: await readArchiveDaemonMaintenance(DEFAULT_DAEMON_MAINTENANCE_PATH),
+            }, null, 2))
+            return
+          }
+        }
+        else {
+          stableSamples = 0
+        }
+      }
+
+      await clearArchiveDaemonStartOnce(DEFAULT_DAEMON_START_ONCE_PATH)
+      await enterArchiveDaemonMaintenance(DEFAULT_DAEMON_MAINTENANCE_PATH, 'resume-health-check-failed')
+      await stopDaemonProcess(flags)
+      throw new Error('Scheduled Archive daemon did not become healthy within 15 seconds; maintenance remains active')
+    }
+    catch (error) {
+      await clearArchiveDaemonStartOnce(DEFAULT_DAEMON_START_ONCE_PATH).catch(() => {})
+      await enterArchiveDaemonMaintenance(DEFAULT_DAEMON_MAINTENANCE_PATH, 'resume-failed').catch(() => {})
+      throw error
+    }
   }
 
   if (action === 'start') {
@@ -297,6 +392,9 @@ async function daemonCommand(positionals, flags) {
       console.log(JSON.stringify({ started: false, reason: 'already running', ...current }, null, 2))
       return
     }
+
+    await enterArchiveDaemonMaintenance(DEFAULT_DAEMON_MAINTENANCE_PATH, 'direct-start')
+    await clearArchiveDaemonStartOnce(DEFAULT_DAEMON_START_ONCE_PATH)
 
     const daemonScript = path.join(PROJECT_ROOT, 'scripts', 'chatgpt-archive-daemon.mjs')
     const statePath = daemonStatePath(flags)
