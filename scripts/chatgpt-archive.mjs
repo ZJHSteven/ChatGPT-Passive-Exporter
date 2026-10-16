@@ -286,7 +286,6 @@ async function daemonCommand(positionals, flags) {
     const args = [
       '-NoProfile',
       '-NonInteractive',
-      '-ExecutionPolicy', 'Bypass',
       '-File', WINDOWS_STARTUP_HELPER,
       '-Action', helperAction,
       '-TaskName', WINDOWS_STARTUP_TASK,
