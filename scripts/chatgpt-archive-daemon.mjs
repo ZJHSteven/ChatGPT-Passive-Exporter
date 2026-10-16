@@ -6046,12 +6046,13 @@ async function main() {
     const current = unboundDevSpaceTurns.get(event.metadataId)
     const persistedStartAt = Number(binding.firstSeenAt || event.startedAtMs)
     const generationRestarted = Boolean(current && persistedStartAt > Number(current.startedAt || 0))
-    unboundDevSpaceTurns.set(event.metadataId, {
+    const nextCandidate = {
       startedAt: generationRestarted ? persistedStartAt : (current?.startedAt ?? persistedStartAt),
       lastEventAt: Math.max(Number(current?.lastEventAt || 0), event.startedAtMs),
       lastAuditId: event.id,
       repairQueuedAt: generationRestarted ? null : (current?.repairQueuedAt ?? null),
-    })
+    }
+    unboundDevSpaceTurns.set(event.metadataId, nextCandidate)
   }
 
   const pollDevSpaceAudits = () => {
