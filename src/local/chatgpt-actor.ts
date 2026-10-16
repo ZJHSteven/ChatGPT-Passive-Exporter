@@ -1451,9 +1451,13 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
   const client = new ActorCdpClient(target.webSocketDebuggerUrl)
   await client.connect()
   try {
-    await client.send('Page.enable')
-    await client.send('Runtime.enable')
-    await client.send('Network.enable')
+    // `Page.enable` / `Runtime.enable` 都不是当前 Actor 的必要条件。生产 canary 已证实后台
+    // Guardian 会偶发只在这些无关 ACK 上超时；把它们当硬门闩会让一次完全没碰 UI 的发送
+    // 直接失败。真正必须先建立的是 Network observer，因为后续正式 POST/HTTP/SSE 全靠它验收。
+    await enableActorNetworkDomain(
+      (method, params, commandTimeoutMs) => client.send(method, params, commandTimeoutMs),
+      { commandTimeoutMs: Math.min(5_000, Math.max(1_000, timeoutMs)) },
+    )
     const domLedger = options.domLedgerPath
       ? await ActorDomDriftLedger.open(options.domLedgerPath)
       : null
