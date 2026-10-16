@@ -68,6 +68,7 @@ import {
   shouldReadGuardianProtocolBody,
   watchdogDiagnosticTurnKey,
   watchdogStartNotificationKey,
+  unboundWatchdogStartNotificationKey,
   watchdogTurnStartedAtFromPayload,
   reconcileWatchdogDiagnosticTurn,
   shouldStartCatalogWatchdog,
@@ -1135,16 +1136,48 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       startedAt: 1_000,
     })
     expect(longStart.title).toMatch(/^Watchdog 开始 · .+…$/u)
-    expect(longStart.body).not.toContain(`会话：${longTitle}`)
+    expect(longStart.body).toContain(`会话：${longTitle}`)
     expect(longStart.body.split('\n')[0]).toContain('起点：1970-01-01 08:00:01 北京时间 → 超时：1970-01-01 08:45:01 北京时间（45 分钟）')
-    expect(longStart.body.split('\n')[1]).toBe('CID：conversation-long')
-    expect(longStart.body.split('\n')).toHaveLength(2)
+    expect(longStart.body.split('\n')[2]).toBe('CID：conversation-long')
+    expect(longStart.body.split('\n')).toHaveLength(3)
 
     expect(watchdogStartNotificationKey('conversation-a', 1_000))
       .toBe('watchdog-start:conversation-a:1000')
     expect(watchdogStartNotificationKey('conversation-a', 2_000))
       .toBe('watchdog-start:conversation-a:2000')
     expect(watchdogStartNotificationKey('', 1_000)).toBeNull()
+
+    const unbound = buildWatchdogStartNotificationPayload({
+      metadataId: 'v1/abcdefgh12345678',
+      title: '排查 Archive Watchdog',
+      startedAt: 1_000,
+    })
+    expect(unbound.title).toBe('Watchdog 开始 · 排查 Archive Watchdog')
+    expect(unbound.body.split('\n')[1]).toBe('状态：等待绑定 canonical Conversation')
+    expect(unbound.body).not.toContain('meta/abcdefgh')
+    expect(unbound).not.toHaveProperty('url')
+
+    const unboundLongTitle = '这是一个特别特别特别特别特别长的未绑定聊天标题'
+    const unboundLong = buildWatchdogStartNotificationPayload({
+      metadataId: 'v1/abcdefgh12345678',
+      title: unboundLongTitle,
+      startedAt: 1_000,
+    })
+    expect(unboundLong.title).toMatch(/^Watchdog 开始 · .+…$/u)
+    expect(unboundLong.body).toContain(`会话：${unboundLongTitle} · 未绑定`)
+    expect(unboundLong.body).not.toContain('meta/abcdefgh')
+
+    const titleMissing = buildWatchdogStartNotificationPayload({
+      metadataId: 'v1/abcdefgh12345678',
+      startedAt: 1_000,
+    })
+    expect(titleMissing.title).toBe('Watchdog 开始 · Title 缺失')
+    expect(titleMissing.body).toContain('Title 缺失（异常） · meta/abcdefgh')
+    expect(titleMissing.body).not.toContain('v1/abcdefgh12345678')
+
+    expect(unboundWatchdogStartNotificationKey('v1/abcdefgh12345678', 1_000))
+      .toBe('watchdog-start-unbound:v1/abcdefgh12345678:1000')
+    expect(unboundWatchdogStartNotificationKey('', 1_000)).toBeNull()
   })
 
   test('Watchdog 起点标题只在 canonical 仍是占位符时使用 DevSpace displayTitle', () => {

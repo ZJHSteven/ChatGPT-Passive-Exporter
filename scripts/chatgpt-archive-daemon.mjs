@@ -1049,7 +1049,8 @@ export function buildWatchdogTimeoutNotificationPayload({
  * 时仍在内部保留 provisional first-tool 时间；完成 exact binding 后再用这个原始时间发开始通知。
  */
 export function buildWatchdogStartNotificationPayload({
-  conversationId,
+  conversationId = null,
+  metadataId = null,
   title,
   startedAt,
   watchdogMs = 45 * 60_000,
@@ -1063,12 +1064,21 @@ export function buildWatchdogStartNotificationPayload({
   const watchdogMinutes = Math.round(safeWatchdogMs / 60_000)
   const subject = compactNotificationSubject(title)
   const timingLine = `起点：${formatBeijingTime(safeStartedAt)} → 超时：${formatBeijingTime(safeStartedAt + safeWatchdogMs)}（${watchdogMinutes} 分钟）`
-  const identityLine = `CID：${conversationId}`
+  const identityLine = conversationId
+    ? `CID：${conversationId}`
+    : subject.full
+      ? '状态：等待绑定 canonical Conversation'
+      : `Title 缺失（异常） · ${shortDevSpaceMetadataAlias(metadataId)}`
+  const fullTitleLine = subject.truncated
+    ? `会话：${subject.full}${conversationId ? '' : ' · 未绑定'}`
+    : null
   return {
-    title: notificationTitleWithSubject('Watchdog 开始', subject),
+    title: subject.short
+      ? notificationTitleWithSubject('Watchdog 开始', subject)
+      : 'Watchdog 开始 · Title 缺失',
     // 锁屏第一屏最重要的是“这一轮从几点开始、几点会触发 Watchdog”。CID 只是排障身份，
-    // 因此固定放到第二行；即使标题被截断，也不再用完整会话名挤占正文的首屏空间。
-    body: [timingLine, identityLine].join('\n'),
+    // 因此固定把 timing 放第一行；Title 太长时按其它通知的一致规则把完整 Title 下沉正文。
+    body: [timingLine, fullTitleLine, identityLine].filter(Boolean).join('\n'),
     group: BARK_NOTIFICATION_GROUPS.chatTimeout,
     url: conversationId ? `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` : undefined,
   }
@@ -1082,6 +1092,13 @@ export function watchdogStartNotificationKey(conversationId, startedAt) {
   const cid = String(conversationId || '').trim()
   const start = Math.max(0, Math.trunc(Number(startedAt) || 0))
   return cid && start > 0 ? `watchdog-start:${cid}:${start}` : null
+}
+
+/** metadata 尚未绑定 canonical CID 时的稳定起点收据 key。 */
+export function unboundWatchdogStartNotificationKey(metadataId, startedAt) {
+  const metadata = String(metadataId || '').trim()
+  const start = Math.max(0, Math.trunc(Number(startedAt) || 0))
+  return metadata && start > 0 ? `watchdog-start-unbound:${metadata}:${start}` : null
 }
 
 /**
