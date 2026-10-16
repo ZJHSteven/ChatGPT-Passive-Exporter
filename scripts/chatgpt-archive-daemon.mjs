@@ -6066,22 +6066,63 @@ async function main() {
 
   const pollDevSpaceAudits = () => {
     try {
-      const events = devSpaceAuditBridge.pollSince(Math.max(0, devSpacePollSinceAt - DEVSPACE_POLL_OVERLAP_MS))
-      for (const event of events) handleDevSpaceAuditEvent(event)
-      if (events.length > 0) {
-        devSpacePollSinceAt = Math.max(devSpacePollSinceAt, ...events.map(event => event.startedAtMs + 1))
+      let observed = 0
+      while (true) {
+        const events = devSpaceAuditCursor
+          ? devSpaceAuditBridge.pollAfter({
+              startedAt: devSpaceAuditCursor.startedAt,
+              auditId: devSpaceAuditCursor.auditId,
+            }, DEVSPACE_AUDIT_PAGE_SIZE)
+          : devSpaceAuditBridge.pollSince(0, DEVSPACE_AUDIT_PAGE_SIZE)
+        if (events.length === 0) break
+
+        for (const event of events) {
+          // 必须先完整处理，再推进 durable cursor。若中途抛错，下次从上一条高水位安全重放。
+          handleDevSpaceAuditEvent(event)
+          devSpaceAuditCursor = archive.advanceDevSpaceAuditCursor({
+            consumerKey: DEVSPACE_AUDIT_CONSUMER_KEY,
+            startedAt: event.startedAt,
+            auditId: event.id,
+          })
+          observed += 1
+        }
+        if (events.length < DEVSPACE_AUDIT_PAGE_SIZE) break
       }
       devSpaceLastPollAt = Date.now()
       devSpaceLastError = null
-      for (const [auditId, at] of seenDevSpaceAuditIds) {
-        if (!shouldRetainSeenDevSpaceAudit(at, devSpacePollSinceAt, DEVSPACE_POLL_OVERLAP_MS)) {
-          seenDevSpaceAuditIds.delete(auditId)
-        }
-      }
+      return observed
     }
     catch (error) {
       devSpaceLastError = error instanceof Error ? error.message : String(error)
+      return 0
     }
+  }
+
+  const bootstrapDevSpaceAuditCursor = () => {
+    if (devSpaceAuditCursorBootstrapped) return devSpaceAuditCursor
+    const latest = devSpaceAuditBridge.latestAuditCursor()
+    if (latest) {
+      devSpaceAuditCursor = archive.advanceDevSpaceAuditCursor({
+        consumerKey: DEVSPACE_AUDIT_CONSUMER_KEY,
+        startedAt: latest.startedAt,
+        auditId: latest.auditId,
+      })
+    }
+    // DevSpace DB 为空也只 bootstrap 一次。之后第一条 audit 会由 pollSince(0) 消费并建立游标。
+    devSpaceAuditCursorBootstrapped = true
+    return devSpaceAuditCursor
+  }
+
+  /**
+   * cursor 只追踪 INSERT 时的 started_at；同一 audit 的 finish 是 UPDATE，不会再次越过 cursor。
+   * 因此 daemon 重启/低频兜底要按 recovery 中尚未 finished 的 audit id 重读最终行。
+   */
+  const refreshPendingDevSpaceRecoveryAudits = () => {
+    let refreshed = 0
+    for (const auditId of archive.listPendingDevSpaceRecoveryAuditIds(1000)) {
+      if (refreshDevSpaceRecoveryAudit(auditId)) refreshed += 1
+    }
+    return refreshed
   }
 
   /**
