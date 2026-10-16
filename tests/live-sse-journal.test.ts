@@ -82,5 +82,39 @@ describe('LiveSseJournalStream', () => {
     expect(metaText).toContain('stream-failed')
     expect(metaText).not.toContain('SHOULD-NOT-APPEAR')
   })
+
+  test('pre-ready dataReceived 立即进入独立 WAL，同时不打乱最终 SSE 字节顺序', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-live-sse-'))
+    tempDirs.push(root)
+    const stream = new LiveSseJournalStream(root, {
+      targetId: 'target-3',
+      cdpRequestId: '345.67',
+      transport: 'conversation',
+      startedAt: Date.UTC(2026, 9, 16, 8, 2, 0),
+    })
+
+    const pendingA = 'data: pending-A\n\n'
+    const pendingB = 'data: pending-B\n\n'
+    await stream.appendPreReadyBase64(Buffer.from(pendingA).toString('base64'), { at: 100, sequence: 0 })
+    await stream.appendPreReadyBase64(Buffer.from(pendingB).toString('base64'), { at: 110, sequence: 1 })
+
+    // 这是关键 crash 窗口：streamResourceContent 还没给 bufferedData，但已观察到的 chunk 已经在 WAL。
+    const walRows = (await fs.readFile(stream.preReadyChunkPath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line))
+    expect(walRows.map(row => row.sequence)).toEqual([0, 1])
+    expect(walRows.map(row => Buffer.from(row.dataBase64, 'base64').toString('utf8'))).toEqual([pendingA, pendingB])
+    expect(await fs.readFile(stream.filePath, 'utf8')).toBe('')
+
+    const buffered = 'data: buffered-prefix\n\n'
+    await stream.appendBase64(Buffer.from(buffered).toString('base64'))
+    await stream.appendBase64(Buffer.from(pendingA).toString('base64'))
+    await stream.appendBase64(Buffer.from(pendingB).toString('base64'))
+    const snapshot = await stream.finalize({ event: 'stream-finished' })
+
+    expect(await fs.readFile(stream.filePath, 'utf8')).toBe(buffered + pendingA + pendingB)
+    expect(snapshot.preReadyBytesWritten).toBe(Buffer.byteLength(pendingA + pendingB))
+  })
 })
 
