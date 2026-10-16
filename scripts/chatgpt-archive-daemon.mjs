@@ -3565,6 +3565,12 @@ async function main() {
         bytes: liveSseJournalBytes,
         errors: liveSseJournalErrors,
       },
+      canonical: {
+        promoted: liveSseCanonicalPromoted,
+        fallbacks: liveSseCanonicalFallbacks,
+        bodyRefreshesSkipped: liveSseBodyRefreshesSkipped,
+        satisfiedConversations: liveSseCanonicalSatisfied.size,
+      },
       streams: [...activeLiveTransports.values()]
         .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))
         .slice(-32),
