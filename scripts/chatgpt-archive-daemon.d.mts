@@ -1,3 +1,4 @@
+export declare function acquireArchiveDaemonSingleton(input?: { host?: string; port?: number }): Promise<import('node:net').Server>
 export declare function formatDaemonFatalError(error: unknown): string
 export declare function appendDaemonFatalLog(
   logPath: string,
@@ -396,10 +397,11 @@ export function shouldRebuildGuardianAfterHealthFailures(
 ): boolean
 
 export function guardianUiFailureKind(snapshot: {
+  href?: unknown
   ready?: unknown
   composerPresent?: unknown
   accountLoadFailure?: unknown
-} | null | undefined): 'account-load-failure' | null
+} | null | undefined): 'account-load-failure' | 'wrong-document' | null
 
 /** deferred gap repair 的统一门控：WSS、debounce、最小间隔、cooldown 与并发状态必须同时满足。 */
 export function shouldRunDeferredGapRepair(input: {

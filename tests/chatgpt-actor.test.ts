@@ -7,6 +7,7 @@ import {
   DEFAULT_ACTOR_MIN_SUBMIT_GAP_MS,
   actorSubmitGapDelayMs,
   actorConversationUrl,
+  actorDocumentFailureKind,
   actorResponseMimeAccepted,
   buildActorDomObservationExpression,
   conversationIdFromUrl,
@@ -20,6 +21,14 @@ import {
 } from '../src/local/chatgpt-actor.ts'
 
 describe('ChatGPT single actor helpers', () => {
+  test('actor distinguishes wrong browser documents from ChatGPT DOM drift', () => {
+    expect(actorDocumentFailureKind('chrome-error://chromewebdata/')).toBe('wrong-document')
+    expect(actorDocumentFailureKind('about:blank')).toBe('wrong-document')
+    expect(actorDocumentFailureKind('https://example.com/')).toBe('wrong-document')
+    expect(actorDocumentFailureKind('https://chatgpt.com/')).toBeNull()
+    expect(actorDocumentFailureKind('https://chatgpt.com/c/123')).toBeNull()
+  })
+
   test('导航期空壳 DOM 只表示页面未就绪，不应作为稳定 drift 指纹', () => {
     expect(isTransientActorDomObservation({
       routeKind: 'conversation',

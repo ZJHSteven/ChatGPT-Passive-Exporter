@@ -112,6 +112,48 @@ interface ActorPageSnapshot {
   messageNodes: number
 }
 
+export function actorDocumentFailureKind(href: string): 'wrong-document' | null {
+  const raw = String(href || '').trim()
+  if (!raw) return 'wrong-document'
+  try {
+    return new URL(raw).origin === 'https://chatgpt.com' ? null : 'wrong-document'
+  }
+  catch {
+    return 'wrong-document'
+  }
+}
+
+async function waitForHealthyActorShell(
+  client: ActorCdpClient,
+  timeoutMs: number,
+  targetMode: ActorTargetMode,
+): Promise<ActorPageSnapshot> {
+  const deadline = Date.now() + Math.max(1_000, timeoutMs)
+  let recoveredWrongDocument = false
+  let lastSnapshot: ActorPageSnapshot | null = null
+  while (Date.now() < deadline) {
+    lastSnapshot = await readActorPageSnapshot(client)
+    const documentFailure = actorDocumentFailureKind(lastSnapshot.href)
+    if (!documentFailure && (
+      lastSnapshot.composerHydrated
+      || lastSnapshot.stopVisible
+      || lastSnapshot.waitingForFinal
+    )) return lastSnapshot
+    if (documentFailure && !recoveredWrongDocument) {
+      recoveredWrongDocument = true
+      const recoveryUrl = targetMode === 'guardian'
+        ? 'https://chatgpt.com/?chatgpt-archive-guardian=1'
+        : 'https://chatgpt.com/'
+      await client.send('Page.navigate', { url: recoveryUrl })
+    }
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  throw new Error(
+    'ChatGPT actor page did not reach a healthy ChatGPT shell before timeout: href='
+      + (lastSnapshot?.href || 'unknown'),
+  )
+}
+
 interface ActorSendOptions {
   cdpHttp: string
   statePath: string
@@ -1190,8 +1232,9 @@ async function ensureActorRoute(
   conversationId: string | null,
   timeoutMs: number,
   projectName: string | null = null,
+  targetMode: ActorTargetMode = 'guardian',
 ): Promise<{ snapshot: ActorPageSnapshot; navigationMode: 'already-there' | 'spa-new' | 'spa-project' | 'spa-conversation' | 'full-fallback' }> {
-  const before = await readActorPageSnapshot(client)
+  const before = await waitForHealthyActorShell(client, timeoutMs, targetMode)
   const hadGuardianMarker = (() => {
     try { return new URL(before.href).searchParams.get('chatgpt-archive-guardian') === '1' }
     catch { return false }
@@ -1256,38 +1299,50 @@ async function neutralizeGuardianAfterSubmit(
   catch (error) {
     return {
       neutralized: false,
-      reason: `snapshot-failed:${error instanceof Error ? error.message : String(error)}`,
+      reason: 'snapshot-failed:' + (error instanceof Error ? error.message : String(error)),
       href: null,
     }
   }
-  const hadGuardianMarker = (() => {
-    try { return new URL(before.href).searchParams.get('chatgpt-archive-guardian') === '1' }
-    catch { return false }
-  })()
+
+  const guardianHome = 'https://chatgpt.com/?chatgpt-archive-guardian=1'
   try {
     const currentUrl = new URL(before.href)
     if (before.conversationId === null && currentUrl.pathname === '/') {
-      await preserveGuardianMarker(client, hadGuardianMarker)
-      return { neutralized: true, reason: 'already-neutral', href: before.href }
+      await preserveGuardianMarker(client, true)
+      const href = String(await evaluateValue(client, 'location.href') || before.href || guardianHome)
+      return { neutralized: true, reason: 'already-neutral', href }
     }
   }
-  catch { /* 非标准 URL 继续尝试第一方 SPA new-chat，不做 full navigation fallback。 */ }
+  catch { /* non-standard URL falls through to active recovery */ }
+
+  const fullNavigateHome = async (reason: string) => {
+    await client.send('Page.navigate', { url: guardianHome })
+    const snapshot = await waitForRoute(client, null, Math.min(input.timeoutMs, 5_000))
+    const href = String(await evaluateValue(client, 'location.href') || snapshot.href || guardianHome)
+    return { neutralized: true, reason, href }
+  }
 
   try {
     const clicked = await clickNewChatSpa(client)
-    if (!clicked) return { neutralized: false, reason: 'spa-new-unavailable', href: before.href }
+    if (!clicked) return await fullNavigateHome('full-new-after-spa-unavailable')
     const snapshot = await waitForRoute(client, null, Math.min(input.timeoutMs, 5_000))
-    await preserveGuardianMarker(client, hadGuardianMarker)
-    const href = String(await evaluateValue(client, 'location.href') || snapshot.href || '') || null
+    await preserveGuardianMarker(client, true)
+    const href = String(await evaluateValue(client, 'location.href') || snapshot.href || guardianHome)
     return { neutralized: true, reason: 'spa-new-ready', href }
   }
-  catch (error) {
-    // cleanup 失败不能把已经 2xx + CID bind 成功的发送反判失败。下一笔 Actor 仍会通过
-    // ensureActorRoute() 从当前 route 恢复；这里只保留可观察结果。
-    return {
-      neutralized: false,
-      reason: `spa-new-failed:${error instanceof Error ? error.message : String(error)}`,
-      href: before.href,
+  catch (spaError) {
+    try {
+      return await fullNavigateHome('full-new-after-spa-failure')
+    }
+    catch (fullError) {
+      return {
+        neutralized: false,
+        reason: 'guardian-neutralize-failed:'
+          + (spaError instanceof Error ? spaError.message : String(spaError))
+          + '; full-navigation:'
+          + (fullError instanceof Error ? fullError.message : String(fullError)),
+        href: before.href,
+      }
     }
   }
 }
@@ -1547,7 +1602,7 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
     })
 
     try {
-      const route = await ensureActorRoute(client, expectedConversationId, timeoutMs, projectName)
+      const route = await ensureActorRoute(client, expectedConversationId, timeoutMs, projectName, targetMode)
       await waitForComposer(client, timeoutMs)
 
       // 旧 conversation 只有“路由已到位”还不够。至少要看到真实 message DOM；若本次切换产生了

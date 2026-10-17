@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, test } from 'vitest'
 import {
+  acquireArchiveDaemonSingleton,
   activeApiAllowed,
   buildDevSpaceCheckpointNotificationPayload,
   buildDevSpaceConclusionNotificationPayload,
@@ -1428,6 +1429,37 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       composerPresent: false,
       accountLoadFailure: false,
     })).toBeNull()
+    expect(guardianUiFailureKind({
+      href: 'chrome-error://chromewebdata/',
+      ready: 'complete',
+      composerPresent: false,
+      accountLoadFailure: false,
+    })).toBe('wrong-document')
+    expect(guardianUiFailureKind({
+      href: 'about:blank',
+      ready: 'complete',
+      composerPresent: false,
+      accountLoadFailure: false,
+    })).toBe('wrong-document')
+    expect(guardianUiFailureKind({
+      href: 'https://chatgpt.com/',
+      ready: 'complete',
+      composerPresent: true,
+      accountLoadFailure: false,
+    })).toBeNull()
+  })
+
+  test('daemon singleton lease rejects a second process-level owner', async () => {
+    const first = await acquireArchiveDaemonSingleton({ port: 0 })
+    try {
+      const address = first.address()
+      expect(address && typeof address === 'object').toBe(true)
+      const port = address && typeof address === 'object' ? address.port : 0
+      await expect(acquireArchiveDaemonSingleton({ port })).rejects.toMatchObject({ code: 'EADDRINUSE' })
+    }
+    finally {
+      await new Promise<void>(resolve => first.close(() => resolve()))
+    }
   })
 
   test('deferred gap repair 必须等待 WSS/debounce；cooldown 时仅允许已有 passive catalog 的纯被动 repair', () => {

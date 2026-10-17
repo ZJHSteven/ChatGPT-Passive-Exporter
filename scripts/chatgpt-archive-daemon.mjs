@@ -17,6 +17,7 @@
 import fs from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import path from 'node:path'
+import { createServer as createNetServer } from 'node:net'
 import process from 'node:process'
 import { execFileSync, spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -101,6 +102,8 @@ const DEFAULT_LIFEOPS_SYNC_CONFIG = path.join(PROJECT_ROOT, 'data', 'lifeops-syn
 const DEFAULT_LIFEOPS_SYNC_PENDING = path.join(PROJECT_ROOT, 'data', 'lifeops-sync-pending.json')
 const DEFAULT_BRIDGE_HOST = '127.0.0.1'
 const DEFAULT_BRIDGE_PORT = 47_832
+const DEFAULT_SINGLETON_HOST = '127.0.0.1'
+const DEFAULT_SINGLETON_PORT = 47_830
 const DEFAULT_IMAGE_ASSET_DIR = path.join(PROJECT_ROOT, 'data', 'assets', 'chatgpt')
 const DEVSPACE_POLL_OVERLAP_MS = 10_000
 const DEVSPACE_AUDIT_CONSUMER_KEY = 'archive-daemon'
@@ -127,6 +130,27 @@ const DEFAULT_CHROME_SHORTCUT = process.platform === 'win32' && process.env.USER
  * 都可能 reject 任意对象。JSON.stringify 失败时再退回 String，保证“记录 fatal”
  * 本身永远不会因为异常值而再次抛错。
  */
+export async function acquireArchiveDaemonSingleton({
+  host = DEFAULT_SINGLETON_HOST,
+  port = DEFAULT_SINGLETON_PORT,
+} = {}) {
+  const server = createNetServer()
+  await new Promise((resolve, reject) => {
+    const onError = (error) => {
+      server.removeListener('listening', onListening)
+      reject(error)
+    }
+    const onListening = () => {
+      server.removeListener('error', onError)
+      resolve()
+    }
+    server.once('error', onError)
+    server.once('listening', onListening)
+    server.listen({ host, port, exclusive: true })
+  })
+  return server
+}
+
 export function formatDaemonFatalError(error) {
   if (error instanceof Error) return error.stack || error.message
   if (typeof error === 'string') return error
@@ -1227,6 +1251,16 @@ export function shouldRebuildGuardianAfterHealthFailures(consecutiveFailures, th
 
 export function guardianUiFailureKind(snapshot) {
   if (!snapshot || String(snapshot.ready || '') !== 'complete') return null
+  const href = typeof snapshot.href === 'string' ? snapshot.href.trim() : ''
+  if (href) {
+    try {
+      const url = new URL(href)
+      if (url.origin !== 'https://chatgpt.com') return 'wrong-document'
+    }
+    catch {
+      return 'wrong-document'
+    }
+  }
   if (snapshot.composerPresent === true) return null
   if (snapshot.accountLoadFailure === true) return 'account-load-failure'
   return null
@@ -2206,6 +2240,7 @@ export function shouldRetireWssSocketsForFrameNavigation(frame) {
 
 async function main() {
   const flags = parseArgs(process.argv.slice(2))
+  const daemonSingleton = await acquireArchiveDaemonSingleton()
   const cdpHttp = String(flags.get('cdp') || DEFAULT_CDP).replace(/\/$/u, '')
   const dbPath = flags.has('db') ? path.resolve(String(flags.get('db'))) : DEFAULT_DB
   const statePath = flags.has('state') ? path.resolve(String(flags.get('state'))) : DEFAULT_STATE
@@ -2592,6 +2627,9 @@ async function main() {
     .map(([conversationId]) => conversationId)
   const timedOutWatchdogIds = () => [...activeTurns.entries()]
     .filter(([, active]) => isWatchdogLatched(active))
+    .map(([conversationId]) => conversationId)
+  const pendingWatchdogDiagnosisIds = () => [...activeTurns.entries()]
+    .filter(([, active]) => isWatchdogLatched(active) && Number(active?.watchdogPendingAt || 0) > 0)
     .map(([conversationId]) => conversationId)
   const turnRecorder = new ActiveTurnRecorder(turnTracePath)
   const eventCounts = new Map()
@@ -3708,7 +3746,8 @@ async function main() {
       active: reliableActiveIds().length + catalogLateActiveIds().length,
       reliableActive: reliableActiveIds().length,
       catalogLateActive: catalogLateActiveIds().length,
-      timedOutAwaitingDiagnosis: timedOutWatchdogIds().length,
+      timedOut: timedOutWatchdogIds().length,
+      timedOutAwaitingDiagnosis: pendingWatchdogDiagnosisIds().length,
       oldestActiveMs: (reliableActiveIds().length + catalogLateActiveIds().length) > 0
         ? Math.max(...[...activeTurns.values()]
             .filter(item => !isWatchdogLatched(item))
@@ -6264,12 +6303,15 @@ async function main() {
    * 导致启动 CPU 飙高的问题。只有同一 metadata 的所有可信命中都落在同一个 conversation，
    * 才持久化 binding。
    */
-  const backfillStoredDevSpaceBindings = ({ sinceAt = null } = {}) => {
+  const backfillStoredDevSpaceBindings = ({ sinceAt = null, metadataIds = null } = {}) => {
+    const requestedMetadataIds = Array.isArray(metadataIds) && metadataIds.length > 0
+      ? new Set(metadataIds.map(value => String(value || '').trim()).filter(Boolean))
+      : null
     const unbound = archive.listDevSpaceMetadataBindings({
       onlyUnbound: true,
       ...(Number.isFinite(Number(sinceAt)) ? { sinceAt: Number(sinceAt) } : {}),
       limit: 1000,
-    })
+    }).filter(binding => !requestedMetadataIds || requestedMetadataIds.has(binding.metadataId))
     if (unbound.length === 0) return 0
 
     const globalStartAt = Math.max(
@@ -6352,36 +6394,22 @@ async function main() {
     return created
   }
 
-  const reconcileDevSpaceBindingFromBody = (conversationId, diagnostic) => {
-    const now = Date.now()
-    const turnExchangeId = typeof diagnostic?.turnExchangeId === 'string' ? diagnostic.turnExchangeId : null
-    const requestId = typeof diagnostic?.requestId === 'string' ? diagnostic.requestId : null
-    const existing = archive.getDevSpaceMetadataBindingsForConversation(conversationId)
-    if (existing.length > 0) {
-      // 一个 canonical conversation 可以先后出现多个 openai/session metadata。
-      // 旧 binding 只说明“这些 metadata 仍属于这个 CID”，不能证明当前 turn 没有新 metadata。
-      // 因此先更新旧 binding 的最近 turn/request，但绝不能在这里 return；
-      // 下面仍要尝试从当前 body exact-match 一个尚未绑定的新 metadata。
-      archive.updateDevSpaceBindingTurn({
-        conversationId,
-        turnExchangeId,
-        requestId,
-        observedAt: now,
-        lifecycleState: activeTurns.has(conversationId) ? 'active' : 'closed',
-      })
-      for (const row of archive.getDevSpaceMetadataBindingsForConversation(conversationId)) mirrorDevSpaceBinding(row)
-    }
-    if (!turnExchangeId) return
-    const candidate = matchDevSpaceBindingFromStoredTurn(conversationId, turnExchangeId)
-    if (!candidate) return
+  const bindDevSpaceCandidateFromStoredTurn = ({
+    conversationId,
+    turnExchangeId,
+    requestId = null,
+    candidate,
+    evidence,
+    observedAt = Date.now(),
+  }) => {
     bindDevSpaceMetadataToConversation({
       metadataId: candidate.metadataId,
       conversationId,
       startAt: candidate.startAt,
-      observedAt: now,
+      observedAt,
       turnExchangeId,
       requestId,
-      evidence: 'body:exact-tool-args',
+      evidence,
       confidence: 'high',
       lifecycleState: activeTurns.has(conversationId) ? 'active' : 'closed',
     })
@@ -6391,7 +6419,83 @@ async function main() {
       turnExchangeId,
       exactMatches: candidate.exactMatches,
       uniqueMatches: candidate.uniqueMatches,
+      evidence,
     })
+  }
+
+  const reconcileHistoricalDevSpaceBindingsFromConversation = (
+    conversationId,
+    { excludeTurnExchangeId = null, maxTurns = 64 } = {},
+  ) => {
+    if (archive.listDevSpaceMetadataBindings({ onlyUnbound: true, limit: 1 }).length === 0) return 0
+    const turns = archive.db.prepare(
+      "SELECT turn_exchange_id AS turnExchangeId, MAX(ordinal) AS lastOrdinal "
+      + "FROM messages INDEXED BY messages_conversation_ordinal "
+      + "WHERE conversation_id=? AND turn_exchange_id IS NOT NULL "
+      + "AND recipient='api_tool.call_tool' AND text<>'' "
+      + "GROUP BY turn_exchange_id ORDER BY lastOrdinal DESC LIMIT ?",
+    ).all(conversationId, Math.max(1, Math.min(256, Number(maxTurns) || 64)))
+
+    let created = 0
+    for (const row of turns) {
+      const historicalTurnExchangeId = String(row.turnExchangeId || '')
+      if (!historicalTurnExchangeId || historicalTurnExchangeId === excludeTurnExchangeId) continue
+      const candidate = matchDevSpaceBindingFromStoredTurn(conversationId, historicalTurnExchangeId)
+      if (!candidate) continue
+      bindDevSpaceCandidateFromStoredTurn({
+        conversationId,
+        turnExchangeId: historicalTurnExchangeId,
+        candidate,
+        evidence: 'body:exact-tool-args-conversation-history',
+      })
+      created += 1
+    }
+    return created
+  }
+
+  const reconcileDevSpaceBindingFromBody = (conversationId, diagnostic) => {
+    const now = Date.now()
+    const turnExchangeId = typeof diagnostic?.turnExchangeId === 'string' ? diagnostic.turnExchangeId : null
+    const requestId = typeof diagnostic?.requestId === 'string' ? diagnostic.requestId : null
+    const existing = archive.getDevSpaceMetadataBindingsForConversation(conversationId)
+    if (existing.length > 0) {
+      archive.updateDevSpaceBindingTurn({
+        conversationId,
+        turnExchangeId,
+        requestId,
+        observedAt: now,
+        lifecycleState: activeTurns.has(conversationId) ? 'active' : 'closed',
+      })
+      for (const row of archive.getDevSpaceMetadataBindingsForConversation(conversationId)) mirrorDevSpaceBinding(row)
+    }
+
+    let currentMatched = false
+    if (turnExchangeId) {
+      const candidate = matchDevSpaceBindingFromStoredTurn(conversationId, turnExchangeId)
+      if (candidate) {
+        bindDevSpaceCandidateFromStoredTurn({
+          conversationId,
+          turnExchangeId,
+          requestId,
+          candidate,
+          evidence: 'body:exact-tool-args',
+          observedAt: now,
+        })
+        currentMatched = true
+      }
+    }
+
+    const historicalCreated = reconcileHistoricalDevSpaceBindingsFromConversation(conversationId, {
+      excludeTurnExchangeId: turnExchangeId,
+      maxTurns: 64,
+    })
+    if (historicalCreated > 0) {
+      void log('DevSpace conversation-scoped historical binding retry complete', {
+        conversationId,
+        currentMatched,
+        historicalCreated,
+      })
+    }
   }
 
   const checkUnboundDevSpaceTimeouts = () => {
@@ -8426,33 +8530,18 @@ async function main() {
   // 首次把旧 DevSpace metadata seed 进 Archive 时跑一遍即可；之后 live body sync 自己会
   // 对当前 turn 做 exact-match。否则少量永久无法匹配的旧 metadata 会让每次启动都重扫
   // 2 万+ audit / 数百 turn，甚至把 Watchdog 主循环堵住一分多钟。
-  const devSpaceBackfilledBindings = shouldRunHistoricalDevSpaceBackfill(
-    hadExistingDevSpaceMetadataBindings,
-    devSpaceHistoricalSeeded,
-  )
-    ? backfillStoredDevSpaceBindings()
-    : 0
-  if (devSpaceBackfilledBindings > 0) {
-    await log('DevSpace exact-match binding backfill complete', {
-      created: devSpaceBackfilledBindings,
-    })
-  }
+  // Never run the global historical exact-match scan on the daemon startup hot path.
+  // New metadata can legitimately be seeded on any restart, so devSpaceHistoricalSeeded > 0
+  // is not a migration-only signal. Historical binding repair is conversation-scoped and
+  // event-driven after canonical Body sync instead.
+  const devSpaceBackfilledBindings = 0
 
   // parser / binding 策略升级后，旧 metadata 可能“以前匹配不了、现在能匹配”。
   // 每次启动只对近期 unbound 做一个窄窗口重验，避免为了几个活跃候选重扫数周历史。
-  const recentBackfillSinceAt = Date.now() - Math.max(watchdogMs * 2, 2 * 60 * 60_000)
-  const recentDevSpaceBackfilledBindings = backfillStoredDevSpaceBindings({
-    sinceAt: recentBackfillSinceAt,
-  })
-  if (recentDevSpaceBackfilledBindings > 0) {
-    await log('DevSpace recent exact-match binding backfill complete', {
-      created: recentDevSpaceBackfilledBindings,
-      sinceAt: recentBackfillSinceAt,
-    })
-  }
+  // Recurring recent-unbound backfill is intentionally excluded from the startup hot path.
+  // Its current create_time range scan can exceed the 90s resume health gate on the large archive.
+  // Historical repair must be explicit/bounded and must not delay Guardian/WSS readiness.
 
-  // 第一次升级 durable cursor 时，以“当前 DevSpace 头部”为一次性 bootstrap 边界；今天已经发生的
-  // 历史缺口由独立 repair/backfill 补齐。此后每次重启都从 SQLite 持久 cursor 续读，离线多久都不丢。
   const cursorBeforeBootstrap = devSpaceAuditCursor
   bootstrapDevSpaceAuditCursor()
   if (!cursorBeforeBootstrap && devSpaceAuditCursor) {
@@ -8541,6 +8630,7 @@ async function main() {
             )
             const lower = bodyText.toLowerCase()
             return {
+              href: String(location.href || ''),
               visibility: document.visibilityState,
               discarded: document.wasDiscarded === true,
               ready: document.readyState,
@@ -8593,12 +8683,22 @@ async function main() {
         const now = Date.now()
         if (guardianUiReloadAttemptedAt === null) {
           guardianUiReloadAttemptedAt = now
-          await log('guardian UI unhealthy; soft reload requested', {
+          const recoveryCommand = uiFailure === 'wrong-document' ? 'Page.navigate' : 'Page.reload'
+          await log('guardian UI unhealthy; recovery requested', {
             failure: uiFailure,
+            href: uiSnapshot?.href ?? null,
             ready: uiSnapshot?.ready ?? null,
             composerPresent: Boolean(uiSnapshot?.composerPresent),
+            recoveryCommand,
           })
-          await guardian.page.send('Page.reload', { ignoreCache: false })
+          if (recoveryCommand === 'Page.navigate') {
+            await guardian.page.send('Page.navigate', {
+              url: 'https://chatgpt.com/?' + GUARDIAN_MARKER + '=1',
+            })
+          }
+          else {
+            await guardian.page.send('Page.reload', { ignoreCache: false })
+          }
           await writeState()
           await new Promise(resolve => setTimeout(resolve, 3000))
           continue
@@ -8736,6 +8836,10 @@ async function main() {
   await writeState()
   devSpaceAuditWakeListener.close()
   devSpaceAuditBridge.close()
+  await new Promise((resolve) => {
+    if (!daemonSingleton.listening) return resolve()
+    daemonSingleton.close(() => resolve())
+  })
   archive.close()
 }
 
