@@ -7860,7 +7860,7 @@ async function main() {
               }
               activeTurns.set(id, nextActive)
               persistActiveTurn(id, nextActive)
-              dispatchWatchdogStartNotification(id, nextActive)
+              dispatchWatchdogStartNotification(id, nextActive, item.title ?? null)
             }
             else if (catalogProgressed) {
               const active = activeTurns.get(id)
