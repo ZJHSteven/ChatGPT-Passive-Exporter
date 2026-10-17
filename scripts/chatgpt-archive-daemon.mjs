@@ -1207,6 +1207,23 @@ export function buildUnboundWatchdogNotificationPayload({ metadataId, title = nu
   }
 }
 
+export function unboundWatchdogDiagnosisNotificationKey(metadataId, startedAt) {
+  return `watchdog-diagnosis-unbound:${String(metadataId || 'unknown')}:${Math.max(0, Math.trunc(Number(startedAt || 0)))}`
+}
+
+export function buildUnboundWatchdogDiagnosisNotificationPayload({
+  metadataId,
+  title = null,
+  recoveryAuditCount = 0,
+}) {
+  return {
+    title: 'Watchdog · 诊断',
+    subtitle: notificationConversationSubtitle({ title, metadataId, unbound: true }),
+    body: `未绑定 · canonical Body 未取得 · recovery ${Number(recoveryAuditCount || 0)}`,
+    group: conversationNotificationGroup({ metadataId }),
+  }
+}
+
 /** 正常 final 也作为 turn 的最终可见结果发送，和异常 incident 对称。 */
 export function buildTurnFinalNotificationPayload({ conversationId, title, diagnostic }) {
   const finalLine = diagnostic?.hasImageGenerationFinal
@@ -2601,6 +2618,10 @@ async function main() {
   // 只有 body sync 成功或 unbound gap-repair 明确结束后才消费，避免发“已扫描”但其实没拿到结果。
   const pendingDevSpaceIdleDiagnoses = new Map()
   let devSpaceIdleDiagnosisNotificationsQueued = 0
+  // 45 分钟 unbound Watchdog 只有在“解析出 CID 并完成 Body 诊断”或
+  // “catalog repair 后仍无 CID，明确记录 canonical Body 未取得”后才算闭环。
+  const pendingUnboundWatchdogDiagnoses = new Map()
+  let unboundWatchdogDiagnosisNotificationsQueued = 0
   // daemon 重启不能把一个已经计时几十分钟的 provisional watchdog 重新从 0 开始。
   // 从 Archive 自己的持久 binding 表恢复近期未绑定 metadata；firstSeenAt 仍是原始首个工具时间。
   for (const binding of archive.listDevSpaceMetadataBindings({
@@ -2608,12 +2629,50 @@ async function main() {
     sinceAt: Date.now() - Math.max(watchdogMs * 2, 2 * 60_000),
     limit: 1000,
   })) {
+    const startedAt = Number(binding.firstSeenAt || binding.lastSeenAt || Date.now())
     unboundDevSpaceTurns.set(binding.metadataId, {
-      startedAt: binding.firstSeenAt,
+      startedAt,
       lastEventAt: binding.lastSeenAt,
       lastAuditId: binding.lastAuditId,
       repairQueuedAt: null,
     })
+    const timedOutAt = Number(binding.unboundWatchdogAt || 0)
+    const diagnosisKey = unboundWatchdogDiagnosisNotificationKey(binding.metadataId, startedAt)
+    if (timedOutAt > 0 && !archive.hasTurnNotification(diagnosisKey)) {
+      pendingUnboundWatchdogDiagnoses.set(binding.metadataId, {
+        metadataId: binding.metadataId,
+        startedAt,
+        watchdogAt: timedOutAt,
+        title: binding.displayTitle ?? null,
+        catalogRepairCompletedAt: null,
+      })
+    }
+  }
+  // 已经跨过 45m 硬边界的 unresolved diagnosis 不能受“近期活动窗口”限制。
+  // 这里只扫很小的 binding 表，不碰 messages 大表；因此可安全跨重启恢复历史未闭环项。
+  for (const binding of archive.listDevSpaceMetadataBindings({ onlyUnbound: true, limit: 1000 })) {
+    const timedOutAt = Number(binding.unboundWatchdogAt || 0)
+    if (timedOutAt <= 0) continue
+    const startedAt = Number(binding.firstSeenAt || binding.lastSeenAt || timedOutAt)
+    const diagnosisKey = unboundWatchdogDiagnosisNotificationKey(binding.metadataId, startedAt)
+    if (archive.hasTurnNotification(diagnosisKey)) continue
+    if (!unboundDevSpaceTurns.has(binding.metadataId)) {
+      unboundDevSpaceTurns.set(binding.metadataId, {
+        startedAt,
+        lastEventAt: binding.lastSeenAt,
+        lastAuditId: binding.lastAuditId,
+        repairQueuedAt: null,
+      })
+    }
+    if (!pendingUnboundWatchdogDiagnoses.has(binding.metadataId)) {
+      pendingUnboundWatchdogDiagnoses.set(binding.metadataId, {
+        metadataId: binding.metadataId,
+        startedAt,
+        watchdogAt: timedOutAt,
+        title: binding.displayTitle ?? null,
+        catalogRepairCompletedAt: null,
+      })
+    }
   }
   // activeTurns 现在承载“所有已纳入 watchdog 的 active”：既可能来自可靠 WSS/actor start，
   // 也可能来自 catalog 首次观察到 active 的保守 late-start。两者不能在取证输出里混称 reliable。
@@ -3143,6 +3202,90 @@ async function main() {
         notificationQueued: queued,
         ...counts,
       })
+    }
+  }
+
+  const completeUnboundWatchdogDiagnoses = () => {
+    if (syncInFlight || reconcileInFlight || ready.size > 0) return
+    for (const [metadataId, pending] of [...pendingUnboundWatchdogDiagnoses.entries()]) {
+      if (!pending.catalogRepairCompletedAt) continue
+
+      const binding = archive.getDevSpaceMetadataBinding(metadataId)
+      if (binding?.conversationId) {
+        pendingUnboundWatchdogDiagnoses.delete(metadataId)
+        if (!ready.has(binding.conversationId)) {
+          markSyncReady(binding.conversationId, 'watchdog:devspace-timeout', 0)
+        }
+        void log('unbound watchdog catalog repair resolved canonical binding; queued body diagnosis', {
+          metadataId,
+          conversationId: binding.conversationId,
+        })
+        continue
+      }
+
+      const counts = devSpaceRecoveryCountsForMetadata(metadataId)
+      const title = pending.title
+        ?? devSpaceAuditBridge.metadataToolState(metadataId)?.title
+        ?? binding?.displayTitle
+        ?? null
+      const notificationKey = unboundWatchdogDiagnosisNotificationKey(metadataId, pending.startedAt)
+      const alreadySent = archive.hasTurnNotification(notificationKey)
+      const queued = alreadySent ? false : dispatchPersistentNotification({
+        notificationKey,
+        kind: 'watchdog-diagnosis:unbound',
+        conversationId: null,
+        turnKey: metadataId,
+        payload: buildUnboundWatchdogDiagnosisNotificationPayload({
+          metadataId,
+          title,
+          ...counts,
+        }),
+        successLog: 'unbound watchdog diagnosis notification sent',
+        failureLog: 'unbound watchdog diagnosis notification failed',
+        logFields: { metadataId, ...counts },
+      })
+      if (queued) unboundWatchdogDiagnosisNotificationsQueued += 1
+
+      enqueueLifeOpsEvent({
+        sourceEventId: unboundWatchdogLifeOpsEventId(metadataId, pending.startedAt),
+        metadataId,
+        conversationId: null,
+        turnExchangeId: null,
+        title,
+        runState: 'aborted',
+        reviewState: 'unread',
+        updatedAt: new Date(pending.catalogRepairCompletedAt || Date.now()).toISOString(),
+        inboxKind: 'incident',
+        inboxHealth: 'incident',
+        incidentType: 'active-zombie-unbound',
+        incidentState: 'unbound-unresolved-no-canonical-body',
+        metadata: {
+          provisionalStartedAt: pending.startedAt,
+          watchdogAt: pending.watchdogAt,
+          catalogRepairCompletedAt: pending.catalogRepairCompletedAt,
+          canonicalBodyAvailable: false,
+          ...counts,
+        },
+      })
+
+      // 成功发送后的 notification ledger 是跨重启 completion marker。
+      // 失败时不清 pending，下一轮可以继续重试；LifeOps 则已经有明确终态分类。
+      if (alreadySent) {
+        pendingUnboundWatchdogDiagnoses.delete(metadataId)
+        void log('unbound watchdog diagnosis completed without canonical binding', {
+          metadataId,
+          notificationQueued: false,
+          notificationAlreadySent: true,
+          ...counts,
+        })
+      }
+      else if (queued) {
+        void log('unbound watchdog terminal diagnosis queued without canonical binding', {
+          metadataId,
+          notificationQueued: true,
+          ...counts,
+        })
+      }
     }
   }
 
@@ -3724,6 +3867,8 @@ async function main() {
       idleNotificationsQueued: devSpaceIdleNotificationsQueued,
       idleDiagnosesPending: pendingDevSpaceIdleDiagnoses.size,
       idleDiagnosisNotificationsQueued: devSpaceIdleDiagnosisNotificationsQueued,
+      unboundWatchdogDiagnosesPending: pendingUnboundWatchdogDiagnoses.size,
+      unboundWatchdogDiagnosisNotificationsQueued,
       bindings: archive.listDevSpaceMetadataBindings({ limit: 100 }).map(binding => ({
         metadataId: binding.metadataId,
         conversationId: binding.conversationId,
@@ -6500,9 +6645,31 @@ async function main() {
 
   const checkUnboundDevSpaceTimeouts = () => {
     const now = Date.now()
-    for (const [metadataId, candidate] of unboundDevSpaceTurns) {
+    for (const [metadataId, candidate] of [...unboundDevSpaceTurns.entries()]) {
+      const currentBinding = archive.getDevSpaceMetadataBinding(metadataId)
+      if (currentBinding?.conversationId) {
+        unboundDevSpaceTurns.delete(metadataId)
+        pendingUnboundWatchdogDiagnoses.delete(metadataId)
+        void log('stale unbound watchdog candidate cleared after durable binding', {
+          metadataId,
+          conversationId: currentBinding.conversationId,
+        })
+        continue
+      }
       if (now - Number(candidate.startedAt) < watchdogMs) continue
+
+      const startedAt = Number(candidate.startedAt || currentBinding?.firstSeenAt || now)
       archive.markDevSpaceUnboundWatchdog(metadataId, now)
+      const diagnosisKey = unboundWatchdogDiagnosisNotificationKey(metadataId, startedAt)
+      if (!archive.hasTurnNotification(diagnosisKey) && !pendingUnboundWatchdogDiagnoses.has(metadataId)) {
+        pendingUnboundWatchdogDiagnoses.set(metadataId, {
+          metadataId,
+          startedAt,
+          watchdogAt: now,
+          title: currentBinding?.displayTitle ?? devSpaceAuditBridge.metadataToolState(metadataId)?.title ?? null,
+          catalogRepairCompletedAt: null,
+        })
+      }
       // CID 还没解出来也不能静默：先告诉用户“Watchdog 已到点但当前无法安全定位聊天”。
       // 持久 notification key 保证这个 provisional 事件跨循环/重启只成功发送一次。
       enqueueLifeOpsUnboundWatchdog(metadataId, candidate, now)
@@ -6511,7 +6678,7 @@ async function main() {
         candidate.repairQueuedAt = now
         void log('unbound DevSpace watchdog exceeded threshold; queued catalog repair', {
           metadataId,
-          activeForMs: now - Number(candidate.startedAt),
+          activeForMs: now - startedAt,
         })
         void scheduleGapRepair('devspace-unbound-timeout')
       }
@@ -7909,6 +8076,12 @@ async function main() {
           if (pending.repairMode === 'unbound-catalog') pending.catalogRepairCompletedAt = completedAt
         }
       }
+      if (repair.reasons.has('devspace-unbound-timeout')) {
+        const completedAt = Date.now()
+        for (const pending of pendingUnboundWatchdogDiagnoses.values()) {
+          if (!pending.catalogRepairCompletedAt) pending.catalogRepairCompletedAt = completedAt
+        }
+      }
       pendingGapRepair = null
       lastGapRepairGate = null
       lastGapRepairGateSignature = null
@@ -8768,6 +8941,7 @@ async function main() {
      await drainCheckpointWatches()
      await maybeRunGapRepair()
      completeUnboundDevSpaceIdleDiagnoses()
+     completeUnboundWatchdogDiagnoses()
      await hydratePendingGeneratedImageAssets()
       if (protocolLedger?.refreshBaselineLock()) scheduleProtocolLedgerFlush()
      // 运行态错误已经写入日志；完整健康迭代成功后清掉 state 里的 transient lastError，

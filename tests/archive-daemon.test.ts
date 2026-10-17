@@ -12,6 +12,7 @@ import {
   buildDevSpaceIdleUnboundDiagnosisNotificationPayload,
   buildCooldownNotificationPayload,
   buildTurnFinalNotificationPayload,
+  buildUnboundWatchdogDiagnosisNotificationPayload,
   buildUnboundWatchdogNotificationPayload,
   buildWatchdogDeferredNotificationPayload,
   buildWatchdogDiagnosisNotificationPayload,
@@ -48,6 +49,7 @@ import {
   shouldRetireIdleLiveTransport,
   shouldTripObserved429,
   terminalStateSupersedesResumeCredential,
+  unboundWatchdogDiagnosisNotificationKey,
   sanitizeCapturedHeaders,
   passiveObservationMatchesReady,
   preferredWatchdogStartTitle,
@@ -1299,6 +1301,22 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(payload.body).not.toContain('v1/abcdefghijklmnopqrstuvwxyz0123456789')
     expect(payload.group).toBe('Chat/meta/abcdefgh')
     expect(payload).not.toHaveProperty('url')
+  })
+
+  test('未绑定 watchdog 的最终诊断明确暴露 canonical Body 缺失并跨重启稳定去重', () => {
+    const metadataId = 'v1/abcdefghijklmnopqrstuvwxyz0123456789'
+    const payload = buildUnboundWatchdogDiagnosisNotificationPayload({
+      metadataId,
+      title: 'Case 4 PBL 第一幕作业与PPT资料整合',
+      recoveryAuditCount: 29,
+    })
+    expect(payload.title).toBe('Watchdog · 诊断')
+    expect(payload.subtitle).toBe('Case 4 PBL 第一幕作业与PPT资料整合 · 未绑定')
+    expect(payload.body).toBe('未绑定 · canonical Body 未取得 · recovery 29')
+    expect(payload.group).toBe('Chat/meta/abcdefgh')
+    expect(unboundWatchdogDiagnosisNotificationKey(metadataId, 1_234)).toBe(
+      'watchdog-diagnosis-unbound:v1/abcdefghijklmnopqrstuvwxyz0123456789:1234',
+    )
   })
 
   test('正常 final 只在在线终态/Watchdog 路径通知，历史 startup/periodic 不补轰炸', () => {

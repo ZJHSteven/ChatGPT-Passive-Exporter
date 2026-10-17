@@ -287,6 +287,17 @@ export function buildUnboundWatchdogNotificationPayload(input: {
   now?: number
 }): { title: string, subtitle: string, body: string, group: string }
 
+export function unboundWatchdogDiagnosisNotificationKey(
+  metadataId: unknown,
+  startedAt: unknown,
+): string
+
+export function buildUnboundWatchdogDiagnosisNotificationPayload(input: {
+  metadataId: string
+  title?: string | null
+  recoveryAuditCount?: number
+}): { title: string, subtitle: string, body: string, group: string }
+
 export function buildTurnFinalNotificationPayload(input: {
   conversationId: string
   title?: string | null
