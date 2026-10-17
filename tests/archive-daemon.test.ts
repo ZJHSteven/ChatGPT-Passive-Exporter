@@ -36,6 +36,7 @@ import {
   decodeCdpResponseBodyBytes,
   devSpaceIdleRepairMode,
   devSpaceFirstToolWatchdogState,
+  planDevSpaceBindingProbes,
   extractDevSpaceCheckpoint,
   extractDevSpaceConclusion,
   estuaryFileIdFromUrl,
@@ -205,6 +206,32 @@ test('不完整 SSE 只做 provisional union，绝不据此关闭 turn 或取消
   expect(partial).not.toContain('clearSyncDemand(')
   expect(partial).not.toContain('clearActiveTurn(')
   expect(partial).not.toContain('liveSseCanonicalSatisfied.set(')
+})
+
+test('所有 canonical ingress 都必须给 DevSpace binding 一次 reconcile 机会', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+
+  const promotionStart = daemon.indexOf('const promoteCompleteLiveSse')
+  const promotionEnd = daemon.indexOf('const mergePartialLiveSseEvidence', promotionStart)
+  expect(promotionStart).toBeGreaterThan(-1)
+  expect(promotionEnd).toBeGreaterThan(promotionStart)
+  const promotion = daemon.slice(promotionStart, promotionEnd)
+  expect(promotion).toContain("observationKind: 'live-sse-complete'")
+  expect(promotion).toContain('reconcileDevSpaceBindingFromBody(snapshot.conversationId')
+
+  const passiveStart = daemon.indexOf('const rememberPassiveBodyResponse')
+  const passiveEnd = daemon.indexOf('const rememberPassiveCatalogResponse', passiveStart)
+  expect(passiveStart).toBeGreaterThan(-1)
+  expect(passiveEnd).toBeGreaterThan(passiveStart)
+  const passive = daemon.slice(passiveStart, passiveEnd)
+  expect(passive).toContain("observationKind: 'mapping-snapshot:passive-native'")
+  expect(passive).toContain('reconcileHistoricalDevSpaceBindingsFromConversation(conversationId, { maxTurns: 64 })')
+  expect(passive).toContain("observationKind: 'body-page:passive-native'")
+  expect(passive).toContain('const passiveDiagnostic = diagnoseLatestRun(normalized)')
+  expect(passive).toContain('reconcileDevSpaceBindingFromBody(conversationId, passiveDiagnostic)')
 })
 
 test('global catalog replay 继承第一方 query 模板，只覆盖分页参数', () => {
@@ -956,6 +983,40 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     const progressed = { ...diagnosed, lastEventAt: watchdogMs + 5_000 }
     expect(shouldQueueWatchdogDiagnostic(progressed, watchdogMs * 2, watchdogMs)).toBe(false)
     expect(shouldQueueWatchdogDiagnostic(progressed, watchdogMs * 20, watchdogMs)).toBe(false)
+  })
+
+  test('同一 unbound timeout generation 对每个 CID 只做一次 bounded body probe', () => {
+    const first = planDevSpaceBindingProbes({
+      generation: 'meta-a:1000',
+      previousGeneration: '',
+      probedConversationIds: [],
+      candidateConversationIds: ['c1', 'c2'],
+    })
+    expect(first.targets).toEqual(['c1', 'c2'])
+
+    const repeated = planDevSpaceBindingProbes({
+      generation: 'meta-a:1000',
+      previousGeneration: first.generation,
+      probedConversationIds: first.probedConversationIds,
+      candidateConversationIds: ['c1', 'c2'],
+    })
+    expect(repeated.targets).toEqual([])
+
+    const newCandidate = planDevSpaceBindingProbes({
+      generation: 'meta-a:1000',
+      previousGeneration: repeated.generation,
+      probedConversationIds: repeated.probedConversationIds,
+      candidateConversationIds: ['c1', 'c2', 'c3'],
+    })
+    expect(newCandidate.targets).toEqual(['c3'])
+
+    const nextGeneration = planDevSpaceBindingProbes({
+      generation: 'meta-a:1000|meta-b:2000',
+      previousGeneration: newCandidate.generation,
+      probedConversationIds: newCandidate.probedConversationIds,
+      candidateConversationIds: ['c1', 'c2'],
+    })
+    expect(nextGeneration.targets).toEqual(['c1', 'c2'])
   })
 
   test('DevSpace first-tool 新 turn 不能继承上一轮 binding 的 turn key', () => {

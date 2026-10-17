@@ -96,6 +96,17 @@ export function devSpaceFirstToolWatchdogState(auditAt: number): {
   lastDiagnosticTurnKey: null
 }
 
+export function planDevSpaceBindingProbes(input?: {
+  generation?: string
+  previousGeneration?: string
+  probedConversationIds?: Iterable<string>
+  candidateConversationIds?: Iterable<string>
+}): {
+  generation: string
+  probedConversationIds: string[]
+  targets: string[]
+}
+
 /** 当前 canonical exact match 只允许覆盖 legacy backfill binding，不覆盖另一个在线 exact binding。 */
 export function shouldSupersedeDevSpaceBinding(
   existing: { conversationId?: unknown, evidence?: unknown } | null | undefined,

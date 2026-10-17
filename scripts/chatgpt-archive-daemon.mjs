@@ -597,6 +597,28 @@ export function devSpaceFirstToolWatchdogState(auditAt) {
   }
 }
 
+export function planDevSpaceBindingProbes({
+  generation = '',
+  previousGeneration = '',
+  probedConversationIds = [],
+  candidateConversationIds = [],
+} = {}) {
+  const changed = String(generation) !== String(previousGeneration)
+  const seen = new Set(changed ? [] : probedConversationIds)
+  const targets = []
+  for (const conversationId of candidateConversationIds) {
+    const id = String(conversationId || '')
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    targets.push(id)
+  }
+  return {
+    generation: String(generation),
+    probedConversationIds: [...seen],
+    targets,
+  }
+}
+
 /**
  * 当前 turn 的 canonical exact match 可以纠正历史 backfill；反过来不允许。
  *
@@ -2598,6 +2620,8 @@ async function main() {
   // metadata 尚未解出 canonical conversation 时，也先保存 first-tool 的真实时间。
   // binding 晚到以后仍以这个时间作为 watchdog.startedAt，不让发现延迟污染超时起点。
   const unboundDevSpaceTurns = new Map()
+  let devSpaceBindingProbeGeneration = ''
+  let devSpaceBindingProbedConversationIds = []
   const recentConversationComplete = new Map()
   // DevSpace audit 从 durable (started_at, audit_id) 高水位续读。首次升级时会在 daemon
   // startup 明确 bootstrap 到当时头部；之后无论离线多久都从持久游标继续，不再靠 2 分钟回看。
@@ -6001,6 +6025,13 @@ async function main() {
         updateIncidents: false,
         allowIncompleteTailIncident: false,
       })
+      // 完整 SSE 已经被提升为 canonical messages 后，它在 binding 语义上就等价于一次
+      // canonical Body 落库。不能因为随后 WSS complete 会跳过主动 Body refresh，就让
+      // DevSpace metadata 永远失去 exact tool+args reconcile 的机会。
+      reconcileDevSpaceBindingFromBody(snapshot.conversationId, {
+        turnExchangeId: snapshot.turnExchangeId,
+        requestId: snapshot.requestId,
+      })
 
       liveSseCanonicalPromoted += 1
       liveSseCanonicalSatisfied.set(snapshot.conversationId, {
@@ -6643,6 +6674,40 @@ async function main() {
     }
   }
 
+  const queueTimedOutDevSpaceBindingProbes = () => {
+    const timedOutEntries = [...unboundDevSpaceTurns.entries()]
+      .filter(([, candidate]) => Boolean(candidate.repairQueuedAt))
+      .sort(([a], [b]) => a.localeCompare(b))
+    if (timedOutEntries.length === 0) return 0
+
+    const generation = timedOutEntries
+      .map(([metadataId, candidate]) => `${metadataId}:${Number(candidate.repairQueuedAt)}`)
+      .join('|')
+    const candidateConversationIds = new Set([
+      ...activeTurns.keys(),
+      ...catalogActive.keys(),
+    ])
+    const plan = planDevSpaceBindingProbes({
+      generation,
+      previousGeneration: devSpaceBindingProbeGeneration,
+      probedConversationIds: devSpaceBindingProbedConversationIds,
+      candidateConversationIds,
+    })
+    devSpaceBindingProbeGeneration = plan.generation
+    devSpaceBindingProbedConversationIds = plan.probedConversationIds
+    for (const conversationId of plan.targets) {
+      markSyncReady(conversationId, 'devspace:binding-probe', 0)
+    }
+    if (plan.targets.length > 0) {
+      void log('queued bounded DevSpace binding body probes after catalog repair', {
+        generationCount: timedOutEntries.length,
+        targetCount: plan.targets.length,
+        conversationIds: plan.targets,
+      })
+    }
+    return plan.targets.length
+  }
+
   const checkUnboundDevSpaceTimeouts = () => {
     const now = Date.now()
     for (const [metadataId, candidate] of [...unboundDevSpaceTurns.entries()]) {
@@ -6704,6 +6769,11 @@ async function main() {
         endpoint: `/backend-api/conversation/${conversationId}`,
         observationKind: 'mapping-snapshot:passive-native',
       })
+      // mapping snapshot 同样是 canonical conversation ingress。它可能是页面恢复时唯一自然
+      // 发出的 conversation 请求；如果这里只 merge 不 reconcile，已经落库的 tool calls 仍会
+      // 永久保持 unbound。mapping 没有稳定的 latest-turn diagnostic，因此对该 CID 做 bounded
+      // historical exact retry。
+      reconcileHistoricalDevSpaceBindingsFromConversation(conversationId, { maxTurns: 64 })
       passiveBodyResponses += 1
       return
     }
@@ -6734,6 +6804,10 @@ async function main() {
         allowIncompleteTailIncident: false,
         incidentKind: 'abnormal-terminal',
       })
+      // 第一方页面自然拿到的 latest Body 也是 canonical ingress。过去这里只 merge SQLite，
+      // 没有触发 binding reconcile，导致“Body 已在库里但 metadata 仍 unbound”。
+      const passiveDiagnostic = diagnoseLatestRun(normalized)
+      reconcileDevSpaceBindingFromBody(conversationId, passiveDiagnostic)
       const recoverySuperseded = reconcileDevSpaceRecoveryWithCanonical(conversationId)
       if (recoverySuperseded > 0) {
         void log('passive canonical body superseded DevSpace recovery overlay', {
@@ -8070,6 +8144,9 @@ async function main() {
     if (activeWindowAvailable) lastGapRepairAttemptAt = now
     try {
       await reconcileCatalog('gap-repair')
+      if (repair.reasons.has('devspace-unbound-timeout')) {
+        queueTimedOutDevSpaceBindingProbes()
+      }
       if (repair.reasons.has('devspace-idle-unbound-5m')) {
         const completedAt = Date.now()
         for (const pending of pendingDevSpaceIdleDiagnoses.values()) {
