@@ -488,7 +488,7 @@ describe('Archive Bridge', () => {
     expect(denied.headers.get('www-authenticate')).toBe('Bearer')
   })
 
-  test('conversation/messages 只暴露收缩后的 canonical 字段并过滤 hidden', async () => {
+  test('conversation/messages 保留完整非 hidden 节点，并只隐藏 reasoning 正文', async () => {
     const { base, headers } = await startBridge()
     const list = await fetch(`${base}/v1/conversations?limit=10`, { headers })
     expect(list.status).toBe(200)
@@ -504,35 +504,42 @@ describe('Archive Bridge', () => {
       hasMore: boolean
       nextBeforeOrdinal: number | null
     }
-    expect(body.messages.map(item => item.messageId)).toEqual(['m1', 'm2'])
-    expect(body).toMatchObject({ total: 2, hasMore: false, nextBeforeOrdinal: 1 })
+    expect(body.messages.map(item => item.messageId)).toEqual(['m1', 'm2', 'reasoning-internal'])
+    expect(body).toMatchObject({ total: 3, hasMore: false, nextBeforeOrdinal: 1 })
     expect(JSON.stringify(body)).not.toContain('must-not-leak')
     expect(JSON.stringify(body)).not.toContain('内部隐藏消息')
     expect(JSON.stringify(body)).not.toContain('这里是模型内部推理')
+    expect(body.messages.at(-1)).toMatchObject({
+      messageId: 'reasoning-internal',
+      reasoningRedacted: true,
+      contentRedacted: true,
+      text: '',
+      turnExchangeId: 'turn-1',
+    })
 
     const tail = await fetch(`${base}/v1/conversations/cid-1/messages?limit=2`, { headers })
     expect(tail.status).toBe(200)
     expect(await tail.json()).toMatchObject({
-      total: 2,
-      hasMore: false,
-      nextBeforeOrdinal: 1,
+      total: 3,
+      hasMore: true,
+      nextBeforeOrdinal: 3,
       messages: [
-        { messageId: 'm1', ordinal: 1 },
         { messageId: 'm2', ordinal: 3 },
+        { messageId: 'reasoning-internal', ordinal: 4 },
       ],
     })
 
     const older = await fetch(`${base}/v1/conversations/cid-1/messages?limit=2&before_ordinal=3`, { headers })
     expect(older.status).toBe(200)
     expect(await older.json()).toMatchObject({
-      total: 2,
+      total: 3,
       hasMore: false,
       nextBeforeOrdinal: 1,
       messages: [{ messageId: 'm1', ordinal: 1 }],
     })
   })
 
-  test('messages API 有分页数据源时不读取整条 Conversation，并隐藏内部正文', async () => {
+  test('messages API 有分页数据源时不读取整条 Conversation，并保留 tool/API 节点正文', async () => {
     const archive = mockArchive()
     let fullReadCalled = false
     archive.getMessages = () => {
@@ -557,7 +564,7 @@ describe('Archive Bridge', () => {
           role: 'assistant',
           recipient: 'api_tool.call_tool',
           contentType: 'text',
-          text: '内部调用参数不应返回',
+          text: '工具调用参数',
           hidden: 0,
           turnExchangeId: 'turn-latest',
         },
@@ -567,7 +574,7 @@ describe('Archive Bridge', () => {
           role: 'tool',
           recipient: 'all',
           contentType: 'text',
-          text: '内部工具结果不应返回',
+          text: '工具调用结果',
           hidden: 0,
           turnExchangeId: 'turn-latest',
         },
@@ -599,19 +606,27 @@ describe('Archive Bridge', () => {
     }
     expect(fullReadCalled).toBe(false)
     expect(body.canonicalCount).toBe(1000)
-    expect(body.messages).toHaveLength(2)
+    expect(body.messages).toHaveLength(4)
     expect(body.messages[0]).toMatchObject({
       messageId: 'visible-user',
       text: '用户正文',
       contentRedacted: false,
     })
     expect(body.messages[1]).toMatchObject({
+      messageId: 'internal-call',
+      text: '工具调用参数',
+      contentRedacted: false,
+    })
+    expect(body.messages[2]).toMatchObject({
+      messageId: 'internal-result',
+      text: '工具调用结果',
+      contentRedacted: false,
+    })
+    expect(body.messages[3]).toMatchObject({
       messageId: 'visible-assistant',
       text: '最终回复',
       contentRedacted: false,
     })
-    expect(JSON.stringify(body)).not.toContain('内部调用参数不应返回')
-    expect(JSON.stringify(body)).not.toContain('内部工具结果不应返回')
   })
 
   test('search 和 worksite resolve 返回可供 LifeOps 使用的脱敏工作现场', async () => {
