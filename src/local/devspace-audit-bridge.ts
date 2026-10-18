@@ -463,14 +463,14 @@ export class DevSpaceAuditBridge {
       FROM tool_audit
       WHERE metadata_id IS NOT NULL
         AND metadata_id <> ''
-        AND (
-          started_at > ?
-          OR (started_at = ? AND id > ?)
-        )
+        -- SQLite 对 row-value 比较采用字典序，语义正好就是 durable (started_at,id)
+        -- keyset cursor。旧 OR 写法会让真实 800MiB DevSpace DB 退化成从头扫描
+        -- tool_audit_started_idx，并为 ORDER BY 第二列建临时 B-tree；生产实测取 1 行也要
+        -- 195~216ms。tuple keyset 可直接从 started_at 索引 seek，实测降到亚毫秒级。
+        AND (started_at, id) > (?, ?)
       ORDER BY started_at ASC, id ASC
       LIMIT ?
     `).all(
-      cursor.startedAt,
       cursor.startedAt,
       cursor.auditId,
       Math.max(1, Math.trunc(limit)),
