@@ -2,7 +2,9 @@
 
 ### 现场结论
 - Conversation `6ab60de8-ccf8-83e9-8848-9d15ee8bf177` 并未逃出 Watchdog：Archive Reader 已返回 active generation，`startType=devspace:first-tool`，且存在由 `body-page:watchdog:active-timeout` 产生的 open `active-zombie` incident。
-- 因此本轮主假设从“Watchdog 未建档”收窄为“Watchdog 已建档/已超时，但 watchdog-start / watchdog-timeout 通知没有成功呈现给用户，或被通知去重/恢复语义抑制”。
+- 根因已确认：22:50:37 的 `conversation-turn-complete` 清掉 active 后，22:50:41 一个仍属于旧 turn `7198391f-...` 的 DevSpace audit 又把同 CID 重建为 generation；22:59:11 用户真正开启新 turn `a2e77cfd-...` 后，由于 conversation 级 generation 已存在，第一把 DevSpace tool 只推进 `lastEventAt`，没有建立新 generation。旧 generation 到 23:35 后又先发 timeout、再拉 Body，导致新 turn 被旧 deadline 吞掉。
+- DevSpace 原始 `request_meta_json` / `process_session_id` 均没有稳定 per-turn identity，因此不能靠隐藏字段直接分轮。修复改为让每次 canonical Body 尽早给 generation 绑定 `turn_exchange_id`，并把 timeout 用户通知延迟到 Body 核实之后：同 turn 才确认超时；若 Body 已切到尚未超时的新 turn，则废弃旧 deadline、按新 user create_time 重置计时并补发新 turn start。
+- Bark ledger 另证实旧 generation 的 start/timeout/diagnosis 均曾以 HTTP 200 返回；用户未看到这些旧通知属于下游呈现问题，与本轮“新 turn 没有独立 generation”是两层问题，不能混为一个根因。
 - 用户明确反馈：该聊天本轮既没收到 Watchdog 开始通知，也没收到约一小时后的超时通知；需要把 notification ledger 与 Bark 发送结果逐层对齐，不能只看 active_watchdogs/incident 就判定用户已经收到通知。
 
 ### ExecPlan
@@ -12,6 +14,13 @@
 4. 若 start 与 timeout 的断点不同，分别沿 generation 创建路径和 timeout incident 路径取证；尤其检查 daemon startup/recovery 对历史 generation 故意不补发 start 的规则是否错误覆盖了一个仍在运行的新 generation。
 5. 定位根因后做最小修复并补回归：必须覆盖“长聊天已有旧 active/incidents + 新 turn DevSpace first-tool”的真实形态，证明 start 与 timeout 都能且只会发送一次。
 6. 运行定向 Watchdog/notifier 测试与全量 `npm run check`；通过后受控 reload production，再用自然 turn 验收，不伪造大量 Bark。
+
+### 2026-10-19 修复状态
+- `c6a30a6`：canonical Body 主动给 active Watchdog generation 绑定/校正 turn identity。
+- `6d4c4f0`、`1a10d15`：45min 到点只进入 pending，Body 核实后才写 LifeOps/Bark timeout；发现新 turn 且未真正超时则抑制旧 deadline。
+- `ad879f1`、`68d5596`、`e8340ee`：抽出 timeout-confirmation 纯规则、补回归测试与 `.d.mts` 声明。
+- 验证：`tests/archive-daemon.test.ts` 82/82；全量 `npm run check` 通过，30 个测试文件 / 287 tests 全绿，Chrome/Edge/Firefox/userscript 全部构建成功。
+- 待完成：受控 reload daemon，并核对生产状态已加载新 commit；之后用自然发生的新 turn 做一次真实 start/timeout 生命周期验收。
 
 ## 2026-10-18 LifeOps / Archive Bridge 周期性 5s/12s 超时回归
 
