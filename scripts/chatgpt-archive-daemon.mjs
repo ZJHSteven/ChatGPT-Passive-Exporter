@@ -2436,13 +2436,30 @@ async function main() {
   let controlPlaneLagOver1000Ms = 0
   let controlPlaneStage = 'startup'
   const controlPlaneRecentSlowLags = []
+  const recordControlPlaneSlowPath = ({ at = Date.now(), lagMs, stage, source }) => {
+    const durationMs = Math.max(0, Number(lagMs) || 0)
+    if (durationMs < 100) return
+    controlPlaneRecentSlowLags.push({
+      at,
+      lagMs: Math.round(durationMs * 100) / 100,
+      stage,
+      source,
+    })
+    if (controlPlaneRecentSlowLags.length > 40) controlPlaneRecentSlowLags.shift()
+  }
   const runControlPlaneStage = (stage, fn) => {
     const previous = controlPlaneStage
+    const sectionStartedAt = performance.now()
     controlPlaneStage = stage
     try {
       return fn()
     }
     finally {
+      recordControlPlaneSlowPath({
+        lagMs: performance.now() - sectionStartedAt,
+        stage,
+        source: 'sync-section',
+      })
       controlPlaneStage = previous
     }
   }
@@ -2453,14 +2470,12 @@ async function main() {
     controlPlaneLagMaxMs = Math.max(controlPlaneLagMaxMs, lagMs)
     if (lagMs >= 100) controlPlaneLagOver100Ms += 1
     if (lagMs >= 1000) controlPlaneLagOver1000Ms += 1
-    if (lagMs >= 100) {
-      controlPlaneRecentSlowLags.push({
-        at: now,
-        lagMs,
-        stage: controlPlaneStage,
-      })
-      if (controlPlaneRecentSlowLags.length > 40) controlPlaneRecentSlowLags.shift()
-    }
+    recordControlPlaneSlowPath({
+      at: now,
+      lagMs,
+      stage: controlPlaneStage,
+      source: 'timer-drift',
+    })
     controlPlaneExpectedAt = now + CONTROL_PLANE_TICK_MS
   }, CONTROL_PLANE_TICK_MS)
   controlPlaneLagTimer.unref?.()
@@ -6656,6 +6671,11 @@ async function main() {
       const elapsedMs = performance.now() - batchStartedAt
       devSpaceAuditLastBatchMs = elapsedMs
       devSpaceAuditMaxBatchMs = Math.max(devSpaceAuditMaxBatchMs, elapsedMs)
+      recordControlPlaneSlowPath({
+        lagMs: elapsedMs,
+        stage: 'devspace-audit-batch',
+        source: 'sync-section',
+      })
       devSpaceAuditPollInFlight = false
     }
   }
