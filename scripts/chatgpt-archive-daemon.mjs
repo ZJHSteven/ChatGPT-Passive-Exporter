@@ -8397,9 +8397,8 @@ async function main() {
     for (const [conversationId, active] of activeTurns) {
       if (active.watchdogPendingAt) {
         stopCheckpointWatch(conversationId, 'watchdog-pending', now)
-        // daemon 重启后恢复 timed-out generation 时仍补发一次“到点”事实；持久 ledger 会去重。
-        enqueueLifeOpsWatchdogTimeout(conversationId, active, now)
-        dispatchWatchdogTimeoutNotification(conversationId, active, now)
+        // pending 只表示“conversation generation 已到阈值、等待 canonical Body 核实 turn 身份”。
+        // daemon 重启也不能在核实前补发 timeout，否则跨设备新 turn 会继承旧 generation 的误报。
         if (!ready.has(conversationId)) {
           const watchdogTrigger = watchdogTriggerForStartType(active.startType)
           markSyncReady(conversationId, watchdogTrigger, 0)
@@ -8420,9 +8419,7 @@ async function main() {
       active.lastWatchdogAt = now
       active.watchdogPendingAt = now
       persistActiveTurn(conversationId, active)
-      // Watchdog 到点事实与 body 是否可立即拉取无关：第一条通知现在始终立即发送。
-      enqueueLifeOpsWatchdogTimeout(conversationId, active, now)
-      dispatchWatchdogTimeoutNotification(conversationId, active, now)
+      // 到点先进入 pending，真正的 timeout 通知由 drainDirty() 在 canonical Body 核实 turn 后发送。
       const watchdogTrigger = watchdogTriggerForStartType(active.startType)
       markSyncReady(conversationId, watchdogTrigger, 0)
       void log('active turn exceeded watchdog; queued diagnostic body sync', {
