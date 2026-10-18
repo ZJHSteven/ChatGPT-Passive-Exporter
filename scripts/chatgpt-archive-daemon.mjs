@@ -778,6 +778,14 @@ export function reconcileWatchdogDiagnosticTurn(active, diagnostic, now = Date.n
 }
 
 /**
+ * conversation generation 到点后，只有 canonical Body 仍指向同一 turn，或新 turn 自己也已经
+ * 超过 watchdog 窗口，才允许对用户宣告“超时”。发现尚未超时的新 turn 时，旧 deadline 作废。
+ */
+export function shouldConfirmWatchdogTimeoutAfterDiagnostic(result) {
+  return !Boolean(result?.watchdogTurnChanged) || Boolean(result?.watchdogTurnAlreadyTimedOut)
+}
+
+/**
  * 一次 watchdog 诊断成功后，这个 generation 是否应该退出 activeTurns。
  *
  * reliable generation 仍以“一次硬超时诊断”为终点；catalog late-start 则必须留下已诊断
@@ -5903,7 +5911,7 @@ async function main() {
         // 该步骤只读局部时间窗，不扫描整库。
         publishDevSpaceBindingEvidenceFromBody(conversationId, result.diagnostic)
         const watchdogTimeoutConfirmed = watchdogTrigger
-          && (!result.watchdogTurnChanged || result.watchdogTurnAlreadyTimedOut)
+          && shouldConfirmWatchdogTimeoutAfterDiagnostic(result)
         const watchdogActive = watchdogTrigger ? activeTurns.get(conversationId) : null
         const watchdogConfirmedStartedAt = watchdogTimeoutConfirmed
           ? Number(watchdogActive?.startedAt || watchdogGenerationStartedAt || 0)
