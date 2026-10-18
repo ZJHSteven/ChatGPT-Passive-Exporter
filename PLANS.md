@@ -1,3 +1,18 @@
+## 2026-10-19 《整理磁盘容量》Watchdog 已触发但手机无通知
+
+### 现场结论
+- Conversation `6ab60de8-ccf8-83e9-8848-9d15ee8bf177` 并未逃出 Watchdog：Archive Reader 已返回 active generation，`startType=devspace:first-tool`，且存在由 `body-page:watchdog:active-timeout` 产生的 open `active-zombie` incident。
+- 因此本轮主假设从“Watchdog 未建档”收窄为“Watchdog 已建档/已超时，但 watchdog-start / watchdog-timeout 通知没有成功呈现给用户，或被通知去重/恢复语义抑制”。
+- 用户明确反馈：该聊天本轮既没收到 Watchdog 开始通知，也没收到约一小时后的超时通知；需要把 notification ledger 与 Bark 发送结果逐层对齐，不能只看 active_watchdogs/incident 就判定用户已经收到通知。
+
+### ExecPlan
+1. 以 CID `6ab60de8-ccf8-83e9-8848-9d15ee8bf177` 为主键，对齐 active_watchdogs 的 startedAt/lastWatchdogAt、当前 turnExchangeId、generation/tombstone 与 incident detectedAt。
+2. 查询 `turn_notification_ledger` 中该 CID 的 `watchdog-start`、`watchdog-timeout`、`watchdog-diagnosis` 条目，确认是否从未入账、入账但 skipped/deduped、还是已经实际调用 Bark。
+3. 若 ledger 显示 Bark 成功，再查 notifier/daemon 日志中的 HTTP 结果、group/title/subtitle，并核对是否存在“成功写账但未真正发送”或错误 conversation group/title 的情况。
+4. 若 start 与 timeout 的断点不同，分别沿 generation 创建路径和 timeout incident 路径取证；尤其检查 daemon startup/recovery 对历史 generation 故意不补发 start 的规则是否错误覆盖了一个仍在运行的新 generation。
+5. 定位根因后做最小修复并补回归：必须覆盖“长聊天已有旧 active/incidents + 新 turn DevSpace first-tool”的真实形态，证明 start 与 timeout 都能且只会发送一次。
+6. 运行定向 Watchdog/notifier 测试与全量 `npm run check`；通过后受控 reload production，再用自然 turn 验收，不伪造大量 Bark。
+
 ## 2026-10-18 LifeOps / Archive Bridge 周期性 5s/12s 超时回归
 
 ### 现场结论
