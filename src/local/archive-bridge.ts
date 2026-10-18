@@ -234,6 +234,16 @@ async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<Rec
 function sanitizeMessages(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
   return rows
     .filter(row => Number(row.hidden ?? 0) === 0)
+    .filter(row => {
+      const role = typeof row.role === 'string' ? row.role : 'unknown'
+      const recipient = typeof row.recipient === 'string' ? row.recipient : null
+      const channel = typeof row.channel === 'string' ? row.channel : null
+      const contentType = typeof row.contentType === 'string' ? row.contentType : null
+      const internalReasoning = channel === 'analysis' || Boolean(contentType && /reasoning/iu.test(contentType))
+      return (role === 'user' || role === 'assistant')
+        && (recipient === null || recipient === 'all')
+        && !internalReasoning
+    })
     .map(row => {
       const channel = typeof row.channel === 'string' ? row.channel : null
       const contentType = typeof row.contentType === 'string' ? row.contentType : null
@@ -243,8 +253,6 @@ function sanitizeMessages(rows: Array<Record<string, unknown>>): Array<Record<st
       // 这既保留完整生命周期/工具链定位能力，也不把本来只供模型内部消费的思维文本固化成产品 API。
       const reasoningRedacted = channel === 'analysis' || Boolean(contentType && /reasoning/iu.test(contentType))
       const contentRedacted = reasoningRedacted
-        || (role !== 'user' && role !== 'assistant')
-        || (recipient !== null && recipient !== 'all')
       return {
         messageId: typeof row.messageId === 'string' ? row.messageId : null,
         ordinal: Number.isFinite(Number(row.ordinal)) ? Number(row.ordinal) : null,
