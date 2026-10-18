@@ -599,23 +599,13 @@ describe('Archive Bridge', () => {
     }
     expect(fullReadCalled).toBe(false)
     expect(body.canonicalCount).toBe(1000)
-    expect(body.messages).toHaveLength(4)
+    expect(body.messages).toHaveLength(2)
     expect(body.messages[0]).toMatchObject({
       messageId: 'visible-user',
       text: '用户正文',
       contentRedacted: false,
     })
     expect(body.messages[1]).toMatchObject({
-      messageId: 'internal-call',
-      text: '',
-      contentRedacted: true,
-    })
-    expect(body.messages[2]).toMatchObject({
-      messageId: 'internal-result',
-      text: '',
-      contentRedacted: true,
-    })
-    expect(body.messages[3]).toMatchObject({
       messageId: 'visible-assistant',
       text: '最终回复',
       contentRedacted: false,
