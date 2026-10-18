@@ -9371,7 +9371,12 @@ async function main() {
   // 所以不会把几周前的聊天误当成当前 active watchdog。
   const hadExistingDevSpaceMetadataBindings = archive.listDevSpaceMetadataBindings({ limit: 1 }).length > 0
   let devSpaceHistoricalSeeded = 0
-  const devSpaceMetadataHistory = devSpaceAuditBridge.metadataSummaries(10_000)
+  // 全历史 GROUP BY + 逐条 Archive upsert 只属于第一次迁移。稳态重启若 binding 表已经存在，
+  // durable audit cursor 会把 daemon 离线期间的新 metadata 逐条补进来；没必要每次启动都重新
+  // GROUP BY 整个 DevSpace tool_audit 历史，再重复写几百条完全相同的 binding 行。
+  const devSpaceMetadataHistory = hadExistingDevSpaceMetadataBindings
+    ? []
+    : devSpaceAuditBridge.metadataSummaries(10_000)
   for (const summary of devSpaceMetadataHistory) {
     const seeded = archive.seedDevSpaceMetadataHistory({
       metadataId: summary.metadataId,
