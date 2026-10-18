@@ -504,34 +504,28 @@ describe('Archive Bridge', () => {
       hasMore: boolean
       nextBeforeOrdinal: number | null
     }
-    expect(body.messages.map(item => item.messageId)).toEqual(['m1', 'm2', 'reasoning-internal'])
-    expect(body).toMatchObject({ total: 3, hasMore: false, nextBeforeOrdinal: 1 })
+    expect(body.messages.map(item => item.messageId)).toEqual(['m1', 'm2'])
+    expect(body).toMatchObject({ total: 2, hasMore: false, nextBeforeOrdinal: 1 })
     expect(JSON.stringify(body)).not.toContain('must-not-leak')
     expect(JSON.stringify(body)).not.toContain('内部隐藏消息')
     expect(JSON.stringify(body)).not.toContain('这里是模型内部推理')
-    expect(body.messages.at(-1)).toMatchObject({
-      messageId: 'reasoning-internal',
-      reasoningRedacted: true,
-      text: '',
-      turnExchangeId: 'turn-1',
-    })
 
     const tail = await fetch(`${base}/v1/conversations/cid-1/messages?limit=2`, { headers })
     expect(tail.status).toBe(200)
     expect(await tail.json()).toMatchObject({
-      total: 3,
-      hasMore: true,
-      nextBeforeOrdinal: 3,
+      total: 2,
+      hasMore: false,
+      nextBeforeOrdinal: 1,
       messages: [
+        { messageId: 'm1', ordinal: 1 },
         { messageId: 'm2', ordinal: 3 },
-        { messageId: 'reasoning-internal', ordinal: 4 },
       ],
     })
 
     const older = await fetch(`${base}/v1/conversations/cid-1/messages?limit=2&before_ordinal=3`, { headers })
     expect(older.status).toBe(200)
     expect(await older.json()).toMatchObject({
-      total: 3,
+      total: 2,
       hasMore: false,
       nextBeforeOrdinal: 1,
       messages: [{ messageId: 'm1', ordinal: 1 }],
