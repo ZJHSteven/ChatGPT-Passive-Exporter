@@ -2418,6 +2418,25 @@ async function main() {
     // 首次启动或损坏的旧 state 都不应阻止 daemon 启动。
   }
   const startedAt = Date.now()
+  // Archive daemon 同时承载 Bridge HTTP、WSS/SSE、DevSpace UDP、Bark timer 与 CDP health。
+  // Node 事件循环是 cooperative scheduling：任一同步 SQLite/JS 段不返回，这些控制面就都无法调度。
+  // 用固定 250ms 心跳直接量“实际失去调度多久”，避免以后再把 event-loop starvation 误判成网络慢。
+  const CONTROL_PLANE_TICK_MS = 250
+  let controlPlaneExpectedAt = Date.now() + CONTROL_PLANE_TICK_MS
+  let controlPlaneLagLastMs = 0
+  let controlPlaneLagMaxMs = 0
+  let controlPlaneLagOver100Ms = 0
+  let controlPlaneLagOver1000Ms = 0
+  const controlPlaneLagTimer = setInterval(() => {
+    const now = Date.now()
+    const lagMs = Math.max(0, now - controlPlaneExpectedAt)
+    controlPlaneLagLastMs = lagMs
+    controlPlaneLagMaxMs = Math.max(controlPlaneLagMaxMs, lagMs)
+    if (lagMs >= 100) controlPlaneLagOver100Ms += 1
+    if (lagMs >= 1000) controlPlaneLagOver1000Ms += 1
+    controlPlaneExpectedAt = now + CONTROL_PLANE_TICK_MS
+  }, CONTROL_PLANE_TICK_MS)
+  controlPlaneLagTimer.unref?.()
   // 进程一拿到 statePath 就先覆盖“旧 daemon 的 PID 身份”，不要等到历史 seed、
   // DevSpace catch-up、Bridge/WSS 等较重初始化完成以后才第一次写 state。
   //
