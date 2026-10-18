@@ -623,17 +623,6 @@ export class ChatArchiveDb {
         ON messages(conversation_id, ordinal)
         WHERE hidden=0;
 
-      -- DevSpace Binding Queue 按 canonical turn 精确读取 tool calls。旧路径只有
-      -- (conversation_id, ordinal) 索引，必须先扫整条几千-message Conversation 再筛
-      -- turn_exchange_id；真实冷缓存样本可到 1s+。这个 partial index 只覆盖真正 tool-call
-      -- 行，既小又能把 exact turn lookup 变成窄 seek。
-      CREATE INDEX IF NOT EXISTS messages_tool_turn_time
-        ON messages(conversation_id, turn_exchange_id, create_time)
-        WHERE recipient='api_tool.call_tool'
-          AND turn_exchange_id IS NOT NULL
-          AND create_time IS NOT NULL
-          AND text<>'';
-
       CREATE TABLE IF NOT EXISTS resources (
         row_id INTEGER PRIMARY KEY AUTOINCREMENT,
         conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -1086,6 +1075,16 @@ export class ChatArchiveDb {
     this.ensureColumn('messages', 'first_seen_at', 'INTEGER')
     this.ensureColumn('messages', 'last_seen_at', 'INTEGER')
     this.ensureColumn('messages', 'source_observed_at', 'INTEGER')
+    // turn_exchange_id 是历史库后补列，因此这个索引必须在 ensureColumn 之后创建；
+    // fresh DB 的初始 messages schema 还没有该列，过早 CREATE INDEX 会让整个 migration 失败。
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS messages_tool_turn_time
+        ON messages(conversation_id, turn_exchange_id, create_time)
+        WHERE recipient='api_tool.call_tool'
+          AND turn_exchange_id IS NOT NULL
+          AND create_time IS NOT NULL
+          AND text<>'';
+    `)
     // `metadata.parent_id` 与官方 mapping.parent 不是同一个语义：2026-09-13 在真实长会话中
     // 观察到大量不一致。额外记录 parent 来源，避免后来的 plural body 把官方树关系覆盖掉。
     this.ensureColumn('mapping_nodes', 'parent_source', 'TEXT')
