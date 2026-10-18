@@ -314,6 +314,12 @@ test('daemon state 暴露控制平面 event-loop lag，避免把本机 starvatio
   expect(daemon).toContain('controlPlane: {')
   expect(daemon).toContain('eventLoopLagLastMs: controlPlaneLagLastMs')
   expect(daemon).toContain('eventLoopLagMaxMs: controlPlaneLagMaxMs')
+  expect(daemon).toContain("controlPlaneStage = 'startup'")
+  expect(daemon).toContain('recentSlowLags: controlPlaneRecentSlowLags.slice(-40)')
+  expect(daemon).toContain("runControlPlaneStage(`conversation-merge:${trigger}`")
+  expect(daemon).toContain("controlPlaneStage = 'devspace-audit-batch'")
+  expect(daemon).toContain("runControlPlaneStage('devspace-binding-item'")
+  expect(daemon).toContain("controlPlaneStage = 'idle'")
 })
 
 test('startup 直接信任 durable active_watchdogs，不再逐条扫描 messages 重算 startedAt', async () => {

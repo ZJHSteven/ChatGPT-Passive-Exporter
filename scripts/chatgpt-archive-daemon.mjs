@@ -2427,6 +2427,18 @@ async function main() {
   let controlPlaneLagMaxMs = 0
   let controlPlaneLagOver100Ms = 0
   let controlPlaneLagOver1000Ms = 0
+  let controlPlaneStage = 'startup'
+  const controlPlaneRecentSlowLags = []
+  const runControlPlaneStage = (stage, fn) => {
+    const previous = controlPlaneStage
+    controlPlaneStage = stage
+    try {
+      return fn()
+    }
+    finally {
+      controlPlaneStage = previous
+    }
+  }
   const controlPlaneLagTimer = setInterval(() => {
     const now = Date.now()
     const lagMs = Math.max(0, now - controlPlaneExpectedAt)
@@ -2434,6 +2446,14 @@ async function main() {
     controlPlaneLagMaxMs = Math.max(controlPlaneLagMaxMs, lagMs)
     if (lagMs >= 100) controlPlaneLagOver100Ms += 1
     if (lagMs >= 1000) controlPlaneLagOver1000Ms += 1
+    if (lagMs >= 100) {
+      controlPlaneRecentSlowLags.push({
+        at: now,
+        lagMs,
+        stage: controlPlaneStage,
+      })
+      if (controlPlaneRecentSlowLags.length > 40) controlPlaneRecentSlowLags.shift()
+    }
     controlPlaneExpectedAt = now + CONTROL_PLANE_TICK_MS
   }, CONTROL_PLANE_TICK_MS)
   controlPlaneLagTimer.unref?.()
@@ -3851,6 +3871,8 @@ async function main() {
       eventLoopLagMaxMs: controlPlaneLagMaxMs,
       eventLoopLagOver100Ms: controlPlaneLagOver100Ms,
       eventLoopLagOver1000Ms: controlPlaneLagOver1000Ms,
+      stage: controlPlaneStage,
+      recentSlowLags: controlPlaneRecentSlowLags.slice(-40),
     },
     bridge: {
       enabled: bridgeEnabled,
@@ -5528,7 +5550,7 @@ async function main() {
       }
 
       const mergeStartedAt = performance.now()
-      const merged = archive.mergeLiveMessagesPage(normalized, {
+      const merged = runControlPlaneStage(`conversation-merge:${trigger}`, () => archive.mergeLiveMessagesPage(normalized, {
         observedAt: Date.now(),
         endpoint: pages === 0 ? basePath : `${basePath}/messages`,
         pageCursor: cursor,
@@ -5543,7 +5565,7 @@ async function main() {
           && (!watchdogTurnChanged || watchdogTurnAlreadyTimedOut)
           && (confirmedTerminal || trigger.startsWith('watchdog:')),
         incidentKind: requestedIncidentKind,
-      })
+      }))
       databaseMergeMs += performance.now() - mergeStartedAt
       if (pages === 0) latestDiagnostic = merged.diagnostic
       if (pages === 0 && merged.diagnostic.hasImageGenerationFinal) {
@@ -6577,6 +6599,9 @@ async function main() {
     const batchStartedAt = performance.now()
     let observed = 0
     try {
+      const previousStage = controlPlaneStage
+      controlPlaneStage = 'devspace-audit-batch'
+      try {
       const events = devSpaceAuditCursor
         ? devSpaceAuditBridge.pollAfter({
             startedAt: devSpaceAuditCursor.startedAt,
@@ -6606,6 +6631,10 @@ async function main() {
         scheduleDevSpaceAuditPoll()
       }
       return observed
+      }
+      finally {
+        controlPlaneStage = previousStage
+      }
     }
     catch (error) {
       devSpaceLastError = error instanceof Error ? error.message : String(error)
@@ -6958,18 +6987,20 @@ async function main() {
     if (!evidenceEntry.done) {
       const [key, row] = evidenceEntry.value
       devSpaceBindingEvidenceWork.delete(key)
-      attemptDevSpaceBindingQueueEvidence(row, { source: 'devspace-audit-worker' })
+      runControlPlaneStage('devspace-binding-item', () => {
+        attemptDevSpaceBindingQueueEvidence(row, { source: 'devspace-audit-worker' })
+      })
     }
     else {
       const auditEntry = devSpaceBindingAuditWork.entries().next()
       if (!auditEntry.done) {
         const [auditId, event] = auditEntry.value
         devSpaceBindingAuditWork.delete(auditId)
-        const rows = archive.listPendingDevSpaceBindingTurnEvidence({
+        const rows = runControlPlaneStage('devspace-binding-audit-scan', () => archive.listPendingDevSpaceBindingTurnEvidence({
           overlapStartAt: Math.max(0, Number(event.startedAtMs) - 120_000),
           overlapEndAt: Number(event.startedAtMs) + 120_000,
           limit: 256,
-        })
+        }))
         for (const row of rows) {
           const key = `${row.conversationId}:${row.turnExchangeId}`
           devSpaceBindingEvidenceWork.set(key, row)
@@ -9456,6 +9487,7 @@ async function main() {
     fallbackPollMs: DEVSPACE_FALLBACK_POLL_MS,
   })
 
+  controlPlaneStage = 'idle'
   await log('daemon starting', { pid: process.pid, dbPath, cdpHttp })
   while (!stopping) {
     try {
