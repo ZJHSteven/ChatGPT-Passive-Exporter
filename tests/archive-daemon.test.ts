@@ -257,6 +257,39 @@ test('DevSpace binding uses one persistent Matching Queue for canonical evidence
     .toBeLessThan(audit.indexOf('dispatchUnboundWatchdogStartNotification('))
 })
 
+test('DevSpace audit backlog 必须分批让出 event loop，不能无界 drain', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+
+  const scheduleStart = daemon.indexOf('const scheduleDevSpaceAuditPoll')
+  const pollStart = daemon.indexOf('const pollDevSpaceAudits', scheduleStart)
+  const pollEnd = daemon.indexOf('const bootstrapDevSpaceAuditCursor', pollStart)
+  expect(scheduleStart).toBeGreaterThan(-1)
+  expect(pollStart).toBeGreaterThan(scheduleStart)
+  expect(pollEnd).toBeGreaterThan(pollStart)
+
+  const schedule = daemon.slice(scheduleStart, pollStart)
+  const poll = daemon.slice(pollStart, pollEnd)
+
+  // continuation 必须跨 event-loop tick；同步递归/while 全量 drain 都会再次饿死同进程 Bridge。
+  expect(schedule).toContain('setImmediate(')
+  expect(schedule).toContain('devSpaceAuditPollScheduled')
+  expect(poll).not.toContain('while (true)')
+  expect(poll).toContain('DEVSPACE_AUDIT_BATCH_SIZE')
+  expect(poll).toContain('scheduleDevSpaceAuditPoll()')
+  expect(poll).toContain('advanceDevSpaceAuditCursor({')
+  expect(poll.indexOf('handleDevSpaceAuditEvent(event)'))
+    .toBeLessThan(poll.indexOf('advanceDevSpaceAuditCursor({'))
+
+  // 状态面必须能看见是否在持续满批让路，以及单批本身是否已经异常变慢。
+  expect(daemon).toContain('auditConsumer: {')
+  expect(daemon).toContain('lastBatchMs:')
+  expect(daemon).toContain('maxBatchMs:')
+  expect(daemon).toContain('yields: devSpaceAuditPollYields')
+})
+
 test('unbound gap repair requires Project sidebar discovery before terminal unbound completion', async () => {
   const daemon = await fs.readFile(
     new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),

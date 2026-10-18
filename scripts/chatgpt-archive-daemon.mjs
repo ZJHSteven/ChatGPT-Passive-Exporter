@@ -112,7 +112,14 @@ const DEFAULT_SINGLETON_PORT = 47_830
 const DEFAULT_IMAGE_ASSET_DIR = path.join(PROJECT_ROOT, 'data', 'assets', 'chatgpt')
 const DEVSPACE_POLL_OVERLAP_MS = 10_000
 const DEVSPACE_AUDIT_CONSUMER_KEY = 'archive-daemon'
-const DEVSPACE_AUDIT_PAGE_SIZE = 250
+// DevSpace audit 的消费必须主动给 Node event loop 让路。
+//
+// 这里故意把单批压得很小：每条 audit 后面还可能触发 recovery mirror、Binding Queue
+// exact-match 与同步 SQLite 查询。即使单条通常很快，几十/几百条连续执行也会让同进程的
+// Archive Bridge HTTP 完全拿不到调度，LifeOps 就会看到 5s search / 12s conversation timeout。
+// 一批 4 条的目标不是提高吞吐，而是把“最大连续占用主线程”的上界压低；剩余 backlog 用
+// setImmediate 续跑，让 HTTP/WSS/timer/CDP 回调在批次之间获得机会。
+const DEVSPACE_AUDIT_BATCH_SIZE = 4
 const DEVSPACE_FALLBACK_POLL_MS = 60_000
 const DEVSPACE_IDLE_ALERT_THRESHOLDS_MS = [60_000, 180_000, 300_000]
 const DEVSPACE_IDLE_STARTUP_LOOKBACK_MS = 6 * 60_000
@@ -2667,6 +2674,13 @@ async function main() {
   let devSpaceLastAuditAt = null
   let devSpaceLastError = null
   let devSpaceAuditsObserved = 0
+  let devSpaceAuditPollInFlight = false
+  let devSpaceAuditPollScheduled = false
+  let devSpaceAuditPollBatches = 0
+  let devSpaceAuditPollYields = 0
+  let devSpaceAuditLastBatchCount = 0
+  let devSpaceAuditLastBatchMs = 0
+  let devSpaceAuditMaxBatchMs = 0
   let devSpaceBindingsCreated = 0
   let devSpaceBindingMirrors = 0
   let devSpaceBindingQueueEnqueued = 0
@@ -3922,6 +3936,16 @@ async function main() {
       lastAuditAt: devSpaceLastAuditAt,
       lastError: devSpaceLastError,
       auditsObserved: devSpaceAuditsObserved,
+      auditConsumer: {
+        batchSize: DEVSPACE_AUDIT_BATCH_SIZE,
+        inFlight: devSpaceAuditPollInFlight,
+        continuationScheduled: devSpaceAuditPollScheduled,
+        batches: devSpaceAuditPollBatches,
+        yields: devSpaceAuditPollYields,
+        lastBatchCount: devSpaceAuditLastBatchCount,
+        lastBatchMs: Math.round(devSpaceAuditLastBatchMs * 100) / 100,
+        maxBatchMs: Math.round(devSpaceAuditMaxBatchMs * 100) / 100,
+      },
       bindingsCreated: devSpaceBindingsCreated,
       bindingMirrors: devSpaceBindingMirrors,
       bindingQueuePending: archive.listPendingDevSpaceBindingTurnEvidence({ limit: 10_000 }).length,
@@ -6440,37 +6464,74 @@ async function main() {
     }
   }
 
-  const pollDevSpaceAudits = () => {
-    try {
-      let observed = 0
-      while (true) {
-        const events = devSpaceAuditCursor
-          ? devSpaceAuditBridge.pollAfter({
-              startedAt: devSpaceAuditCursor.startedAt,
-              auditId: devSpaceAuditCursor.auditId,
-            }, DEVSPACE_AUDIT_PAGE_SIZE)
-          : devSpaceAuditBridge.pollSince(0, DEVSPACE_AUDIT_PAGE_SIZE)
-        if (events.length === 0) break
+  /**
+   * durable audit backlog 的 cooperative continuation。
+   *
+   * 不能在当前调用栈里递归继续消费，否则虽然“拆成批次”，本质仍然不给 HTTP/WSS/timer
+   * 调度机会。setImmediate 会把续批放到下一轮 event loop；scheduled 标记同时避免 UDP wake、
+   * 60s fallback 和前一批 continuation 重复堆出多个 drain。
+   */
+  const scheduleDevSpaceAuditPoll = () => {
+    if (devSpaceAuditPollScheduled || stopping) return
+    devSpaceAuditPollScheduled = true
+    setImmediate(() => {
+      devSpaceAuditPollScheduled = false
+      pollDevSpaceAudits()
+    })
+  }
 
-        for (const event of events) {
-          // 必须先完整处理，再推进 durable cursor。若中途抛错，下次从上一条高水位安全重放。
-          handleDevSpaceAuditEvent(event)
-          devSpaceAuditCursor = archive.advanceDevSpaceAuditCursor({
-            consumerKey: DEVSPACE_AUDIT_CONSUMER_KEY,
-            startedAt: event.startedAt,
-            auditId: event.id,
-          })
-          observed += 1
-        }
-        if (events.length < DEVSPACE_AUDIT_PAGE_SIZE) break
+  /**
+   * 每次只消费一个很小的 durable audit 批次。
+   *
+   * durable cursor 仍然保持原语义：一条 event 必须完整 handle 成功后才推进。若某条处理中
+   * 抛错，本批立即停止，下一次 wake/fallback 从上一条已成功 cursor 继续，不会为了“让路”
+   * 牺牲 exactly-once-like 的本地恢复边界。
+   */
+  const pollDevSpaceAudits = () => {
+    if (devSpaceAuditPollInFlight || stopping) return 0
+    devSpaceAuditPollInFlight = true
+    const batchStartedAt = performance.now()
+    let observed = 0
+    try {
+      const events = devSpaceAuditCursor
+        ? devSpaceAuditBridge.pollAfter({
+            startedAt: devSpaceAuditCursor.startedAt,
+            auditId: devSpaceAuditCursor.auditId,
+          }, DEVSPACE_AUDIT_BATCH_SIZE)
+        : devSpaceAuditBridge.pollSince(0, DEVSPACE_AUDIT_BATCH_SIZE)
+
+      for (const event of events) {
+        // 必须先完整处理，再推进 durable cursor。若中途抛错，下次从上一条高水位安全重放。
+        handleDevSpaceAuditEvent(event)
+        devSpaceAuditCursor = archive.advanceDevSpaceAuditCursor({
+          consumerKey: DEVSPACE_AUDIT_CONSUMER_KEY,
+          startedAt: event.startedAt,
+          auditId: event.id,
+        })
+        observed += 1
       }
+
       devSpaceLastPollAt = Date.now()
       devSpaceLastError = null
+      devSpaceAuditPollBatches += 1
+      devSpaceAuditLastBatchCount = observed
+
+      // 满批说明“很可能还有 backlog”。这里只登记一个下一轮 continuation，绝不当前栈继续扫。
+      if (events.length === DEVSPACE_AUDIT_BATCH_SIZE) {
+        devSpaceAuditPollYields += 1
+        scheduleDevSpaceAuditPoll()
+      }
       return observed
     }
     catch (error) {
       devSpaceLastError = error instanceof Error ? error.message : String(error)
       return 0
+    }
+    finally {
+      const elapsedMs = performance.now() - batchStartedAt
+      devSpaceAuditLastBatchMs = elapsedMs
+      devSpaceAuditMaxBatchMs = Math.max(devSpaceAuditMaxBatchMs, elapsedMs)
+      devSpaceAuditPollInFlight = false
     }
   }
 
