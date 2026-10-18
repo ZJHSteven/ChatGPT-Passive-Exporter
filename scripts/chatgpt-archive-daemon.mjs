@@ -119,7 +119,10 @@ const DEVSPACE_AUDIT_CONSUMER_KEY = 'archive-daemon'
 // Archive Bridge HTTP 完全拿不到调度，LifeOps 就会看到 5s search / 12s conversation timeout。
 // 一批 4 条的目标不是提高吞吐，而是把“最大连续占用主线程”的上界压低；剩余 backlog 用
 // setImmediate 续跑，让 HTTP/WSS/timer/CDP 回调在批次之间获得机会。
-const DEVSPACE_AUDIT_BATCH_SIZE = 4
+// DevSpace audit 是控制面入口，单条内部仍包含若干同步 SQLite 操作。
+// 在这些写路径完全迁出主线程前，不再把多条 audit 串成一个不可抢占批次；
+// backlog 通过 setImmediate continuation 逐条追平。
+const DEVSPACE_AUDIT_BATCH_SIZE = 1
 const DEVSPACE_FALLBACK_POLL_MS = 60_000
 const DEVSPACE_IDLE_ALERT_THRESHOLDS_MS = [60_000, 180_000, 300_000]
 const DEVSPACE_IDLE_STARTUP_LOOKBACK_MS = 6 * 60_000
@@ -6527,21 +6530,26 @@ async function main() {
   const handleDevSpaceAuditEvent = (event) => {
     devSpaceAuditsObserved += 1
     devSpaceLastAuditAt = Math.max(Number(devSpaceLastAuditAt || 0), event.startedAtMs)
-    const metadataState = devSpaceAuditBridge.metadataToolState(event.metadataId)
-    const binding = archive.observeDevSpaceMetadata({
+    const metadataState = runControlPlaneStage('devspace-audit:metadata-state', () =>
+      devSpaceAuditBridge.metadataToolState(event.metadataId))
+    const binding = runControlPlaneStage('devspace-audit:observe-metadata', () => archive.observeDevSpaceMetadata({
       metadataId: event.metadataId,
       auditId: event.id,
       auditAt: event.startedAtMs,
       displayTitle: metadataState?.title ?? null,
-    })
+    }))
     // begin 事件会看到 runningTools>0 并立即取消旧 idle generation。
     // finish 事件即使 auditId 已经见过，也会由 wake callback 额外按 metadata 重读。
-    refreshDevSpaceIdleCandidate(event.metadataId, Date.now(), metadataState)
-    dispatchDevSpaceProgressNotification(event)
+    runControlPlaneStage('devspace-audit:idle-refresh', () =>
+      refreshDevSpaceIdleCandidate(event.metadataId, Date.now(), metadataState))
+    runControlPlaneStage('devspace-audit:progress-notification', () =>
+      dispatchDevSpaceProgressNotification(event))
     // binding 尚未建立时也立即写 synthetic provisional conversation；一旦绑定再原位迁移。
-    persistDevSpaceRecoveryAudit(event, binding)
+    runControlPlaneStage('devspace-audit:recovery-upsert', () =>
+      persistDevSpaceRecoveryAudit(event, binding))
     if (binding.conversationId) {
-      activateBoundDevSpaceTurn(binding, event.startedAtMs)
+      runControlPlaneStage('devspace-audit:activate-bound-turn', () =>
+        activateBoundDevSpaceTurn(binding, event.startedAtMs))
       return
     }
 
