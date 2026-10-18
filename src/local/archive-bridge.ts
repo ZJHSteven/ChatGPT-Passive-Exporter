@@ -746,24 +746,60 @@ export class ArchiveBridgeServer {
     const messagesMatch = /^\/v1\/conversations\/([^/]+)\/messages$/u.exec(url.pathname)
     if (messagesMatch && method === 'GET') {
       const conversationId = decodeURIComponent(messagesMatch[1]!)
+      const limit = parseLimit(url.searchParams.get('limit'), 120)
+      const beforeOrdinal = parseBeforeOrdinal(url.searchParams.get('before_ordinal'))
       // canonical first-party messages 永远是主数据；DevSpace recovery 只在 Reader/Bridge 展示层
       // 追加仍未被 canonical body supersede 的 provisional 尾部节点。
-      const canonicalMessages = this.options.archive.getMessages(conversationId)
-      const recoveryMessages = this.options.archive.getDevSpaceRecoveryMessages?.(conversationId) ?? []
-      const allMessages = sanitizeMessages([...canonicalMessages, ...recoveryMessages])
-      const page = paginateOrdinalRows(
-        allMessages,
-        parseLimit(url.searchParams.get('limit'), 120),
-        parseBeforeOrdinal(url.searchParams.get('before_ordinal')),
+      const recoveryMessages = sanitizeMessages(
+        this.options.archive.getDevSpaceRecoveryMessages?.(conversationId) ?? [],
       )
+      const canonicalPage = this.options.archive.getMessagesPage?.(conversationId, {
+        limit,
+        beforeOrdinal,
+      })
+
+      let messages: Array<Record<string, unknown>>
+      let canonicalCount: number
+      let total: number
+      let hasMore: boolean
+      let nextBeforeOrdinal: number | null
+
+      if (canonicalPage) {
+        const canonicalMessages = sanitizeMessages(canonicalPage.messages)
+        const eligibleRecovery = beforeOrdinal === null
+          ? recoveryMessages
+          : recoveryMessages.filter(row =>
+              Number.isFinite(Number(row.ordinal)) && Number(row.ordinal) < beforeOrdinal,
+            )
+        messages = [...canonicalMessages, ...eligibleRecovery].slice(-limit)
+        canonicalCount = canonicalPage.canonicalCount
+        total = canonicalPage.visibleCount + recoveryMessages.length
+        hasMore = canonicalPage.eligibleVisibleCount + eligibleRecovery.length > messages.length
+        nextBeforeOrdinal = messages.length > 0 && Number.isFinite(Number(messages[0]!.ordinal))
+          ? Number(messages[0]!.ordinal)
+          : null
+      }
+      else {
+        const canonicalMessages = this.options.archive.getMessages(conversationId)
+        const page = paginateOrdinalRows(
+          sanitizeMessages([...canonicalMessages, ...recoveryMessages]),
+          limit,
+          beforeOrdinal,
+        )
+        messages = page.rows
+        canonicalCount = canonicalMessages.length
+        total = page.total
+        hasMore = page.hasMore
+        nextBeforeOrdinal = page.nextBeforeOrdinal
+      }
       jsonResponse(res, 200, {
         conversationId,
-        messages: page.rows,
-        canonicalCount: canonicalMessages.length,
+        messages,
+        canonicalCount,
         provisionalCount: recoveryMessages.length,
-        total: page.total,
-        hasMore: page.hasMore,
-        nextBeforeOrdinal: page.nextBeforeOrdinal,
+        total,
+        hasMore,
+        nextBeforeOrdinal,
       })
       return
     }
