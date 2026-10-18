@@ -9,6 +9,7 @@
 - DevSpace `tool_audit.request_meta_json` 已保存完整 Host `_meta`，但 `719...` 与 `a2e...` 的 `openai/session`、`openai/subject`、organization、userAgent 全相同；`process_session_id` 只是本地命令会话，也无 turn 语义。新 turn 不会重新调用 `init`。因此现有 audit 数据里确实没有可直接使用的 per-turn / `turn_exchange_id`。
 - MCP SDK 的 handler extra 另外暴露 `requestId / taskId / sessionId / requestInfo(headers)`，DevSpace 当前只保留 `_meta`。其中 JSON-RPC requestId 很可能是单 tool 唯一值、stateless transport session 也未必存在；唯一仍值得取证的是 Host HTTP headers 是否携带同 turn 稳定、跨 turn 变化的 correlation 字段，尚未验证，不能先假定存在。
 - 通知链是另一条独立故障：该 CID 的 `watchdog-start`（22:49:50、22:51:26）、1min `devspace-idle`（22:59:02）、`watchdog-timeout`（23:35:47）和 `watchdog-diagnosis`（23:36:20）在 ledger 中均为 Bark HTTP 200，但用户未看到。必须单独排查 Bark/APNs/iOS 最终呈现，不可用“Watchdog 没触发”解释。
+- 撤回版已完成生产回归与部署：定向 daemon 81/81；全量 `npm run check` 30 files / 286 tests 全绿，TypeScript 与 Chrome/Edge/Firefox/userscript 构建全部通过；受控 resume 后 PID=`38052`，6s 复核 Bridge=true、WSS=3、conversation transport=true、DevSpace wake=true（最近 10ms）、LifeOps pending=0、lastError=null。
 
 ### 下一步边界
 1. 先保持原两阶段 Watchdog，不增加周期性 Body polling、不把 timeout 后移、不靠 idle 时间差直接重置 generation。
