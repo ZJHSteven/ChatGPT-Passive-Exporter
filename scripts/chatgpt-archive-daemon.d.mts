@@ -157,6 +157,11 @@ export function reconcileWatchdogDiagnosticTurn(
   nextActive: any
 }
 
+/** canonical Body 核实 turn 后，是否允许把 watchdog deadline 宣告为真实超时。 */
+export function shouldConfirmWatchdogTimeoutAfterDiagnostic(
+  result: { watchdogTurnChanged?: unknown, watchdogTurnAlreadyTimedOut?: unknown } | null | undefined,
+): boolean
+
 /** watchdog 诊断成功后决定当前 generation 是否应立即关闭。 */
 export function shouldCloseWatchdogGenerationAfterSync(
   trigger: unknown,
