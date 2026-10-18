@@ -64,6 +64,7 @@ import {
   shouldRunDeferredGapRepair,
   shouldQueueWatchdogDiagnostic,
   shouldConfirmWatchdogTimeoutAfterDiagnostic,
+  shouldProbeWatchdogTurnIdentityOnDevSpaceResume,
   shouldRetainSeenDevSpaceAudit,
   shouldRunHistoricalDevSpaceBackfill,
   shouldCloseWatchdogGenerationAfterSync,
@@ -1233,6 +1234,27 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       watchdogTurnChanged: true,
       watchdogTurnAlreadyTimedOut: true,
     })).toBe(true)
+  })
+
+  test('DevSpace 已知 turn 静默后恢复只触发身份探针，不用时间差直接重置 generation', () => {
+    const active = {
+      startedAt: 1_000,
+      lastEventAt: 10_000,
+      lastWatchdogAt: null,
+      watchdogPendingAt: null,
+      lastDiagnosticTurnKey: 'turn-a',
+      startType: 'devspace:first-tool',
+    }
+    expect(shouldProbeWatchdogTurnIdentityOnDevSpaceResume(active, 69_999, 60_000)).toBe(false)
+    expect(shouldProbeWatchdogTurnIdentityOnDevSpaceResume(active, 70_000, 60_000)).toBe(true)
+    expect(shouldProbeWatchdogTurnIdentityOnDevSpaceResume({
+      ...active,
+      lastDiagnosticTurnKey: null,
+    }, 70_000, 60_000)).toBe(false)
+    expect(shouldProbeWatchdogTurnIdentityOnDevSpaceResume({
+      ...active,
+      watchdogPendingAt: 65_000,
+    }, 70_000, 60_000)).toBe(false)
   })
 
   test('watchdog 诊断后保留 tombstone；明确 terminal/new turn 再由其它路径结束或替换', () => {
