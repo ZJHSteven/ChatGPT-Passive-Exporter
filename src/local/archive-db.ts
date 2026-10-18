@@ -1907,6 +1907,11 @@ export class ChatArchiveDb {
        * 单独解释成异常终止；这用于 watchdog / gap repair 防止误报仍在正常运行的长任务。
        */
       allowIncompleteTailIncident?: boolean
+      /**
+       * daemon 可提前在线程池完成 forensic observation 的 JSON/gzip 准备。
+       * 若省略则保持旧同步 fallback，供 CLI/测试/其它调用方使用。
+       */
+      preparedObservation?: PreparedLiveObservation
     } = {},
   ): LiveMergeResult {
     const mergeStartedAt = performance.now()
@@ -1919,7 +1924,7 @@ export class ChatArchiveDb {
     const observedAt = options.observedAt ?? Date.now()
     const now = Date.now()
     const updateCurrentState = options.updateCurrentState !== false
-    const rawText = json(payload)
+    const rawText = options.preparedObservation?.rawText ?? json(payload)
     const messageIds = conversation.messages.map(message => message.id)
     const knownBefore = this.knownMessageIds(conversationId, messageIds)
     const prepareFinishedAt = performance.now()
@@ -2225,7 +2230,8 @@ export class ChatArchiveDb {
       messageWriteMs = performance.now() - messageWriteStartedAt
 
       const observationStartedAt = performance.now()
-      const compressedObservation = gzipSync(Buffer.from(rawText, 'utf8'))
+      const compressedObservation = options.preparedObservation?.compressed
+        ?? gzipSync(Buffer.from(rawText, 'utf8'))
       observationGzipBytes = compressedObservation.byteLength
       this.db.prepare(`
         INSERT INTO live_observations (
@@ -2237,7 +2243,7 @@ export class ChatArchiveDb {
         options.endpoint ?? null,
         options.pageCursor ?? null,
         observedAt,
-        sha256Text(rawText),
+        options.preparedObservation?.sha256 ?? sha256Text(rawText),
         compressedObservation,
       )
       observationMs = performance.now() - observationStartedAt
