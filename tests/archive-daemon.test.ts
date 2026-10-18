@@ -317,9 +317,25 @@ test('daemon state 暴露控制平面 event-loop lag，避免把本机 starvatio
   expect(daemon).toContain("controlPlaneStage = 'startup'")
   expect(daemon).toContain('recentSlowLags: controlPlaneRecentSlowLags.slice(-40)')
   expect(daemon).toContain("runControlPlaneStage(`conversation-merge:${trigger}`")
-  expect(daemon).toContain("controlPlaneStage = 'devspace-audit-batch'")
+  expect(daemon).toContain("runControlPlaneStage('devspace-audit:poll'")
+  expect(daemon).toContain("runControlPlaneStage('devspace-audit:metadata-state'")
+  expect(daemon).toContain("runControlPlaneStage('devspace-audit:advance-cursor'")
   expect(daemon).toContain("runControlPlaneStage('devspace-binding-item'")
   expect(daemon).toContain("controlPlaneStage = 'idle'")
+})
+
+test('同一条 DevSpace audit 内部分段 yield，durable cursor 仍只在整条处理成功后推进', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+  expect(daemon).toContain('const handleDevSpaceAuditEvent = async (event) =>')
+  expect(daemon).toContain('await yieldControlPlane()')
+  expect(daemon).toContain('await handleDevSpaceAuditEvent(event)')
+  const handledAt = daemon.indexOf('await handleDevSpaceAuditEvent(event)')
+  const cursorAt = daemon.indexOf("runControlPlaneStage('devspace-audit:advance-cursor'", handledAt)
+  expect(handledAt).toBeGreaterThan(-1)
+  expect(cursorAt).toBeGreaterThan(handledAt)
 })
 
 test('Guardian Windows 窗口隐藏必须异步执行，不能用 execFileSync 冻结控制面', async () => {

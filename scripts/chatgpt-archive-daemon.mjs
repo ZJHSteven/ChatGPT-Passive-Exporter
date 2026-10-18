@@ -2463,6 +2463,7 @@ async function main() {
       controlPlaneStage = previous
     }
   }
+  const yieldControlPlane = () => new Promise(resolve => setImmediate(resolve))
   const controlPlaneLagTimer = setInterval(() => {
     const now = Date.now()
     const lagMs = Math.max(0, now - controlPlaneExpectedAt)
@@ -6546,35 +6547,42 @@ async function main() {
     return binding
   }
 
-  const handleDevSpaceAuditEvent = (event) => {
+  const handleDevSpaceAuditEvent = async (event) => {
     devSpaceAuditsObserved += 1
     devSpaceLastAuditAt = Math.max(Number(devSpaceLastAuditAt || 0), event.startedAtMs)
     const metadataState = runControlPlaneStage('devspace-audit:metadata-state', () =>
       devSpaceAuditBridge.metadataToolState(event.metadataId))
+    await yieldControlPlane()
     const binding = runControlPlaneStage('devspace-audit:observe-metadata', () => archive.observeDevSpaceMetadata({
       metadataId: event.metadataId,
       auditId: event.id,
       auditAt: event.startedAtMs,
       displayTitle: metadataState?.title ?? null,
     }))
+    await yieldControlPlane()
     // begin 事件会看到 runningTools>0 并立即取消旧 idle generation。
     // finish 事件即使 auditId 已经见过，也会由 wake callback 额外按 metadata 重读。
     runControlPlaneStage('devspace-audit:idle-refresh', () =>
       refreshDevSpaceIdleCandidate(event.metadataId, Date.now(), metadataState))
+    await yieldControlPlane()
     runControlPlaneStage('devspace-audit:progress-notification', () =>
       dispatchDevSpaceProgressNotification(event))
+    await yieldControlPlane()
     // binding 尚未建立时也立即写 synthetic provisional conversation；一旦绑定再原位迁移。
     runControlPlaneStage('devspace-audit:recovery-upsert', () =>
       persistDevSpaceRecoveryAudit(event, binding))
+    await yieldControlPlane()
     if (binding.conversationId) {
       runControlPlaneStage('devspace-audit:activate-bound-turn', () =>
         activateBoundDevSpaceTurn(binding, event.startedAtMs))
+      await yieldControlPlane()
       return
     }
 
     // binding exact-match/rebind 不能留在 audit 热路径同步执行；它可能触发较大的 SQLite
     // 扫描/镜像。先登记工作，让 first-tool Watchdog 与 durable cursor 立即继续推进。
     queueDevSpaceBindingWorkForAudit(event)
+    await yieldControlPlane()
 
     const current = unboundDevSpaceTurns.get(event.metadataId)
     const persistedStartAt = Number(binding.firstSeenAt || event.startedAtMs)
@@ -6609,7 +6617,7 @@ async function main() {
     devSpaceAuditPollScheduled = true
     setImmediate(() => {
       devSpaceAuditPollScheduled = false
-      pollDevSpaceAudits()
+      void pollDevSpaceAudits()
     })
   }
 
@@ -6620,31 +6628,37 @@ async function main() {
    * 抛错，本批立即停止，下一次 wake/fallback 从上一条已成功 cursor 继续，不会为了“让路”
    * 牺牲 exactly-once-like 的本地恢复边界。
    */
-  const pollDevSpaceAudits = () => {
-    if (devSpaceAuditPollInFlight || stopping) return 0
+  const pollDevSpaceAudits = async () => {
+    if (stopping) return 0
+    // UDP start/finish、fallback 与 cooperative continuation 可能同时要求 poll。
+    // 旧同步实现可以简单 return 0；异步分段后调用方需要能够真正等到前一轮完成，
+    // 否则 finish recovery refresh 会在 start audit 尚未持久化时抢跑。
+    while (devSpaceAuditPollInFlight && !stopping) await yieldControlPlane()
+    if (stopping) return 0
     devSpaceAuditPollInFlight = true
     const batchStartedAt = performance.now()
     let observed = 0
     try {
-      const previousStage = controlPlaneStage
-      controlPlaneStage = 'devspace-audit-batch'
-      try {
-      const events = devSpaceAuditCursor
-        ? devSpaceAuditBridge.pollAfter({
-            startedAt: devSpaceAuditCursor.startedAt,
-            auditId: devSpaceAuditCursor.auditId,
-          }, DEVSPACE_AUDIT_BATCH_SIZE)
-        : devSpaceAuditBridge.pollSince(0, DEVSPACE_AUDIT_BATCH_SIZE)
+      const events = runControlPlaneStage('devspace-audit:poll', () => (
+        devSpaceAuditCursor
+          ? devSpaceAuditBridge.pollAfter({
+              startedAt: devSpaceAuditCursor.startedAt,
+              auditId: devSpaceAuditCursor.auditId,
+            }, DEVSPACE_AUDIT_BATCH_SIZE)
+          : devSpaceAuditBridge.pollSince(0, DEVSPACE_AUDIT_BATCH_SIZE)
+      ))
 
       for (const event of events) {
         // 必须先完整处理，再推进 durable cursor。若中途抛错，下次从上一条高水位安全重放。
-        handleDevSpaceAuditEvent(event)
-        devSpaceAuditCursor = archive.advanceDevSpaceAuditCursor({
+        await handleDevSpaceAuditEvent(event)
+        await yieldControlPlane()
+        devSpaceAuditCursor = runControlPlaneStage('devspace-audit:advance-cursor', () => archive.advanceDevSpaceAuditCursor({
           consumerKey: DEVSPACE_AUDIT_CONSUMER_KEY,
           startedAt: event.startedAt,
           auditId: event.id,
-        })
+        }))
         observed += 1
+        await yieldControlPlane()
       }
 
       devSpaceLastPollAt = Date.now()
@@ -6658,10 +6672,6 @@ async function main() {
         scheduleDevSpaceAuditPoll()
       }
       return observed
-      }
-      finally {
-        controlPlaneStage = previousStage
-      }
     }
     catch (error) {
       devSpaceLastError = error instanceof Error ? error.message : String(error)
@@ -6671,11 +6681,6 @@ async function main() {
       const elapsedMs = performance.now() - batchStartedAt
       devSpaceAuditLastBatchMs = elapsedMs
       devSpaceAuditMaxBatchMs = Math.max(devSpaceAuditMaxBatchMs, elapsedMs)
-      recordControlPlaneSlowPath({
-        lagMs: elapsedMs,
-        stage: 'devspace-audit-batch',
-        source: 'sync-section',
-      })
       devSpaceAuditPollInFlight = false
     }
   }
@@ -9488,7 +9493,7 @@ async function main() {
       refreshed: pendingRecoveryRefreshedAtStartup,
     })
   }
-  pollDevSpaceAudits()
+  await pollDevSpaceAudits()
   const bindingQueueQueuedAtStartup = queuePendingDevSpaceBindingQueue({
     limit: 1000,
   })
@@ -9506,12 +9511,15 @@ async function main() {
   }
   devSpaceLastFallbackPollAt = Date.now()
   const devSpaceWakeListening = await devSpaceAuditWakeListener.start((signal) => {
-    pollDevSpaceAudits()
-    // finish 与 start 使用同一 auditId；finish 是原行 UPDATE，不会越过 started_at cursor，
-    // 因此仍按 signal.metadataId / auditId 重读最终状态。
-    refreshDevSpaceIdleCandidate(signal.metadataId)
-    // recovery overlay 同样按 auditId 补最终 result/error/finished_at。
-    refreshDevSpaceRecoveryAudit(signal.auditId)
+    // poll 现在会在同一 audit 内部 cooperative yield；finish 门铃的最终状态重读显式串到
+    // 本次 poll 之后，保持旧版“先消费 start/cursor，再覆盖 finish result”的顺序。
+    void pollDevSpaceAudits().finally(() => {
+      // finish 与 start 使用同一 auditId；finish 是原行 UPDATE，不会越过 started_at cursor，
+      // 因此仍按 signal.metadataId / auditId 重读最终状态。
+      refreshDevSpaceIdleCandidate(signal.metadataId)
+      // recovery overlay 同样按 auditId 补最终 result/error/finished_at。
+      refreshDevSpaceRecoveryAudit(signal.auditId)
+    })
   })
   await log('DevSpace audit wake listener ready', {
     listening: devSpaceWakeListening,
@@ -9547,7 +9555,7 @@ async function main() {
       // 稳态由 DevSpace 事件立即唤醒；这里只保留一分钟一次的 durable catch-up，
       // 它不是实时发现路径，成本也从“每 5 秒一次”降到“每 60 秒一次”。
       if (Date.now() - devSpaceLastFallbackPollAt >= DEVSPACE_FALLBACK_POLL_MS) {
-        pollDevSpaceAudits()
+        await pollDevSpaceAudits()
         refreshPendingDevSpaceRecoveryAudits()
         // idle 状态本身也按 metadata 重读，作为 finish 门铃丢失时的低频兜底。
         refreshTrackedDevSpaceIdleCandidates()
