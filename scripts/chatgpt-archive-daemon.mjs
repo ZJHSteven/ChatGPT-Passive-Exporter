@@ -6752,7 +6752,7 @@ async function main() {
    */
   const readDevSpaceTurnEvidenceFromStoredTurn = (conversationId, turnExchangeId) => {
     const rows = archive.db.prepare(
-      "SELECT create_time AS createTime, text FROM messages WHERE conversation_id=? AND turn_exchange_id=? AND recipient='api_tool.call_tool' AND create_time IS NOT NULL AND text<>'' ORDER BY create_time ASC",
+      "SELECT create_time AS createTime, text FROM messages INDEXED BY messages_tool_turn_time WHERE conversation_id=? AND turn_exchange_id=? AND recipient='api_tool.call_tool' AND create_time IS NOT NULL AND text<>'' ORDER BY create_time ASC",
     ).all(conversationId, turnExchangeId)
     const bodyCalls = rows
       .map(row => parseDevSpaceBodyToolCall(String(row.text || ''), Number(row.createTime) * 1000))
