@@ -39,6 +39,17 @@ export interface ArchiveBridgeDataSource {
   list(limit?: number): ArchiveBridgeConversationRow[]
   listDevSpaceRecoveryVirtualConversations?(limit?: number): ArchiveBridgeConversationRow[]
   getMessages(conversationId: string): Array<Record<string, unknown>>
+  getMessagesPage?(conversationId: string, options?: {
+    limit?: number
+    beforeOrdinal?: number | null
+  }): {
+    messages: Array<Record<string, unknown>>
+    canonicalCount: number
+    visibleCount: number
+    eligibleVisibleCount: number
+    hasMore: boolean
+    nextBeforeOrdinal: number | null
+  }
   getDevSpaceRecoveryMessages?(conversationId: string): Array<Record<string, unknown>>
   getResources?(conversationId: string): Array<Record<string, unknown>>
   searchConversations?(query: string, options?: { limit?: number, snippetsPerConversation?: number, sort?: 'relevance' | 'recent' | 'frequency' }): Array<Record<string, unknown>>
