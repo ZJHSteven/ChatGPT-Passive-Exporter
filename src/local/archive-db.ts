@@ -615,6 +615,25 @@ export class ChatArchiveDb {
       CREATE INDEX IF NOT EXISTS messages_conversation_ordinal
         ON messages(conversation_id, ordinal);
 
+      -- Reader 的 canonical ordinal 完整性检查只需要 conversation_id + ordinal；
+      -- 可见节点统计/分页则只需要 hidden=0 的同一组窄键。生产 4.9GB messages 主表上，
+      -- 若 visible count 需要回表读取 hidden，8 条长聊天会从约 10ms 的 covering-index
+      -- 工作退化到约 180~210ms。partial index 让控制面不必触碰肥 message row。
+      CREATE INDEX IF NOT EXISTS messages_conversation_visible_ordinal
+        ON messages(conversation_id, ordinal)
+        WHERE hidden=0;
+
+      -- DevSpace Binding Queue 按 canonical turn 精确读取 tool calls。旧路径只有
+      -- (conversation_id, ordinal) 索引，必须先扫整条几千-message Conversation 再筛
+      -- turn_exchange_id；真实冷缓存样本可到 1s+。这个 partial index 只覆盖真正 tool-call
+      -- 行，既小又能把 exact turn lookup 变成窄 seek。
+      CREATE INDEX IF NOT EXISTS messages_tool_turn_time
+        ON messages(conversation_id, turn_exchange_id, create_time)
+        WHERE recipient='api_tool.call_tool'
+          AND turn_exchange_id IS NOT NULL
+          AND create_time IS NOT NULL
+          AND text<>'';
+
       CREATE TABLE IF NOT EXISTS resources (
         row_id INTEGER PRIMARY KEY AUTOINCREMENT,
         conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -5345,25 +5364,31 @@ export class ChatArchiveDb {
     // developer / reasoning 节点都仍属于这条 Conversation，应该参与 ordinal 与分页；
     // reasoning 正文是否对外展示由 Bridge 的 sanitize 层单独处理。
     const readerVisibleSql = 'hidden = 0'
+    // 绝不能为了 visibleCount 把 ordinal 完整性检查从窄 covering index 拖回肥 messages 表。
+    // 两个 count 拆开后，各自只读最小索引；生产 8 条 4k~5k-message 长聊天从约 200ms
+    // 降到约 10~15ms 的 count 总成本。
     const counts = this.db.prepare(`
       SELECT count(*) AS canonicalCount,
-             sum(CASE WHEN ${readerVisibleSql} THEN 1 ELSE 0 END) AS visibleCount,
              min(ordinal) AS minOrdinal,
              max(ordinal) AS maxOrdinal,
              count(DISTINCT ordinal) AS distinctOrdinalCount,
              sum(CASE WHEN ordinal IS NULL THEN 1 ELSE 0 END) AS nullOrdinalCount
-      FROM messages
+      FROM messages INDEXED BY messages_conversation_ordinal
       WHERE conversation_id = ?
     `).get(conversationId) as {
       canonicalCount?: number
-      visibleCount?: number
       minOrdinal?: number | null
       maxOrdinal?: number | null
       distinctOrdinalCount?: number
       nullOrdinalCount?: number
     } | undefined
+    const visible = this.db.prepare(`
+      SELECT count(*) AS visibleCount
+      FROM messages INDEXED BY messages_conversation_visible_ordinal
+      WHERE conversation_id = ? AND hidden = 0
+    `).get(conversationId) as { visibleCount?: number } | undefined
     const canonicalCount = Number(counts?.canonicalCount ?? 0)
-    const visibleCount = Number(counts?.visibleCount ?? 0)
+    const visibleCount = Number(visible?.visibleCount ?? 0)
     // Live 热路径已经不再每次全表重写 ordinal，但绝大多数 canonical Conversation 的
     // 持久 ordinal 仍然是完整的 0..N-1。先用 O(N) 但只走窄索引的完整性检查；一旦成立，
     // 后续页就能直接利用 messages_conversation_ordinal 做毫秒级 keyset/range 读取。
@@ -5403,7 +5428,7 @@ export class ChatArchiveDb {
           reasoning_status AS reasoningStatus,
           model_slug AS modelSlug,
           resolved_model_slug AS resolvedModelSlug
-        FROM messages
+        FROM messages INDEXED BY messages_conversation_visible_ordinal
         WHERE conversation_id = ? AND ${readerVisibleSql} ${beforeClause}
         ORDER BY ordinal DESC
         LIMIT ?
@@ -5411,7 +5436,7 @@ export class ChatArchiveDb {
       if (beforeOrdinal !== null) {
         const eligible = this.db.prepare(`
           SELECT count(*) AS n
-          FROM messages
+          FROM messages INDEXED BY messages_conversation_visible_ordinal
           WHERE conversation_id = ? AND ${readerVisibleSql} AND ordinal < ?
         `).get(conversationId, beforeOrdinal) as { n?: number } | undefined
         eligibleVisibleCount = Number(eligible?.n ?? 0)
