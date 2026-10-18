@@ -3857,6 +3857,13 @@ async function main() {
     database: dbPath,
     turnTrace: turnTracePath,
     cdp: cdpHttp,
+    controlPlane: {
+      tickMs: CONTROL_PLANE_TICK_MS,
+      eventLoopLagLastMs: controlPlaneLagLastMs,
+      eventLoopLagMaxMs: controlPlaneLagMaxMs,
+      eventLoopLagOver100Ms: controlPlaneLagOver100Ms,
+      eventLoopLagOver1000Ms: controlPlaneLagOver1000Ms,
+    },
     bridge: {
       enabled: bridgeEnabled,
       listening: archiveBridge?.listening ?? false,
