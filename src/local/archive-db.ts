@@ -5186,9 +5186,16 @@ export class ChatArchiveDb {
     const beforeOrdinal = options.beforeOrdinal === null || options.beforeOrdinal === undefined
       ? null
       : Math.trunc(options.beforeOrdinal)
+    const readerVisibleSql = `
+      hidden = 0
+      AND role IN ('user', 'assistant')
+      AND (recipient IS NULL OR recipient = 'all')
+      AND COALESCE(channel, '') <> 'analysis'
+      AND lower(COALESCE(content_type, '')) NOT LIKE '%reasoning%'
+    `
     const counts = this.db.prepare(`
       SELECT count(*) AS canonicalCount,
-             sum(CASE WHEN hidden=0 THEN 1 ELSE 0 END) AS visibleCount,
+             sum(CASE WHEN ${readerVisibleSql} THEN 1 ELSE 0 END) AS visibleCount,
              min(ordinal) AS minOrdinal,
              max(ordinal) AS maxOrdinal,
              count(DISTINCT ordinal) AS distinctOrdinalCount,
@@ -5245,7 +5252,7 @@ export class ChatArchiveDb {
           model_slug AS modelSlug,
           resolved_model_slug AS resolvedModelSlug
         FROM messages
-        WHERE conversation_id = ? AND hidden = 0 ${beforeClause}
+        WHERE conversation_id = ? AND ${readerVisibleSql} ${beforeClause}
         ORDER BY ordinal DESC
         LIMIT ?
       `).all(...pageArgs).reverse() as unknown as Array<Record<string, unknown>>
@@ -5253,7 +5260,7 @@ export class ChatArchiveDb {
         const eligible = this.db.prepare(`
           SELECT count(*) AS n
           FROM messages
-          WHERE conversation_id = ? AND hidden = 0 AND ordinal < ?
+          WHERE conversation_id = ? AND ${readerVisibleSql} AND ordinal < ?
         `).get(conversationId, beforeOrdinal) as { n?: number } | undefined
         eligibleVisibleCount = Number(eligible?.n ?? 0)
       }
@@ -5273,7 +5280,11 @@ export class ChatArchiveDb {
           SELECT o.row_id, o.ordinal
           FROM ordered o
           JOIN messages m ON m.row_id = o.row_id
-          WHERE m.hidden = 0 ${beforeClause}
+          WHERE ${readerVisibleSql.replaceAll('hidden', 'm.hidden')
+            .replaceAll('role', 'm.role')
+            .replaceAll('recipient', 'm.recipient')
+            .replaceAll('channel', 'm.channel')
+            .replaceAll('content_type', 'm.content_type')} ${beforeClause}
           ORDER BY o.ordinal DESC
           LIMIT ?
         )
@@ -5312,7 +5323,11 @@ export class ChatArchiveDb {
           SELECT count(*) AS n
           FROM ordered o
           JOIN messages m ON m.row_id = o.row_id
-          WHERE m.hidden = 0 AND o.ordinal < ?
+          WHERE ${readerVisibleSql.replaceAll('hidden', 'm.hidden')
+            .replaceAll('role', 'm.role')
+            .replaceAll('recipient', 'm.recipient')
+            .replaceAll('channel', 'm.channel')
+            .replaceAll('content_type', 'm.content_type')} AND o.ordinal < ?
         `).get(conversationId, beforeOrdinal) as { n?: number } | undefined
         eligibleVisibleCount = Number(eligible?.n ?? 0)
       }
