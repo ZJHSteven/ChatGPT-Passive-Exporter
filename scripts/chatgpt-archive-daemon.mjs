@@ -9545,10 +9545,10 @@ async function main() {
       auditId: devSpaceAuditCursor.auditId,
     })
   }
-  const pendingRecoveryRefreshedAtStartup = refreshPendingDevSpaceRecoveryAudits()
-  if (pendingRecoveryRefreshedAtStartup > 0) {
+  const pendingRecoveryAtStartup = refreshPendingDevSpaceRecoveryAudits({ collectMetadataIds: true })
+  if (pendingRecoveryAtStartup.refreshed > 0) {
     await log('pending DevSpace recovery audits refreshed after startup', {
-      refreshed: pendingRecoveryRefreshedAtStartup,
+      refreshed: pendingRecoveryAtStartup.refreshed,
     })
   }
   await pollDevSpaceAudits()
@@ -9560,12 +9560,23 @@ async function main() {
       queued: bindingQueueQueuedAtStartup,
     })
   }
-  // 重启恢复只看最近 6 分钟本地工具活动；候选的 lastCheckedIdleMs 从当前 idle 年龄
-  // 起步，因此不会补发已经错过的历史 1/3 分钟，但仍可继续命中后续 3/5 分钟。
-  for (const state of devSpaceAuditBridge.recentMetadataToolStates(
-    Date.now() - DEVSPACE_IDLE_STARTUP_LOOKBACK_MS,
-  )) {
-    refreshDevSpaceIdleCandidate(state.metadataId)
+  // 启动恢复不再扫描 DevSpace 全局“最近 started OR finished”。真实 800MiB tool_audit 上，
+  // 旧 OR+GROUP BY+ORDER BY 即使最终只返回 1 个 metadata，冷缓存也实测 3.8s，热缓存仍
+  // 约 0.55s。这里从 Archive 已持久化事实反推候选：
+  // 1) daemon 离线期间可能 finish 的 pending recovery audit（上面已按 audit-id 精确重读）；
+  // 2) 近期 durable replay / live audit 已推进 last_seen_at 的 metadata binding。
+  // 然后逐 metadata_id 走 DevSpace (metadata_id,started_at) 索引精确读取当前状态。
+  const startupMetadataIds = new Set(pendingRecoveryAtStartup.metadataIds)
+  for (const binding of archive.listDevSpaceMetadataBindings({
+    sinceAt: Date.now() - DEVSPACE_IDLE_STARTUP_LOOKBACK_MS,
+    limit: 200,
+  })) {
+    startupMetadataIds.add(binding.metadataId)
+  }
+  for (const metadataId of startupMetadataIds) {
+    const state = runControlPlaneStage('devspace-startup:metadata-state', () =>
+      devSpaceAuditBridge.metadataToolState(metadataId))
+    if (state) refreshDevSpaceIdleCandidate(state.metadataId, Date.now(), state)
   }
   devSpaceLastFallbackPollAt = Date.now()
   const devSpaceWakeListening = await devSpaceAuditWakeListener.start((signal) => {
