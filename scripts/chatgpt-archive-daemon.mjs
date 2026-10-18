@@ -6953,8 +6953,14 @@ async function main() {
     if (queued.created) devSpaceBindingQueueEnqueued += 1
     if (queued.row.status !== 'pending') return { queued: true, matched: true }
 
-    const matched = attemptDevSpaceBindingQueueEvidence(queued.row, { source })
-    return { queued: true, matched }
+    // Canonical ingress 只负责发布 durable evidence；绝不能在 Body/SSE/passive callback 里
+    // 现场跑 exact matcher。旧实现虽然已有 Matching Queue 表，却在 enqueue 后立刻同步
+    // attempt，一次 Body 最多枚举 64 个 turn，仍会把主事件循环堵到秒级。
+    // 真正匹配统一交给 cooperative binding worker，每 tick 最多处理一条。
+    const key = `${queued.row.conversationId}:${queued.row.turnExchangeId}`
+    devSpaceBindingEvidenceWork.set(key, queued.row)
+    scheduleDevSpaceBindingWorker()
+    return { queued: true, matched: false }
   }
 
   const publishCanonicalDevSpaceBindingEvidence = (
@@ -7079,7 +7085,7 @@ async function main() {
       observedAt: Date.now(),
       maxTurns,
       source: 'conversation-history',
-    }).matched
+    }).queued
   }
 
   const publishDevSpaceBindingEvidenceFromBody = (conversationId, diagnostic) => runControlPlaneStage(
@@ -7106,14 +7112,14 @@ async function main() {
       maxTurns: 64,
       source: 'canonical-body',
     })
-    if (result.matched > 0) {
-      void log('DevSpace matching queue consumed canonical body evidence', {
+    if (result.queued > 0) {
+      void log('DevSpace matching queue scheduled canonical body evidence', {
         conversationId,
         turnExchangeId,
         queued: result.queued,
-        matched: result.matched,
+        alreadyMatched: result.matched,
       })
-      }
+    }
     },
   )
 
