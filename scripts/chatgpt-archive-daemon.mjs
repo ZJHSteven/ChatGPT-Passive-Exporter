@@ -6988,13 +6988,14 @@ async function main() {
     }
   }
 
-  const drainPendingDevSpaceBindingQueue = ({ limit = 1000, source = 'startup' } = {}) => {
+  const queuePendingDevSpaceBindingQueue = ({ limit = 1000 } = {}) => {
     const rows = archive.listPendingDevSpaceBindingTurnEvidence({ limit })
-    let matched = 0
     for (const row of rows) {
-      if (attemptDevSpaceBindingQueueEvidence(row, { source })) matched += 1
+      const key = `${row.conversationId}:${row.turnExchangeId}`
+      devSpaceBindingEvidenceWork.set(key, row)
     }
-    return matched
+    if (rows.length > 0) scheduleDevSpaceBindingWorker()
+    return rows.length
   }
 
 
@@ -9420,13 +9421,12 @@ async function main() {
     })
   }
   pollDevSpaceAudits()
-  const bindingQueueRecoveredAtStartup = drainPendingDevSpaceBindingQueue({
+  const bindingQueueQueuedAtStartup = queuePendingDevSpaceBindingQueue({
     limit: 1000,
-    source: 'startup-recovery',
   })
-  if (bindingQueueRecoveredAtStartup > 0) {
-    await log('DevSpace matching queue recovered bindings after startup', {
-      matched: bindingQueueRecoveredAtStartup,
+  if (bindingQueueQueuedAtStartup > 0) {
+    await log('DevSpace matching queue recovery scheduled after startup', {
+      queued: bindingQueueQueuedAtStartup,
     })
   }
   // 重启恢复只看最近 6 分钟本地工具活动；候选的 lastCheckedIdleMs 从当前 idle 年龄
