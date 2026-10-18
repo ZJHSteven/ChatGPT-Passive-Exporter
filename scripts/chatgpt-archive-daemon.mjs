@@ -2648,27 +2648,16 @@ async function main() {
   }
   // daemon 重启必须恢复“原计时器”，而不是由最近一次 DevSpace audit 重新开表。
   // active_watchdogs 是 conversation 级状态，因此不受同一 CID 多 metadata 的影响。
+  //
+  // 旧实现会在每次启动时，对每个已有 lastDiagnosticTurnKey 的 watchdog 再扫一次
+  // messages，尝试从 turn_exchange_id/request_id/message_id 反查 user create_time。
+  // 这条兼容性重验在当前 11.56GiB 生产库上 11 条合计约 1.8s，而且本轮核验
+  // 没有一条实际改变 startedAt。当前 runtime 在 canonical Body attach/move turn 时已经
+  // 把 canonical startedAt 持久化进 active_watchdogs；稳态重启应直接相信 durable state。
+  // 历史异常行若需要修复，必须走显式/bounded repair，而不是永久塞进 startup 热路径。
   for (const persisted of archive.listActiveWatchdogs()) {
-    let restoredStartedAt = Number(persisted.startedAt)
-    const diagnosticKey = typeof persisted.lastDiagnosticTurnKey === 'string' && persisted.lastDiagnosticTurnKey
-      ? persisted.lastDiagnosticTurnKey
-      : null
-    if (diagnosticKey) {
-      const row = archive.db.prepare(`
-        SELECT MIN(create_time) AS createTime
-        FROM messages
-        WHERE conversation_id = ?
-          AND role = 'user'
-          AND create_time IS NOT NULL
-          AND (turn_exchange_id = ? OR request_id = ? OR message_id = ?)
-      `).get(persisted.conversationId, diagnosticKey, diagnosticKey, diagnosticKey)
-      const canonicalStartedAt = Number(row?.createTime) * 1000
-      if (Number.isFinite(canonicalStartedAt) && canonicalStartedAt > 0 && canonicalStartedAt < restoredStartedAt) {
-        restoredStartedAt = canonicalStartedAt
-      }
-    }
     const restored = {
-      startedAt: restoredStartedAt,
+      startedAt: Number(persisted.startedAt),
       lastEventAt: persisted.lastEventAt,
       lastWatchdogAt: persisted.lastWatchdogAt,
       watchdogPendingAt: persisted.watchdogPendingAt,
@@ -2676,7 +2665,6 @@ async function main() {
       lastDiagnosticTurnKey: persisted.lastDiagnosticTurnKey,
     }
     activeTurns.set(persisted.conversationId, restored)
-    if (restoredStartedAt !== Number(persisted.startedAt)) persistActiveTurn(persisted.conversationId, restored)
   }
   // metadata 尚未解出 canonical conversation 时，也先保存 first-tool 的真实时间。
   // binding 晚到以后仍以这个时间作为 watchdog.startedAt，不让发现延迟污染超时起点。
