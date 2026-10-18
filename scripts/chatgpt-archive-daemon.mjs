@@ -19,7 +19,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { createServer as createNetServer } from 'node:net'
 import process from 'node:process'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ChatArchiveDb, devSpaceVirtualConversationId } from '../src/local/archive-db.ts'
 import {
@@ -87,6 +88,8 @@ import {
   FIRST_PARTY_REPLAY_HEADER_ALLOWLIST,
   sanitizeFirstPartyReplayHeaders,
 } from '../src/core/first-party-request-context.ts'
+
+const execFileAsync = promisify(execFile)
 
 const DEFAULT_CDP = 'http://127.0.0.1:9222'
 const GUARDIAN_MARKER = 'chatgpt-archive-guardian'
@@ -1929,7 +1932,7 @@ async function ensureGuardian(cdpHttp) {
         expression: `document.title=${JSON.stringify(titleMarker)}`,
         returnByValue: true,
       }, 3000)
-      const stdout = execFileSync('powershell.exe', [
+      const { stdout } = await execFileAsync('powershell.exe', [
         '-NoProfile',
         '-NonInteractive',
         '-ExecutionPolicy', 'Bypass',
@@ -1939,9 +1942,10 @@ async function ensureGuardian(cdpHttp) {
         encoding: 'utf8',
         timeout: 8000,
         windowsHide: true,
-      }).trim()
-      const [hwnd, visibleBefore, visibleAfter] = stdout.split(/\t/u)
-      nativeWindow = stdout ? {
+      })
+      const normalizedStdout = String(stdout || '').trim()
+      const [hwnd, visibleBefore, visibleAfter] = normalizedStdout.split(/\t/u)
+      nativeWindow = normalizedStdout ? {
         hwnd: hwnd || null,
         visibleBefore: visibleBefore === 'True',
         visibleAfter: visibleAfter === 'True',

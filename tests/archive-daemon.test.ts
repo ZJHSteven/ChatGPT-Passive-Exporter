@@ -322,6 +322,16 @@ test('daemon state 暴露控制平面 event-loop lag，避免把本机 starvatio
   expect(daemon).toContain("controlPlaneStage = 'idle'")
 })
 
+test('Guardian Windows 窗口隐藏必须异步执行，不能用 execFileSync 冻结控制面', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+  expect(daemon).toContain('const execFileAsync = promisify(execFile)')
+  expect(daemon).toContain("await execFileAsync('powershell.exe'")
+  expect(daemon).not.toContain('execFileSync(')
+})
+
 test('startup 直接信任 durable active_watchdogs，不再逐条扫描 messages 重算 startedAt', async () => {
   const daemon = await fs.readFile(
     new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
