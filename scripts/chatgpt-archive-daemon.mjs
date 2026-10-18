@@ -5886,12 +5886,13 @@ async function main() {
       const [conversationId, trigger] = nextReady
       ready.delete(conversationId)
       try {
-        const watchdogGenerationStartedAt = String(trigger || '').startsWith('watchdog:')
+        const watchdogTrigger = String(trigger || '').startsWith('watchdog:')
+        const watchdogGenerationStartedAt = watchdogTrigger
           ? Number(activeTurns.get(conversationId)?.startedAt || 0)
           : 0
         const result = await syncConversation(conversationId, trigger)
         syncedConversations += 1
-        if (String(trigger || '').startsWith('watchdog:')) {
+        if (watchdogTrigger) {
           const active = activeTurns.get(conversationId)
           if (active) {
             active.watchdogPendingAt = null
@@ -5901,7 +5902,35 @@ async function main() {
         // body 一旦给出 turn_exchange_id，就可以把 earlier provisional metadata 做后验校验；
         // 该步骤只读局部时间窗，不扫描整库。
         publishDevSpaceBindingEvidenceFromBody(conversationId, result.diagnostic)
-        if (String(trigger || '').startsWith('watchdog:')) {
+        const watchdogTimeoutConfirmed = watchdogTrigger
+          && (!result.watchdogTurnChanged || result.watchdogTurnAlreadyTimedOut)
+        const watchdogActive = watchdogTrigger ? activeTurns.get(conversationId) : null
+        const watchdogConfirmedStartedAt = watchdogTimeoutConfirmed
+          ? Number(watchdogActive?.startedAt || watchdogGenerationStartedAt || 0)
+          : 0
+        if (watchdogTimeoutConfirmed && watchdogActive) {
+          // conversation-level generation 可能在跨设备新 turn 到来时短暂落后于真实 turn。
+          // 只有 canonical Body 证明“仍是同一 turn”，或证明“新 turn 自己也已经超过阈值”，
+          // 才把 timeout 作为用户可见事实写入 LifeOps/Bark。
+          const confirmedAt = Date.now()
+          watchdogActive.lastWatchdogAt = Math.max(
+            Number(watchdogActive.lastWatchdogAt || 0),
+            confirmedAt,
+          )
+          watchdogActive.watchdogPendingAt = null
+          persistActiveTurn(conversationId, watchdogActive)
+          enqueueLifeOpsWatchdogTimeout(conversationId, watchdogActive, confirmedAt)
+          dispatchWatchdogTimeoutNotification(conversationId, watchdogActive, confirmedAt)
+        }
+        else if (watchdogTrigger && result.watchdogTurnChanged) {
+          await log('stale watchdog deadline suppressed after canonical turn change', {
+            conversationId,
+            previousGenerationStartedAt: watchdogGenerationStartedAt,
+            currentGenerationStartedAt: activeTurns.get(conversationId)?.startedAt ?? null,
+            currentTurnKey: watchdogDiagnosticTurnKey(result.diagnostic),
+          })
+        }
+        if (watchdogTimeoutConfirmed) {
           const tailGaps = attachWatchdogDevSpaceTailGapEvidence(conversationId, result.diagnostic)
           if (tailGaps.length > 0) {
             await log('watchdog diagnosis attached DevSpace canonical tail gap evidence', {
@@ -6009,11 +6038,10 @@ async function main() {
         // Worksite 本身只同步 metadata/link，不读取正文；同 Conversation 后续 Turn 更新同一引用。
         if (lifeOpsSync) {
           const currentIncident = result.newIncident || latestOpenIncident(conversationId)
-          const watchdogTrigger = String(trigger || '').startsWith('watchdog:')
           const shouldEnqueueInboxTurn = !result.terminalSettleNeeded && (
             result.diagnostic.terminalEvidence === 'final'
             || Boolean(currentIncident)
-            || watchdogTrigger
+            || watchdogTimeoutConfirmed
           )
           if (shouldEnqueueInboxTurn) {
             const worksite = buildArchiveBridgeWorksite(
@@ -6023,24 +6051,24 @@ async function main() {
             )
             if (worksite) {
               const override = lifeOpsEventOverrideByConversation.get(conversationId)
-              const watchdogSourceEventId = watchdogTrigger && watchdogGenerationStartedAt > 0
-                ? watchdogLifeOpsEventId(conversationId, watchdogGenerationStartedAt)
+              const watchdogSourceEventId = watchdogTimeoutConfirmed && watchdogConfirmedStartedAt > 0
+                ? watchdogLifeOpsEventId(conversationId, watchdogConfirmedStartedAt)
                 : null
               const incidentType = currentIncident?.lifecycleClass
                 || currentIncident?.incidentKind
-                || (watchdogTrigger ? 'watchdog-timeout' : null)
+                || (watchdogTimeoutConfirmed ? 'watchdog-timeout' : null)
               lifeOpsSync.enqueue({
                 ...worksite,
                 sourceEventId: override?.sourceEventId
                   || watchdogSourceEventId
                   || worksite.sourceEventId,
                 metadataId: override?.metadataId ?? null,
-                inboxKind: currentIncident || watchdogTrigger ? 'incident' : 'turn',
-                inboxHealth: currentIncident || watchdogTrigger ? 'incident' : 'healthy',
+                inboxKind: currentIncident || watchdogTimeoutConfirmed ? 'incident' : 'turn',
+                inboxHealth: currentIncident || watchdogTimeoutConfirmed ? 'incident' : 'healthy',
                 finalState: result.diagnostic.terminalEvidence ?? null,
                 incidentType,
                 incidentState: currentIncident?.status
-                  || (watchdogTrigger ? 'diagnosed' : null),
+                  || (watchdogTimeoutConfirmed ? 'diagnosed' : null),
                 metadata: {
                   ...(worksite.metadata || {}),
                   trigger,
@@ -6055,12 +6083,13 @@ async function main() {
           }
         }
         // SQLite/trace 到这里已经完成；通知只从已落库事实分叉出去，不参与 syncInFlight。
-        // Watchdog 固定是“两阶段”：到点时已经发第一条；body 一旦诊断成功，这里无条件发第二条，
-        // 不再额外叠加 turn-final / incident Bark，确保同一 Watchdog turn 最多恰好两条。
-        if (String(trigger || '').startsWith('watchdog:')) {
+        // Watchdog 固定是“两阶段”，但“到点”必须先经 Body 确认仍属于同一 turn。
+        // 若这次 Body 证明 CID 已切到尚未超时的新 turn，则只保留新 turn 的开始收据，
+        // 不发送旧 generation 的 timeout/diagnosis。
+        if (watchdogTimeoutConfirmed) {
           dispatchWatchdogDiagnosisNotification(
             conversationId,
-            watchdogGenerationStartedAt,
+            watchdogConfirmedStartedAt,
             result.diagnostic,
             // Watchdog 诊断通知必须从“已落库后的最终 incident 视图”读取 evidence。
             // result.newIncident 是 merge 返回的瞬时对象，可能早于 canonical-tail-gap 附着，
