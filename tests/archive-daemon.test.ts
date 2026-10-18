@@ -252,9 +252,20 @@ test('DevSpace binding uses one persistent Matching Queue for canonical evidence
   expect(auditStart).toBeGreaterThan(-1)
   expect(auditEnd).toBeGreaterThan(auditStart)
   const audit = daemon.slice(auditStart, auditEnd)
-  expect(audit.indexOf('drainDevSpaceBindingQueueForAudit(event)')).toBeGreaterThan(-1)
-  expect(audit.indexOf('drainDevSpaceBindingQueueForAudit(event)'))
-    .toBeLessThan(audit.indexOf('dispatchUnboundWatchdogStartNotification('))
+  expect(audit).toContain('queueDevSpaceBindingWorkForAudit(event)')
+  expect(audit).not.toContain('attemptDevSpaceBindingQueueEvidence(')
+
+  const workerStart = daemon.indexOf('const scheduleDevSpaceBindingWorker')
+  const workerEnd = daemon.indexOf('const drainPendingDevSpaceBindingQueue', workerStart)
+  expect(workerStart).toBeGreaterThan(-1)
+  expect(workerEnd).toBeGreaterThan(workerStart)
+  const worker = daemon.slice(workerStart, workerEnd)
+  expect(worker).toContain('setImmediate(')
+  expect(worker).toContain('attemptDevSpaceBindingQueueEvidence(row')
+  expect(worker).toContain('devSpaceBindingEvidenceWork.delete(key)')
+  expect(worker).not.toContain('for (const row of rows) {\n      if (attemptDevSpaceBindingQueueEvidence')
+  expect(daemon).toContain('bindingWorker: {')
+  expect(daemon).toContain('maxItemMs:')
 })
 
 test('DevSpace audit backlog 必须分批让出 event loop，不能无界 drain', async () => {
