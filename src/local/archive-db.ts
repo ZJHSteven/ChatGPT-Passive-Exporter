@@ -251,6 +251,24 @@ export interface DevSpaceMetadataBindingRow {
   lifecycleState: 'unbound' | 'active' | 'closed'
 }
 
+/** Canonical turn evidence queue row for DevSpace binding. */
+export interface DevSpaceBindingTurnEvidenceRow {
+  conversationId: string
+  turnExchangeId: string
+  firstToolAt: number
+  lastToolAt: number
+  toolCallCount: number
+  evidenceRevision: string
+  status: 'pending' | 'matched'
+  matchedMetadataId: string | null
+  firstQueuedAt: number
+  lastQueuedAt: number
+  lastAttemptAt: number | null
+  attemptCount: number
+  lastAttemptEvidenceRevision: string | null
+  lastAttemptMetadataRevision: string | null
+}
+
 /**
  * 未绑定 metadata 的稳定 synthetic conversation id。
  *
@@ -832,6 +850,27 @@ export class ChatArchiveDb {
       CREATE INDEX IF NOT EXISTS devspace_metadata_bindings_unbound
         ON devspace_metadata_bindings(lifecycle_state, last_seen_at DESC);
 
+      CREATE TABLE IF NOT EXISTS devspace_binding_turn_evidence (
+        conversation_id TEXT NOT NULL,
+        turn_exchange_id TEXT NOT NULL,
+        first_tool_at INTEGER NOT NULL,
+        last_tool_at INTEGER NOT NULL,
+        tool_call_count INTEGER NOT NULL,
+        evidence_revision TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        matched_metadata_id TEXT,
+        first_queued_at INTEGER NOT NULL,
+        last_queued_at INTEGER NOT NULL,
+        last_attempt_at INTEGER,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_attempt_evidence_revision TEXT,
+        last_attempt_metadata_revision TEXT,
+        PRIMARY KEY (conversation_id, turn_exchange_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS devspace_binding_turn_evidence_pending_time
+        ON devspace_binding_turn_evidence(status, first_tool_at, last_tool_at);
+
       -- DevSpace Recover overlay：只保存本地审计事实，不冒充 first-party messages。
       -- canonical body 后续出现相同 tool+args 时只打 superseded 标记，保留原始取证链。
       CREATE TABLE IF NOT EXISTS devspace_recovery_audits (
@@ -949,6 +988,8 @@ export class ChatArchiveDb {
     this.ensureColumn('conversations', 'last_reasoning_status', 'TEXT')
     this.ensureColumn('conversations', 'last_monitor_checked_at', 'INTEGER')
     this.ensureColumn('devspace_metadata_bindings', 'display_title', 'TEXT')
+    this.ensureColumn('devspace_binding_turn_evidence', 'last_attempt_evidence_revision', 'TEXT')
+    this.ensureColumn('devspace_binding_turn_evidence', 'last_attempt_metadata_revision', 'TEXT')
 
     this.ensureColumn('messages', 'node_id', 'TEXT')
     this.ensureColumn('messages', 'role_raw', 'TEXT')
@@ -4632,6 +4673,177 @@ export class ChatArchiveDb {
   }
 
   /** Archive 负责推断；一旦绑定，后续 observe 不再把 lifecycle 打回 unbound。 */
+  upsertDevSpaceBindingTurnEvidence(input: {
+    conversationId: string
+    turnExchangeId: string
+    firstToolAt: number
+    lastToolAt: number
+    toolCallCount: number
+    evidenceRevision: string
+    observedAt: number
+  }): { row: DevSpaceBindingTurnEvidenceRow, changed: boolean, created: boolean } {
+    const existing = this.getDevSpaceBindingTurnEvidence(input.conversationId, input.turnExchangeId)
+    const firstToolAt = Math.max(0, Math.trunc(input.firstToolAt))
+    const lastToolAt = Math.max(firstToolAt, Math.trunc(input.lastToolAt))
+    const toolCallCount = Math.max(1, Math.trunc(input.toolCallCount))
+    const observedAt = Math.max(0, Math.trunc(input.observedAt))
+    const evidenceRevision = input.evidenceRevision.trim()
+    const changed = !existing
+      || existing.evidenceRevision !== evidenceRevision
+      || existing.firstToolAt !== firstToolAt
+      || existing.lastToolAt !== lastToolAt
+      || existing.toolCallCount !== toolCallCount
+    this.db.prepare(`
+      INSERT INTO devspace_binding_turn_evidence (
+        conversation_id, turn_exchange_id,
+        first_tool_at, last_tool_at, tool_call_count, evidence_revision,
+        status, matched_metadata_id,
+        first_queued_at, last_queued_at, last_attempt_at, attempt_count
+      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, NULL, 0)
+      ON CONFLICT(conversation_id, turn_exchange_id) DO UPDATE SET
+        last_queued_at=CASE
+          WHEN devspace_binding_turn_evidence.evidence_revision <> excluded.evidence_revision
+            OR devspace_binding_turn_evidence.first_tool_at <> excluded.first_tool_at
+            OR devspace_binding_turn_evidence.last_tool_at <> excluded.last_tool_at
+            OR devspace_binding_turn_evidence.tool_call_count <> excluded.tool_call_count
+          THEN max(devspace_binding_turn_evidence.last_queued_at, excluded.last_queued_at)
+          ELSE devspace_binding_turn_evidence.last_queued_at
+        END,
+        first_tool_at=excluded.first_tool_at,
+        last_tool_at=excluded.last_tool_at,
+        tool_call_count=excluded.tool_call_count,
+        evidence_revision=excluded.evidence_revision
+    `).run(
+      input.conversationId,
+      input.turnExchangeId,
+      firstToolAt,
+      lastToolAt,
+      toolCallCount,
+      evidenceRevision,
+      observedAt,
+      observedAt,
+    )
+    return {
+      row: this.getDevSpaceBindingTurnEvidence(input.conversationId, input.turnExchangeId)!,
+      changed,
+      created: !existing,
+    }
+  }
+
+  getDevSpaceBindingTurnEvidence(
+    conversationId: string,
+    turnExchangeId: string,
+  ): DevSpaceBindingTurnEvidenceRow | null {
+    const row = this.db.prepare(`
+      SELECT conversation_id AS conversationId,
+             turn_exchange_id AS turnExchangeId,
+             first_tool_at AS firstToolAt,
+             last_tool_at AS lastToolAt,
+             tool_call_count AS toolCallCount,
+             evidence_revision AS evidenceRevision,
+             status,
+             matched_metadata_id AS matchedMetadataId,
+             first_queued_at AS firstQueuedAt,
+             last_queued_at AS lastQueuedAt,
+             last_attempt_at AS lastAttemptAt,
+             attempt_count AS attemptCount,
+             last_attempt_evidence_revision AS lastAttemptEvidenceRevision,
+             last_attempt_metadata_revision AS lastAttemptMetadataRevision
+      FROM devspace_binding_turn_evidence
+      WHERE conversation_id=? AND turn_exchange_id=?
+    `).get(conversationId, turnExchangeId) as DevSpaceBindingTurnEvidenceRow | undefined
+    return row ?? null
+  }
+
+  listPendingDevSpaceBindingTurnEvidence(input: {
+    overlapStartAt?: number
+    overlapEndAt?: number
+    limit?: number
+  } = {}): DevSpaceBindingTurnEvidenceRow[] {
+    const clauses = [`status='pending'`]
+    const params: Array<string | number> = []
+    if (input.overlapStartAt !== undefined && input.overlapEndAt !== undefined) {
+      const startAt = Math.max(0, Math.trunc(input.overlapStartAt))
+      const endAt = Math.max(startAt, Math.trunc(input.overlapEndAt))
+      clauses.push('first_tool_at <= ?')
+      clauses.push('last_tool_at >= ?')
+      params.push(endAt, startAt)
+    }
+    params.push(Math.max(1, Math.min(10_000, Math.trunc(input.limit ?? 1000))))
+    const where = clauses.join(' AND ')
+    return this.db.prepare(`
+      SELECT conversation_id AS conversationId,
+             turn_exchange_id AS turnExchangeId,
+             first_tool_at AS firstToolAt,
+             last_tool_at AS lastToolAt,
+             tool_call_count AS toolCallCount,
+             evidence_revision AS evidenceRevision,
+             status,
+             matched_metadata_id AS matchedMetadataId,
+             first_queued_at AS firstQueuedAt,
+             last_queued_at AS lastQueuedAt,
+             last_attempt_at AS lastAttemptAt,
+             attempt_count AS attemptCount,
+             last_attempt_evidence_revision AS lastAttemptEvidenceRevision,
+             last_attempt_metadata_revision AS lastAttemptMetadataRevision
+      FROM devspace_binding_turn_evidence
+      WHERE ${where}
+      ORDER BY last_queued_at DESC
+      LIMIT ?
+    `).all(...params) as unknown as DevSpaceBindingTurnEvidenceRow[]
+  }
+
+  markDevSpaceBindingTurnEvidenceAttempt(
+    conversationId: string,
+    turnExchangeId: string,
+    attemptedAt: number,
+    evidenceRevision: string,
+    metadataRevision: string,
+  ): void {
+    this.db.prepare(`
+      UPDATE devspace_binding_turn_evidence
+      SET last_attempt_at=?,
+          attempt_count=attempt_count+1,
+          last_attempt_evidence_revision=?,
+          last_attempt_metadata_revision=?
+      WHERE conversation_id=? AND turn_exchange_id=? AND status='pending'
+    `).run(
+      Math.max(0, Math.trunc(attemptedAt)),
+      evidenceRevision,
+      metadataRevision,
+      conversationId,
+      turnExchangeId,
+    )
+  }
+
+  markDevSpaceBindingTurnEvidenceMatched(input: {
+    conversationId: string
+    turnExchangeId: string
+    metadataId: string
+    matchedAt: number
+    evidenceRevision: string
+    metadataRevision: string
+  }): void {
+    this.db.prepare(`
+      UPDATE devspace_binding_turn_evidence
+      SET status='matched',
+          matched_metadata_id=?,
+          last_attempt_at=?,
+          attempt_count=attempt_count+1,
+          last_attempt_evidence_revision=?,
+          last_attempt_metadata_revision=?
+      WHERE conversation_id=? AND turn_exchange_id=?
+    `).run(
+      input.metadataId,
+      Math.max(0, Math.trunc(input.matchedAt)),
+      input.evidenceRevision,
+      input.metadataRevision,
+      input.conversationId,
+      input.turnExchangeId,
+    )
+  }
+
+
   bindDevSpaceMetadata(input: {
     metadataId: string
     conversationId: string

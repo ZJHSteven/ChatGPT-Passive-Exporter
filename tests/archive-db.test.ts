@@ -2242,4 +2242,97 @@ describe('ChatArchiveDb', () => {
       db.close()
     }
   })
+
+  test('DevSpace binding evidence queue dedupes unchanged turns and persists match state', () => {
+    const db = tempDb()
+    try {
+      const first = db.upsertDevSpaceBindingTurnEvidence({
+        conversationId: 'queue-cid',
+        turnExchangeId: 'queue-turn',
+        firstToolAt: 10_000,
+        lastToolAt: 12_000,
+        toolCallCount: 3,
+        evidenceRevision: 'rev-a',
+        observedAt: 20_000,
+      })
+      expect(first.created).toBe(true)
+      expect(first.changed).toBe(true)
+      expect(first.row).toMatchObject({
+        status: 'pending',
+        firstQueuedAt: 20_000,
+        lastQueuedAt: 20_000,
+        attemptCount: 0,
+      })
+
+      db.markDevSpaceBindingTurnEvidenceAttempt(
+        'queue-cid',
+        'queue-turn',
+        21_000,
+        'rev-a',
+        'meta-rev-a',
+      )
+      const unchanged = db.upsertDevSpaceBindingTurnEvidence({
+        conversationId: 'queue-cid',
+        turnExchangeId: 'queue-turn',
+        firstToolAt: 10_000,
+        lastToolAt: 12_000,
+        toolCallCount: 3,
+        evidenceRevision: 'rev-a',
+        observedAt: 30_000,
+      })
+      expect(unchanged.changed).toBe(false)
+      expect(unchanged.row).toMatchObject({
+        lastQueuedAt: 20_000,
+        lastAttemptAt: 21_000,
+        attemptCount: 1,
+        lastAttemptEvidenceRevision: 'rev-a',
+        lastAttemptMetadataRevision: 'meta-rev-a',
+      })
+
+      const changed = db.upsertDevSpaceBindingTurnEvidence({
+        conversationId: 'queue-cid',
+        turnExchangeId: 'queue-turn',
+        firstToolAt: 10_000,
+        lastToolAt: 13_000,
+        toolCallCount: 4,
+        evidenceRevision: 'rev-b',
+        observedAt: 31_000,
+      })
+      expect(changed.changed).toBe(true)
+      expect(changed.row).toMatchObject({
+        lastQueuedAt: 31_000,
+        evidenceRevision: 'rev-b',
+        toolCallCount: 4,
+      })
+      expect(db.listPendingDevSpaceBindingTurnEvidence({
+        overlapStartAt: 11_500,
+        overlapEndAt: 11_500,
+      })).toHaveLength(1)
+      expect(db.listPendingDevSpaceBindingTurnEvidence({
+        overlapStartAt: 50_000,
+        overlapEndAt: 60_000,
+      })).toHaveLength(0)
+
+      db.markDevSpaceBindingTurnEvidenceMatched({
+        conversationId: 'queue-cid',
+        turnExchangeId: 'queue-turn',
+        metadataId: 'meta-queue',
+        matchedAt: 32_000,
+        evidenceRevision: 'rev-b',
+        metadataRevision: 'meta-rev-b',
+      })
+      expect(db.getDevSpaceBindingTurnEvidence('queue-cid', 'queue-turn')).toMatchObject({
+        status: 'matched',
+        matchedMetadataId: 'meta-queue',
+        attemptCount: 2,
+        lastAttemptEvidenceRevision: 'rev-b',
+        lastAttemptMetadataRevision: 'meta-rev-b',
+      })
+      expect(db.listPendingDevSpaceBindingTurnEvidence()).toHaveLength(0)
+    }
+    finally {
+      db.close()
+    }
+  })
+
 })

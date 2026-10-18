@@ -220,7 +220,7 @@ test('所有 canonical ingress 都必须给 DevSpace binding 一次 reconcile �
   expect(promotionEnd).toBeGreaterThan(promotionStart)
   const promotion = daemon.slice(promotionStart, promotionEnd)
   expect(promotion).toContain("observationKind: 'live-sse-complete'")
-  expect(promotion).toContain('reconcileDevSpaceBindingFromBody(snapshot.conversationId')
+  expect(promotion).toContain('publishDevSpaceBindingEvidenceFromBody(snapshot.conversationId')
 
   const passiveStart = daemon.indexOf('const rememberPassiveBodyResponse')
   const passiveEnd = daemon.indexOf('const rememberPassiveCatalogResponse', passiveStart)
@@ -228,10 +228,32 @@ test('所有 canonical ingress 都必须给 DevSpace binding 一次 reconcile �
   expect(passiveEnd).toBeGreaterThan(passiveStart)
   const passive = daemon.slice(passiveStart, passiveEnd)
   expect(passive).toContain("observationKind: 'mapping-snapshot:passive-native'")
-  expect(passive).toContain('reconcileHistoricalDevSpaceBindingsFromConversation(conversationId, { maxTurns: 64 })')
+  expect(passive).toContain('publishHistoricalDevSpaceBindingEvidenceFromConversation(conversationId, { maxTurns: 64 })')
   expect(passive).toContain("observationKind: 'body-page:passive-native'")
   expect(passive).toContain('const passiveDiagnostic = diagnoseLatestRun(normalized)')
-  expect(passive).toContain('reconcileDevSpaceBindingFromBody(conversationId, passiveDiagnostic)')
+  expect(passive).toContain('publishDevSpaceBindingEvidenceFromBody(conversationId, passiveDiagnostic)')
+})
+
+test('DevSpace binding uses one persistent Matching Queue for canonical evidence', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+
+  expect(daemon.match(/matchDevSpaceCandidateForTurn\(\{/gu)?.length ?? 0).toBe(1)
+  expect(daemon).not.toContain('backfillStoredDevSpaceBindings')
+  expect(daemon).toContain('upsertDevSpaceBindingTurnEvidence({')
+  expect(daemon).toContain('listPendingDevSpaceBindingTurnEvidence({')
+  expect(daemon).toContain('markDevSpaceBindingTurnEvidenceMatched({')
+
+  const auditStart = daemon.indexOf('const handleDevSpaceAuditEvent')
+  const auditEnd = daemon.indexOf('const pollDevSpaceAudits', auditStart)
+  expect(auditStart).toBeGreaterThan(-1)
+  expect(auditEnd).toBeGreaterThan(auditStart)
+  const audit = daemon.slice(auditStart, auditEnd)
+  expect(audit.indexOf('drainDevSpaceBindingQueueForAudit(event)')).toBeGreaterThan(-1)
+  expect(audit.indexOf('drainDevSpaceBindingQueueForAudit(event)'))
+    .toBeLessThan(audit.indexOf('dispatchUnboundWatchdogStartNotification('))
 })
 
 test('global catalog replay 继承第一方 query 模板，只覆盖分页参数', () => {

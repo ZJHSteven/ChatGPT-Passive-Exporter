@@ -2634,6 +2634,9 @@ async function main() {
   let devSpaceAuditsObserved = 0
   let devSpaceBindingsCreated = 0
   let devSpaceBindingMirrors = 0
+  let devSpaceBindingQueueEnqueued = 0
+  let devSpaceBindingQueueAttempts = 0
+  let devSpaceBindingQueueMatches = 0
   // 这里只追踪“最近有 DevSpace 活动、并且当前没有 running tool”的 metadata。
   // 每项保留上一轮观察到的 idle 时长，用于精确识别 1/3/5 分钟阈值穿越。
   const devSpaceIdleCandidates = new Map()
@@ -3886,6 +3889,10 @@ async function main() {
       auditsObserved: devSpaceAuditsObserved,
       bindingsCreated: devSpaceBindingsCreated,
       bindingMirrors: devSpaceBindingMirrors,
+      bindingQueuePending: archive.listPendingDevSpaceBindingTurnEvidence({ limit: 10_000 }).length,
+      bindingQueueEnqueued: devSpaceBindingQueueEnqueued,
+      bindingQueueAttempts: devSpaceBindingQueueAttempts,
+      bindingQueueMatches: devSpaceBindingQueueMatches,
       unboundActive: unboundDevSpaceTurns.size,
       idleCandidates: devSpaceIdleCandidates.size,
       idleNotificationsQueued: devSpaceIdleNotificationsQueued,
@@ -5634,7 +5641,7 @@ async function main() {
         syncInFlight = false
       }
 
-      reconcileDevSpaceBindingFromBody(conversationId, result.diagnostic)
+      publishDevSpaceBindingEvidenceFromBody(conversationId, result.diagnostic)
       checkpointBodyRefreshes += 1
       next = recordCheckpointBody({
         state: next,
@@ -5739,7 +5746,7 @@ async function main() {
         }
         // body 一旦给出 turn_exchange_id，就可以把 earlier provisional metadata 做后验校验；
         // 该步骤只读局部时间窗，不扫描整库。
-        reconcileDevSpaceBindingFromBody(conversationId, result.diagnostic)
+        publishDevSpaceBindingEvidenceFromBody(conversationId, result.diagnostic)
         if (String(trigger || '').startsWith('watchdog:')) {
           const tailGaps = attachWatchdogDevSpaceTailGapEvidence(conversationId, result.diagnostic)
           if (tailGaps.length > 0) {
@@ -6028,7 +6035,7 @@ async function main() {
       // 完整 SSE 已经被提升为 canonical messages 后，它在 binding 语义上就等价于一次
       // canonical Body 落库。不能因为随后 WSS complete 会跳过主动 Body refresh，就让
       // DevSpace metadata 永远失去 exact tool+args reconcile 的机会。
-      reconcileDevSpaceBindingFromBody(snapshot.conversationId, {
+      publishDevSpaceBindingEvidenceFromBody(snapshot.conversationId, {
         turnExchangeId: snapshot.turnExchangeId,
         requestId: snapshot.requestId,
       })
@@ -6347,6 +6354,14 @@ async function main() {
       activateBoundDevSpaceTurn(binding, event.startedAtMs)
       return
     }
+
+    drainDevSpaceBindingQueueForAudit(event)
+    const queueBinding = archive.getDevSpaceMetadataBinding(event.metadataId)
+    if (queueBinding?.conversationId) {
+      activateBoundDevSpaceTurn(queueBinding, event.startedAtMs)
+      return
+    }
+
     const current = unboundDevSpaceTurns.get(event.metadataId)
     const persistedStartAt = Number(binding.firstSeenAt || event.startedAtMs)
     const generationRestarted = Boolean(current && persistedStartAt > Number(current.startedAt || 0))
@@ -6436,7 +6451,7 @@ async function main() {
    * 本来就保存了 DevSpace tool 名和完整 args；tool_audit 也保存同一份 args，因此用
    * canonical exact-match + 同 fingerprint 的局部时间一致性判断身份。
    */
-  const matchDevSpaceBindingFromStoredTurn = (conversationId, turnExchangeId) => {
+  const readDevSpaceTurnEvidenceFromStoredTurn = (conversationId, turnExchangeId) => {
     const rows = archive.db.prepare(
       "SELECT create_time AS createTime, text FROM messages WHERE conversation_id=? AND turn_exchange_id=? AND recipient='api_tool.call_tool' AND create_time IS NOT NULL AND text<>'' ORDER BY create_time ASC",
     ).all(conversationId, turnExchangeId)
@@ -6447,15 +6462,24 @@ async function main() {
 
     const startAt = Math.min(...bodyCalls.map(call => call.startedAtMs))
     const endAt = Math.max(...bodyCalls.map(call => call.startedAtMs))
-    // 两分钟 slack 只为覆盖 Host/SQLite 时间戳落点差异；身份判定本身完全由 tool+args 决定。
+    const revision = createHash('sha256')
+      .update(bodyCalls.map(call =>
+        String(call.startedAtMs) + '\\n'
+        + String(devSpaceToolArgsFingerprint(call.tool, call.argsJson) ?? ''),
+      ).join('\\n--\\n'))
+      .digest('hex')
+    return { bodyCalls, startAt, endAt, revision }
+  }
+
+  const matchDevSpaceBindingFromStoredTurn = (conversationId, turnExchangeId, storedEvidence = null) => {
+    const evidence = storedEvidence ?? readDevSpaceTurnEvidenceFromStoredTurn(conversationId, turnExchangeId)
+    if (!evidence) return null
+    const { bodyCalls, startAt, endAt } = evidence
     const activities = devSpaceAuditBridge.activityBetween(startAt - 120_000, endAt + 120_000, 5000)
-    const boundIds = archive.listDevSpaceMetadataBindings({ limit: 1000 })
-      .filter(row => Boolean(row.conversationId))
-      .map(row => row.metadataId)
     const match = matchDevSpaceCandidateForTurn({
       activities,
       bodyCalls,
-      alreadyBoundMetadataIds: boundIds,
+      alreadyBoundMetadataIds: [],
     })
     if (!match) return null
 
@@ -6479,97 +6503,6 @@ async function main() {
    * 导致启动 CPU 飙高的问题。只有同一 metadata 的所有可信命中都落在同一个 conversation，
    * 才持久化 binding。
    */
-  const backfillStoredDevSpaceBindings = ({ sinceAt = null, metadataIds = null } = {}) => {
-    const requestedMetadataIds = Array.isArray(metadataIds) && metadataIds.length > 0
-      ? new Set(metadataIds.map(value => String(value || '').trim()).filter(Boolean))
-      : null
-    const unbound = archive.listDevSpaceMetadataBindings({
-      onlyUnbound: true,
-      ...(Number.isFinite(Number(sinceAt)) ? { sinceAt: Number(sinceAt) } : {}),
-      limit: 1000,
-    }).filter(binding => !requestedMetadataIds || requestedMetadataIds.has(binding.metadataId))
-    if (unbound.length === 0) return 0
-
-    const globalStartAt = Math.max(
-      0,
-      Math.min(...unbound.map(binding => Math.max(
-        Number(binding.firstSeenAt),
-        Number.isFinite(Number(sinceAt)) ? Number(sinceAt) : 0,
-      ))) - 5 * 60_000,
-    )
-    const globalEndAt = Math.max(
-      ...unbound.map(binding => Number(binding.lastSeenAt)),
-    ) + 5 * 60_000
-    // 9/14 起真实 tool_audit 已超过两万行；历史 backfill 必须覆盖完整时间段，
-    // 不能因为默认 limit 截断后半段而制造“随机只有一部分 metadata 能匹配”的假象。
-    const activities = devSpaceAuditBridge.activityBetween(globalStartAt, globalEndAt, 100_000)
-    if (activities.length === 0) return 0
-
-    const rows = archive.db.prepare(
-      "SELECT conversation_id AS conversationId, turn_exchange_id AS turnExchangeId, create_time AS createTime, text FROM messages WHERE recipient='api_tool.call_tool' AND create_time BETWEEN ? AND ? AND turn_exchange_id IS NOT NULL AND text<>'' ORDER BY create_time ASC",
-    ).all(globalStartAt / 1000, globalEndAt / 1000)
-    const callsByTurn = new Map()
-    for (const row of rows) {
-      const call = parseDevSpaceBodyToolCall(String(row.text || ''), Number(row.createTime) * 1000)
-      if (!call) continue
-      const key = `${row.conversationId}\n${row.turnExchangeId}`
-      const existing = callsByTurn.get(key) ?? {
-        conversationId: row.conversationId,
-        turnExchangeId: row.turnExchangeId,
-        calls: [],
-        lastAt: 0,
-      }
-      existing.calls.push(call)
-      existing.lastAt = Math.max(existing.lastAt, call.startedAtMs)
-      callsByTurn.set(key, existing)
-    }
-
-    const boundIds = archive.listDevSpaceMetadataBindings({ limit: 1000 })
-      .filter(binding => Boolean(binding.conversationId))
-      .map(binding => binding.metadataId)
-    const matchesByMetadata = new Map()
-    for (const turn of callsByTurn.values()) {
-      const match = matchDevSpaceCandidateForTurn({
-        activities,
-        bodyCalls: turn.calls,
-        alreadyBoundMetadataIds: boundIds,
-      })
-      if (!match) continue
-      const matches = matchesByMetadata.get(match.activity.metadataId) ?? []
-      matches.push({
-        conversationId: turn.conversationId,
-        turnExchangeId: turn.turnExchangeId,
-        lastAt: turn.lastAt,
-        exactMatches: match.exactMatches,
-        uniqueMatches: match.uniqueMatches,
-      })
-      matchesByMetadata.set(match.activity.metadataId, matches)
-    }
-
-    let created = 0
-    for (const binding of unbound) {
-      const matches = matchesByMetadata.get(binding.metadataId) ?? []
-      const conversationIds = [...new Set(matches.map(match => match.conversationId))]
-      if (conversationIds.length !== 1 || matches.length === 0) continue
-      const best = matches.sort((a, b) =>
-        b.uniqueMatches - a.uniqueMatches
-        || b.exactMatches - a.exactMatches
-        || b.lastAt - a.lastAt)[0]
-      bindDevSpaceMetadataToConversation({
-        metadataId: binding.metadataId,
-        conversationId: best.conversationId,
-        startAt: binding.firstSeenAt,
-        observedAt: Date.now(),
-        turnExchangeId: best.turnExchangeId,
-        evidence: 'body:exact-tool-args-backfill-v2-time-local',
-        confidence: 'high',
-        lifecycleState: 'closed',
-      })
-      created += 1
-    }
-    return created
-  }
-
   const bindDevSpaceCandidateFromStoredTurn = ({
     conversationId,
     turnExchangeId,
@@ -6599,11 +6532,187 @@ async function main() {
     })
   }
 
-  const reconcileHistoricalDevSpaceBindingsFromConversation = (
+  const metadataRevisionForEvidence = evidence => {
+    const rows = archive.db.prepare(
+      'SELECT metadata_id AS metadataId, last_audit_id AS lastAuditId, last_seen_at AS lastSeenAt '
+      + 'FROM devspace_metadata_bindings '
+      + 'WHERE conversation_id IS NULL AND first_seen_at <= ? AND last_seen_at >= ? '
+      + 'ORDER BY metadata_id ASC',
+    ).all(
+      Number(evidence.lastToolAt) + 120_000,
+      Math.max(0, Number(evidence.firstToolAt) - 120_000),
+    )
+    if (rows.length === 0) return 'none'
+    return createHash('sha256')
+      .update(rows.map(row =>
+        String(row.metadataId || '') + '\n'
+        + String(row.lastAuditId || '') + '\n'
+        + String(row.lastSeenAt || 0),
+      ).join('\n--\n'))
+      .digest('hex')
+  }
+
+  const attemptDevSpaceBindingQueueEvidence = (queueRow, { source = 'queue' } = {}) => {
+    if (!queueRow || queueRow.status !== 'pending') return false
+
+    const storedEvidence = readDevSpaceTurnEvidenceFromStoredTurn(
+      queueRow.conversationId,
+      queueRow.turnExchangeId,
+    )
+    if (!storedEvidence) return false
+
+    const metadataRevision = metadataRevisionForEvidence({
+      firstToolAt: storedEvidence.startAt,
+      lastToolAt: storedEvidence.endAt,
+    })
+    if (queueRow.lastAttemptEvidenceRevision === storedEvidence.revision
+      && queueRow.lastAttemptMetadataRevision === metadataRevision) {
+      return false
+    }
+
+    devSpaceBindingQueueAttempts += 1
+    const candidate = matchDevSpaceBindingFromStoredTurn(
+      queueRow.conversationId,
+      queueRow.turnExchangeId,
+      storedEvidence,
+    )
+    if (!candidate) {
+      archive.markDevSpaceBindingTurnEvidenceAttempt(
+        queueRow.conversationId,
+        queueRow.turnExchangeId,
+        Date.now(),
+        storedEvidence.revision,
+        metadataRevision,
+      )
+      return false
+    }
+
+    const existingBinding = archive.getDevSpaceMetadataBinding(candidate.metadataId)
+    const observedAt = Date.now()
+    if (existingBinding?.conversationId) {
+      if (existingBinding.conversationId !== queueRow.conversationId) {
+        archive.markDevSpaceBindingTurnEvidenceAttempt(
+          queueRow.conversationId,
+          queueRow.turnExchangeId,
+          observedAt,
+          storedEvidence.revision,
+          metadataRevision,
+        )
+        void log('DevSpace matching queue rejected cross-conversation bound candidate', {
+          source,
+          metadataId: candidate.metadataId,
+          boundConversationId: existingBinding.conversationId,
+          evidenceConversationId: queueRow.conversationId,
+          turnExchangeId: queueRow.turnExchangeId,
+        })
+        return false
+      }
+
+      archive.markDevSpaceBindingTurnEvidenceMatched({
+        conversationId: queueRow.conversationId,
+        turnExchangeId: queueRow.turnExchangeId,
+        metadataId: candidate.metadataId,
+        matchedAt: observedAt,
+        evidenceRevision: storedEvidence.revision,
+        metadataRevision,
+      })
+      devSpaceBindingQueueMatches += 1
+      return true
+    }
+
+    bindDevSpaceCandidateFromStoredTurn({
+      conversationId: queueRow.conversationId,
+      turnExchangeId: queueRow.turnExchangeId,
+      candidate,
+      evidence: 'body:exact-tool-args-matching-queue',
+      observedAt,
+    })
+    archive.markDevSpaceBindingTurnEvidenceMatched({
+      conversationId: queueRow.conversationId,
+      turnExchangeId: queueRow.turnExchangeId,
+      metadataId: candidate.metadataId,
+      matchedAt: observedAt,
+      evidenceRevision: storedEvidence.revision,
+      metadataRevision,
+    })
+    devSpaceBindingQueueMatches += 1
+    void log('DevSpace matching queue consumed canonical turn evidence', {
+      source,
+      metadataId: candidate.metadataId,
+      conversationId: queueRow.conversationId,
+      turnExchangeId: queueRow.turnExchangeId,
+      exactMatches: candidate.exactMatches,
+      uniqueMatches: candidate.uniqueMatches,
+    })
+    return true
+  }
+
+  const enqueueStoredDevSpaceTurnEvidence = (
     conversationId,
-    { excludeTurnExchangeId = null, maxTurns = 64 } = {},
+    turnExchangeId,
+    {
+      observedAt = Date.now(),
+      force = false,
+      source = 'canonical-ingress',
+    } = {},
   ) => {
-    if (archive.listDevSpaceMetadataBindings({ onlyUnbound: true, limit: 1 }).length === 0) return 0
+    const storedEvidence = readDevSpaceTurnEvidenceFromStoredTurn(conversationId, turnExchangeId)
+    if (!storedEvidence) return { queued: false, matched: false }
+
+    const metadataRevision = metadataRevisionForEvidence({
+      firstToolAt: storedEvidence.startAt,
+      lastToolAt: storedEvidence.endAt,
+    })
+    const recentEvidence = Math.abs(Number(observedAt) - Number(storedEvidence.endAt)) <= 10 * 60_000
+    if (!force && !recentEvidence && metadataRevision === 'none') {
+      return { queued: false, matched: false }
+    }
+
+    const queued = archive.upsertDevSpaceBindingTurnEvidence({
+      conversationId,
+      turnExchangeId,
+      firstToolAt: storedEvidence.startAt,
+      lastToolAt: storedEvidence.endAt,
+      toolCallCount: storedEvidence.bodyCalls.length,
+      evidenceRevision: storedEvidence.revision,
+      observedAt,
+    })
+    if (queued.created) devSpaceBindingQueueEnqueued += 1
+    if (queued.row.status !== 'pending') return { queued: true, matched: true }
+
+    const matched = attemptDevSpaceBindingQueueEvidence(queued.row, { source })
+    return { queued: true, matched }
+  }
+
+  const publishCanonicalDevSpaceBindingEvidence = (
+    conversationId,
+    {
+      turnExchangeId = null,
+      excludeTurnExchangeId = null,
+      observedAt = Date.now(),
+      maxTurns = 64,
+      source = 'canonical-ingress',
+    } = {},
+  ) => {
+    let queued = 0
+    let matched = 0
+    const handled = new Set()
+
+    const publishTurn = (candidateTurnExchangeId, force = false) => {
+      const id = String(candidateTurnExchangeId || '')
+      if (!id || handled.has(id) || id === excludeTurnExchangeId) return
+      handled.add(id)
+      const result = enqueueStoredDevSpaceTurnEvidence(conversationId, id, {
+        observedAt,
+        force,
+        source,
+      })
+      if (result.queued) queued += 1
+      if (result.matched) matched += 1
+    }
+
+    if (turnExchangeId) publishTurn(turnExchangeId, true)
+
     const turns = archive.db.prepare(
       "SELECT turn_exchange_id AS turnExchangeId, MAX(ordinal) AS lastOrdinal "
       + "FROM messages INDEXED BY messages_conversation_ordinal "
@@ -6611,25 +6720,47 @@ async function main() {
       + "AND recipient='api_tool.call_tool' AND text<>'' "
       + "GROUP BY turn_exchange_id ORDER BY lastOrdinal DESC LIMIT ?",
     ).all(conversationId, Math.max(1, Math.min(256, Number(maxTurns) || 64)))
+    for (const row of turns) publishTurn(row.turnExchangeId, false)
 
-    let created = 0
-    for (const row of turns) {
-      const historicalTurnExchangeId = String(row.turnExchangeId || '')
-      if (!historicalTurnExchangeId || historicalTurnExchangeId === excludeTurnExchangeId) continue
-      const candidate = matchDevSpaceBindingFromStoredTurn(conversationId, historicalTurnExchangeId)
-      if (!candidate) continue
-      bindDevSpaceCandidateFromStoredTurn({
-        conversationId,
-        turnExchangeId: historicalTurnExchangeId,
-        candidate,
-        evidence: 'body:exact-tool-args-conversation-history',
-      })
-      created += 1
-    }
-    return created
+    return { queued, matched }
   }
 
-  const reconcileDevSpaceBindingFromBody = (conversationId, diagnostic) => {
+  const drainDevSpaceBindingQueueForAudit = event => {
+    const rows = archive.listPendingDevSpaceBindingTurnEvidence({
+      overlapStartAt: Math.max(0, Number(event.startedAtMs) - 120_000),
+      overlapEndAt: Number(event.startedAtMs) + 120_000,
+      limit: 256,
+    })
+    let matched = 0
+    for (const row of rows) {
+      if (attemptDevSpaceBindingQueueEvidence(row, { source: 'devspace-audit' })) matched += 1
+    }
+    return matched
+  }
+
+  const drainPendingDevSpaceBindingQueue = ({ limit = 1000, source = 'startup' } = {}) => {
+    const rows = archive.listPendingDevSpaceBindingTurnEvidence({ limit })
+    let matched = 0
+    for (const row of rows) {
+      if (attemptDevSpaceBindingQueueEvidence(row, { source })) matched += 1
+    }
+    return matched
+  }
+
+
+  const publishHistoricalDevSpaceBindingEvidenceFromConversation = (
+    conversationId,
+    { excludeTurnExchangeId = null, maxTurns = 64 } = {},
+  ) => {
+    return publishCanonicalDevSpaceBindingEvidence(conversationId, {
+      excludeTurnExchangeId,
+      observedAt: Date.now(),
+      maxTurns,
+      source: 'conversation-history',
+    }).matched
+  }
+
+  const publishDevSpaceBindingEvidenceFromBody = (conversationId, diagnostic) => {
     const now = Date.now()
     const turnExchangeId = typeof diagnostic?.turnExchangeId === 'string' ? diagnostic.turnExchangeId : null
     const requestId = typeof diagnostic?.requestId === 'string' ? diagnostic.requestId : null
@@ -6645,31 +6776,18 @@ async function main() {
       for (const row of archive.getDevSpaceMetadataBindingsForConversation(conversationId)) mirrorDevSpaceBinding(row)
     }
 
-    let currentMatched = false
-    if (turnExchangeId) {
-      const candidate = matchDevSpaceBindingFromStoredTurn(conversationId, turnExchangeId)
-      if (candidate) {
-        bindDevSpaceCandidateFromStoredTurn({
-          conversationId,
-          turnExchangeId,
-          requestId,
-          candidate,
-          evidence: 'body:exact-tool-args',
-          observedAt: now,
-        })
-        currentMatched = true
-      }
-    }
-
-    const historicalCreated = reconcileHistoricalDevSpaceBindingsFromConversation(conversationId, {
-      excludeTurnExchangeId: turnExchangeId,
+    const result = publishCanonicalDevSpaceBindingEvidence(conversationId, {
+      turnExchangeId,
+      observedAt: now,
       maxTurns: 64,
+      source: 'canonical-body',
     })
-    if (historicalCreated > 0) {
-      void log('DevSpace conversation-scoped historical binding retry complete', {
+    if (result.matched > 0) {
+      void log('DevSpace matching queue consumed canonical body evidence', {
         conversationId,
-        currentMatched,
-        historicalCreated,
+        turnExchangeId,
+        queued: result.queued,
+        matched: result.matched,
       })
     }
   }
@@ -6773,7 +6891,7 @@ async function main() {
       // 发出的 conversation 请求；如果这里只 merge 不 reconcile，已经落库的 tool calls 仍会
       // 永久保持 unbound。mapping 没有稳定的 latest-turn diagnostic，因此对该 CID 做 bounded
       // historical exact retry。
-      reconcileHistoricalDevSpaceBindingsFromConversation(conversationId, { maxTurns: 64 })
+      publishHistoricalDevSpaceBindingEvidenceFromConversation(conversationId, { maxTurns: 64 })
       passiveBodyResponses += 1
       return
     }
@@ -6807,7 +6925,7 @@ async function main() {
       // 第一方页面自然拿到的 latest Body 也是 canonical ingress。过去这里只 merge SQLite，
       // 没有触发 binding reconcile，导致“Body 已在库里但 metadata 仍 unbound”。
       const passiveDiagnostic = diagnoseLatestRun(normalized)
-      reconcileDevSpaceBindingFromBody(conversationId, passiveDiagnostic)
+      publishDevSpaceBindingEvidenceFromBody(conversationId, passiveDiagnostic)
       const recoverySuperseded = reconcileDevSpaceRecoveryWithCanonical(conversationId)
       if (recoverySuperseded > 0) {
         void log('passive canonical body superseded DevSpace recovery overlay', {
@@ -8808,6 +8926,15 @@ async function main() {
     })
   }
   pollDevSpaceAudits()
+  const bindingQueueRecoveredAtStartup = drainPendingDevSpaceBindingQueue({
+    limit: 1000,
+    source: 'startup-recovery',
+  })
+  if (bindingQueueRecoveredAtStartup > 0) {
+    await log('DevSpace matching queue recovered bindings after startup', {
+      matched: bindingQueueRecoveredAtStartup,
+    })
+  }
   // 重启恢复只看最近 6 分钟本地工具活动；候选的 lastCheckedIdleMs 从当前 idle 年龄
   // 起步，因此不会补发已经错过的历史 1/3 分钟，但仍可继续命中后续 3/5 分钟。
   for (const state of devSpaceAuditBridge.recentMetadataToolStates(
