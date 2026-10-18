@@ -301,6 +301,21 @@ test('DevSpace audit backlog 必须分批让出 event loop，不能无界 drain'
   expect(daemon).toContain('yields: devSpaceAuditPollYields')
 })
 
+test('daemon state 暴露控制平面 event-loop lag，避免把本机 starvation 误判成网络慢', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+
+  expect(daemon).toContain('const CONTROL_PLANE_TICK_MS = 250')
+  expect(daemon).toContain('controlPlaneLagMaxMs')
+  expect(daemon).toContain('controlPlaneLagOver100Ms')
+  expect(daemon).toContain('controlPlaneLagOver1000Ms')
+  expect(daemon).toContain('controlPlane: {')
+  expect(daemon).toContain('eventLoopLagLastMs: controlPlaneLagLastMs')
+  expect(daemon).toContain('eventLoopLagMaxMs: controlPlaneLagMaxMs')
+})
+
 test('DevSpace binding probe 在 canonical IDs 全已知时必须跳过 merge', async () => {
   const daemon = await fs.readFile(
     new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
