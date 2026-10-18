@@ -5236,13 +5236,11 @@ export class ChatArchiveDb {
     const beforeOrdinal = options.beforeOrdinal === null || options.beforeOrdinal === undefined
       ? null
       : Math.trunc(options.beforeOrdinal)
-    const readerVisibleSql = `
-      hidden = 0
-      AND role IN ('user', 'assistant')
-      AND (recipient IS NULL OR recipient = 'all')
-      AND COALESCE(channel, '') <> 'analysis'
-      AND lower(COALESCE(content_type, '')) NOT LIKE '%reasoning%'
-    `
+    // Reader 的分页边界只负责“别把整条 Conversation 一次性搬进 Node”，
+    // 不能顺手改变 canonical 节点语义。tool call / tool result / API / system /
+    // developer / reasoning 节点都仍属于这条 Conversation，应该参与 ordinal 与分页；
+    // reasoning 正文是否对外展示由 Bridge 的 sanitize 层单独处理。
+    const readerVisibleSql = 'hidden = 0'
     const counts = this.db.prepare(`
       SELECT count(*) AS canonicalCount,
              sum(CASE WHEN ${readerVisibleSql} THEN 1 ELSE 0 END) AS visibleCount,
