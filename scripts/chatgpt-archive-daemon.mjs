@@ -6735,12 +6735,21 @@ async function main() {
    * cursor 只追踪 INSERT 时的 started_at；同一 audit 的 finish 是 UPDATE，不会再次越过 cursor。
    * 因此 daemon 重启/低频兜底要按 recovery 中尚未 finished 的 audit id 重读最终行。
    */
-  const refreshPendingDevSpaceRecoveryAudits = () => {
+  const refreshPendingDevSpaceRecoveryAudits = ({ collectMetadataIds = false } = {}) => {
     let refreshed = 0
+    const metadataIds = new Set()
     for (const auditId of archive.listPendingDevSpaceRecoveryAuditIds(1000)) {
-      if (refreshDevSpaceRecoveryAudit(auditId)) refreshed += 1
+      // startup 需要知道“哪些 metadata 可能在 daemon 离线期间 finish 了”。
+      // 既然这里本来就要按 pending audit-id 精确重读最终行，就顺手复用这份 event；
+      // 不要再额外全表扫描 DevSpace tool_audit 去猜最近 finished_at。
+      const event = devSpaceAuditBridge.auditById(auditId)
+      if (!event) continue
+      if (event.metadataId) metadataIds.add(event.metadataId)
+      if (persistDevSpaceRecoveryAudit(event)) refreshed += 1
     }
-    return refreshed
+    return collectMetadataIds
+      ? { refreshed, metadataIds: [...metadataIds] }
+      : refreshed
   }
 
   /**
