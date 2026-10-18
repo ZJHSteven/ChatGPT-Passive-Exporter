@@ -256,7 +256,7 @@ test('DevSpace binding uses one persistent Matching Queue for canonical evidence
   expect(audit).not.toContain('attemptDevSpaceBindingQueueEvidence(')
 
   const workerStart = daemon.indexOf('const scheduleDevSpaceBindingWorker')
-  const workerEnd = daemon.indexOf('const drainPendingDevSpaceBindingQueue', workerStart)
+  const workerEnd = daemon.indexOf('const queuePendingDevSpaceBindingQueue', workerStart)
   expect(workerStart).toBeGreaterThan(-1)
   expect(workerEnd).toBeGreaterThan(workerStart)
   const worker = daemon.slice(workerStart, workerEnd)
