@@ -538,6 +538,98 @@ describe('Archive Bridge', () => {
     })
   })
 
+  test('messages API 有分页数据源时不读取整条 Conversation，并隐藏内部正文', async () => {
+    const archive = mockArchive()
+    let fullReadCalled = false
+    archive.getMessages = () => {
+      fullReadCalled = true
+      return []
+    }
+    archive.getMessagesPage = () => ({
+      messages: [
+        {
+          messageId: 'visible-user',
+          ordinal: 100,
+          role: 'user',
+          recipient: 'all',
+          contentType: 'text',
+          text: '用户正文',
+          hidden: 0,
+          turnExchangeId: 'turn-latest',
+        },
+        {
+          messageId: 'internal-call',
+          ordinal: 101,
+          role: 'assistant',
+          recipient: 'api_tool.call_tool',
+          contentType: 'text',
+          text: '内部调用参数不应返回',
+          hidden: 0,
+          turnExchangeId: 'turn-latest',
+        },
+        {
+          messageId: 'internal-result',
+          ordinal: 102,
+          role: 'tool',
+          recipient: 'all',
+          contentType: 'text',
+          text: '内部工具结果不应返回',
+          hidden: 0,
+          turnExchangeId: 'turn-latest',
+        },
+        {
+          messageId: 'visible-assistant',
+          ordinal: 103,
+          role: 'assistant',
+          recipient: 'all',
+          channel: 'final',
+          contentType: 'text',
+          text: '最终回复',
+          hidden: 0,
+          turnExchangeId: 'turn-latest',
+        },
+      ],
+      canonicalCount: 1000,
+      visibleCount: 980,
+      eligibleVisibleCount: 980,
+      hasMore: true,
+      nextBeforeOrdinal: 100,
+    })
+
+    const { base, headers } = await startBridge(undefined, archive)
+    const response = await fetch(`${base}/v1/conversations/cid-1/messages?limit=4`, { headers })
+    expect(response.status).toBe(200)
+    const body = await response.json() as {
+      canonicalCount: number
+      messages: Array<Record<string, unknown>>
+    }
+    expect(fullReadCalled).toBe(false)
+    expect(body.canonicalCount).toBe(1000)
+    expect(body.messages).toHaveLength(4)
+    expect(body.messages[0]).toMatchObject({
+      messageId: 'visible-user',
+      text: '用户正文',
+      contentRedacted: false,
+    })
+    expect(body.messages[1]).toMatchObject({
+      messageId: 'internal-call',
+      text: '',
+      contentRedacted: true,
+    })
+    expect(body.messages[2]).toMatchObject({
+      messageId: 'internal-result',
+      text: '',
+      contentRedacted: true,
+    })
+    expect(body.messages[3]).toMatchObject({
+      messageId: 'visible-assistant',
+      text: '最终回复',
+      contentRedacted: false,
+    })
+    expect(JSON.stringify(body)).not.toContain('内部调用参数不应返回')
+    expect(JSON.stringify(body)).not.toContain('内部工具结果不应返回')
+  })
+
   test('search 和 worksite resolve 返回可供 LifeOps 使用的脱敏工作现场', async () => {
     const { base, headers } = await startBridge()
 
