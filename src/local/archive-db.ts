@@ -561,6 +561,8 @@ function visibleForMarkdown(conversation: CanonicalConversation): boolean {
  * - FTS 只索引可读 User/Assistant 正文，不把巨大 tool result、connector JSON、raw CoT
  *   塞进全文索引；这些仍可从 message/resource 表按需审计。
  */
+const ARCHIVE_SCHEMA_VERSION = 1
+
 export class ChatArchiveDb {
   readonly db: DatabaseSync
   readonly filePath: string
@@ -574,7 +576,18 @@ export class ChatArchiveDb {
     // 再叠加外层事件回调缺少隔离，就可能把常驻 daemon 整个打死。
     // 5 秒只用于等待本机极短事务；真正长期锁仍会明确失败，不会无限挂起。
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;')
-    this.migrate()
+    const schemaVersion = Number((this.db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0)
+    if (schemaVersion > ARCHIVE_SCHEMA_VERSION) {
+      this.db.close()
+      throw new Error(`Archive schema v${schemaVersion} is newer than supported v${ARCHIVE_SCHEMA_VERSION}`)
+    }
+    if (schemaVersion !== ARCHIVE_SCHEMA_VERSION) {
+      this.migrate()
+      // user_version 是这套本地 schema 的稳态快速门。以后任何 migration 变化都必须 bump
+      // ARCHIVE_SCHEMA_VERSION；否则 12GB 生产库每次启动都会重复做几十项 table/index/column
+      // 探测，冷文件缓存下可把控制面启动阻塞到秒级。
+      this.db.exec(`PRAGMA user_version=${ARCHIVE_SCHEMA_VERSION}`)
+    }
   }
 
   close(): void {
