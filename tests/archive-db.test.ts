@@ -168,6 +168,7 @@ describe('ChatArchiveDb', () => {
     tempDirs.push(dir)
     const file = path.join(dir, 'archive.sqlite')
     const first = new ChatArchiveDb(file)
+    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 1 })
     first.close()
 
     const blocker = new DatabaseSync(file)
@@ -189,6 +190,18 @@ describe('ChatArchiveDb', () => {
       blocker.exec('ROLLBACK')
       blocker.close()
     }
+  })
+
+  test('高于当前代码的 Archive schema 必须 fail-closed，不能由旧代码降级迁移', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatgpt-archive-future-schema-'))
+    tempDirs.push(dir)
+    const file = path.join(dir, 'archive.sqlite')
+    const first = new ChatArchiveDb(file)
+    first.close()
+    const newer = new DatabaseSync(file)
+    newer.exec('PRAGMA user_version=999')
+    newer.close()
+    expect(() => new ChatArchiveDb(file)).toThrow(/newer than supported/u)
   })
 
   test('持久化 resume token 与自动恢复退避状态', () => {
