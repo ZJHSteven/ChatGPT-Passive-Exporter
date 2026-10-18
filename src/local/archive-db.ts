@@ -5165,6 +5165,110 @@ export class ChatArchiveDb {
     `).all(conversationId) as unknown as Array<Record<string, unknown>>
   }
 
+  /**
+   * Reader 专用分页：先在 SQLite 内确定 ordinal 与目标页，再读取这一页的正文。
+   *
+   * getMessages() 是完整导出语义，不能用于“最近几 turn”的热路径，否则工具密集型长聊天会把
+   * 整个 Conversation 的大段 text 先复制进 Node，再由 Bridge 丢掉绝大多数行。
+   */
+  getMessagesPage(
+    conversationId: string,
+    options: { limit?: number, beforeOrdinal?: number | null } = {},
+  ): {
+    messages: Array<Record<string, unknown>>
+    canonicalCount: number
+    visibleCount: number
+    eligibleVisibleCount: number
+    hasMore: boolean
+    nextBeforeOrdinal: number | null
+  } {
+    const limit = Math.max(1, Math.min(200, Math.trunc(options.limit ?? 120)))
+    const beforeOrdinal = options.beforeOrdinal === null || options.beforeOrdinal === undefined
+      ? null
+      : Math.trunc(options.beforeOrdinal)
+    const counts = this.db.prepare(`
+      SELECT count(*) AS canonicalCount,
+             sum(CASE WHEN hidden=0 THEN 1 ELSE 0 END) AS visibleCount
+      FROM messages
+      WHERE conversation_id = ?
+    `).get(conversationId) as { canonicalCount?: number, visibleCount?: number } | undefined
+    const canonicalCount = Number(counts?.canonicalCount ?? 0)
+    const visibleCount = Number(counts?.visibleCount ?? 0)
+
+    const beforeClause = beforeOrdinal === null ? '' : 'AND o.ordinal < ?'
+    const pageSql = `
+      WITH ordered AS (
+        SELECT row_id,
+               ROW_NUMBER() OVER (ORDER BY COALESCE(create_time, 0), row_id) - 1 AS ordinal
+        FROM messages
+        WHERE conversation_id = ?
+      ), page_ids AS (
+        SELECT o.row_id, o.ordinal
+        FROM ordered o
+        JOIN messages m ON m.row_id = o.row_id
+        WHERE m.hidden = 0 ${beforeClause}
+        ORDER BY o.ordinal DESC
+        LIMIT ?
+      )
+      SELECT
+        m.message_id AS messageId,
+        p.ordinal AS ordinal,
+        m.role,
+        m.author_name AS authorName,
+        m.recipient,
+        m.channel,
+        m.content_type AS contentType,
+        m.text,
+        m.hidden,
+        m.create_time AS createTime,
+        m.status,
+        m.end_turn AS endTurn,
+        m.request_id AS requestId,
+        m.turn_exchange_id AS turnExchangeId,
+        m.finish_type AS finishType,
+        m.finish_reason AS finishReason,
+        m.reasoning_status AS reasoningStatus,
+        m.model_slug AS modelSlug,
+        m.resolved_model_slug AS resolvedModelSlug
+      FROM page_ids p
+      JOIN messages m ON m.row_id = p.row_id
+      ORDER BY p.ordinal ASC
+    `
+    const pageArgs: Array<string | number> = beforeOrdinal === null
+      ? [conversationId, limit]
+      : [conversationId, beforeOrdinal, limit]
+    const messages = this.db.prepare(pageSql).all(...pageArgs) as unknown as Array<Record<string, unknown>>
+
+    let eligibleVisibleCount = visibleCount
+    if (beforeOrdinal !== null) {
+      const eligible = this.db.prepare(`
+        WITH ordered AS (
+          SELECT row_id,
+                 ROW_NUMBER() OVER (ORDER BY COALESCE(create_time, 0), row_id) - 1 AS ordinal
+          FROM messages
+          WHERE conversation_id = ?
+        )
+        SELECT count(*) AS n
+        FROM ordered o
+        JOIN messages m ON m.row_id = o.row_id
+        WHERE m.hidden = 0 AND o.ordinal < ?
+      `).get(conversationId, beforeOrdinal) as { n?: number } | undefined
+      eligibleVisibleCount = Number(eligible?.n ?? 0)
+    }
+
+    const nextBeforeOrdinal = messages.length > 0 && Number.isFinite(Number(messages[0]!.ordinal))
+      ? Number(messages[0]!.ordinal)
+      : null
+    return {
+      messages,
+      canonicalCount,
+      visibleCount,
+      eligibleVisibleCount,
+      hasMore: eligibleVisibleCount > messages.length,
+      nextBeforeOrdinal,
+    }
+  }
+
   getResources(conversationId: string): Array<Record<string, unknown>> {
     const rows = this.db.prepare(`
       SELECT r.message_id AS messageId,
