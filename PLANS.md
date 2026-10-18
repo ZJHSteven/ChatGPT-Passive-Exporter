@@ -6,6 +6,7 @@
 - 同一生产 SQLite 用独立 CLI 搜索/读取通常仅约 0.7–0.9 秒，FTS/Reader 本身可用。故障时 daemon 会出现分钟级日志空窗和较高单核 CPU，占用期间 Bridge 无法调度。
 - 10 月 11 日已修过 live merge 全量派生重建导致的同类 event-loop starvation；当前该路径仍是 touched-message 增量维护，没有回滚。
 - 新发现的当前回归点：`pollDevSpaceAudits()` 用 `while (true)` 一次性吃完整个 durable audit backlog；每条 audit 又同步执行 recovery mirror、Binding Queue overlap drain、SQLite fingerprint/matching。并发长任务积压时会重新形成“整批 backlog 饿死主循环”。
+- 进一步生产压力验收发现第二个、更直接的同步阻塞源：unbound repair 会在 catalog/project repair 后排一组 `devspace:binding-probe`。这些 probe 只是为了从候选 Conversation 的 canonical tool evidence 绑定 metadata，但旧实现即使最新 body 的全部 message ID 已经存在，仍调用 `mergeLiveMessagesPage()` 重写页面数据。生产日志已抓到 `newMessages=0 / dbMergeMs=17766ms` 与 `newMessages=0 / dbMergeMs=10367ms`，期间本机 Bridge `/health` 连续 3s 超时。该路径必须在“全部 canonical ID 已知”时直接复用存量证据并跳过 merge；只有 probe 真看到新 message ID 时才允许落库。
 
 ### ExecPlan
 1. 把 DevSpace audit consumer 改为 cooperative scheduling：每个事件循环 tick 只处理一个小批次，若仍有 backlog 用 `setImmediate` 续跑，明确把控制权交回 Node event loop。
@@ -16,6 +17,7 @@
 6. 生产验收至少覆盖：本机 Bridge `/health` 连续快速响应；LifeOps search/read 多轮不再撞 5s/12s；制造/等待自然 DevSpace audit burst 时 daemon state 的 yielded batch 递增且 Bridge 仍可响应。
 7. 不通过简单放大 LifeOps 5s/12s timeout 掩盖根因；只有确认 daemon 长尾消失后才重新评估这些预算是否需要调整。
 8. 生产首轮 LifeOps Reader smoke 若暴露超大响应，则继续收缩 Bridge Reader：canonical messages 必须在 SQLite 层先按 ordinal 游标分页，禁止“全聊天读入 Node 后再 slice”；tool / API / reasoning / system 等非面向用户正文只保留生命周期字段，不向 Reader 返回原始 text。目标是 limit_turns=3 的网络体积与目标 turn 成正比，而不是与整条工具历史成正比。
+9. 对 `devspace:binding-probe` 增加 no-op merge 快路：第一页全部 message ID 已存在时，直接返回 payload 的 diagnostic 并由后续 Matching Queue 从 SQLite 读 canonical evidence；禁止再次触发 messages/FTS/resources/raw observation 写放大。增加 skipped counter/log 与回归测试，并用刚才出现 17.8s no-op merge 的真实生产样本做 smoke。
 
 ## 2026-10-16 Bark / Watchdog 手机通知第二轮人因化
 
