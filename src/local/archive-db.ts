@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { gunzipSync, gzipSync } from 'node:zlib'
+import { gunzipSync, gzip, gzipSync } from 'node:zlib'
 import { adaptConversation } from '../core/adapter.ts'
 import { extractMessageText } from '../core/adapter.ts'
 import { buildRichManifest } from '../core/manifest.ts'
@@ -241,6 +241,12 @@ export interface LiveMergeResult {
     rawJsonBytes: number
     observationGzipBytes: number
   }
+}
+
+export interface PreparedLiveObservation {
+  rawText: string
+  sha256: string
+  compressed: Buffer
 }
 
 export interface LiveMappingMergeResult {
@@ -526,6 +532,27 @@ function canonicalRole(value: unknown): string {
 
 function sha256Text(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex')
+}
+
+/**
+ * 把冷 forensic observation 的 CPU 压缩移出 Archive 同步 writer 热区。
+ * zlib callback 在线程池执行，等待期间 daemon 的 HTTP/WSS/UDP/timer 仍可正常调度；
+ * 最终 BLOB 仍由 mergeLiveMessagesPage 在同一个 SQLite 事务里原子写入。
+ */
+export async function prepareLiveObservation(payload: unknown): Promise<PreparedLiveObservation> {
+  const rawText = json(payload)
+  const input = Buffer.from(rawText, 'utf8')
+  const compressed = await new Promise<Buffer>((resolve, reject) => {
+    gzip(input, (error, result) => {
+      if (error) reject(error)
+      else resolve(result)
+    })
+  })
+  return {
+    rawText,
+    sha256: sha256Text(rawText),
+    compressed,
+  }
 }
 
 function jsonWithoutKeys(value: Record<string, unknown>, excluded: ReadonlySet<string>): string {
