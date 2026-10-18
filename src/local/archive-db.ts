@@ -1962,23 +1962,6 @@ export class ChatArchiveDb {
       FROM messages
       WHERE conversation_id = ? AND message_id = ?
     `)
-    const touchExistingMessage = this.db.prepare(`
-      UPDATE messages
-      SET last_seen_at=max(COALESCE(last_seen_at, ?), ?),
-          source_observed_at=max(COALESCE(source_observed_at, 0), ?)
-      WHERE conversation_id=? AND message_id=?
-    `)
-    const touchExistingMappingNode = this.db.prepare(`
-      UPDATE mapping_nodes
-      SET last_seen_at=max(last_seen_at, ?),
-          source_observed_at=max(source_observed_at, ?)
-      WHERE conversation_id=? AND node_id=?
-    `)
-    const touchExistingImageAssets = this.db.prepare(`
-      UPDATE image_assets
-      SET last_seen_at=max(last_seen_at, ?)
-      WHERE conversation_id=? AND message_id=?
-    `)
     const insertPart = this.db.prepare(`
       INSERT INTO message_parts (
         conversation_id, message_id, part_index, source_field, part_kind, text_value, json_value
@@ -2027,7 +2010,7 @@ export class ChatArchiveDb {
     `)
 
     const touchedMessageIds: string[] = []
-    let observationOnlyTouches = 0
+    const observationOnlyMessageIds: string[] = []
     let conversationHeadMs = 0
     let messageWriteMs = 0
     let observationMs = 0
@@ -2122,10 +2105,7 @@ export class ChatArchiveDb {
         // raw canonical 完全相同时，正文/metadata/状态/资源派生都不可能改变，只推进“本次又看见”
         // 的观察时间即可。若标题变化则保留旧完整路径，让本页 FTS title 按原语义刷新。
         if (!conversationTitleChanged && typeof existing?.rawJson === 'string' && existing.rawJson === effectiveRawJson) {
-          touchExistingMessage.run(observedAt, observedAt, observedAt, conversationId, message.id)
-          touchExistingMappingNode.run(observedAt, observedAt, conversationId, message.id)
-          touchExistingImageAssets.run(observedAt, conversationId, message.id)
-          observationOnlyTouches += 1
+          observationOnlyMessageIds.push(message.id)
           return
         }
 
@@ -2190,6 +2170,31 @@ export class ChatArchiveDb {
           })
         }
       })
+      // no-op Body 常常一次重复数百条完全相同 message。逐条对 messages/mapping/image
+      // 各跑一条 UPDATE，会制造 N*3 次 JS<->SQLite 边界调用；589 条真实页仅“seen-time touch”
+      // 就约 90~100ms。按 300 个 id 一批更新，语义不变，但把上千 statement 压成个位数。
+      for (let offset = 0; offset < observationOnlyMessageIds.length; offset += 300) {
+        const ids = observationOnlyMessageIds.slice(offset, offset + 300)
+        if (ids.length === 0) continue
+        const placeholders = ids.map(() => '?').join(',')
+        this.db.prepare(`
+          UPDATE messages
+          SET last_seen_at=max(COALESCE(last_seen_at, ?), ?),
+              source_observed_at=max(COALESCE(source_observed_at, 0), ?)
+          WHERE conversation_id=? AND message_id IN (${placeholders})
+        `).run(observedAt, observedAt, observedAt, conversationId, ...ids)
+        this.db.prepare(`
+          UPDATE mapping_nodes
+          SET last_seen_at=max(last_seen_at, ?),
+              source_observed_at=max(source_observed_at, ?)
+          WHERE conversation_id=? AND node_id IN (${placeholders})
+        `).run(observedAt, observedAt, conversationId, ...ids)
+        this.db.prepare(`
+          UPDATE image_assets
+          SET last_seen_at=max(last_seen_at, ?)
+          WHERE conversation_id=? AND message_id IN (${placeholders})
+        `).run(observedAt, conversationId, ...ids)
+      }
       messageWriteMs = performance.now() - messageWriteStartedAt
 
       const observationStartedAt = performance.now()
@@ -2296,7 +2301,7 @@ export class ChatArchiveDb {
         commitMs,
         postMergeMs: performance.now() - postMergeStartedAt,
         fullRewriteMessages: touchedMessageIds.length,
-        observationOnlyTouches,
+        observationOnlyTouches: observationOnlyMessageIds.length,
         rawJsonBytes: Buffer.byteLength(rawText, 'utf8'),
         observationGzipBytes,
       },
