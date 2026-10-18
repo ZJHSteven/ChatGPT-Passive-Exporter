@@ -19,8 +19,10 @@
 - `c6a30a6`：canonical Body 主动给 active Watchdog generation 绑定/校正 turn identity。
 - `6d4c4f0`、`1a10d15`：45min 到点只进入 pending，Body 核实后才写 LifeOps/Bark timeout；发现新 turn 且未真正超时则抑制旧 deadline。
 - `ad879f1`、`68d5596`、`e8340ee`：抽出 timeout-confirmation 纯规则、补回归测试与 `.d.mts` 声明。
-- 验证：`tests/archive-daemon.test.ts` 82/82；全量 `npm run check` 通过，30 个测试文件 / 287 tests 全绿，Chrome/Edge/Firefox/userscript 全部构建成功。
-- 待完成：受控 reload daemon，并核对生产状态已加载新 commit；之后用自然发生的新 turn 做一次真实 start/timeout 生命周期验收。
+- `f99ede7`、`683a6d6`、`e01e522`：补跨设备场景的保守 turn-identity probe。已知 turn 的 DevSpace activity 静默 >=60s 后恢复时只排一次 canonical Body 探针，不靠时间差直接认定新 turn；Body 真正换 turn 才 rollover generation 并补 start。
+- 验证：`tests/archive-daemon.test.ts` 83/83；全量 `npm run check` 通过，30 个测试文件 / 288 tests 全绿，Chrome/Edge/Firefox/userscript 全部构建成功。
+- 生产已受控 reload：新 PID `25508`，`startupPhase=running`；reload 后 6s 复核 Bridge listening、WSS activeSockets=3、conversation transport observed=true、DevSpace wake listening=true（最近 wake latency 24ms）、LifeOps pending=0、lastError=null。
+- 剩余验收边界：尚未自然发生一条“部署后真实跨设备新 turn + 持续 45min”样本，因此代码/测试/生产加载均已验证，但完整 45min 自然生命周期仍待下一次真实样本被动验收。另：旧 generation 的 Bark ledger 曾返回 HTTP 200 而用户未见通知，这是独立的 Bark/iOS 呈现链问题，不应与本次 generation 状态机根因混淆。
 
 ## 2026-10-18 LifeOps / Archive Bridge 周期性 5s/12s 超时回归
 
