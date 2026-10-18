@@ -237,19 +237,25 @@ function sanitizeMessages(rows: Array<Record<string, unknown>>): Array<Record<st
     .map(row => {
       const channel = typeof row.channel === 'string' ? row.channel : null
       const contentType = typeof row.contentType === 'string' ? row.contentType : null
+      const role = typeof row.role === 'string' ? row.role : 'unknown'
+      const recipient = typeof row.recipient === 'string' ? row.recipient : null
       // Reader 可以展示“发生过 reasoning / tool 阶段”及其状态，但不对外输出模型内部 reasoning 文本。
       // 这既保留完整生命周期/工具链定位能力，也不把本来只供模型内部消费的思维文本固化成产品 API。
       const reasoningRedacted = channel === 'analysis' || Boolean(contentType && /reasoning/iu.test(contentType))
+      const contentRedacted = reasoningRedacted
+        || (role !== 'user' && role !== 'assistant')
+        || (recipient !== null && recipient !== 'all')
       return {
         messageId: typeof row.messageId === 'string' ? row.messageId : null,
         ordinal: Number.isFinite(Number(row.ordinal)) ? Number(row.ordinal) : null,
-        role: typeof row.role === 'string' ? row.role : 'unknown',
+        role,
         authorName: typeof row.authorName === 'string' ? row.authorName : null,
-        recipient: typeof row.recipient === 'string' ? row.recipient : null,
+        recipient,
         channel,
         contentType,
-        text: reasoningRedacted ? '' : typeof row.text === 'string' ? row.text : '',
+        text: contentRedacted ? '' : typeof row.text === 'string' ? row.text : '',
         reasoningRedacted,
+        contentRedacted,
         createTime: typeof row.createTime === 'number' ? row.createTime : null,
         status: typeof row.status === 'string' ? row.status : null,
         endTurn: row.endTurn === 1 || row.endTurn === true,
