@@ -316,6 +316,21 @@ test('daemon state 暴露控制平面 event-loop lag，避免把本机 starvatio
   expect(daemon).toContain('eventLoopLagMaxMs: controlPlaneLagMaxMs')
 })
 
+test('startup 直接信任 durable active_watchdogs，不再逐条扫描 messages 重算 startedAt', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+  const start = daemon.indexOf('for (const persisted of archive.listActiveWatchdogs())')
+  const end = daemon.indexOf('const unboundDevSpaceTurns = new Map()', start)
+  expect(start).toBeGreaterThan(-1)
+  expect(end).toBeGreaterThan(start)
+  const restore = daemon.slice(start, end)
+  expect(restore).toContain('startedAt: Number(persisted.startedAt)')
+  expect(restore).not.toContain('SELECT MIN(create_time)')
+  expect(restore).not.toContain('turn_exchange_id = ? OR request_id = ? OR message_id = ?')
+})
+
 test('DevSpace binding probe 在 canonical IDs 全已知时必须跳过 merge', async () => {
   const daemon = await fs.readFile(
     new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
