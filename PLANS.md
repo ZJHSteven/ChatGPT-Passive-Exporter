@@ -15,6 +15,7 @@
 5. 跑 archive-daemon 定向测试 + 全量 `npm run check`。通过后受控 reload production daemon。
 6. 生产验收至少覆盖：本机 Bridge `/health` 连续快速响应；LifeOps search/read 多轮不再撞 5s/12s；制造/等待自然 DevSpace audit burst 时 daemon state 的 yielded batch 递增且 Bridge 仍可响应。
 7. 不通过简单放大 LifeOps 5s/12s timeout 掩盖根因；只有确认 daemon 长尾消失后才重新评估这些预算是否需要调整。
+8. 生产首轮 LifeOps Reader smoke 若暴露超大响应，则继续收缩 Bridge Reader：canonical messages 必须在 SQLite 层先按 ordinal 游标分页，禁止“全聊天读入 Node 后再 slice”；tool / API / reasoning / system 等非面向用户正文只保留生命周期字段，不向 Reader 返回原始 text。目标是 limit_turns=3 的网络体积与目标 turn 成正比，而不是与整条工具历史成正比。
 
 ## 2026-10-16 Bark / Watchdog 手机通知第二轮人因化
 
