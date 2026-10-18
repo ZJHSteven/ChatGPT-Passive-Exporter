@@ -99,6 +99,60 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('完全相同的 live message 只推进观察时间，任何 canonical 变化仍走完整 merge', () => {
+    const db = tempDb()
+    try {
+      const page = (status: string) => ({
+        title: 'no-op merge',
+        conversation_id: 'noop-merge',
+        current_node: 'a1',
+        messages: [{
+          id: 'a1',
+          author: { role: 'assistant' },
+          recipient: 'all',
+          channel: 'final',
+          status,
+          content: { content_type: 'text', parts: ['same body'] },
+          metadata: { turn_exchange_id: 'turn-1' },
+        }],
+      })
+
+      db.mergeLiveMessagesPage(page('finished'), { observedAt: 1000 })
+      const first = db.db.prepare(`
+        SELECT raw_json AS rawJson, last_seen_at AS lastSeenAt,
+               source_observed_at AS sourceObservedAt, status
+        FROM messages WHERE conversation_id='noop-merge' AND message_id='a1'
+      `).get() as { rawJson: string, lastSeenAt: number, sourceObservedAt: number, status: string }
+
+      db.mergeLiveMessagesPage(page('finished'), { observedAt: 2000 })
+      const repeated = db.db.prepare(`
+        SELECT raw_json AS rawJson, last_seen_at AS lastSeenAt,
+               source_observed_at AS sourceObservedAt, status
+        FROM messages WHERE conversation_id='noop-merge' AND message_id='a1'
+      `).get() as { rawJson: string, lastSeenAt: number, sourceObservedAt: number, status: string }
+      expect(repeated).toMatchObject({
+        rawJson: first.rawJson,
+        lastSeenAt: 2000,
+        sourceObservedAt: 2000,
+        status: 'finished',
+      })
+
+      db.mergeLiveMessagesPage(page('in_progress'), { observedAt: 3000 })
+      const changed = db.db.prepare(`
+        SELECT raw_json AS rawJson, last_seen_at AS lastSeenAt,
+               source_observed_at AS sourceObservedAt, status
+        FROM messages WHERE conversation_id='noop-merge' AND message_id='a1'
+      `).get() as { rawJson: string, lastSeenAt: number, sourceObservedAt: number, status: string }
+      expect(changed.status).toBe('in_progress')
+      expect(changed.rawJson).not.toBe(first.rawJson)
+      expect(changed.lastSeenAt).toBe(3000)
+      expect(changed.sourceObservedAt).toBe(3000)
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('本地并发访问使用有限 busy timeout，避免瞬时写锁立即抛错', () => {
     const db = tempDb()
     try {

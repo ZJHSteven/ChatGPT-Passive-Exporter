@@ -1898,9 +1898,26 @@ export class ChatArchiveDb {
         source_observed_at=max(COALESCE(messages.source_observed_at, 0), excluded.source_observed_at)
     `)
     const getExistingMessageContent = this.db.prepare(`
-      SELECT text, content_json AS contentJson
+      SELECT text, content_json AS contentJson, raw_json AS rawJson
       FROM messages
       WHERE conversation_id = ? AND message_id = ?
+    `)
+    const touchExistingMessage = this.db.prepare(`
+      UPDATE messages
+      SET last_seen_at=max(COALESCE(last_seen_at, ?), ?),
+          source_observed_at=max(COALESCE(source_observed_at, 0), ?)
+      WHERE conversation_id=? AND message_id=?
+    `)
+    const touchExistingMappingNode = this.db.prepare(`
+      UPDATE mapping_nodes
+      SET last_seen_at=max(last_seen_at, ?),
+          source_observed_at=max(source_observed_at, ?)
+      WHERE conversation_id=? AND node_id=?
+    `)
+    const touchExistingImageAssets = this.db.prepare(`
+      UPDATE image_assets
+      SET last_seen_at=max(last_seen_at, ?)
+      WHERE conversation_id=? AND message_id=?
     `)
     const insertPart = this.db.prepare(`
       INSERT INTO message_parts (
@@ -1949,16 +1966,19 @@ export class ChatArchiveDb {
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `)
 
+    const touchedMessageIds: string[] = []
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const existingConversation = this.db.prepare(
         'SELECT title FROM conversations WHERE id = ?',
       ).get(conversationId) as { title?: string } | undefined
       const conversationExists = Boolean(existingConversation)
+      const mergedTitle = preferredConversationTitle(existingConversation?.title, conversation.title, conversationId)
+      const conversationTitleChanged = Boolean(existingConversation && existingConversation.title !== mergedTitle)
       if (updateCurrentState || !conversationExists) {
         upsertConversation.run(
           conversationId,
-          preferredConversationTitle(existingConversation?.title, conversation.title, conversationId),
+          mergedTitle,
           conversation.currentNode ?? null,
           observedAt,
           now,
@@ -1996,12 +2016,15 @@ export class ChatArchiveDb {
         const metadata = record(rawMessage.metadata)
         const finishDetails = record(metadata.finish_details)
         const parentId = stringValue(metadata.parent_id)
+        const existing = knownBefore.has(message.id)
+          ? getExistingMessageContent.get(conversationId, message.id) as {
+              text?: unknown
+              contentJson?: unknown
+              rawJson?: unknown
+            } | undefined
+          : undefined
 
         if (options.preserveObservedTextPrefix === true) {
-          const existing = getExistingMessageContent.get(conversationId, message.id) as {
-            text?: unknown
-            contentJson?: unknown
-          } | undefined
           const existingText = typeof existing?.text === 'string' ? existing.text : ''
           const incomingText = typeof message.text === 'string' ? message.text : ''
           if (
@@ -2021,6 +2044,21 @@ export class ChatArchiveDb {
             }
           }
         }
+
+        const effectiveRawJson = json(effectiveRawMessage)
+        // first-party Body 经常重复返回完全相同的 canonical message。旧实现即使 raw_json
+        // 一个字节都没变，也会重写大 TEXT/JSON、DELETE+INSERT message_parts，并把该行再次
+        // 送进三套 FTS/resources rebuild；newMessages=0 的真实页面因此仍可同步耗时数百毫秒。
+        // raw canonical 完全相同时，正文/metadata/状态/资源派生都不可能改变，只推进“本次又看见”
+        // 的观察时间即可。若标题变化则保留旧完整路径，让本页 FTS title 按原语义刷新。
+        if (!conversationTitleChanged && typeof existing?.rawJson === 'string' && existing.rawJson === effectiveRawJson) {
+          touchExistingMessage.run(observedAt, observedAt, observedAt, conversationId, message.id)
+          touchExistingMappingNode.run(observedAt, observedAt, conversationId, message.id)
+          touchExistingImageAssets.run(observedAt, conversationId, message.id)
+          return
+        }
+
+        touchedMessageIds.push(message.id)
 
         upsertMessage.run(
           conversationId,
@@ -2049,7 +2087,7 @@ export class ChatArchiveDb {
           stringValue(metadata.reasoning_status),
           json(author),
           json(content),
-          json(effectiveRawMessage),
+          effectiveRawJson,
           observedAt,
           observedAt,
           observedAt,
@@ -2096,7 +2134,9 @@ export class ChatArchiveDb {
         gzipSync(Buffer.from(rawText, 'utf8')),
       )
 
-      this.rebuildConversationDerivedInsideTransaction(conversationId, conversation.messages.map(message => message.id))
+      if (touchedMessageIds.length > 0) {
+        this.rebuildConversationDerivedInsideTransaction(conversationId, touchedMessageIds)
+      }
       this.db.exec('COMMIT')
     }
     catch (error) {
