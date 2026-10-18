@@ -5188,72 +5188,134 @@ export class ChatArchiveDb {
       : Math.trunc(options.beforeOrdinal)
     const counts = this.db.prepare(`
       SELECT count(*) AS canonicalCount,
-             sum(CASE WHEN hidden=0 THEN 1 ELSE 0 END) AS visibleCount
+             sum(CASE WHEN hidden=0 THEN 1 ELSE 0 END) AS visibleCount,
+             min(ordinal) AS minOrdinal,
+             max(ordinal) AS maxOrdinal,
+             count(DISTINCT ordinal) AS distinctOrdinalCount,
+             sum(CASE WHEN ordinal IS NULL THEN 1 ELSE 0 END) AS nullOrdinalCount
       FROM messages
       WHERE conversation_id = ?
-    `).get(conversationId) as { canonicalCount?: number, visibleCount?: number } | undefined
+    `).get(conversationId) as {
+      canonicalCount?: number
+      visibleCount?: number
+      minOrdinal?: number | null
+      maxOrdinal?: number | null
+      distinctOrdinalCount?: number
+      nullOrdinalCount?: number
+    } | undefined
     const canonicalCount = Number(counts?.canonicalCount ?? 0)
     const visibleCount = Number(counts?.visibleCount ?? 0)
+    // Live 热路径已经不再每次全表重写 ordinal，但绝大多数 canonical Conversation 的
+    // 持久 ordinal 仍然是完整的 0..N-1。先用 O(N) 但只走窄索引的完整性检查；一旦成立，
+    // 后续页就能直接利用 messages_conversation_ordinal 做毫秒级 keyset/range 读取。
+    // 极少数历史/中间态若 ordinal 有洞、重复或 NULL，则自动回退动态 ROW_NUMBER，正确性优先。
+    const storedOrdinalUsable = canonicalCount === 0 || (
+      Number(counts?.nullOrdinalCount ?? 0) === 0
+      && Number(counts?.distinctOrdinalCount ?? 0) === canonicalCount
+      && Number(counts?.minOrdinal ?? 0) === 0
+      && Number(counts?.maxOrdinal ?? -1) === canonicalCount - 1
+    )
 
-    const beforeClause = beforeOrdinal === null ? '' : 'AND o.ordinal < ?'
-    const pageSql = `
-      WITH ordered AS (
-        SELECT row_id,
-               ROW_NUMBER() OVER (ORDER BY COALESCE(create_time, 0), row_id) - 1 AS ordinal
-        FROM messages
-        WHERE conversation_id = ?
-      ), page_ids AS (
-        SELECT o.row_id, o.ordinal
-        FROM ordered o
-        JOIN messages m ON m.row_id = o.row_id
-        WHERE m.hidden = 0 ${beforeClause}
-        ORDER BY o.ordinal DESC
-        LIMIT ?
-      )
-      SELECT
-        m.message_id AS messageId,
-        p.ordinal AS ordinal,
-        m.role,
-        m.author_name AS authorName,
-        m.recipient,
-        m.channel,
-        m.content_type AS contentType,
-        m.text,
-        m.hidden,
-        m.create_time AS createTime,
-        m.status,
-        m.end_turn AS endTurn,
-        m.request_id AS requestId,
-        m.turn_exchange_id AS turnExchangeId,
-        m.finish_type AS finishType,
-        m.finish_reason AS finishReason,
-        m.reasoning_status AS reasoningStatus,
-        m.model_slug AS modelSlug,
-        m.resolved_model_slug AS resolvedModelSlug
-      FROM page_ids p
-      JOIN messages m ON m.row_id = p.row_id
-      ORDER BY p.ordinal ASC
-    `
-    const pageArgs: Array<string | number> = beforeOrdinal === null
-      ? [conversationId, limit]
-      : [conversationId, beforeOrdinal, limit]
-    const messages = this.db.prepare(pageSql).all(...pageArgs) as unknown as Array<Record<string, unknown>>
-
+    let messages: Array<Record<string, unknown>>
     let eligibleVisibleCount = visibleCount
-    if (beforeOrdinal !== null) {
-      const eligible = this.db.prepare(`
+    if (storedOrdinalUsable) {
+      const beforeClause = beforeOrdinal === null ? '' : 'AND ordinal < ?'
+      const pageArgs: Array<string | number> = beforeOrdinal === null
+        ? [conversationId, limit]
+        : [conversationId, beforeOrdinal, limit]
+      messages = this.db.prepare(`
+        SELECT
+          message_id AS messageId,
+          ordinal,
+          role,
+          author_name AS authorName,
+          recipient,
+          channel,
+          content_type AS contentType,
+          text,
+          hidden,
+          create_time AS createTime,
+          status,
+          end_turn AS endTurn,
+          request_id AS requestId,
+          turn_exchange_id AS turnExchangeId,
+          finish_type AS finishType,
+          finish_reason AS finishReason,
+          reasoning_status AS reasoningStatus,
+          model_slug AS modelSlug,
+          resolved_model_slug AS resolvedModelSlug
+        FROM messages
+        WHERE conversation_id = ? AND hidden = 0 ${beforeClause}
+        ORDER BY ordinal DESC
+        LIMIT ?
+      `).all(...pageArgs).reverse() as unknown as Array<Record<string, unknown>>
+      if (beforeOrdinal !== null) {
+        const eligible = this.db.prepare(`
+          SELECT count(*) AS n
+          FROM messages
+          WHERE conversation_id = ? AND hidden = 0 AND ordinal < ?
+        `).get(conversationId, beforeOrdinal) as { n?: number } | undefined
+        eligibleVisibleCount = Number(eligible?.n ?? 0)
+      }
+    }
+    else {
+      const beforeClause = beforeOrdinal === null ? '' : 'AND o.ordinal < ?'
+      const pageArgs: Array<string | number> = beforeOrdinal === null
+        ? [conversationId, limit]
+        : [conversationId, beforeOrdinal, limit]
+      messages = this.db.prepare(`
         WITH ordered AS (
           SELECT row_id,
                  ROW_NUMBER() OVER (ORDER BY COALESCE(create_time, 0), row_id) - 1 AS ordinal
           FROM messages
           WHERE conversation_id = ?
+        ), page_ids AS (
+          SELECT o.row_id, o.ordinal
+          FROM ordered o
+          JOIN messages m ON m.row_id = o.row_id
+          WHERE m.hidden = 0 ${beforeClause}
+          ORDER BY o.ordinal DESC
+          LIMIT ?
         )
-        SELECT count(*) AS n
-        FROM ordered o
-        JOIN messages m ON m.row_id = o.row_id
-        WHERE m.hidden = 0 AND o.ordinal < ?
-      `).get(conversationId, beforeOrdinal) as { n?: number } | undefined
-      eligibleVisibleCount = Number(eligible?.n ?? 0)
+        SELECT
+          m.message_id AS messageId,
+          p.ordinal AS ordinal,
+          m.role,
+          m.author_name AS authorName,
+          m.recipient,
+          m.channel,
+          m.content_type AS contentType,
+          m.text,
+          m.hidden,
+          m.create_time AS createTime,
+          m.status,
+          m.end_turn AS endTurn,
+          m.request_id AS requestId,
+          m.turn_exchange_id AS turnExchangeId,
+          m.finish_type AS finishType,
+          m.finish_reason AS finishReason,
+          m.reasoning_status AS reasoningStatus,
+          m.model_slug AS modelSlug,
+          m.resolved_model_slug AS resolvedModelSlug
+        FROM page_ids p
+        JOIN messages m ON m.row_id = p.row_id
+        ORDER BY p.ordinal ASC
+      `).all(...pageArgs) as unknown as Array<Record<string, unknown>>
+      if (beforeOrdinal !== null) {
+        const eligible = this.db.prepare(`
+          WITH ordered AS (
+            SELECT row_id,
+                   ROW_NUMBER() OVER (ORDER BY COALESCE(create_time, 0), row_id) - 1 AS ordinal
+            FROM messages
+            WHERE conversation_id = ?
+          )
+          SELECT count(*) AS n
+          FROM ordered o
+          JOIN messages m ON m.row_id = o.row_id
+          WHERE m.hidden = 0 AND o.ordinal < ?
+        `).get(conversationId, beforeOrdinal) as { n?: number } | undefined
+        eligibleVisibleCount = Number(eligible?.n ?? 0)
+      }
     }
 
     const nextBeforeOrdinal = messages.length > 0 && Number.isFinite(Number(messages[0]!.ordinal))
