@@ -5592,6 +5592,16 @@ async function main() {
           && (confirmedTerminal || trigger.startsWith('watchdog:')),
         incidentKind: requestedIncidentKind,
       }))
+      if (Number(merged.timings?.totalMs || 0) >= 100) {
+        await log('slow canonical merge profile', {
+          conversationId,
+          trigger,
+          page: pages,
+          pageMessages: merged.pageMessageCount,
+          newMessages: merged.newMessageCount,
+          ...merged.timings,
+        })
+      }
       databaseMergeMs += performance.now() - mergeStartedAt
       if (pages === 0) latestDiagnostic = merged.diagnostic
       if (pages === 0 && merged.diagnostic.hasImageGenerationFinal) {
@@ -6238,7 +6248,7 @@ async function main() {
       const payload = accumulator.canonicalPayload(fallbackTitle)
       if (!payload) throw new Error('complete SSE did not produce canonical payload')
       const observedAt = Date.now()
-      const merged = archive.mergeLiveMessagesPage(payload, {
+      const merged = runControlPlaneStage('conversation-merge:live-sse-complete', () => archive.mergeLiveMessagesPage(payload, {
         observedAt,
         endpoint: source.endpoint ?? null,
         observationKind: 'live-sse-complete',
@@ -6247,7 +6257,16 @@ async function main() {
         updateCurrentState: true,
         updateIncidents: false,
         allowIncompleteTailIncident: false,
-      })
+      }))
+      if (Number(merged.timings?.totalMs || 0) >= 100) {
+        void log('slow canonical merge profile', {
+          conversationId: snapshot.conversationId,
+          trigger: 'live-sse-complete',
+          pageMessages: merged.pageMessageCount,
+          newMessages: merged.newMessageCount,
+          ...merged.timings,
+        }).catch(() => {})
+      }
       // 完整 SSE 已经被提升为 canonical messages 后，它在 binding 语义上就等价于一次
       // canonical Body 落库。不能因为随后 WSS complete 会跳过主动 Body refresh，就让
       // DevSpace metadata 永远失去 exact tool+args reconcile 的机会。
@@ -6323,7 +6342,7 @@ async function main() {
       if (!payload || !snapshot.conversationId) return null
 
       const observedAt = Date.now()
-      const merged = archive.mergeLiveMessagesPage(payload, {
+      const merged = runControlPlaneStage('conversation-merge:live-sse-partial', () => archive.mergeLiveMessagesPage(payload, {
         observedAt,
         endpoint: source.endpoint ?? null,
         observationKind: 'live-sse-partial',
@@ -6332,7 +6351,16 @@ async function main() {
         updateCurrentState: false,
         updateIncidents: false,
         allowIncompleteTailIncident: false,
-      })
+      }))
+      if (Number(merged.timings?.totalMs || 0) >= 100) {
+        void log('slow canonical merge profile', {
+          conversationId: snapshot.conversationId,
+          trigger: 'live-sse-partial',
+          pageMessages: merged.pageMessageCount,
+          newMessages: merged.newMessageCount,
+          ...merged.timings,
+        }).catch(() => {})
+      }
       liveSsePartialEvidenceMerged += 1
       liveSsePartialMessagesMerged += Number(snapshot.messages.length || 0)
       void log('partial live SSE evidence merged', {
@@ -7242,7 +7270,7 @@ async function main() {
     passiveBodyResponses += 1
 
     if (route.kind === 'body-latest') {
-      runControlPlaneStage('conversation-merge:passive-native', () => archive.mergeLiveMessagesPage(normalized, {
+      const passiveMerged = runControlPlaneStage('conversation-merge:passive-native', () => archive.mergeLiveMessagesPage(normalized, {
         observedAt: capturedAt,
         endpoint: `/backend-api/conversations/${conversationId}`,
         pageCursor: null,
@@ -7253,6 +7281,15 @@ async function main() {
         allowIncompleteTailIncident: false,
         incidentKind: 'abnormal-terminal',
       }))
+      if (Number(passiveMerged.timings?.totalMs || 0) >= 100) {
+        await log('slow canonical merge profile', {
+          conversationId,
+          trigger: 'passive-native',
+          pageMessages: passiveMerged.pageMessageCount,
+          newMessages: passiveMerged.newMessageCount,
+          ...passiveMerged.timings,
+        })
+      }
       // 第一方页面自然拿到的 latest Body 也是 canonical ingress。过去这里只 merge SQLite，
       // 没有触发 binding reconcile，导致“Body 已在库里但 metadata 仍 unbound”。
       const passiveDiagnostic = diagnoseLatestRun(normalized)
