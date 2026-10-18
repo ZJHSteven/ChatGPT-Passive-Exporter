@@ -331,6 +331,33 @@ test('startup 直接信任 durable active_watchdogs，不再逐条扫描 message
   expect(restore).not.toContain('turn_exchange_id = ? OR request_id = ? OR message_id = ?')
 })
 
+test('startup binding recovery 复用 cooperative worker，不同步 drain pending queue', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+  expect(daemon).toContain('const queuePendingDevSpaceBindingQueue =')
+  expect(daemon).toContain('devSpaceBindingEvidenceWork.set(key, row)')
+  expect(daemon).toContain('scheduleDevSpaceBindingWorker()')
+  expect(daemon).not.toContain('const drainPendingDevSpaceBindingQueue =')
+  expect(daemon).toContain('DevSpace matching queue recovery scheduled after startup')
+})
+
+test('DevSpace 全历史 metadata seed 只在首次迁移运行，稳态启动依赖 durable audit cursor', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+  const start = daemon.indexOf('const hadExistingDevSpaceMetadataBindings')
+  const end = daemon.indexOf('const devSpaceBackfilledBindings = 0', start)
+  expect(start).toBeGreaterThan(-1)
+  expect(end).toBeGreaterThan(start)
+  const seed = daemon.slice(start, end)
+  expect(seed).toContain('hadExistingDevSpaceMetadataBindings')
+  expect(seed).toContain('? []')
+  expect(seed).toContain(': devSpaceAuditBridge.metadataSummaries(10_000)')
+})
+
 test('DevSpace binding probe 在 canonical IDs 全已知时必须跳过 merge', async () => {
   const daemon = await fs.readFile(
     new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
