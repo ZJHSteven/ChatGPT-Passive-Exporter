@@ -22,7 +22,11 @@ import process from 'node:process'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { ChatArchiveDb, devSpaceVirtualConversationId } from '../src/local/archive-db.ts'
+import {
+  ChatArchiveDb,
+  devSpaceVirtualConversationId,
+  prepareLiveObservation,
+} from '../src/local/archive-db.ts'
 import {
   ActiveTurnRecorder,
   buildBodySnapshotTrace,
@@ -5575,6 +5579,9 @@ async function main() {
         }
       }
 
+      const observationPrepareStartedAt = performance.now()
+      const preparedObservation = await prepareLiveObservation(normalized)
+      const asyncObservationPrepareMs = performance.now() - observationPrepareStartedAt
       const mergeStartedAt = performance.now()
       const merged = runControlPlaneStage(`conversation-merge:${trigger}`, () => archive.mergeLiveMessagesPage(normalized, {
         observedAt: Date.now(),
@@ -5591,6 +5598,7 @@ async function main() {
           && (!watchdogTurnChanged || watchdogTurnAlreadyTimedOut)
           && (confirmedTerminal || trigger.startsWith('watchdog:')),
         incidentKind: requestedIncidentKind,
+        preparedObservation,
       }))
       if (Number(merged.timings?.totalMs || 0) >= 100) {
         await log('slow canonical merge profile', {
@@ -5599,6 +5607,7 @@ async function main() {
           page: pages,
           pageMessages: merged.pageMessageCount,
           newMessages: merged.newMessageCount,
+          asyncObservationPrepareMs,
           ...merged.timings,
         })
       }
@@ -7279,6 +7288,9 @@ async function main() {
     passiveBodyResponses += 1
 
     if (route.kind === 'body-latest') {
+      const observationPrepareStartedAt = performance.now()
+      const preparedObservation = await prepareLiveObservation(normalized)
+      const asyncObservationPrepareMs = performance.now() - observationPrepareStartedAt
       const passiveMerged = runControlPlaneStage('conversation-merge:passive-native', () => archive.mergeLiveMessagesPage(normalized, {
         observedAt: capturedAt,
         endpoint: `/backend-api/conversations/${conversationId}`,
@@ -7289,6 +7301,7 @@ async function main() {
         classifyTerminal: false,
         allowIncompleteTailIncident: false,
         incidentKind: 'abnormal-terminal',
+        preparedObservation,
       }))
       if (Number(passiveMerged.timings?.totalMs || 0) >= 100) {
         await log('slow canonical merge profile', {
@@ -7296,6 +7309,7 @@ async function main() {
           trigger: 'passive-native',
           pageMessages: passiveMerged.pageMessageCount,
           newMessages: passiveMerged.newMessageCount,
+          asyncObservationPrepareMs,
           ...passiveMerged.timings,
         })
       }
