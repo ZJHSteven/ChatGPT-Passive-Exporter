@@ -78,6 +78,36 @@ interface ArchiveSearchMetaRow {
 
 const CJK_CODEPOINT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
 
+function normalizedConversationTitle(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim() : ''
+}
+
+/**
+ * ChatGPT 在新会话自动命名尚未完成、或某些旧快照/分页响应里，会再次给出
+ * New chat / 新聊天。这种占位符不是一次真实的“重命名”，不能覆盖已经见过的
+ * 可读标题；否则同一 conversation 会在真实标题与 New chat 之间来回跳。
+ */
+export function isPlaceholderConversationTitle(value: unknown, conversationId: string | null = null): boolean {
+  const title = normalizedConversationTitle(value)
+  if (!title) return true
+  if (conversationId && title === conversationId) return true
+  return /^(?:new chat|新聊天)$/iu.test(title)
+}
+
+export function preferredConversationTitle(
+  existingTitle: unknown,
+  incomingTitle: unknown,
+  conversationId: string | null = null,
+): string {
+  const existing = normalizedConversationTitle(existingTitle)
+  const incoming = normalizedConversationTitle(incomingTitle)
+  if (isPlaceholderConversationTitle(incoming, conversationId)
+    && !isPlaceholderConversationTitle(existing, conversationId)) {
+    return existing
+  }
+  return incoming || existing || conversationId || ''
+}
+
 /**
  * 为“一到两字 CJK 任意子串”生成紧凑的短词 token。
  * 同一 message 内同时保存去重 unigram + 相邻 bigram；例如 `长江三峡` 会生成
@@ -1288,6 +1318,9 @@ export class ChatArchiveDb {
         source_id, conversation_id, part_name, record_ordinal, observed_at, sha256, raw_json_gzip
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `)
+    const getConversationTitle = this.db.prepare(
+      'SELECT title FROM conversations WHERE id = ?',
+    )
 
     let conversationCount = 0
     let nodeCount = 0
@@ -1311,7 +1344,11 @@ export class ChatArchiveDb {
           .filter(message => message && typeof message === 'object' && !Array.isArray(message))
         upsertConversation.run(
           conversationId,
-          stringValue(rawConversation.title) ?? 'ChatGPT Conversation',
+          preferredConversationTitle(
+            (getConversationTitle.get(conversationId) as { title?: string } | undefined)?.title,
+            stringValue(rawConversation.title) ?? 'ChatGPT Conversation',
+            conversationId,
+          ),
           stringValue(rawConversation.current_node),
           options.observedAt,
           now,
@@ -1914,11 +1951,14 @@ export class ChatArchiveDb {
 
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      const conversationExists = Boolean(this.db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(conversationId))
+      const existingConversation = this.db.prepare(
+        'SELECT title FROM conversations WHERE id = ?',
+      ).get(conversationId) as { title?: string } | undefined
+      const conversationExists = Boolean(existingConversation)
       if (updateCurrentState || !conversationExists) {
         upsertConversation.run(
           conversationId,
-          conversation.title,
+          preferredConversationTitle(existingConversation?.title, conversation.title, conversationId),
           conversation.currentNode ?? null,
           observedAt,
           now,
@@ -2263,9 +2303,16 @@ export class ChatArchiveDb {
 
     this.db.exec('BEGIN IMMEDIATE')
     try {
+      const existingConversation = this.db.prepare(
+        'SELECT title FROM conversations WHERE id = ?',
+      ).get(conversationId) as { title?: string } | undefined
       upsertConversation.run(
         conversationId,
-        stringValue(rawConversation.title) ?? canonical.title,
+        preferredConversationTitle(
+          existingConversation?.title,
+          stringValue(rawConversation.title) ?? canonical.title,
+          conversationId,
+        ),
         stringValue(rawConversation.current_node),
         observedAt,
         now,
@@ -3266,6 +3313,9 @@ export class ChatArchiveDb {
       && message.recipient === 'all'
       && message.text.trim().length > 0,
     )
+    const existingTitle = (this.db.prepare(
+      'SELECT title FROM conversations WHERE id = ?',
+    ).get(conversationId) as { title?: string } | undefined)?.title
 
     const upsertConversation = this.db.prepare(`
       INSERT INTO conversations (
@@ -3315,7 +3365,7 @@ export class ChatArchiveDb {
       this.db.prepare('DELETE FROM conversations WHERE id = ?').run(conversationId)
       upsertConversation.run(
         conversationId,
-        conversation.title,
+        preferredConversationTitle(existingTitle, conversation.title, conversationId),
         conversation.sourceFormat,
         conversation.currentNode ?? null,
         capturedAt,

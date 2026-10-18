@@ -3,7 +3,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, test } from 'vitest'
-import { ChatArchiveDb, devSpaceVirtualConversationId } from '../src/local/archive-db.ts'
+import {
+  ChatArchiveDb,
+  devSpaceVirtualConversationId,
+  preferredConversationTitle,
+} from '../src/local/archive-db.ts'
 import { devSpaceToolArgsFingerprint } from '../src/local/devspace-audit-bridge.ts'
 
 const tempDirs: string[] = []
@@ -61,6 +65,40 @@ function payload() {
 }
 
 describe('ChatArchiveDb', () => {
+  test('占位标题不能覆盖真实标题，但后续真实重命名可以更新', () => {
+    expect(preferredConversationTitle('正式标题', 'New chat', 'cid')).toBe('正式标题')
+    expect(preferredConversationTitle('正式标题', '新聊天', 'cid')).toBe('正式标题')
+    expect(preferredConversationTitle('正式标题', 'cid', 'cid')).toBe('正式标题')
+    expect(preferredConversationTitle('New chat', '后来生成的标题', 'cid')).toBe('后来生成的标题')
+    expect(preferredConversationTitle('旧真实标题', '用户新标题', 'cid')).toBe('用户新标题')
+  })
+
+  test('live body 不会把已知真实标题回退成 New chat', () => {
+    const db = tempDb()
+    try {
+      const page = (title: string, text: string) => ({
+        title,
+        conversation_id: 'title-monotonic',
+        current_node: 'a1',
+        messages: [{
+          id: 'a1', author: { role: 'assistant' }, recipient: 'all', channel: 'final',
+          content: { content_type: 'text', parts: [text] }, metadata: { turn_exchange_id: 'turn-1' },
+        }],
+      })
+      db.mergeLiveMessagesPage(page('已经生成的真实标题', 'one'), { observedAt: 1000 })
+      db.mergeLiveMessagesPage(page('New chat', 'two'), { observedAt: 2000 })
+      expect(db.db.prepare("SELECT title FROM conversations WHERE id='title-monotonic'").get())
+        .toMatchObject({ title: '已经生成的真实标题' })
+
+      db.mergeLiveMessagesPage(page('用户后来改的新标题', 'three'), { observedAt: 3000 })
+      expect(db.db.prepare("SELECT title FROM conversations WHERE id='title-monotonic'").get())
+        .toMatchObject({ title: '用户后来改的新标题' })
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('本地并发访问使用有限 busy timeout，避免瞬时写锁立即抛错', () => {
     const db = tempDb()
     try {
