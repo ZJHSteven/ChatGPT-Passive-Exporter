@@ -63,6 +63,7 @@ import {
   listPath,
   shouldRunDeferredGapRepair,
   shouldQueueWatchdogDiagnostic,
+  shouldConfirmWatchdogTimeoutAfterDiagnostic,
   shouldRetainSeenDevSpaceAudit,
   shouldRunHistoricalDevSpaceBackfill,
   shouldCloseWatchdogGenerationAfterSync,
@@ -1217,6 +1218,21 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       watchdogPendingAt: null,
       lastDiagnosticTurnKey: 'turn-b',
     })
+  })
+
+  test('watchdog 到点必须先确认 canonical turn，旧 generation 不能替尚未超时的新 turn 报超时', () => {
+    expect(shouldConfirmWatchdogTimeoutAfterDiagnostic({
+      watchdogTurnChanged: false,
+      watchdogTurnAlreadyTimedOut: false,
+    })).toBe(true)
+    expect(shouldConfirmWatchdogTimeoutAfterDiagnostic({
+      watchdogTurnChanged: true,
+      watchdogTurnAlreadyTimedOut: false,
+    })).toBe(false)
+    expect(shouldConfirmWatchdogTimeoutAfterDiagnostic({
+      watchdogTurnChanged: true,
+      watchdogTurnAlreadyTimedOut: true,
+    })).toBe(true)
   })
 
   test('watchdog 诊断后保留 tombstone；明确 terminal/new turn 再由其它路径结束或替换', () => {
