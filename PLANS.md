@@ -1,3 +1,21 @@
+## 2026-10-18 LifeOps / Archive Bridge 周期性 5s/12s 超时回归
+
+### 现场结论
+- LifeOps `search_conversations` 的 5 秒与 `read_conversation` 的 12 秒都来自 LifeOps Worker `archive-client.ts` 的人为 HTTP 预算，不是 SQLite 内部 timeout。
+- 同时段本机 `127.0.0.1:47832/health` 也会 3 秒零字节超时，因此 Cloudflare Tunnel / Access 不是根因；Archive Bridge 与 daemon 同进程，问题在本机 daemon 事件循环。
+- 同一生产 SQLite 用独立 CLI 搜索/读取通常仅约 0.7–0.9 秒，FTS/Reader 本身可用。故障时 daemon 会出现分钟级日志空窗和较高单核 CPU，占用期间 Bridge 无法调度。
+- 10 月 11 日已修过 live merge 全量派生重建导致的同类 event-loop starvation；当前该路径仍是 touched-message 增量维护，没有回滚。
+- 新发现的当前回归点：`pollDevSpaceAudits()` 用 `while (true)` 一次性吃完整个 durable audit backlog；每条 audit 又同步执行 recovery mirror、Binding Queue overlap drain、SQLite fingerprint/matching。并发长任务积压时会重新形成“整批 backlog 饿死主循环”。
+
+### ExecPlan
+1. 把 DevSpace audit consumer 改为 cooperative scheduling：每个事件循环 tick 只处理一个小批次，若仍有 backlog 用 `setImmediate` 续跑，明确把控制权交回 Node event loop。
+2. 防止 wake / fallback / continuation 重入或重复排队；durable cursor 仍保持“单条完整处理成功后才推进”，不改变掉电/异常恢复语义。
+3. 在 daemon state 增加轻量批次观测：最近批次处理数/耗时、累计批次数、因满批而主动 yield 次数，后续能直接判断是否又出现消费者长尾。
+4. 增加回归测试，明确禁止 `pollDevSpaceAudits` 再出现无界 `while (true)` drain，并验证 continuation 使用事件循环让步而非递归同步继续。
+5. 跑 archive-daemon 定向测试 + 全量 `npm run check`。通过后受控 reload production daemon。
+6. 生产验收至少覆盖：本机 Bridge `/health` 连续快速响应；LifeOps search/read 多轮不再撞 5s/12s；制造/等待自然 DevSpace audit burst 时 daemon state 的 yielded batch 递增且 Bridge 仍可响应。
+7. 不通过简单放大 LifeOps 5s/12s timeout 掩盖根因；只有确认 daemon 长尾消失后才重新评估这些预算是否需要调整。
+
 ## 2026-10-16 Bark / Watchdog 手机通知第二轮人因化
 
 ### 现场问题
