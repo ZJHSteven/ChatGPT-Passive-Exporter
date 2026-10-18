@@ -214,6 +214,33 @@ export interface LiveMergeResult {
   totalMessageCount: number
   resourceCount: number
   diagnostic: RunDiagnostic
+  /**
+   * live merge 热路径分段计时。
+   *
+   * 这里故意记录 wall time，而不是把“SQLite 慢”当成一个不可拆的黑盒：
+   * - prepare: canonical adapter / JSON stringify / known-id lookup；
+   * - messageWrite: conversation/head + message/mapping/parts 的事务内写入；
+   * - observation: raw observation 的 sha256 + gzip + BLOB insert；
+   * - derived: FTS/resources/count 等派生层更新；
+   * - commit: WAL commit 本身；
+   * - postMerge: diagnostic / incident ledger / 最终 count 读取。
+   *
+   * daemon 只会对明显慢页记录这些值，避免正常采集日志膨胀。
+   */
+  timings: {
+    totalMs: number
+    prepareMs: number
+    conversationHeadMs: number
+    messageWriteMs: number
+    observationMs: number
+    derivedMs: number
+    commitMs: number
+    postMergeMs: number
+    fullRewriteMessages: number
+    observationOnlyTouches: number
+    rawJsonBytes: number
+    observationGzipBytes: number
+  }
 }
 
 export interface LiveMappingMergeResult {
@@ -1824,6 +1851,7 @@ export class ChatArchiveDb {
       allowIncompleteTailIncident?: boolean
     } = {},
   ): LiveMergeResult {
+    const mergeStartedAt = performance.now()
     const conversation = adaptConversation(payload)
     if (conversation.sourceFormat !== 'messages') throw new Error('Live merge currently requires a plural messages[] payload')
     const conversationId = conversation.conversationId
@@ -1836,6 +1864,7 @@ export class ChatArchiveDb {
     const rawText = json(payload)
     const messageIds = conversation.messages.map(message => message.id)
     const knownBefore = this.knownMessageIds(conversationId, messageIds)
+    const prepareFinishedAt = performance.now()
 
     const upsertConversation = this.db.prepare(`
       INSERT INTO conversations (
@@ -1967,8 +1996,16 @@ export class ChatArchiveDb {
     `)
 
     const touchedMessageIds: string[] = []
+    let observationOnlyTouches = 0
+    let conversationHeadMs = 0
+    let messageWriteMs = 0
+    let observationMs = 0
+    let derivedMs = 0
+    let commitMs = 0
+    let observationGzipBytes = 0
     this.db.exec('BEGIN IMMEDIATE')
     try {
+      const conversationHeadStartedAt = performance.now()
       const existingConversation = this.db.prepare(
         'SELECT title FROM conversations WHERE id = ?',
       ).get(conversationId) as { title?: string } | undefined
@@ -2005,7 +2042,9 @@ export class ChatArchiveDb {
           )
         }
       }
+      conversationHeadMs = performance.now() - conversationHeadStartedAt
 
+      const messageWriteStartedAt = performance.now()
       conversation.messages.forEach((message, pageOrdinal) => {
         if (options.insertUnknownOnly === true && knownBefore.has(message.id)) return
         const rawMessage = record(message.raw)
@@ -2055,6 +2094,7 @@ export class ChatArchiveDb {
           touchExistingMessage.run(observedAt, observedAt, observedAt, conversationId, message.id)
           touchExistingMappingNode.run(observedAt, observedAt, conversationId, message.id)
           touchExistingImageAssets.run(observedAt, conversationId, message.id)
+          observationOnlyTouches += 1
           return
         }
 
@@ -2119,7 +2159,11 @@ export class ChatArchiveDb {
           })
         }
       })
+      messageWriteMs = performance.now() - messageWriteStartedAt
 
+      const observationStartedAt = performance.now()
+      const compressedObservation = gzipSync(Buffer.from(rawText, 'utf8'))
+      observationGzipBytes = compressedObservation.byteLength
       this.db.prepare(`
         INSERT INTO live_observations (
           conversation_id, observation_kind, endpoint, page_cursor, observed_at, sha256, raw_json_gzip
@@ -2131,19 +2175,25 @@ export class ChatArchiveDb {
         options.pageCursor ?? null,
         observedAt,
         sha256Text(rawText),
-        gzipSync(Buffer.from(rawText, 'utf8')),
+        compressedObservation,
       )
+      observationMs = performance.now() - observationStartedAt
 
+      const derivedStartedAt = performance.now()
       if (touchedMessageIds.length > 0) {
         this.rebuildConversationDerivedInsideTransaction(conversationId, touchedMessageIds)
       }
+      derivedMs = performance.now() - derivedStartedAt
+      const commitStartedAt = performance.now()
       this.db.exec('COMMIT')
+      commitMs = performance.now() - commitStartedAt
     }
     catch (error) {
       this.db.exec('ROLLBACK')
       throw error
     }
 
+    const postMergeStartedAt = performance.now()
     const diagnostics = diagnoseRuns(payload as never)
     const diagnostic = diagnostics.at(-1) ?? diagnoseLatestRun(payload as never)
 
@@ -2205,6 +2255,20 @@ export class ChatArchiveDb {
       totalMessageCount: Number(counts.messageCount),
       resourceCount: Number(counts.resourceCount),
       diagnostic,
+      timings: {
+        totalMs: performance.now() - mergeStartedAt,
+        prepareMs: prepareFinishedAt - mergeStartedAt,
+        conversationHeadMs,
+        messageWriteMs,
+        observationMs,
+        derivedMs,
+        commitMs,
+        postMergeMs: performance.now() - postMergeStartedAt,
+        fullRewriteMessages: touchedMessageIds.length,
+        observationOnlyTouches,
+        rawJsonBytes: Buffer.byteLength(rawText, 'utf8'),
+        observationGzipBytes,
+      },
     }
   }
 
