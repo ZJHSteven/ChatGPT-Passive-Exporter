@@ -2686,6 +2686,7 @@ async function main() {
   let devSpaceBindingQueueEnqueued = 0
   let devSpaceBindingQueueAttempts = 0
   let devSpaceBindingQueueMatches = 0
+  let devSpaceBindingProbeMergesSkipped = 0
   // 这里只追踪“最近有 DevSpace 活动、并且当前没有 running tool”的 metadata。
   // 每项保留上一轮观察到的 idle 时长，用于精确识别 1/3/5 分钟阈值穿越。
   const devSpaceIdleCandidates = new Map()
@@ -3952,6 +3953,7 @@ async function main() {
       bindingQueueEnqueued: devSpaceBindingQueueEnqueued,
       bindingQueueAttempts: devSpaceBindingQueueAttempts,
       bindingQueueMatches: devSpaceBindingQueueMatches,
+      bindingProbeMergesSkipped: devSpaceBindingProbeMergesSkipped,
       unboundActive: unboundDevSpaceTurns.size,
       idleCandidates: devSpaceIdleCandidates.size,
       idleNotificationsQueued: devSpaceIdleNotificationsQueued,
@@ -5440,6 +5442,45 @@ async function main() {
         ? new Set(passivePageEntry.knownBeforeIds)
         : archive.knownMessageIds(conversationId, ids)
       const allKnownBefore = ids.length > 0 && ids.every(id => knownBefore.has(id))
+
+      // devspace:binding-probe 只用于在候选 Conversation 里寻找已经落库的 canonical
+      // DevSpace tool evidence，从而把 unresolved metadata 绑定到 CID/turn。若当前 body 这一页
+      // 的全部 message ID 都已经存在，再跑 mergeLiveMessagesPage() 不会增加 canonical 信息，
+      // 却会重复触发 messages/FTS/resources/raw observation 写放大。生产曾实测出现
+      // newMessages=0 但 dbMergeMs=10~18 秒，期间同进程 Archive Bridge 完全无法响应。
+      //
+      // 这个快路严格只用于 binding-probe；WSS/Watchdog/catalog 等正式同步即便 ID 全已知，
+      // 仍继续 merge，以便捕获同 ID 上的状态、终止字段或内容变化。
+      if (trigger === 'devspace:binding-probe' && allKnownBefore) {
+        devSpaceBindingProbeMergesSkipped += 1
+        const skippedPages = pages + 1
+        void log('DevSpace binding probe reused stored canonical page; merge skipped', {
+          conversationId,
+          page: skippedPages,
+          messages: ids.length,
+          cursor,
+        }).catch(() => {})
+        return {
+          conversationId,
+          pages: skippedPages,
+          newMessages,
+          currentNode: first.current_node ?? null,
+          updateTime: first.update_time ?? null,
+          diagnostic: latestDiagnostic ?? preliminaryDiagnostic,
+          newIncident,
+          newHistoricalIncidents: [],
+          imageGenerationEvent,
+          exactMapping: false,
+          passivePagesUsed,
+          databaseMergeMs,
+          terminalSettleNeeded,
+          watchdogTurnChanged,
+          watchdogTurnStartedAt,
+          watchdogTurnAlreadyTimedOut,
+          recoverySuperseded: 0,
+        }
+      }
+
       const mergeStartedAt = performance.now()
       const merged = archive.mergeLiveMessagesPage(normalized, {
         observedAt: Date.now(),
