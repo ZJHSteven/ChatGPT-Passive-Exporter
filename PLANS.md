@@ -35,8 +35,33 @@
 5. 跑 archive-daemon 定向测试 + 全量 `npm run check`。通过后受控 reload production daemon。
 6. 生产验收至少覆盖：本机 Bridge `/health` 连续快速响应；LifeOps search/read 多轮不再撞 5s/12s；制造/等待自然 DevSpace audit burst 时 daemon state 的 yielded batch 递增且 Bridge 仍可响应。
 7. 不通过简单放大 LifeOps 5s/12s timeout 掩盖根因；只有确认 daemon 长尾消失后才重新评估这些预算是否需要调整。
-8. 生产首轮 LifeOps Reader smoke 若暴露超大响应，则继续收缩 Bridge Reader：canonical messages 必须在 SQLite 层先按 ordinal 游标分页，禁止“全聊天读入 Node 后再 slice”；tool / API / reasoning / system 等非面向用户正文只保留生命周期字段，不向 Reader 返回原始 text。目标是 limit_turns=3 的网络体积与目标 turn 成正比，而不是与整条工具历史成正比。
+8. **2026-10-19 语义纠正：Reader 性能优化只能改变“怎么分页”，不能改变“Conversation 包含哪些 canonical 节点”。** 保留 SQLite 内 ordinal/keyset 分页，禁止“全聊天读入 Node 后再 slice”；但 tool call / tool result / API / system / developer 等非 hidden canonical 节点仍必须进入正常 ordinal 与分页并返回正文。reasoning 节点也保留在节点序列中，仅内部 reasoning 正文继续 redacted。此前为缩响应而让内部节点不占分页位置的做法属于错误语义收缩，现已撤回。
 9. 对 `devspace:binding-probe` 增加 no-op merge 快路：第一页全部 message ID 已存在时，直接返回 payload 的 diagnostic 并由后续 Matching Queue 从 SQLite 读 canonical evidence；禁止再次触发 messages/FTS/resources/raw observation 写放大。增加 skipped counter/log 与回归测试，并用刚才出现 17.8s no-op merge 的真实生产样本做 smoke。
+
+## 2026-10-19 Archive 控制平面事件循环隔离 ExecPlan
+
+目标：把 Archive daemon 明确分成“必须随时响应的控制平面”和“允许耗时的数据库/归档数据平面”。Bridge `/health`、LifeOps search/read 入口、DevSpace UDP wake、WSS/SSE 生命周期、Bark timer、CDP health/timeout 都不能再被任一同步 SQLite merge/binding/reindex 路径阻塞到秒级，更不能分钟级。
+
+已确认时间线：
+1. **长期架构弱点一直存在，但本次分钟级复发是近期新工作量放大。** 2026-10-11 曾有同类事件：live merge 对约 3500-message Conversation 更新 24 条消息时，全量 ordinal/FTS/resources/markdown 重建可同步堵 48–54s；`43febfe` 已修成 touched-message 增量，当前没有回滚。
+2. 2026-10-16 `029fff7` 为 durable audit cursor 引入了“同步读完整 backlog”的 `while(true)` 消费方式。此前单条 audit 相对轻时风险不易显现；积压大时仍可饿死 event loop。
+3. 2026-10-18 `64dcc1d` centralized Binding Queue 的**方向正确**：多 Body/SSE/passive ingress 统一发布 canonical evidence，只匹配 pending/unbound 工作，避免每个入口各自维护 binding。问题在于实现把 `drainDevSpaceBindingQueueForAudit()` 放进每条 audit 的同步热路径：一条 audit 最多同步扫 256 个 pending evidence，每个 evidence 又会做 stored-turn read、metadata revision、activity/matcher、binding/recovery mirror。因此“数据集合更小”并不等于“延迟更小”，工作被集中到了最敏感的事件循环 callback 内。
+4. 同一天 unbound repair 的 `devspace:binding-probe` 又会在 `newMessages=0` 时做完整 canonical merge；真实生产记录有 17.8s / 10.4s 纯 no-op merge。无界 audit backlog × 每 audit 同步 queue drain × 偶发十几秒 merge 叠加，解释了 10/18 Bark/Bridge/CDP 一起出现分钟级迟到。
+5. 当前数据库约 11.56GiB 是**放大器而不是搜索根因**：Conversation-first CLI 搜索（包含 Node 冷启动）当前 p50 约 0.5–0.6s；真实 LifeOps `/v1/search` 的 Archive 内部 timing 约 0.13s。大库更显著影响写放大、全量扫描、FTS/resource 重建与维护，不应把它解释成索引读天然需要数秒。
+
+近期止血已落地：
+- audit backlog 改为小批次 + `setImmediate` continuation；
+- `devspace:binding-probe` 全部 message 已知时在 merge 前 fast-path；
+- audit 内 exact-match/rebind 移到 cooperative binding worker，每 tick 最多一条 evidence；
+- Reader 恢复完整 canonical 节点语义，同时保留 DB-side pagination / ordinal index 快路。
+
+下一阶段架构门槛：
+1. **先量化 event-loop SLO，而不是继续凭日志空窗猜。** daemon state 增加 event-loop lag（recent/max/percentile 或等价 timer drift）以及每个同步阶段的 wall time；任何单次同步 section >100ms 记 slow-path，>1s 记 infrastructure incident。目标控制平面常态 P99 <50–100ms。
+2. **`setImmediate` 只是 cooperative 止血，不是最终隔离。** 它只能在两个工作项之间 yield，无法抢占一条 10s 的 `DatabaseSync.run()/all()`。所有可能随数据规模增长到 >100ms 的 merge、FTS/resource rebuild、binding scan/rebind、历史 repair 必须迁离控制平面线程。
+3. 优先把重数据库工作迁到独立 Worker Thread/child process（更偏向 child process 做故障域隔离）；主 daemon 只 enqueue 小任务、接收小结果。SQLite 继续 WAL：writer 串行化是数据库约束，但不能等价成 Node HTTP/WSS/UDP/timer 也一起串行等待。
+4. Bridge Reader/Search 最终也应具备独立进程入口或专用 read worker。独立 CLI 在 daemon 卡死时仍能 0.5–0.9s 完成搜索已经证明“读服务与采集 writer 解耦”可行；这样即使 writer 出现坏 SQL，LifeOps/Reader 也不会一起关门。
+5. 所有 bulk/recovery/reindex 路径都必须有有界 batch、显式 yield/worker 边界和状态可观测；禁止在 UDP/WSS/HTTP callback 内直接循环 drain 未知数量工作。
+6. 先完成 event-loop/stage telemetry，再按真实热点逐项迁移；不通过简单放大 LifeOps 5s/12s timeout 掩盖基础设施阻塞。
 
 ## 2026-10-16 Bark / Watchdog 手机通知第二轮人因化
 
