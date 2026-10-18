@@ -63,6 +63,13 @@
 5. 所有 bulk/recovery/reindex 路径都必须有有界 batch、显式 yield/worker 边界和状态可观测；禁止在 UDP/WSS/HTTP callback 内直接循环 drain 未知数量工作。
 6. 先完成 event-loop/stage telemetry，再按真实热点逐项迁移；不通过简单放大 LifeOps 5s/12s timeout 掩盖基础设施阻塞。
 
+2026-10-19 05:2x 补充：下一阶段先把 canonical writer 的 630ms 拆成可归因阶段，再决定物理拆库/sidecar 边界。当前生产 SQLite 文件约 12.48GB、4KiB page、约304万页，WAL约96MB；连接仍使用 SQLite 默认 `cache_size=-2000`（约2MiB）且 `mmap_size=0`。官方 SQLite 文档确认 `-2000` 就是约2,048,000 bytes 的默认 page cache，mmap 默认关闭；这对当前热工作集值得单独基准，不应直接凭经验调大。定点 `dbstat` 已确认 `messages` 主表本身约4.90GB/119.6万页（不含其索引和FTS），说明“热message layer约3GB”已低估；44万行但平均行很肥，`text/metadata_json/author_json/content_json/raw_json` 冗余和 overflow page 会放大 merge I/O。后续：
+- 不再跑全库 dbstat 扫描；按对象/样本做低扰动审计。
+- 给 `mergeLiveMessagesPage()` 增加内部 timing：pre-adapt/json/knownIds、conversation/head、message upsert、parts/mapping、raw observation gzip+insert、derived FTS/resources/count、incident/post-merge；真实 Body 直接输出阶段耗时。
+- 用独立只读连接对默认2MiB cache 与候选64/128MiB cache、256MiB mmap做代表性 Reader/Search/binding SQL A/B；只有生产样本显著获益才落 PRAGMA，避免“调参即修复”的错觉。
+- 重点验证 `live_observations` 虽然查询冷，但目前与 canonical hot merge 同事务写入 `gzipSync(rawText)` + blob insert；若其CPU/WAL/page-cache成本显著，就把 observation journal 从热事务移出，优先拆到独立冷库/sidecar，而不是让协议取证拖住 message writer。
+- writer sidecar 设计必须避免主 daemon 继续持有同步写连接等待 SQLite writer lock；目标不是“换线程执行同一把锁”，而是控制面不再同步等待重写入。
+
 ## 2026-10-16 Bark / Watchdog 手机通知第二轮人因化
 
 ### 现场问题
