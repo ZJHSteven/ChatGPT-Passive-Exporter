@@ -1,28 +1,20 @@
-## 2026-10-19 《整理磁盘容量》Watchdog 已触发但手机无通知
+## 2026-10-19 《整理磁盘容量》Watchdog generation 串轮取证
 
-### 现场结论
-- Conversation `6ab60de8-ccf8-83e9-8848-9d15ee8bf177` 并未逃出 Watchdog：Archive Reader 已返回 active generation，`startType=devspace:first-tool`，且存在由 `body-page:watchdog:active-timeout` 产生的 open `active-zombie` incident。
-- 根因已确认：22:50:37 的 `conversation-turn-complete` 清掉 active 后，22:50:41 一个仍属于旧 turn `7198391f-...` 的 DevSpace audit 又把同 CID 重建为 generation；22:59:11 用户真正开启新 turn `a2e77cfd-...` 后，由于 conversation 级 generation 已存在，第一把 DevSpace tool 只推进 `lastEventAt`，没有建立新 generation。旧 generation 到 23:35 后又先发 timeout、再拉 Body，导致新 turn 被旧 deadline 吞掉。
-- DevSpace 原始 `request_meta_json` / `process_session_id` 均没有稳定 per-turn identity，因此不能靠隐藏字段直接分轮。修复改为让每次 canonical Body 尽早给 generation 绑定 `turn_exchange_id`，并把 timeout 用户通知延迟到 Body 核实之后：同 turn 才确认超时；若 Body 已切到尚未超时的新 turn，则废弃旧 deadline、按新 user create_time 重置计时并补发新 turn start。
-- Bark ledger 另证实旧 generation 的 start/timeout/diagnosis 均曾以 HTTP 200 返回；用户未看到这些旧通知属于下游呈现问题，与本轮“新 turn 没有独立 generation”是两层问题，不能混为一个根因。
-- 用户明确反馈：该聊天本轮既没收到 Watchdog 开始通知，也没收到约一小时后的超时通知；需要把 notification ledger 与 Bark 发送结果逐层对齐，不能只看 active_watchdogs/incident 就判定用户已经收到通知。
+### 已确认事实
+- 用户否决上一轮三层状态机改法；commit `8c269ba` 已精确撤回。恢复原语义：**45min 到点立即发第一阶段 timeout；随后拉 Body，再发第二阶段 watchdog diagnosis**。同时撤销 `>=60s` idle-resume Body probe 和 canonical Body 自动 rollover generation；cooperative binding worker、标题回退、DevSpace wake 等无关修复保持不动。
+- CID=`6ab60de8-ccf8-83e9-8848-9d15ee8bf177` 在 22:50:37 确实收到 WSS `conversation-turn-complete`，但紧随其后的第一次 Body 指向更早的重叠 turn `762175a2-...`。22:49:27 新开的 turn `7198391f-...` 实际继续运行到 22:57:52，并有 `end_turn=1 / finish_type=stop` 的正常 final。因此 22:50:37 complete 不能解释成 `719...` 的结束。
+- `719...` 的正常 final **没有被 Archive 实时看到**：其 `create_time=22:57:52`，但 `first_seen_at=23:35:54`，直到 45min Watchdog Body diagnosis 才补入数据库。该 CID 在 22:50:37 之后再无任何 WSS `conversation-turn-complete`，所以 `719...` 的 complete 确实丢失。
+- `conversations` WSS carrier 在 22:57:52 final 时仍在线，直到 22:58:29 才旋转；activeSockets 始终 >=2，未形成 global gap。因此不能简单归因“final 时 WSS 已断线”。
+- 旧 turn 最后一次 DevSpace audit 于 22:57:44 完成；22:59:02 系统确实跨过 1min idle 并发出 `devspace-idle`（Bark HTTP 200）。用户 22:59:11 又发新 turn `a2e77cfd-...`，22:59:32 DevSpace tool 恢复，因此 3min/5min idle 阈值被新活动打断，原有 **5min 才拉一次 bound Body** 的后验兜底没有机会触发。
+- DevSpace `tool_audit.request_meta_json` 已保存完整 Host `_meta`，但 `719...` 与 `a2e...` 的 `openai/session`、`openai/subject`、organization、userAgent 全相同；`process_session_id` 只是本地命令会话，也无 turn 语义。新 turn 不会重新调用 `init`。因此现有 audit 数据里确实没有可直接使用的 per-turn / `turn_exchange_id`。
+- MCP SDK 的 handler extra 另外暴露 `requestId / taskId / sessionId / requestInfo(headers)`，DevSpace 当前只保留 `_meta`。其中 JSON-RPC requestId 很可能是单 tool 唯一值、stateless transport session 也未必存在；唯一仍值得取证的是 Host HTTP headers 是否携带同 turn 稳定、跨 turn 变化的 correlation 字段，尚未验证，不能先假定存在。
+- 通知链是另一条独立故障：该 CID 的 `watchdog-start`（22:49:50、22:51:26）、1min `devspace-idle`（22:59:02）、`watchdog-timeout`（23:35:47）和 `watchdog-diagnosis`（23:36:20）在 ledger 中均为 Bark HTTP 200，但用户未看到。必须单独排查 Bark/APNs/iOS 最终呈现，不可用“Watchdog 没触发”解释。
 
-### ExecPlan
-1. 以 CID `6ab60de8-ccf8-83e9-8848-9d15ee8bf177` 为主键，对齐 active_watchdogs 的 startedAt/lastWatchdogAt、当前 turnExchangeId、generation/tombstone 与 incident detectedAt。
-2. 查询 `turn_notification_ledger` 中该 CID 的 `watchdog-start`、`watchdog-timeout`、`watchdog-diagnosis` 条目，确认是否从未入账、入账但 skipped/deduped、还是已经实际调用 Bark。
-3. 若 ledger 显示 Bark 成功，再查 notifier/daemon 日志中的 HTTP 结果、group/title/subtitle，并核对是否存在“成功写账但未真正发送”或错误 conversation group/title 的情况。
-4. 若 start 与 timeout 的断点不同，分别沿 generation 创建路径和 timeout incident 路径取证；尤其检查 daemon startup/recovery 对历史 generation 故意不补发 start 的规则是否错误覆盖了一个仍在运行的新 generation。
-5. 定位根因后做最小修复并补回归：必须覆盖“长聊天已有旧 active/incidents + 新 turn DevSpace first-tool”的真实形态，证明 start 与 timeout 都能且只会发送一次。
-6. 运行定向 Watchdog/notifier 测试与全量 `npm run check`；通过后受控 reload production，再用自然 turn 验收，不伪造大量 Bark。
-
-### 2026-10-19 修复状态
-- `c6a30a6`：canonical Body 主动给 active Watchdog generation 绑定/校正 turn identity。
-- `6d4c4f0`、`1a10d15`：45min 到点只进入 pending，Body 核实后才写 LifeOps/Bark timeout；发现新 turn 且未真正超时则抑制旧 deadline。
-- `ad879f1`、`68d5596`、`e8340ee`：抽出 timeout-confirmation 纯规则、补回归测试与 `.d.mts` 声明。
-- `f99ede7`、`683a6d6`、`e01e522`：补跨设备场景的保守 turn-identity probe。已知 turn 的 DevSpace activity 静默 >=60s 后恢复时只排一次 canonical Body 探针，不靠时间差直接认定新 turn；Body 真正换 turn 才 rollover generation 并补 start。
-- 验证：`tests/archive-daemon.test.ts` 83/83；全量 `npm run check` 通过，30 个测试文件 / 288 tests 全绿，Chrome/Edge/Firefox/userscript 全部构建成功。
-- 生产已受控 reload：新 PID `25508`，`startupPhase=running`；reload 后 6s 复核 Bridge listening、WSS activeSockets=3、conversation transport observed=true、DevSpace wake listening=true（最近 wake latency 24ms）、LifeOps pending=0、lastError=null。
-- 剩余验收边界：尚未自然发生一条“部署后真实跨设备新 turn + 持续 45min”样本，因此代码/测试/生产加载均已验证，但完整 45min 自然生命周期仍待下一次真实样本被动验收。另：旧 generation 的 Bark ledger 曾返回 HTTP 200 而用户未见通知，这是独立的 Bark/iOS 呈现链问题，不应与本次 generation 状态机根因混淆。
+### 下一步边界
+1. 先保持原两阶段 Watchdog，不增加周期性 Body polling、不把 timeout 后移、不靠 idle 时间差直接重置 generation。
+2. 继续取证 MCP handler `requestInfo.headers` / `taskId` 是否存在真正 turn 级本地 correlation；若存在，只增加本地身份观测，不引入 ChatGPT 网络请求。
+3. 若确认 Host 完全不暴露 turn identity，则设计“候选 generation 但旧 deadline 不撤销”的多假设状态机：新工具簇可以成为候选新 task，但绝不因此延长/重置旧 45min；后续 WSS/Body/catalog 证据再归并。该方案需先单独评审重复 start/timeout 的人因语义，不能直接上线。
+4. 独立排查 Bark 200→手机不可见链路；这和 generation 串轮是两个问题。
 
 ## 2026-10-18 LifeOps / Archive Bridge 周期性 5s/12s 超时回归
 
