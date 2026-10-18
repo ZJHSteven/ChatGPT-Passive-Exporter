@@ -91,6 +91,7 @@ import {
   watchdogTriggerForStartType,
   syncSubrequestFetchOptions,
 } from '../scripts/chatgpt-archive-daemon.mjs'
+import { extractProjectCatalogPayload } from '../src/local/project-catalog.ts'
 
 test('daemon fatal 记录 Error stack 与任意 rejection，并尊重 --log', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-daemon-fatal-'))
@@ -254,6 +255,27 @@ test('DevSpace binding uses one persistent Matching Queue for canonical evidence
   expect(audit.indexOf('drainDevSpaceBindingQueueForAudit(event)')).toBeGreaterThan(-1)
   expect(audit.indexOf('drainDevSpaceBindingQueueForAudit(event)'))
     .toBeLessThan(audit.indexOf('dispatchUnboundWatchdogStartNotification('))
+})
+
+test('unbound gap repair requires Project sidebar discovery before terminal unbound completion', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+  const start = daemon.indexOf('const maybeRunGapRepair')
+  const end = daemon.indexOf('const attachGuardianEvents', start)
+  expect(start).toBeGreaterThan(-1)
+  expect(end).toBeGreaterThan(start)
+  const repair = daemon.slice(start, end)
+
+  expect(repair).toContain("familyRateLimitAllowed(rateLimits, 'project-catalog'")
+  expect(repair).toContain('no-passive-project-sidebar-after-gap')
+  const globalIndex = repair.indexOf("await reconcileCatalog('gap-repair')")
+  const projectIndex = repair.indexOf("await reconcileProjectSidebar('devspace-unbound-repair'")
+  const completionIndex = repair.indexOf('pending.catalogRepairCompletedAt = completedAt')
+  expect(globalIndex).toBeGreaterThan(-1)
+  expect(projectIndex).toBeGreaterThan(globalIndex)
+  expect(completionIndex).toBeGreaterThan(projectIndex)
 })
 
 test('global catalog replay 继承第一方 query 模板，只覆盖分页参数', () => {
@@ -1460,6 +1482,20 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(classifyConversationBackendUrl('/backend-api/conversations?exclude_conversation_origin=tpp&expand=false&hide_snorlax=false&is_archived=false&is_starred=false&limit=20&order=updated&offset=0')).toMatchObject({
       kind: 'catalog', offset: 0, limit: 20, globalCatalog: false, conversationOrigin: null, excludeConversationOrigin: 'tpp',
     })
+    expect(classifyConversationBackendUrl('/backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=5&limit=20&owned_only=false')).toEqual({
+      kind: 'project-sidebar',
+      limit: 20,
+      conversationsPerGizmo: 5,
+      ownedOnly: 'false',
+      cursor: null,
+    })
+    expect(classifyConversationBackendUrl('/backend-api/gizmos/g-p-test/conversations?cursor=abc&limit=5&owned_only=false')).toEqual({
+      kind: 'project-catalog',
+      gizmoId: 'g-p-test',
+      limit: 5,
+      ownedOnly: 'false',
+      cursor: 'abc',
+    })
     expect(classifyConversationBackendUrl('/backend-api/conversations/c1?include_has_versions=true&num_turns=10')).toEqual({
       kind: 'body-latest', conversationId: 'c1',
     })
@@ -1470,9 +1506,43 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(classifyConversationBackendUrl('https://example.com/backend-api/conversations?offset=0')).toBeNull()
   })
 
+  test('Project sidebar parser flattens nested recent conversations without treating them as Body', () => {
+    const parsed = extractProjectCatalogPayload({ kind: 'project-sidebar' }, {
+      cursor: null,
+      items: [
+        {
+          gizmo: {
+            gizmo: {
+              id: 'g-p-one',
+              display: { name: 'Project One' },
+            },
+          },
+          conversations: {
+            cursor: 'next-conversations',
+            items: [
+              { id: 'cid-1', title: 'One', update_time: '2026-10-18T00:00:00Z', mapping: null },
+              { id: 'cid-2', title: 'Two', update_time: '2026-10-17T00:00:00Z', mapping: null },
+            ],
+          },
+        },
+      ],
+    })
+    expect(parsed).toMatchObject({
+      cursor: null,
+      projects: [{
+        projectId: 'g-p-one',
+        projectName: 'Project One',
+        cursor: 'next-conversations',
+        conversationCount: 2,
+      }],
+    })
+    expect(parsed.conversations.map(item => item.id)).toEqual(['cid-1', 'cid-2'])
+  })
+
   test('Guardian cooldown block 只匹配 conversation REST；passive body 必须足够新才可替代 replay', () => {
     expect(shouldBlockGuardianConversationRest('https://chatgpt.com/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=false&is_starred=false')).toBe(true)
     expect(shouldBlockGuardianConversationRest('https://chatgpt.com/backend-api/conversations/c1?num_turns=10')).toBe(true)
+    expect(shouldBlockGuardianConversationRest('https://chatgpt.com/backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=5&limit=20&owned_only=false')).toBe(true)
     expect(shouldBlockGuardianConversationRest('wss://chatgpt.com/ws')).toBe(false)
     expect(passiveObservationMatchesReady(10_000, 9_000)).toBe(true)
     expect(passiveObservationMatchesReady(8_000, 10_000, 1_500)).toBe(false)

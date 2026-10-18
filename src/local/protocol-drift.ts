@@ -38,6 +38,8 @@ export interface ProtocolResponseShape {
   contentType: string | null
   topLevelKeys: string[]
   itemKeys: string[]
+  projectGizmoKeys?: string[]
+  projectConversationKeys?: string[]
   messageKeys: string[]
   messageMetadataKeys: string[]
   pageInfoKeys: string[]
@@ -47,7 +49,7 @@ export interface ProtocolResponseShape {
 
 export interface ProtocolReplayCandidate {
   eligible: boolean
-  family: 'catalog-global' | 'body-latest' | 'body-cursor' | 'mapping' | null
+  family: 'catalog-global' | 'project-sidebar' | 'project-catalog' | 'body-latest' | 'body-cursor' | 'mapping' | null
   reason: string
 }
 
@@ -247,6 +249,8 @@ export function protocolContractFamily(shape: ProtocolRequestShape): string {
   if (shape.route === '/backend-api/conversation/{conversation_id}' && shape.method === 'GET') return 'mapping'
   if (shape.route === '/backend-api/conversation/{conversation_id}' && shape.method !== 'GET') return 'conversation-action'
   if (shape.route === '/backend-api/conversation/init') return 'conversation-init'
+  if (shape.route === '/backend-api/gizmos/snorlax/sidebar') return 'project-sidebar'
+  if (shape.route === '/backend-api/gizmos/{gizmo_id}/conversations') return 'project-catalog'
   if (shape.route.startsWith('/backend-api/sentinel/chat-requirements/')) return 'sentinel'
   if (shape.route === '/backend-api/f/conversation' || shape.route === '/backend-api/f/conversation/{id}') return 'turn-submit'
   if (shape.route === '/backend-api/estuary/content') return 'asset'
@@ -258,6 +262,8 @@ export function protocolContractFamily(shape: ProtocolRequestShape): string {
 function familyIsOperationallyImportant(family: string): boolean {
   if (family.startsWith('catalog-')) return true
   return [
+    'project-sidebar',
+    'project-catalog',
     'body-latest',
     'body-cursor',
     'mapping',
@@ -275,6 +281,8 @@ function familyLabel(family: string): string {
     'catalog-tpp': 'Conversation List（TPP）',
     'catalog-non-tpp': 'Conversation List（非 TPP）',
     'catalog-filtered': 'Conversation List（Filtered）',
+    'project-sidebar': 'Project Sidebar Catalog',
+    'project-catalog': 'Project Conversation Catalog',
     'body-latest': 'Conversation Body',
     'body-cursor': 'Conversation Body 分页',
     mapping: 'Conversation Mapping',
@@ -421,6 +429,21 @@ export function buildProtocolResponseShape(input: ProtocolResponseInput): Protoc
     ? body as Record<string, unknown>
     : null
   const items = Array.isArray(record?.items) ? record?.items as unknown[] : []
+  const projectGizmos = items
+    .map(item => item && typeof item === 'object' && !Array.isArray(item)
+      ? (item as Record<string, unknown>).gizmo
+      : null)
+    .map(container => container && typeof container === 'object' && !Array.isArray(container)
+      ? (container as Record<string, unknown>).gizmo
+      : null)
+    .filter(Boolean)
+  const projectConversations = items.flatMap(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+    const conversations = (item as Record<string, unknown>).conversations
+    if (!conversations || typeof conversations !== 'object' || Array.isArray(conversations)) return []
+    const nestedItems = (conversations as Record<string, unknown>).items
+    return Array.isArray(nestedItems) ? nestedItems : []
+  })
   const messages = Array.isArray(record?.messages) ? record?.messages as unknown[] : []
   const metadata = messages
     .map(message => message && typeof message === 'object' ? (message as Record<string, unknown>).metadata : null)
@@ -448,6 +471,12 @@ export function buildProtocolResponseShape(input: ProtocolResponseInput): Protoc
     contentType,
     topLevelKeys: record ? Object.keys(record).sort() : [],
     itemKeys: unionObjectKeys(items),
+    ...(projectGizmos.length > 0 || projectConversations.length > 0
+      ? {
+          projectGizmoKeys: unionObjectKeys(projectGizmos),
+          projectConversationKeys: unionObjectKeys(projectConversations),
+        }
+      : {}),
     messageKeys: unionObjectKeys(messages),
     messageMetadataKeys: unionObjectKeys(metadata),
     pageInfoKeys: pageInfo ? Object.keys(pageInfo).sort() : [],
@@ -476,6 +505,15 @@ export function classifyProtocolReplayCandidate(
       return { eligible: true, family: 'catalog-global', reason: 'unfiltered catalog shape with list schema' }
     }
     return { eligible: false, family: null, reason: 'catalog request has semantic filters' }
+  }
+
+  if (request.route === '/backend-api/gizmos/snorlax/sidebar'
+    && hasResponseKeys('items', 'cursor')) {
+    return { eligible: true, family: 'project-sidebar', reason: 'project sidebar catalog with nested recent conversations' }
+  }
+  if (request.route === '/backend-api/gizmos/{gizmo_id}/conversations'
+    && hasResponseKeys('items', 'cursor')) {
+    return { eligible: true, family: 'project-catalog', reason: 'project conversation cursor catalog' }
   }
 
   if (request.route === '/backend-api/conversations/{conversation_id}'
@@ -846,7 +884,15 @@ export class ProtocolDriftLedger {
     const variant = this.state.variants[signature]
     if (!variant) return null
     const family = protocolContractFamily(variant.shape)
-    const replayFamilies = new Set(['catalog-global', 'body-latest', 'body-cursor', 'mapping', 'stream-status'])
+    const replayFamilies = new Set([
+      'catalog-global',
+      'project-sidebar',
+      'project-catalog',
+      'body-latest',
+      'body-cursor',
+      'mapping',
+      'stream-status',
+    ])
     if (!replayFamilies.has(family)) return null
 
     const supported = new Set(supportedHeaderNames.map(value => value.toLowerCase()))
@@ -929,6 +975,8 @@ export class ProtocolDriftLedger {
 
     const requiredTop: Record<string, string[]> = {
       catalog: ['items'],
+      'project-sidebar': ['items', 'cursor'],
+      'project-catalog': ['items', 'cursor'],
       'body-latest': ['messages', 'page_info'],
       'body-cursor': ['messages', 'page_info'],
       mapping: ['mapping'],
@@ -936,6 +984,8 @@ export class ProtocolDriftLedger {
     }
     const operationalTop: Record<string, string[]> = {
       catalog: ['items', 'total', 'limit', 'offset'],
+      'project-sidebar': ['items', 'cursor'],
+      'project-catalog': ['items', 'cursor'],
       'body-latest': ['messages', 'page_info'],
       'body-cursor': ['messages', 'page_info'],
       mapping: ['mapping'],
@@ -954,12 +1004,30 @@ export class ProtocolDriftLedger {
       ? operationalPageInfo.filter(key => !shape.pageInfoKeys.includes(key))
       : []
 
+    const missingProjectGizmo = family === 'project-sidebar'
+      ? ['id'].filter(key => !(shape.projectGizmoKeys || []).includes(key))
+      : []
+    const projectConversationKeys = family === 'project-sidebar'
+      ? (shape.projectConversationKeys || [])
+      : family === 'project-catalog' ? shape.itemKeys : []
+    const missingProjectConversation = ['project-sidebar', 'project-catalog'].includes(family)
+      ? ['id', 'update_time'].filter(key => !projectConversationKeys.includes(key))
+      : []
+
     if (missingRequiredTop.length > 0) details.push(`缺少核心 response 字段: ${missingRequiredTop.join(', ')}`)
     if (missingOperationalTop.length > 0) details.push(`缺少常用 response 字段: ${missingOperationalTop.join(', ')}`)
     if (missingMessage.length > 0) details.push(`messages 缺少核心字段: ${missingMessage.join(', ')}`)
     if (missingPageInfo.length > 0) details.push(`page_info 缺少字段: ${missingPageInfo.join(', ')}`)
 
-    const critical = important && (missingRequiredTop.length > 0 || missingMessage.length > 0)
+    if (missingProjectGizmo.length > 0) details.push('Project gizmo missing core fields: ' + missingProjectGizmo.join(', '))
+    if (missingProjectConversation.length > 0) details.push('Project conversation missing core fields: ' + missingProjectConversation.join(', '))
+
+    const critical = important && (
+      missingRequiredTop.length > 0
+      || missingMessage.length > 0
+      || missingProjectGizmo.length > 0
+      || missingProjectConversation.length > 0
+    )
     const warning = important && !critical && (
       statusChanged
       || contentTypeChanged
@@ -981,6 +1049,7 @@ export class ProtocolDriftLedger {
         dedupeKey: assessmentDedupeKey({
           kind: 'response-contract', family, statusChanged, contentTypeChanged,
           missingRequiredTop, missingOperationalTop, missingMessage, missingPageInfo,
+          missingProjectGizmo, missingProjectConversation,
         }),
         route: request.shape.route,
         method: request.shape.method,

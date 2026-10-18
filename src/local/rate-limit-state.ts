@@ -10,7 +10,7 @@
  * 同一套规则复用于主动请求、native 页面 429、重启恢复和单元测试。
  */
 
-export const RATE_LIMIT_FAMILIES = ['catalog', 'body', 'mapping', 'actor'] as const
+export const RATE_LIMIT_FAMILIES = ['catalog', 'project-catalog', 'body', 'mapping', 'actor'] as const
 
 export type RateLimitFamily = typeof RATE_LIMIT_FAMILIES[number]
 
@@ -227,7 +227,7 @@ export function recordFamily429(
     return current
   }
 
-  if (family === 'catalog') {
+  if (family === 'catalog' || family === 'project-catalog') {
     const nextStage = Math.min(
       current.stage < 0 ? 0 : current.stage + 1,
       CATALOG_BACKOFF_MS.length - 1,
@@ -302,6 +302,10 @@ export function guardianBlockedUrlPatterns(
   const patterns: string[] = []
   if (snapshot.families.catalog.backoffUntil > now) {
     patterns.push('https://chatgpt.com/backend-api/conversations?*')
+  }
+  if (snapshot.families['project-catalog'].backoffUntil > now) {
+    patterns.push('https://chatgpt.com/backend-api/gizmos/snorlax/sidebar*')
+    patterns.push('https://chatgpt.com/backend-api/gizmos/*/conversations*')
   }
   if (snapshot.families.body.backoffUntil > now) {
     patterns.push('https://chatgpt.com/backend-api/conversations/*')

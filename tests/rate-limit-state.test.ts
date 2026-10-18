@@ -94,8 +94,19 @@ describe('family rate-limit state', () => {
     })
     expect(familyRateLimitAllowed(state, 'body', 2000)).toBe(false)
     expect(familyRateLimitAllowed(state, 'catalog', 2000)).toBe(true)
+    expect(familyRateLimitAllowed(state, 'project-catalog', 2000)).toBe(true)
     expect(familyRateLimitAllowed(state, 'actor', 2000)).toBe(true)
     expect(familyBackoffUntil(state, 'body', 2000)).toBe(31_000)
+  })
+
+  test('project catalog has an independent catalog-style backoff bucket', () => {
+    const state = restoreFamilyRateLimitSnapshot({}, 0)
+    const first = recordFamily429(state, 'project-catalog', { now: 1000 })
+    expect(first.stage).toBe(0)
+    expect(first.backoffUntil).toBe(1000 + CATALOG_BACKOFF_MS[0])
+    expect(familyRateLimitAllowed(state, 'project-catalog', 2000)).toBe(false)
+    expect(familyRateLimitAllowed(state, 'catalog', 2000)).toBe(true)
+    expect(familyRateLimitAllowed(state, 'body', 2000)).toBe(true)
   })
 
   test('Guardian URL block 也按 family 拆开', () => {
@@ -108,6 +119,14 @@ describe('family rate-limit state', () => {
     recordFamily429(state, 'body', { now: 2000, fallbackMs: 60_000 })
     expect(guardianBlockedUrlPatterns(state, 3000)).toEqual([
       'https://chatgpt.com/backend-api/conversations?*',
+      'https://chatgpt.com/backend-api/conversations/*',
+    ])
+
+    recordFamily429(state, 'project-catalog', { now: 3000 })
+    expect(guardianBlockedUrlPatterns(state, 4000)).toEqual([
+      'https://chatgpt.com/backend-api/conversations?*',
+      'https://chatgpt.com/backend-api/gizmos/snorlax/sidebar*',
+      'https://chatgpt.com/backend-api/gizmos/*/conversations*',
       'https://chatgpt.com/backend-api/conversations/*',
     ])
   })

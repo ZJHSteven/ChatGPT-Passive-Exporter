@@ -77,6 +77,11 @@ import {
 } from '../src/local/rate-limit-state.ts'
 import { RequestEventLedger } from '../src/local/request-event-ledger.ts'
 import {
+  extractProjectCatalogPayload,
+  PROJECT_SIDEBAR_PATH,
+  PROJECT_SIDEBAR_ROUTE,
+} from '../src/local/project-catalog.ts'
+import {
   buildGlobalCatalogPath,
   captureGlobalCatalogQueryTemplate,
   FIRST_PARTY_REPLAY_HEADER_ALLOWLIST,
@@ -485,7 +490,7 @@ export function shouldStartCatalogWatchdog({
  */
 export function recordCatalogWatchdogProgress(active, now = Date.now()) {
   if (!active || typeof active !== 'object') return active
-  if (!String(active.startType || '').startsWith('catalog:')) return active
+  if (!/^(?:catalog|project-catalog):/u.test(String(active.startType || ''))) return active
   const at = Number(now)
   if (!Number.isFinite(at) || at <= 0) return active
   return {
@@ -2171,6 +2176,30 @@ export function classifyConversationBackendUrl(input, base = 'https://chatgpt.co
      }
     }
 
+    if (url.pathname === '/backend-api/gizmos/snorlax/sidebar') {
+      const limit = Number(url.searchParams.get('limit') ?? '0')
+      const conversationsPerGizmo = Number(url.searchParams.get('conversations_per_gizmo') ?? '0')
+      return {
+        kind: 'project-sidebar',
+        limit: Number.isFinite(limit) ? limit : 0,
+        conversationsPerGizmo: Number.isFinite(conversationsPerGizmo) ? conversationsPerGizmo : 0,
+        ownedOnly: url.searchParams.get('owned_only'),
+        cursor: url.searchParams.get('cursor'),
+      }
+    }
+
+    const projectCatalog = url.pathname.match(/^\/backend-api\/gizmos\/([^/]+)\/conversations\/?$/u)
+    if (projectCatalog) {
+      const limit = Number(url.searchParams.get('limit') ?? '0')
+      return {
+        kind: 'project-catalog',
+        gizmoId: decodeURIComponent(projectCatalog[1]),
+        limit: Number.isFinite(limit) ? limit : 0,
+        ownedOnly: url.searchParams.get('owned_only'),
+        cursor: url.searchParams.get('cursor'),
+      }
+    }
+
     const plural = url.pathname.match(/^\/backend-api\/conversations\/([^/]+?)(\/messages)?\/?$/u)
     if (plural) {
       const conversationId = decodeURIComponent(plural[1])
@@ -2194,6 +2223,8 @@ export function classifyConversationBackendUrl(input, base = 'https://chatgpt.co
     return null
   }
 }
+
+
 
 /** 只有 conversation REST 会在 Guardian cooldown 中被本地 CDP block；WSS 不匹配这里。 */
 export function shouldBlockGuardianConversationRest(input) {
@@ -2505,6 +2536,7 @@ async function main() {
   // 否则 passive merge 后再做 overlap，会被自己刚写进去的数据误判成“整页早已存在”。
   const passiveBodyPages = new Map()
   const passiveCatalogPages = new Map()
+  let passiveProjectSidebar = null
  const passivePageObservers = new Map()
   // activeLiveTransports 仍只暴露轻量生命体征；完整 SSE 正文另存到本地 live-sse journal，
   // 不混进 state/log，避免普通诊断命令意外打印整段聊天正文。
@@ -2549,6 +2581,9 @@ async function main() {
   const passiveCatalogFreshnessMs = intFlag(flags, 'passive-catalog-freshness-ms', 60_000, 1000)
   let passiveBodyResponses = 0
   let passiveCatalogResponses = 0
+  let passiveProjectCatalogResponses = 0
+  let projectCatalogRepairs = 0
+  let projectCatalogRepairDiscoveries = 0
   let passiveImageResponses = 0
   let passiveImageHydrations = 0
   let passiveImageCaptureErrors = 0
@@ -2703,7 +2738,7 @@ async function main() {
   }
   // activeTurns 现在承载“所有已纳入 watchdog 的 active”：既可能来自可靠 WSS/actor start，
   // 也可能来自 catalog 首次观察到 active 的保守 late-start。两者不能在取证输出里混称 reliable。
-  const isCatalogLateActive = (active) => String(active?.startType || '').startsWith('catalog:')
+  const isCatalogLateActive = (active) => /^(?:catalog|project-catalog):/u.test(String(active?.startType || ''))
   const isWatchdogLatched = (active) => Number.isFinite(Number(active?.lastWatchdogAt))
   const reliableActiveIds = () => [...activeTurns.entries()]
     .filter(([, active]) => !isCatalogLateActive(active) && !isWatchdogLatched(active))
@@ -3956,6 +3991,10 @@ async function main() {
         observedPages: passivePageObservers.size,
         bodyResponses: passiveBodyResponses,
         catalogResponses: passiveCatalogResponses,
+        projectCatalogResponses: passiveProjectCatalogResponses,
+        projectSidebarCached: Boolean(passiveProjectSidebar),
+        projectCatalogRepairs,
+        projectCatalogRepairDiscoveries,
         imageResponses: passiveImageResponses,
         imageHydrations: passiveImageHydrations,
         imageCaptureErrors: passiveImageCaptureErrors,
@@ -4771,12 +4810,14 @@ async function main() {
 
   const requestFamilyForKind = (kind) => {
     if (kind === 'catalog') return 'catalog'
+    if (kind === 'project-sidebar' || kind === 'project-catalog') return 'project-catalog'
     if (kind === 'mapping') return 'mapping'
     return 'body'
   }
 
   const routeFamily = (route) => {
     if (route?.kind === 'catalog') return 'catalog'
+    if (route?.kind === 'project-sidebar' || route?.kind === 'project-catalog') return 'project-catalog'
     if (route?.kind === 'mapping') return 'mapping'
     return 'body'
   }
@@ -4784,6 +4825,8 @@ async function main() {
   const routeClassForObservation = (route) => {
     if (!route) return 'unknown'
     if (route.kind === 'catalog') return route.globalCatalog ? 'catalog-global' : 'catalog-native'
+    if (route.kind === 'project-sidebar') return 'project-sidebar'
+    if (route.kind === 'project-catalog') return 'project-catalog'
     return String(route.kind || 'unknown')
   }
 
@@ -4873,7 +4916,9 @@ async function main() {
 
   const waitForRequestSlot = async (kind) => {
     const family = requestFamilyForKind(kind)
-    const configuredGap = family === 'catalog' ? reconcileDelayMs : syncDelayMs
+    const configuredGap = family === 'catalog' || family === 'project-catalog'
+      ? reconcileDelayMs
+      : syncDelayMs
     const familyProbeRemaining = familyProbationRemaining(
       rateLimits,
       family,
@@ -5225,6 +5270,10 @@ async function main() {
     for (const [key, entry] of passiveCatalogPages) {
       if (now - Number(entry.capturedAt || 0) > passiveCacheMaxAgeMs) passiveCatalogPages.delete(key)
     }
+    if (passiveProjectSidebar
+      && now - Number(passiveProjectSidebar.capturedAt || 0) > passiveCacheMaxAgeMs) {
+      passiveProjectSidebar = null
+    }
   }
 
   /**
@@ -5251,6 +5300,14 @@ async function main() {
     const entry = passiveCatalogPages.get(`${offset}:${limit}`)
     if (!entry) return null
     return Number(entry.capturedAt || 0) >= Number(minCapturedAt || 0) ? entry : null
+  }
+
+  const reusablePassiveProjectSidebar = (minCapturedAt = 0) => {
+    prunePassiveCaches()
+    if (!passiveProjectSidebar) return null
+    return Number(passiveProjectSidebar.capturedAt || 0) >= Number(minCapturedAt || 0)
+      ? passiveProjectSidebar
+      : null
   }
 
   const syncConversation = async (conversationId, trigger, options = {}) => {
@@ -6952,6 +7009,147 @@ async function main() {
     }
   }
 
+  const observeProjectCatalogConversations = async ({
+    conversations,
+    reason,
+    observedAt = Date.now(),
+    minConversationUpdateAtMs = null,
+  }) => {
+    let dirtyCount = 0
+    let activeCount = 0
+    let completeCount = 0
+
+    for (const item of conversations || []) {
+      const id = typeof item?.id === 'string'
+        ? item.id
+        : typeof item?.conversation_id === 'string' ? item.conversation_id : null
+      if (!id) continue
+
+      const asyncState = classifyCatalogAsyncStatus(item.async_status)
+      const serverUpdate = chatgptTime(item.update_time)
+      const serverUpdateMs = serverUpdate === null ? null : serverUpdate * 1000
+      if (asyncState !== 'active'
+        && Number.isFinite(Number(minConversationUpdateAtMs))
+        && serverUpdateMs !== null
+        && serverUpdateMs < Number(minConversationUpdateAtMs)) {
+        continue
+      }
+      const now = Math.max(Number(observedAt) || Date.now(), Date.now())
+      const wasCatalogActive = catalogActive.has(id)
+      if (asyncState === 'active') {
+        activeCount += 1
+        const current = catalogActive.get(id)
+        const nextUpdateTime = item.update_time ?? null
+        const catalogProgressed = Boolean(
+          current
+          && nextUpdateTime !== null
+          && String(nextUpdateTime) !== String(current.updateTime ?? ''),
+        )
+        catalogActive.set(id, {
+          firstSeenAt: current?.firstSeenAt ?? now,
+          lastSeenAt: now,
+          asyncStatus: item.async_status,
+          updateTime: nextUpdateTime,
+        })
+        const archived = archive.db.prepare(
+          'SELECT update_time AS updateTime, terminal_state AS terminalState FROM conversations WHERE id = ?',
+        ).get(id)
+        if (shouldStartCatalogWatchdog({
+          alreadyActive: checkpointWatches.has(id),
+          catalogUpdateTime: item.update_time ?? null,
+          archivedUpdateTime: archived?.updateTime ?? null,
+          archivedTerminalState: archived?.terminalState ?? null,
+        })) {
+          armCheckpointWatch(id, 'project-catalog:' + reason + ':async-active', now)
+        }
+        if (shouldStartCatalogWatchdog({
+          alreadyActive: activeTurns.has(id),
+          catalogUpdateTime: item.update_time ?? null,
+          archivedUpdateTime: archived?.updateTime ?? null,
+          archivedTerminalState: archived?.terminalState ?? null,
+        })) {
+          const nextActive = {
+            startedAt: current?.firstSeenAt ?? now,
+            lastEventAt: now,
+            lastWatchdogAt: null,
+            watchdogPendingAt: null,
+            startType: 'project-catalog:async-active:' + reason,
+            lastDiagnosticTurnKey: null,
+          }
+          activeTurns.set(id, nextActive)
+          persistActiveTurn(id, nextActive)
+          dispatchWatchdogStartNotification(id, nextActive, item.title ?? null)
+        }
+        else if (catalogProgressed) {
+          const active = activeTurns.get(id)
+          if (active && /^(?:catalog|project-catalog):/u.test(String(active.startType || ''))) {
+            const progressed = recordCatalogWatchdogProgress(active, now)
+            activeTurns.set(id, progressed)
+            persistActiveTurn(id, progressed)
+          }
+        }
+        markDirty(id, 'project-catalog:async-active:' + reason)
+      }
+      else if (asyncState === 'complete' && (wasCatalogActive || isCatalogLateActive(activeTurns.get(id)))) {
+        completeCount += 1
+        catalogActive.delete(id)
+        clearActiveTurn(id)
+        stopCheckpointWatch(id, 'project-catalog:' + reason + ':async-complete', now)
+        markSyncReady(id, 'project-catalog:' + reason + ':async-complete', 0)
+      }
+
+      const local = archive.db.prepare(
+        'SELECT title, update_time AS updateTime FROM conversations WHERE id=?',
+      ).get(id)
+      const localUpdate = local?.updateTime ?? null
+      const changed = !local
+        || (serverUpdate !== null && (localUpdate === null || serverUpdate > Number(localUpdate) + 0.000001))
+        || String(item.title || '') !== String(local?.title || '')
+      if (changed) {
+        dirtyCount += 1
+        if (asyncState !== 'active') markSyncReady(id, 'project-catalog:' + reason, 0)
+      }
+    }
+
+    return { dirtyCount, activeCount, completeCount }
+  }
+
+  const rememberPassiveProjectCatalogResponse = ({ route, payload, capturedAt, requestUrl, targetId }) => {
+    passiveProjectCatalogResponses += 1
+    const extracted = extractProjectCatalogPayload(route, payload)
+    if (route.kind === 'project-sidebar') {
+      passiveProjectSidebar = {
+        payload,
+        capturedAt,
+        sourceTargetId: targetId,
+        requestUrl,
+      }
+    }
+    void observeProjectCatalogConversations({
+      conversations: extracted.conversations,
+      reason: 'passive:' + route.kind,
+      observedAt: capturedAt,
+      minConversationUpdateAtMs: Number(capturedAt || Date.now()) - 2 * 60 * 60_000,
+    }).then((summary) => {
+      if (summary.dirtyCount > 0) {
+        void log('passive Project catalog discovered conversation changes', {
+          kind: route.kind,
+          targetId,
+          projects: extracted.projects.length,
+          conversations: extracted.conversations.length,
+          ...summary,
+        })
+        void drainDirty()
+      }
+    }).catch(async (error) => {
+      await log('passive Project catalog processing failed', {
+        kind: route.kind,
+        targetId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
+  }
+
   const rememberPassiveCatalogResponse = ({ route, payload, capturedAt, requestUrl, targetId }) => {
     passiveCatalogResponses += 1
     if (!route.globalCatalog || route.limit !== 28 || !Array.isArray(payload?.items)) return
@@ -7639,6 +7837,12 @@ async function main() {
           })
           return
         }
+        if (meta.route.kind === 'project-sidebar' || meta.route.kind === 'project-catalog') {
+          rememberPassiveProjectCatalogResponse({
+            ...meta, payload, targetId: target.id,
+          })
+          return
+        }
         await rememberPassiveBodyResponse({
           ...meta, payload, targetId: target.id,
         })
@@ -8154,6 +8358,53 @@ async function main() {
    *
    * 多次 recover/reconnect 只更新 lastAt 和原因集合，不会各自发起一轮 REST 扫描。
    */
+  const reconcileProjectSidebar = async (
+    reason,
+    { minCapturedAt = 0, minConversationUpdateAtMs = null } = {},
+  ) => {
+    const passive = reusablePassiveProjectSidebar(minCapturedAt)
+    const route = PROJECT_SIDEBAR_ROUTE
+    const payload = passive?.payload ?? await fetchChecked({
+      url: PROJECT_SIDEBAR_PATH,
+      targetPath: route,
+      targetRoute: route,
+      kind: 'project-sidebar',
+    })
+    const extracted = extractProjectCatalogPayload({ kind: 'project-sidebar' }, payload)
+    const summary = await observeProjectCatalogConversations({
+      conversations: extracted.conversations,
+      reason: reason,
+      observedAt: passive?.capturedAt ?? Date.now(),
+      minConversationUpdateAtMs,
+    })
+    projectCatalogRepairs += 1
+    projectCatalogRepairDiscoveries += summary.dirtyCount
+    await log('Project sidebar reconciliation complete', {
+      reason,
+      source: passive ? 'passive' : 'active',
+      projects: extracted.projects.length,
+      conversations: extracted.conversations.length,
+      topCursorPresent: Boolean(extracted.cursor),
+      ...summary,
+    })
+    if (extracted.cursor) {
+      await log('Project sidebar reconciliation stopped at first project page', {
+        reason,
+        topCursorPresent: true,
+        note: 'top-level Project cursor pagination is not replayed until first-party semantics are observed',
+      })
+    }
+    void drainDirty()
+    return {
+      source: passive ? 'passive' : 'active',
+      projects: extracted.projects.length,
+      conversations: extracted.conversations.length,
+      cursor: extracted.cursor,
+      ...summary,
+    }
+  }
+
+
   const scheduleGapRepair = async (reason) => {
     const now = Date.now()
     if (!pendingGapRepair) {
@@ -8192,9 +8443,29 @@ async function main() {
     }
     const now = Date.now()
     const passiveSeed = reusablePassiveCatalogPage(0, 28, Number(pendingGapRepair.lastAt || now))
+    const projectRepairRequired = pendingGapRepair.reasons.has('devspace-idle-unbound-5m')
+      || pendingGapRepair.reasons.has('devspace-unbound-timeout')
+    const projectRepairCandidateStarts = projectRepairRequired
+      ? [
+          ...[...pendingDevSpaceIdleDiagnoses.values()]
+            .filter(pending => pending.repairMode === 'unbound-catalog')
+            .map(pending => archive.getDevSpaceMetadataBinding(pending.metadataId)?.firstSeenAt ?? pending.requestedAt),
+          ...[...pendingUnboundWatchdogDiagnoses.values()]
+            .map(pending => pending.startedAt),
+        ].map(Number).filter(Number.isFinite)
+      : []
+    const projectRepairMinConversationUpdateAtMs = projectRepairCandidateStarts.length > 0
+      ? Math.max(0, Math.min(...projectRepairCandidateStarts) - 10 * 60_000)
+      : Math.max(0, Number(pendingGapRepair.firstAt || now) - Math.max(watchdogMs, 10 * 60_000))
+    const passiveProjectSeed = projectRepairRequired
+      ? reusablePassiveProjectSidebar(Number(pendingGapRepair.lastAt || now))
+      : null
     const catalogBackoffUntil = familyBackoffUntil(rateLimits, 'catalog', now)
+    const projectCatalogBackoffUntil = familyBackoffUntil(rateLimits, 'project-catalog', now)
     const activeWindowAvailable = Boolean(authHeaders) && familyRateLimitAllowed(rateLimits, 'catalog', now)
-    const eligible = shouldRunDeferredGapRepair({
+    const projectCatalogWindowAvailable = !projectRepairRequired
+      || (Boolean(authHeaders) && familyRateLimitAllowed(rateLimits, 'project-catalog', now))
+    let eligible = shouldRunDeferredGapRepair({
       now,
       pendingLastAt: pendingGapRepair.lastAt,
       lastAttemptAt: lastGapRepairAttemptAt,
@@ -8206,6 +8477,12 @@ async function main() {
       reconcileInFlight,
       passiveCatalogAvailable: Boolean(passiveSeed),
     })
+    if (eligible
+      && projectRepairRequired
+      && !projectCatalogWindowAvailable
+      && !passiveProjectSeed) {
+      eligible = false
+    }
 
     const debounceDueAt = Number(pendingGapRepair.lastAt) + gapRepairDelayMs
     const intervalDueAt = lastGapRepairAttemptAt > 0
@@ -8219,6 +8496,11 @@ async function main() {
       if (!familyRateLimitAllowed(rateLimits, 'catalog', now)) blockers.push('catalog-api-cooldown')
       blockers.push('no-passive-catalog-after-gap')
     }
+    if (projectRepairRequired && !projectCatalogWindowAvailable && !passiveProjectSeed) {
+      if (!authHeaders) blockers.push('project-catalog-no-auth')
+      if (!familyRateLimitAllowed(rateLimits, 'project-catalog', now)) blockers.push('project-catalog-api-cooldown')
+      blockers.push('no-passive-project-sidebar-after-gap')
+    }
     if (now < debounceDueAt) blockers.push('debounce')
     if (intervalDueAt > 0 && now < intervalDueAt) blockers.push('active-repair-min-interval')
     const gate = {
@@ -8229,8 +8511,12 @@ async function main() {
       authAvailable: Boolean(authHeaders),
       activeWindowAvailable,
       passiveCatalogAvailable: Boolean(passiveSeed),
+      projectRepairRequired,
+      passiveProjectSidebarAvailable: Boolean(passiveProjectSeed),
+      projectCatalogWindowAvailable,
       reconcileInFlight,
       cooldownUntil: catalogBackoffUntil || null,
+      projectCatalogCooldownUntil: projectCatalogBackoffUntil || null,
       debounceDueAt,
       intervalDueAt: intervalDueAt || null,
       pendingFirstAt: pendingGapRepair.firstAt,
@@ -8245,8 +8531,12 @@ async function main() {
       authAvailable: gate.authAvailable,
       activeWindowAvailable: gate.activeWindowAvailable,
       passiveCatalogAvailable: gate.passiveCatalogAvailable,
+      projectRepairRequired: gate.projectRepairRequired,
+      passiveProjectSidebarAvailable: gate.passiveProjectSidebarAvailable,
+      projectCatalogWindowAvailable: gate.projectCatalogWindowAvailable,
       reconcileInFlight: gate.reconcileInFlight,
       cooldownUntil: gate.cooldownUntil,
+      projectCatalogCooldownUntil: gate.projectCatalogCooldownUntil,
       debounceDueAt: gate.debounceDueAt,
       intervalDueAt: gate.intervalDueAt,
       reasons: gate.reasons,
@@ -8262,6 +8552,12 @@ async function main() {
     if (activeWindowAvailable) lastGapRepairAttemptAt = now
     try {
       await reconcileCatalog('gap-repair')
+      if (projectRepairRequired) {
+        await reconcileProjectSidebar('devspace-unbound-repair', {
+          minCapturedAt: Number(repair.lastAt || 0),
+          minConversationUpdateAtMs: projectRepairMinConversationUpdateAtMs,
+        })
+      }
       if (repair.reasons.has('devspace-unbound-timeout')) {
         queueTimedOutDevSpaceBindingProbes()
       }
@@ -8285,6 +8581,11 @@ async function main() {
       })
     }
     catch (error) {
+      if (projectRepairRequired) {
+        // Global catalog may already have succeeded before Project repair failed/429'd.
+        // Do not let the global 10m minimum interval delay an independent Project bucket retry.
+        lastGapRepairAttemptAt = 0
+      }
       repair.lastAt = Date.now()
       pendingGapRepair = repair
       await log('deferred gap repair failed', {

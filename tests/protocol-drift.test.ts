@@ -16,6 +16,50 @@ import {
 } from '../src/local/protocol-drift.ts'
 
 describe('protocol drift fingerprinting', () => {
+  test('Project sidebar and per-project catalogs are replay candidates with nested transport fingerprints', () => {
+    const sidebar = buildProtocolRequestShape({
+      url: 'https://chatgpt.com/backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=5&limit=20&owned_only=false',
+      method: 'GET',
+      headers: { Authorization: 'a', 'OAI-DID': 'device', 'X-OpenAI-Web-Frontend': 'codex_webview' },
+    })!
+    const sidebarResponse = buildProtocolResponseShape({
+      status: 200,
+      contentType: 'application/json',
+      body: {
+        cursor: null,
+        items: [{
+          gizmo: { gizmo: { id: 'g-p-one', display: { name: 'One' } } },
+          conversations: {
+            cursor: 'next',
+            items: [{ id: 'cid-1', update_time: '2026-10-18T00:00:00Z', title: 'One' }],
+          },
+        }],
+      },
+    })
+    expect(protocolContractFamily(sidebar)).toBe('project-sidebar')
+    expect(sidebarResponse.projectGizmoKeys).toContain('id')
+    expect(sidebarResponse.projectConversationKeys).toEqual(expect.arrayContaining(['id', 'update_time']))
+    expect(classifyProtocolReplayCandidate(sidebar, sidebarResponse)).toMatchObject({
+      eligible: true,
+      family: 'project-sidebar',
+    })
+
+    const project = buildProtocolRequestShape({
+      url: 'https://chatgpt.com/backend-api/gizmos/g-p-one/conversations?cursor=abc&limit=5&owned_only=false',
+      method: 'GET',
+    })!
+    const projectResponse = buildProtocolResponseShape({
+      status: 200,
+      contentType: 'application/json',
+      body: { cursor: null, items: [{ id: 'cid-1', update_time: '2026-10-18T00:00:00Z' }] },
+    })
+    expect(protocolContractFamily(project)).toBe('project-catalog')
+    expect(classifyProtocolReplayCandidate(project, projectResponse)).toMatchObject({
+      eligible: true,
+      family: 'project-catalog',
+    })
+  })
+
   test('global catalog 只自动继承已确认可重放的 query，未知 proof/nonce 不盲拷', () => {
     const template = captureGlobalCatalogQueryTemplate(
       'https://chatgpt.com/backend-api/conversations?offset=0&limit=28&order=updated&expand=false&hide_snorlax=false&pow=one-shot&nonce=abc',
@@ -297,6 +341,56 @@ describe('protocol drift fingerprinting', () => {
       family: 'turn-submit',
     })
     expect(current.assessment?.summary).toContain('Actor 自动继承')
+  })
+
+  test('Project sidebar loses nested CID/update_time becomes critical immediately', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protocol-project-breaking-response-'))
+    const ledger = await ProtocolDriftLedger.open(path.join(dir, 'ledger.json'), {
+      now: 1_000,
+      baselineWindowMs: 60_000,
+    })
+    const request = ledger.observeRequest({
+      url: 'https://chatgpt.com/backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=5&limit=20&owned_only=false',
+      method: 'GET',
+      headers: { Authorization: 'a', 'OAI-DID': 'device' },
+      observedAt: 2_000,
+    })!
+    ledger.observeResponse(request.signature, {
+      status: 200,
+      contentType: 'application/json',
+      body: {
+        cursor: null,
+        items: [{
+          gizmo: { gizmo: { id: 'g-p-one', display: { name: 'One' } } },
+          conversations: {
+            cursor: null,
+            items: [{ id: 'cid-1', update_time: '2026-10-18T00:00:00Z' }],
+          },
+        }],
+      },
+      observedAt: 3_000,
+    })
+    ledger.refreshBaselineLock(70_000)
+
+    const broken = ledger.observeResponse(request.signature, {
+      status: 200,
+      contentType: 'application/json',
+      body: {
+        cursor: null,
+        items: [{
+          gizmo: { gizmo: { display: { name: 'One' } } },
+          conversations: { cursor: null, items: [{ title: 'missing identity' }] },
+        }],
+      },
+      observedAt: 71_000,
+    })!
+    expect(broken.assessment).toMatchObject({
+      severity: 'critical',
+      notify: true,
+      category: 'response-contract',
+      family: 'project-sidebar',
+    })
+    expect(broken.assessment?.details.join(' ')).toContain('Project conversation missing core fields')
   })
 
   test('Conversation Body 核心 messages 消失第一次就判 critical', async () => {
