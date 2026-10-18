@@ -3554,7 +3554,9 @@ async function main() {
    * first-party body 到达后，用同一套 canonical tool+args fingerprint 淘汰 provisional。
    * 这里只读 canonical messages 表，绝不会把 recovery 自己生成的 call 节点拿来和自己匹配。
    */
-  const reconcileDevSpaceRecoveryWithCanonical = (conversationId) => {
+  const reconcileDevSpaceRecoveryWithCanonical = (conversationId) => runControlPlaneStage(
+    'devspace-recovery-reconcile',
+    () => {
     const activeRecovery = archive.listDevSpaceRecoveryAudits(conversationId, false)
     if (activeRecovery.length === 0) return 0
     const minAt = Math.max(0, Math.min(...activeRecovery.map(row => Number(row.startedAt))) - 120_000)
@@ -3610,8 +3612,9 @@ async function main() {
       })
       if (matchedCheckpointId) superseded += 1
     }
-    return superseded
-  }
+      return superseded
+    },
+  )
 
   const notifyActorDomDrift = ({ phase, result, details }) => {
     if (!result?.signature || !result?.shape) return false
@@ -7079,7 +7082,9 @@ async function main() {
     }).matched
   }
 
-  const publishDevSpaceBindingEvidenceFromBody = (conversationId, diagnostic) => {
+  const publishDevSpaceBindingEvidenceFromBody = (conversationId, diagnostic) => runControlPlaneStage(
+    'devspace-binding-publish-body',
+    () => {
     const now = Date.now()
     const turnExchangeId = typeof diagnostic?.turnExchangeId === 'string' ? diagnostic.turnExchangeId : null
     const requestId = typeof diagnostic?.requestId === 'string' ? diagnostic.requestId : null
@@ -7108,8 +7113,9 @@ async function main() {
         queued: result.queued,
         matched: result.matched,
       })
-    }
-  }
+      }
+    },
+  )
 
   const queueTimedOutDevSpaceBindingProbes = () => {
     const timedOutEntries = [...unboundDevSpaceTurns.entries()]
@@ -7230,7 +7236,7 @@ async function main() {
     passiveBodyResponses += 1
 
     if (route.kind === 'body-latest') {
-      archive.mergeLiveMessagesPage(normalized, {
+      runControlPlaneStage('conversation-merge:passive-native', () => archive.mergeLiveMessagesPage(normalized, {
         observedAt: capturedAt,
         endpoint: `/backend-api/conversations/${conversationId}`,
         pageCursor: null,
@@ -7240,7 +7246,7 @@ async function main() {
         classifyTerminal: false,
         allowIncompleteTailIncident: false,
         incidentKind: 'abnormal-terminal',
-      })
+      }))
       // 第一方页面自然拿到的 latest Body 也是 canonical ingress。过去这里只 merge SQLite，
       // 没有触发 binding reconcile，导致“Body 已在库里但 metadata 仍 unbound”。
       const passiveDiagnostic = diagnoseLatestRun(normalized)
