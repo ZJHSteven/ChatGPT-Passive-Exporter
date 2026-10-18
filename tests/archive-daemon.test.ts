@@ -347,6 +347,22 @@ test('同一条 DevSpace audit 内部分段 yield，durable cursor 仍只在整�
   expect(cursorAt).toBeGreaterThan(handledAt)
 })
 
+test('daemon startup 只从 Archive 已知候选恢复 metadata，不全表扫描 DevSpace 最近 activity', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+  const startupBegin = daemon.indexOf('const cursorBeforeBootstrap = devSpaceAuditCursor')
+  const wakeBegin = daemon.indexOf('const devSpaceWakeListening = await devSpaceAuditWakeListener.start', startupBegin)
+  expect(startupBegin).toBeGreaterThan(-1)
+  expect(wakeBegin).toBeGreaterThan(startupBegin)
+  const startup = daemon.slice(startupBegin, wakeBegin)
+  expect(startup).toContain('pendingRecoveryAtStartup.metadataIds')
+  expect(startup).toContain('archive.listDevSpaceMetadataBindings({')
+  expect(startup).toContain("runControlPlaneStage('devspace-startup:metadata-state'")
+  expect(startup).not.toContain('recentMetadataToolStates(')
+})
+
 test('Guardian Windows 窗口隐藏必须异步执行，不能用 execFileSync 冻结控制面', async () => {
   const daemon = await fs.readFile(
     new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
