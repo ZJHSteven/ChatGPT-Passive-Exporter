@@ -2687,6 +2687,15 @@ async function main() {
   let devSpaceBindingQueueAttempts = 0
   let devSpaceBindingQueueMatches = 0
   let devSpaceBindingProbeMergesSkipped = 0
+  // audit 热路径只负责发现“可能需要 binding match”的事实；真正的 exact-match/rebind
+  // 放到 cooperative worker，每个 event-loop tick 最多做一条 evidence，避免一个本地
+  // tool audit 把 Bark/CDP/WSS/timer 一起饿死几十秒甚至几分钟。
+  const devSpaceBindingAuditWork = new Map()
+  const devSpaceBindingEvidenceWork = new Map()
+  let devSpaceBindingWorkerScheduled = false
+  let devSpaceBindingWorkerRuns = 0
+  let devSpaceBindingWorkerLastItemMs = 0
+  let devSpaceBindingWorkerMaxItemMs = 0
   // 这里只追踪“最近有 DevSpace 活动、并且当前没有 running tool”的 metadata。
   // 每项保留上一轮观察到的 idle 时长，用于精确识别 1/3/5 分钟阈值穿越。
   const devSpaceIdleCandidates = new Map()
@@ -2844,9 +2853,24 @@ async function main() {
   const protocolDriftPending = new Map()
   let protocolDriftNotifyTimer = null
 
-  const conversationTitle = (conversationId) => {
+  const canonicalConversationTitle = (conversationId) => {
     const row = archive.db.prepare('SELECT title FROM conversations WHERE id=?').get(conversationId)
     return row?.title || conversationId
+  }
+
+  // 所有用户可见通知都采用同一标题策略：canonical 真实标题优先；若仍是
+  // New chat/新聊天/CID 占位符，则用最近的 DevSpace metadata title 补位。
+  // 这不修改 ChatGPT 服务端标题，只避免本地通知在自动命名尚未完成时退化。
+  const conversationTitle = (conversationId) => {
+    const devSpaceTitles = archive.getDevSpaceMetadataBindingsForConversation(conversationId)
+      .slice()
+      .sort((a, b) => Number(b.lastSeenAt || 0) - Number(a.lastSeenAt || 0))
+      .map(binding => binding.displayTitle)
+    return preferredWatchdogStartTitle({
+      conversationId,
+      canonicalTitle: canonicalConversationTitle(conversationId),
+      devSpaceTitles,
+    }) || conversationId
   }
 
   /**
@@ -2861,7 +2885,7 @@ async function main() {
       .map(binding => binding.displayTitle)
     return preferredWatchdogStartTitle({
       conversationId,
-      canonicalTitle: candidateTitle || conversationTitle(conversationId),
+      canonicalTitle: candidateTitle || canonicalConversationTitle(conversationId),
       devSpaceTitles,
     })
   }
@@ -3007,8 +3031,8 @@ async function main() {
     })
   }
 
-  const refreshDevSpaceIdleCandidate = (metadataId, now = Date.now()) => {
-    const state = devSpaceAuditBridge.metadataToolState(metadataId)
+  const refreshDevSpaceIdleCandidate = (metadataId, now = Date.now(), knownState = null) => {
+    const state = knownState ?? devSpaceAuditBridge.metadataToolState(metadataId)
     if (!state || state.runningTools > 0 || !state.latestFinishedAt || !state.lastFinishedAuditId) {
       devSpaceIdleCandidates.delete(metadataId)
       return null
@@ -3954,6 +3978,14 @@ async function main() {
       bindingQueueAttempts: devSpaceBindingQueueAttempts,
       bindingQueueMatches: devSpaceBindingQueueMatches,
       bindingProbeMergesSkipped: devSpaceBindingProbeMergesSkipped,
+      bindingWorker: {
+        scheduled: devSpaceBindingWorkerScheduled,
+        pendingAuditEvents: devSpaceBindingAuditWork.size,
+        pendingEvidence: devSpaceBindingEvidenceWork.size,
+        runs: devSpaceBindingWorkerRuns,
+        lastItemMs: Math.round(devSpaceBindingWorkerLastItemMs * 100) / 100,
+        maxItemMs: Math.round(devSpaceBindingWorkerMaxItemMs * 100) / 100,
+      },
       unboundActive: unboundDevSpaceTurns.size,
       idleCandidates: devSpaceIdleCandidates.size,
       idleNotificationsQueued: devSpaceIdleNotificationsQueued,
@@ -6468,7 +6500,7 @@ async function main() {
     })
     // begin 事件会看到 runningTools>0 并立即取消旧 idle generation。
     // finish 事件即使 auditId 已经见过，也会由 wake callback 额外按 metadata 重读。
-    refreshDevSpaceIdleCandidate(event.metadataId)
+    refreshDevSpaceIdleCandidate(event.metadataId, Date.now(), metadataState)
     dispatchDevSpaceProgressNotification(event)
     // binding 尚未建立时也立即写 synthetic provisional conversation；一旦绑定再原位迁移。
     persistDevSpaceRecoveryAudit(event, binding)
@@ -6477,12 +6509,9 @@ async function main() {
       return
     }
 
-    drainDevSpaceBindingQueueForAudit(event)
-    const queueBinding = archive.getDevSpaceMetadataBinding(event.metadataId)
-    if (queueBinding?.conversationId) {
-      activateBoundDevSpaceTurn(queueBinding, event.startedAtMs)
-      return
-    }
+    // binding exact-match/rebind 不能留在 audit 热路径同步执行；它可能触发较大的 SQLite
+    // 扫描/镜像。先登记工作，让 first-tool Watchdog 与 durable cursor 立即继续推进。
+    queueDevSpaceBindingWorkForAudit(event)
 
     const current = unboundDevSpaceTurns.get(event.metadataId)
     const persistedStartAt = Number(binding.firstSeenAt || event.startedAtMs)
@@ -6679,7 +6708,9 @@ async function main() {
       requestId,
       evidence,
       confidence: 'high',
-      lifecycleState: activeTurns.has(conversationId) ? 'active' : 'closed',
+      lifecycleState: activeTurns.has(conversationId) || unboundDevSpaceTurns.has(candidate.metadataId)
+        ? 'active'
+        : 'closed',
     })
     void log('DevSpace metadata exact-match binding confirmed', {
       metadataId: candidate.metadataId,
@@ -6884,17 +6915,63 @@ async function main() {
     return { queued, matched }
   }
 
-  const drainDevSpaceBindingQueueForAudit = event => {
-    const rows = archive.listPendingDevSpaceBindingTurnEvidence({
-      overlapStartAt: Math.max(0, Number(event.startedAtMs) - 120_000),
-      overlapEndAt: Number(event.startedAtMs) + 120_000,
-      limit: 256,
+  const scheduleDevSpaceBindingWorker = () => {
+    if (devSpaceBindingWorkerScheduled || stopping) return
+    devSpaceBindingWorkerScheduled = true
+    setImmediate(() => {
+      devSpaceBindingWorkerScheduled = false
+      runDevSpaceBindingWorker()
     })
-    let matched = 0
-    for (const row of rows) {
-      if (attemptDevSpaceBindingQueueEvidence(row, { source: 'devspace-audit' })) matched += 1
+  }
+
+  const queueDevSpaceBindingWorkForAudit = event => {
+    if (!event?.id) return false
+    devSpaceBindingAuditWork.set(event.id, {
+      id: event.id,
+      startedAtMs: Number(event.startedAtMs),
+    })
+    scheduleDevSpaceBindingWorker()
+    return true
+  }
+
+  const runDevSpaceBindingWorker = () => {
+    if (stopping) return
+    const itemStartedAt = performance.now()
+
+    // exact-match/rebind 是这条路径里最重的同步工作。每个 event-loop tick 最多处理一条，
+    // 让 Bark fetch/AbortSignal、CDP、WSS 与 watchdog timer 在条目之间获得调度机会。
+    const evidenceEntry = devSpaceBindingEvidenceWork.entries().next()
+    if (!evidenceEntry.done) {
+      const [key, row] = evidenceEntry.value
+      devSpaceBindingEvidenceWork.delete(key)
+      attemptDevSpaceBindingQueueEvidence(row, { source: 'devspace-audit-worker' })
     }
-    return matched
+    else {
+      const auditEntry = devSpaceBindingAuditWork.entries().next()
+      if (!auditEntry.done) {
+        const [auditId, event] = auditEntry.value
+        devSpaceBindingAuditWork.delete(auditId)
+        const rows = archive.listPendingDevSpaceBindingTurnEvidence({
+          overlapStartAt: Math.max(0, Number(event.startedAtMs) - 120_000),
+          overlapEndAt: Number(event.startedAtMs) + 120_000,
+          limit: 256,
+        })
+        for (const row of rows) {
+          const key = `${row.conversationId}:${row.turnExchangeId}`
+          devSpaceBindingEvidenceWork.set(key, row)
+        }
+      }
+    }
+
+    devSpaceBindingWorkerRuns += 1
+    devSpaceBindingWorkerLastItemMs = performance.now() - itemStartedAt
+    devSpaceBindingWorkerMaxItemMs = Math.max(
+      devSpaceBindingWorkerMaxItemMs,
+      devSpaceBindingWorkerLastItemMs,
+    )
+    if (devSpaceBindingEvidenceWork.size > 0 || devSpaceBindingAuditWork.size > 0) {
+      scheduleDevSpaceBindingWorker()
+    }
   }
 
   const drainPendingDevSpaceBindingQueue = ({ limit = 1000, source = 'startup' } = {}) => {
@@ -6919,10 +6996,76 @@ async function main() {
     }).matched
   }
 
+  const canonicalWatchdogTurnStartedAt = (conversationId, diagnostic) => {
+    const turnExchangeId = typeof diagnostic?.turnExchangeId === 'string'
+      ? diagnostic.turnExchangeId
+      : null
+    if (!turnExchangeId) return null
+    const row = archive.db.prepare(
+      "SELECT MIN(create_time) AS createTime FROM messages "
+      + "WHERE conversation_id=? AND turn_exchange_id=? AND role='user' AND create_time IS NOT NULL",
+    ).get(conversationId, turnExchangeId)
+    const createTime = Number(row?.createTime)
+    return Number.isFinite(createTime) && createTime > 0 ? createTime * 1000 : null
+  }
+
+  /**
+   * DevSpace audit 只有 metadata/session 级身份，没有 turn_exchange_id。每次 canonical Body
+   * 到来都尽早给 active generation 绑定 turn 身份；否则同一 CID 后续出现新 turn 时，
+   * watchdog 会把它误当成旧 generation “第一次认识到的 turn”。
+   */
+  const reconcileActiveWatchdogFromCanonicalBody = (conversationId, diagnostic, observedAt = Date.now()) => {
+    const current = activeTurns.get(conversationId)
+    const turnKey = watchdogDiagnosticTurnKey(diagnostic)
+    if (!current || !turnKey) return null
+
+    const previousTurnKey = current.lastDiagnosticTurnKey ?? null
+    const reconciled = reconcileWatchdogDiagnosticTurn(
+      current,
+      diagnostic,
+      observedAt,
+      canonicalWatchdogTurnStartedAt(conversationId, diagnostic),
+    )
+    const identityAttached = previousTurnKey === null
+      && reconciled.nextActive.lastDiagnosticTurnKey === turnKey
+    if (!reconciled.changed && !identityAttached) return reconciled
+
+    activeTurns.set(conversationId, reconciled.nextActive)
+    persistActiveTurn(conversationId, reconciled.nextActive)
+    if (reconciled.changed) {
+      const alreadyTimedOut = Number.isFinite(Number(reconciled.turnStartedAt))
+        && observedAt - Number(reconciled.turnStartedAt) >= watchdogMs
+      if (!alreadyTimedOut) {
+        dispatchWatchdogStartNotification(
+          conversationId,
+          reconciled.nextActive,
+          conversationTitle(conversationId),
+        )
+      }
+      void log('canonical body moved active watchdog to a newer turn', {
+        conversationId,
+        previousTurnKey,
+        turnKey,
+        turnStartedAt: reconciled.turnStartedAt ?? null,
+        turnStartSource: reconciled.turnStartSource,
+        alreadyTimedOut,
+      }).catch(() => {})
+    }
+    else {
+      void log('canonical body attached turn identity to active watchdog', {
+        conversationId,
+        turnKey,
+        startedAt: reconciled.nextActive.startedAt,
+      }).catch(() => {})
+    }
+    return reconciled
+  }
+
   const publishDevSpaceBindingEvidenceFromBody = (conversationId, diagnostic) => {
     const now = Date.now()
     const turnExchangeId = typeof diagnostic?.turnExchangeId === 'string' ? diagnostic.turnExchangeId : null
     const requestId = typeof diagnostic?.requestId === 'string' ? diagnostic.requestId : null
+    reconcileActiveWatchdogFromCanonicalBody(conversationId, diagnostic, now)
     const existing = archive.getDevSpaceMetadataBindingsForConversation(conversationId)
     if (existing.length > 0) {
       archive.updateDevSpaceBindingTurn({
