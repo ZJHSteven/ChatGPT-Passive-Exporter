@@ -290,6 +290,29 @@ test('DevSpace audit backlog 必须分批让出 event loop，不能无界 drain'
   expect(daemon).toContain('yields: devSpaceAuditPollYields')
 })
 
+test('DevSpace binding probe 在 canonical IDs 全已知时必须跳过 merge', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+
+  const syncStart = daemon.indexOf('const syncConversation = async')
+  const syncEnd = daemon.indexOf('const drainCheckpointWatches', syncStart)
+  expect(syncStart).toBeGreaterThan(-1)
+  expect(syncEnd).toBeGreaterThan(syncStart)
+  const sync = daemon.slice(syncStart, syncEnd)
+
+  const knownIndex = sync.indexOf('const allKnownBefore =')
+  const probeFastPathIndex = sync.indexOf("trigger === 'devspace:binding-probe' && allKnownBefore")
+  const mergeIndex = sync.indexOf('archive.mergeLiveMessagesPage(')
+  expect(knownIndex).toBeGreaterThan(-1)
+  expect(probeFastPathIndex).toBeGreaterThan(knownIndex)
+  expect(mergeIndex).toBeGreaterThan(probeFastPathIndex)
+  expect(sync).toContain('DevSpace binding probe reused stored canonical page; merge skipped')
+  expect(sync).toContain('recoverySuperseded: 0')
+  expect(daemon).toContain('bindingProbeMergesSkipped: devSpaceBindingProbeMergesSkipped')
+})
+
 test('unbound gap repair requires Project sidebar discovery before terminal unbound completion', async () => {
   const daemon = await fs.readFile(
     new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
