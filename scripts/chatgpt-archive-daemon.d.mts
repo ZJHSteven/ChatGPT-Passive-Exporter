@@ -157,22 +157,6 @@ export function reconcileWatchdogDiagnosticTurn(
   nextActive: any
 }
 
-/** canonical Body 核实 turn 后，是否允许把 watchdog deadline 宣告为真实超时。 */
-export function shouldConfirmWatchdogTimeoutAfterDiagnostic(
-  result: { watchdogTurnChanged?: unknown, watchdogTurnAlreadyTimedOut?: unknown } | null | undefined,
-): boolean
-
-/** DevSpace 工具活动静默后恢复时，是否只触发一次 canonical Body turn 身份探针。 */
-export function shouldProbeWatchdogTurnIdentityOnDevSpaceResume(
-  active: {
-    lastEventAt?: unknown
-    lastDiagnosticTurnKey?: unknown
-    watchdogPendingAt?: unknown
-  } | null | undefined,
-  auditAt: unknown,
-  minimumIdleMs?: number,
-): boolean
-
 /** watchdog 诊断成功后决定当前 generation 是否应立即关闭。 */
 export function shouldCloseWatchdogGenerationAfterSync(
   trigger: unknown,

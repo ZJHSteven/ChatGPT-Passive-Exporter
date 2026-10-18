@@ -778,34 +778,6 @@ export function reconcileWatchdogDiagnosticTurn(active, diagnostic, now = Date.n
 }
 
 /**
- * conversation generation 到点后，只有 canonical Body 仍指向同一 turn，或新 turn 自己也已经
- * 超过 watchdog 窗口，才允许对用户宣告“超时”。发现尚未超时的新 turn 时，旧 deadline 作废。
- */
-export function shouldConfirmWatchdogTimeoutAfterDiagnostic(result) {
-  return !Boolean(result?.watchdogTurnChanged) || Boolean(result?.watchdogTurnAlreadyTimedOut)
-}
-
-/**
- * 已知 turn identity 的 DevSpace generation 在较长静默后重新出现工具调用时，不直接猜“新 turn”，
- * 只允许触发一次 canonical Body 身份探针。探针若仍是旧 turn，不会重置 watchdog；若已换 turn，
- * publishDevSpaceBindingEvidenceFromBody() 会用真实 turn_exchange_id 完成 generation rollover。
- */
-export function shouldProbeWatchdogTurnIdentityOnDevSpaceResume(
-  active,
-  auditAt,
-  minimumIdleMs = 60_000,
-) {
-  if (!active || typeof active !== 'object') return false
-  if (active.watchdogPendingAt) return false
-  if (!(typeof active.lastDiagnosticTurnKey === 'string' && active.lastDiagnosticTurnKey)) return false
-  const previousEventAt = Number(active.lastEventAt)
-  const nextAuditAt = Number(auditAt)
-  const idleMs = Number(minimumIdleMs)
-  if (!Number.isFinite(previousEventAt) || !Number.isFinite(nextAuditAt) || !Number.isFinite(idleMs)) return false
-  return nextAuditAt > previousEventAt && nextAuditAt - previousEventAt >= Math.max(0, idleMs)
-}
-
-/**
  * 一次 watchdog 诊断成功后，这个 generation 是否应该退出 activeTurns。
  *
  * reliable generation 仍以“一次硬超时诊断”为终点；catalog late-start 则必须留下已诊断
@@ -5914,13 +5886,12 @@ async function main() {
       const [conversationId, trigger] = nextReady
       ready.delete(conversationId)
       try {
-        const watchdogTrigger = String(trigger || '').startsWith('watchdog:')
-        const watchdogGenerationStartedAt = watchdogTrigger
+        const watchdogGenerationStartedAt = String(trigger || '').startsWith('watchdog:')
           ? Number(activeTurns.get(conversationId)?.startedAt || 0)
           : 0
         const result = await syncConversation(conversationId, trigger)
         syncedConversations += 1
-        if (watchdogTrigger) {
+        if (String(trigger || '').startsWith('watchdog:')) {
           const active = activeTurns.get(conversationId)
           if (active) {
             active.watchdogPendingAt = null
@@ -5930,35 +5901,7 @@ async function main() {
         // body 一旦给出 turn_exchange_id，就可以把 earlier provisional metadata 做后验校验；
         // 该步骤只读局部时间窗，不扫描整库。
         publishDevSpaceBindingEvidenceFromBody(conversationId, result.diagnostic)
-        const watchdogTimeoutConfirmed = watchdogTrigger
-          && shouldConfirmWatchdogTimeoutAfterDiagnostic(result)
-        const watchdogActive = watchdogTrigger ? activeTurns.get(conversationId) : null
-        const watchdogConfirmedStartedAt = watchdogTimeoutConfirmed
-          ? Number(watchdogActive?.startedAt || watchdogGenerationStartedAt || 0)
-          : 0
-        if (watchdogTimeoutConfirmed && watchdogActive) {
-          // conversation-level generation 可能在跨设备新 turn 到来时短暂落后于真实 turn。
-          // 只有 canonical Body 证明“仍是同一 turn”，或证明“新 turn 自己也已经超过阈值”，
-          // 才把 timeout 作为用户可见事实写入 LifeOps/Bark。
-          const confirmedAt = Date.now()
-          watchdogActive.lastWatchdogAt = Math.max(
-            Number(watchdogActive.lastWatchdogAt || 0),
-            confirmedAt,
-          )
-          watchdogActive.watchdogPendingAt = null
-          persistActiveTurn(conversationId, watchdogActive)
-          enqueueLifeOpsWatchdogTimeout(conversationId, watchdogActive, confirmedAt)
-          dispatchWatchdogTimeoutNotification(conversationId, watchdogActive, confirmedAt)
-        }
-        else if (watchdogTrigger && result.watchdogTurnChanged) {
-          await log('stale watchdog deadline suppressed after canonical turn change', {
-            conversationId,
-            previousGenerationStartedAt: watchdogGenerationStartedAt,
-            currentGenerationStartedAt: activeTurns.get(conversationId)?.startedAt ?? null,
-            currentTurnKey: watchdogDiagnosticTurnKey(result.diagnostic),
-          })
-        }
-        if (watchdogTimeoutConfirmed) {
+        if (String(trigger || '').startsWith('watchdog:')) {
           const tailGaps = attachWatchdogDevSpaceTailGapEvidence(conversationId, result.diagnostic)
           if (tailGaps.length > 0) {
             await log('watchdog diagnosis attached DevSpace canonical tail gap evidence', {
@@ -6066,10 +6009,11 @@ async function main() {
         // Worksite 本身只同步 metadata/link，不读取正文；同 Conversation 后续 Turn 更新同一引用。
         if (lifeOpsSync) {
           const currentIncident = result.newIncident || latestOpenIncident(conversationId)
+          const watchdogTrigger = String(trigger || '').startsWith('watchdog:')
           const shouldEnqueueInboxTurn = !result.terminalSettleNeeded && (
             result.diagnostic.terminalEvidence === 'final'
             || Boolean(currentIncident)
-            || watchdogTimeoutConfirmed
+            || watchdogTrigger
           )
           if (shouldEnqueueInboxTurn) {
             const worksite = buildArchiveBridgeWorksite(
@@ -6079,24 +6023,24 @@ async function main() {
             )
             if (worksite) {
               const override = lifeOpsEventOverrideByConversation.get(conversationId)
-              const watchdogSourceEventId = watchdogTimeoutConfirmed && watchdogConfirmedStartedAt > 0
-                ? watchdogLifeOpsEventId(conversationId, watchdogConfirmedStartedAt)
+              const watchdogSourceEventId = watchdogTrigger && watchdogGenerationStartedAt > 0
+                ? watchdogLifeOpsEventId(conversationId, watchdogGenerationStartedAt)
                 : null
               const incidentType = currentIncident?.lifecycleClass
                 || currentIncident?.incidentKind
-                || (watchdogTimeoutConfirmed ? 'watchdog-timeout' : null)
+                || (watchdogTrigger ? 'watchdog-timeout' : null)
               lifeOpsSync.enqueue({
                 ...worksite,
                 sourceEventId: override?.sourceEventId
                   || watchdogSourceEventId
                   || worksite.sourceEventId,
                 metadataId: override?.metadataId ?? null,
-                inboxKind: currentIncident || watchdogTimeoutConfirmed ? 'incident' : 'turn',
-                inboxHealth: currentIncident || watchdogTimeoutConfirmed ? 'incident' : 'healthy',
+                inboxKind: currentIncident || watchdogTrigger ? 'incident' : 'turn',
+                inboxHealth: currentIncident || watchdogTrigger ? 'incident' : 'healthy',
                 finalState: result.diagnostic.terminalEvidence ?? null,
                 incidentType,
                 incidentState: currentIncident?.status
-                  || (watchdogTimeoutConfirmed ? 'diagnosed' : null),
+                  || (watchdogTrigger ? 'diagnosed' : null),
                 metadata: {
                   ...(worksite.metadata || {}),
                   trigger,
@@ -6111,13 +6055,12 @@ async function main() {
           }
         }
         // SQLite/trace 到这里已经完成；通知只从已落库事实分叉出去，不参与 syncInFlight。
-        // Watchdog 固定是“两阶段”，但“到点”必须先经 Body 确认仍属于同一 turn。
-        // 若这次 Body 证明 CID 已切到尚未超时的新 turn，则只保留新 turn 的开始收据，
-        // 不发送旧 generation 的 timeout/diagnosis。
-        if (watchdogTimeoutConfirmed) {
+        // Watchdog 固定是“两阶段”：到点时已经发第一条；body 一旦诊断成功，这里无条件发第二条，
+        // 不再额外叠加 turn-final / incident Bark，确保同一 Watchdog turn 最多恰好两条。
+        if (String(trigger || '').startsWith('watchdog:')) {
           dispatchWatchdogDiagnosisNotification(
             conversationId,
-            watchdogConfirmedStartedAt,
+            watchdogGenerationStartedAt,
             result.diagnostic,
             // Watchdog 诊断通知必须从“已落库后的最终 incident 视图”读取 evidence。
             // result.newIncident 是 merge 返回的瞬时对象，可能早于 canonical-tail-gap 附着，
@@ -6395,12 +6338,6 @@ async function main() {
     }
     const current = activeTurns.get(conversationId)
     const watchdogLatched = isWatchdogLatched(current)
-    const resumeProbePreviousEventAt = current ? Number(current.lastEventAt || 0) : null
-    const shouldProbeTurnIdentity = shouldProbeWatchdogTurnIdentityOnDevSpaceResume(
-      current,
-      auditAt,
-      DEVSPACE_IDLE_ALERT_THRESHOLDS_MS[0],
-    )
     if (current) {
       current.lastEventAt = Math.max(Number(current.lastEventAt || 0), auditAt)
       persistActiveTurn(conversationId, current)
@@ -6424,15 +6361,6 @@ async function main() {
       observedAt: auditAt,
       lifecycleState: watchdogLatched ? 'timed_out' : 'active',
     })
-    if (shouldProbeTurnIdentity) {
-      markSyncReady(conversationId, 'devspace:turn-resume-probe', 0)
-      void log('DevSpace activity resumed after idle; queued canonical turn identity probe', {
-        conversationId,
-        auditAt,
-        previousEventAt: resumeProbePreviousEventAt,
-        turnKey: current?.lastDiagnosticTurnKey ?? null,
-      })
-    }
   }
 
   const bindDevSpaceMetadataToConversation = (input) => {
@@ -7068,76 +6996,10 @@ async function main() {
     }).matched
   }
 
-  const canonicalWatchdogTurnStartedAt = (conversationId, diagnostic) => {
-    const turnExchangeId = typeof diagnostic?.turnExchangeId === 'string'
-      ? diagnostic.turnExchangeId
-      : null
-    if (!turnExchangeId) return null
-    const row = archive.db.prepare(
-      "SELECT MIN(create_time) AS createTime FROM messages "
-      + "WHERE conversation_id=? AND turn_exchange_id=? AND role='user' AND create_time IS NOT NULL",
-    ).get(conversationId, turnExchangeId)
-    const createTime = Number(row?.createTime)
-    return Number.isFinite(createTime) && createTime > 0 ? createTime * 1000 : null
-  }
-
-  /**
-   * DevSpace audit 只有 metadata/session 级身份，没有 turn_exchange_id。每次 canonical Body
-   * 到来都尽早给 active generation 绑定 turn 身份；否则同一 CID 后续出现新 turn 时，
-   * watchdog 会把它误当成旧 generation “第一次认识到的 turn”。
-   */
-  const reconcileActiveWatchdogFromCanonicalBody = (conversationId, diagnostic, observedAt = Date.now()) => {
-    const current = activeTurns.get(conversationId)
-    const turnKey = watchdogDiagnosticTurnKey(diagnostic)
-    if (!current || !turnKey) return null
-
-    const previousTurnKey = current.lastDiagnosticTurnKey ?? null
-    const reconciled = reconcileWatchdogDiagnosticTurn(
-      current,
-      diagnostic,
-      observedAt,
-      canonicalWatchdogTurnStartedAt(conversationId, diagnostic),
-    )
-    const identityAttached = previousTurnKey === null
-      && reconciled.nextActive.lastDiagnosticTurnKey === turnKey
-    if (!reconciled.changed && !identityAttached) return reconciled
-
-    activeTurns.set(conversationId, reconciled.nextActive)
-    persistActiveTurn(conversationId, reconciled.nextActive)
-    if (reconciled.changed) {
-      const alreadyTimedOut = Number.isFinite(Number(reconciled.turnStartedAt))
-        && observedAt - Number(reconciled.turnStartedAt) >= watchdogMs
-      if (!alreadyTimedOut) {
-        dispatchWatchdogStartNotification(
-          conversationId,
-          reconciled.nextActive,
-          conversationTitle(conversationId),
-        )
-      }
-      void log('canonical body moved active watchdog to a newer turn', {
-        conversationId,
-        previousTurnKey,
-        turnKey,
-        turnStartedAt: reconciled.turnStartedAt ?? null,
-        turnStartSource: reconciled.turnStartSource,
-        alreadyTimedOut,
-      }).catch(() => {})
-    }
-    else {
-      void log('canonical body attached turn identity to active watchdog', {
-        conversationId,
-        turnKey,
-        startedAt: reconciled.nextActive.startedAt,
-      }).catch(() => {})
-    }
-    return reconciled
-  }
-
   const publishDevSpaceBindingEvidenceFromBody = (conversationId, diagnostic) => {
     const now = Date.now()
     const turnExchangeId = typeof diagnostic?.turnExchangeId === 'string' ? diagnostic.turnExchangeId : null
     const requestId = typeof diagnostic?.requestId === 'string' ? diagnostic.requestId : null
-    reconcileActiveWatchdogFromCanonicalBody(conversationId, diagnostic, now)
     const existing = archive.getDevSpaceMetadataBindingsForConversation(conversationId)
     if (existing.length > 0) {
       archive.updateDevSpaceBindingTurn({
@@ -8440,8 +8302,9 @@ async function main() {
     for (const [conversationId, active] of activeTurns) {
       if (active.watchdogPendingAt) {
         stopCheckpointWatch(conversationId, 'watchdog-pending', now)
-        // pending 只表示“conversation generation 已到阈值、等待 canonical Body 核实 turn 身份”。
-        // daemon 重启也不能在核实前补发 timeout，否则跨设备新 turn 会继承旧 generation 的误报。
+        // daemon 重启后恢复 timed-out generation 时仍补发一次“到点”事实；持久 ledger 会去重。
+        enqueueLifeOpsWatchdogTimeout(conversationId, active, now)
+        dispatchWatchdogTimeoutNotification(conversationId, active, now)
         if (!ready.has(conversationId)) {
           const watchdogTrigger = watchdogTriggerForStartType(active.startType)
           markSyncReady(conversationId, watchdogTrigger, 0)
@@ -8462,7 +8325,9 @@ async function main() {
       active.lastWatchdogAt = now
       active.watchdogPendingAt = now
       persistActiveTurn(conversationId, active)
-      // 到点先进入 pending，真正的 timeout 通知由 drainDirty() 在 canonical Body 核实 turn 后发送。
+      // Watchdog 到点事实与 body 是否可立即拉取无关：第一条通知现在始终立即发送。
+      enqueueLifeOpsWatchdogTimeout(conversationId, active, now)
+      dispatchWatchdogTimeoutNotification(conversationId, active, now)
       const watchdogTrigger = watchdogTriggerForStartType(active.startType)
       markSyncReady(conversationId, watchdogTrigger, 0)
       void log('active turn exceeded watchdog; queued diagnostic body sync', {
