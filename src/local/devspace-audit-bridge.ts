@@ -580,9 +580,42 @@ export class DevSpaceAuditBridge {
   }
 
   activityBetween(startAtMs: number, endAtMs: number, limit = 500): DevSpaceMetadataActivity[] {
-    return groupDevSpaceActivity(
-      this.pollSince(startAtMs, limit).filter(event => event.startedAtMs <= endAtMs),
-    )
+    if (!this.open() || !this.db) return []
+    const start = new Date(Math.max(0, startAtMs)).toISOString()
+    const end = new Date(Math.max(startAtMs, endAtMs)).toISOString()
+    // Binding matcher 只需要 tool+args+started_at。旧实现调用 pollSince(start, 5000)
+    // 后才在 JS 里 <= end 过滤，会把窗口之后的大量 result_json/request_meta 一并从
+    // 800MiB DevSpace DB 搬出来；真实 ±2min 窗口最终只有 1~5 个 activity，却可耗时
+    // 400~500ms。这里直接让 SQLite 用 started_at 索引做闭区间查询，并只选 matcher 字段。
+    const rows = this.db.prepare(`
+      SELECT id, metadata_id AS metadataId, tool, args_json AS argsJson,
+             started_at AS startedAt
+      FROM tool_audit
+      WHERE metadata_id IS NOT NULL
+        AND metadata_id <> ''
+        AND started_at >= ?
+        AND started_at <= ?
+      ORDER BY started_at ASC, id ASC
+      LIMIT ?
+    `).all(start, end, Math.max(1, Math.trunc(limit))) as Array<{
+      id: string
+      metadataId: string
+      tool: string
+      argsJson: string
+      startedAt: string
+    }>
+    return groupDevSpaceActivity(rows.flatMap(row => {
+      const startedAtMs = Date.parse(row.startedAt)
+      if (!Number.isFinite(startedAtMs)) return []
+      return [{
+        ...row,
+        startedAtMs,
+        resultJson: null,
+        error: null,
+        finishedAt: null,
+        requestMetaJson: null,
+      }]
+    }))
   }
 
   /**
