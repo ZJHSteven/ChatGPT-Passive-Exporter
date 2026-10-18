@@ -786,6 +786,26 @@ export function shouldConfirmWatchdogTimeoutAfterDiagnostic(result) {
 }
 
 /**
+ * 已知 turn identity 的 DevSpace generation 在较长静默后重新出现工具调用时，不直接猜“新 turn”，
+ * 只允许触发一次 canonical Body 身份探针。探针若仍是旧 turn，不会重置 watchdog；若已换 turn，
+ * publishDevSpaceBindingEvidenceFromBody() 会用真实 turn_exchange_id 完成 generation rollover。
+ */
+export function shouldProbeWatchdogTurnIdentityOnDevSpaceResume(
+  active,
+  auditAt,
+  minimumIdleMs = 60_000,
+) {
+  if (!active || typeof active !== 'object') return false
+  if (active.watchdogPendingAt) return false
+  if (!(typeof active.lastDiagnosticTurnKey === 'string' && active.lastDiagnosticTurnKey)) return false
+  const previousEventAt = Number(active.lastEventAt)
+  const nextAuditAt = Number(auditAt)
+  const idleMs = Number(minimumIdleMs)
+  if (!Number.isFinite(previousEventAt) || !Number.isFinite(nextAuditAt) || !Number.isFinite(idleMs)) return false
+  return nextAuditAt > previousEventAt && nextAuditAt - previousEventAt >= Math.max(0, idleMs)
+}
+
+/**
  * 一次 watchdog 诊断成功后，这个 generation 是否应该退出 activeTurns。
  *
  * reliable generation 仍以“一次硬超时诊断”为终点；catalog late-start 则必须留下已诊断
@@ -6375,6 +6395,12 @@ async function main() {
     }
     const current = activeTurns.get(conversationId)
     const watchdogLatched = isWatchdogLatched(current)
+    const resumeProbePreviousEventAt = current ? Number(current.lastEventAt || 0) : null
+    const shouldProbeTurnIdentity = shouldProbeWatchdogTurnIdentityOnDevSpaceResume(
+      current,
+      auditAt,
+      DEVSPACE_IDLE_ALERT_THRESHOLDS_MS[0],
+    )
     if (current) {
       current.lastEventAt = Math.max(Number(current.lastEventAt || 0), auditAt)
       persistActiveTurn(conversationId, current)
@@ -6398,6 +6424,15 @@ async function main() {
       observedAt: auditAt,
       lifecycleState: watchdogLatched ? 'timed_out' : 'active',
     })
+    if (shouldProbeTurnIdentity) {
+      markSyncReady(conversationId, 'devspace:turn-resume-probe', 0)
+      void log('DevSpace activity resumed after idle; queued canonical turn identity probe', {
+        conversationId,
+        auditAt,
+        previousEventAt: resumeProbePreviousEventAt,
+        turnKey: current?.lastDiagnosticTurnKey ?? null,
+      })
+    }
   }
 
   const bindDevSpaceMetadataToConversation = (input) => {
