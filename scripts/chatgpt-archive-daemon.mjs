@@ -9773,29 +9773,13 @@ async function main() {
         guardian.page.closed = true
         continue
       }
-      await refreshPassivePageObservers(targets)
+      // Critical lane 只保存当前 target snapshot；observer attach 等允许耗时的 CDP 工作交给
+      // Maintenance lane，避免某个 10s Network.enable timeout 把 Guardian health tick 一起拖住。
+      latestCdpTargets = Array.isArray(targets) ? targets : []
       // family backoff 到期后及时解除 Guardian 对应 URL pattern。
       // 这一步不发 ChatGPT 请求；只是让页面/下一次 probation probe 不会被过期的本地 CDP block 卡住。
       await syncGuardianRateLimitBlocks()
       retireIdleLiveTransports()
-      if (!resumeStartupRecoveryDone && authHeaders) {
-        const scheduled = recoverRecentOrphanedResumeCredentials()
-        resumeStartupRecoveryDone = true
-        if (scheduled > 0) {
-          await log('recent orphaned live turn resumes scheduled after daemon startup', { scheduled })
-        }
-      }
-      // 稳态由 DevSpace 事件立即唤醒；这里只保留一分钟一次的 durable catch-up，
-      // 它不是实时发现路径，成本也从“每 5 秒一次”降到“每 60 秒一次”。
-      if (Date.now() - devSpaceLastFallbackPollAt >= DEVSPACE_FALLBACK_POLL_MS) {
-        await pollDevSpaceAudits()
-        refreshPendingDevSpaceRecoveryAudits()
-        // idle 状态本身也按 metadata 重读，作为 finish 门铃丢失时的低频兜底。
-        refreshTrackedDevSpaceIdleCandidates()
-        devSpaceLastFallbackPollAt = Date.now()
-      }
-      checkDevSpaceIdleNotifications()
-      checkUnboundDevSpaceTimeouts()
 
       // 只做健康观测，不主动激活窗口。短暂的 renderer/CDP 抖动先累计失败次数；
       // 不再“一次 3 秒 timeout 就拆 Guardian”。成功一次立即清零。
@@ -9907,18 +9891,6 @@ async function main() {
         throw new Error('guardian has no active ChatGPT WSS after readiness grace period')
       }
 
-      if (reconcileHours > 0
-        && authHeaders
-        && familyRateLimitAllowed(rateLimits, 'catalog')
-        && !cooldownRecoveryPending
-        && !guardianConversationRestBlockUncertain
-        && Date.now() - lastReconcileAt >= reconcileHours * 3600_000) {
-        await reconcileCatalog('periodic').catch(async (error) => {
-          await log('periodic reconciliation failed; passive Guardian remains online', {
-            error: error instanceof Error ? error.message : String(error),
-          })
-        })
-      }
       // cooldown 到期只解除“主动 API 禁止”，不再拿完整 catalog 扫描当探针。
       // 先保持 WSS 在线；已知 ready conversation 由 drainDirty 逐条补 body。
       if (cooldownRecoveryPending && activeApiAllowed(cooldownUntil)) {
@@ -9944,14 +9916,9 @@ async function main() {
           recoveryProbeGapMs,
         })
       }
-     queueWatchdogDiagnostics()
-     await drainDirty()
-     await drainCheckpointWatches()
-     await maybeRunGapRepair()
-     completeUnboundDevSpaceIdleDiagnoses()
-     completeUnboundWatchdogDiagnoses()
-     await hydratePendingGeneratedImageAssets()
-      if (protocolLedger?.refreshBaselineLock()) scheduleProtocolLedgerFlush()
+      // 后台归档/修复/图片/observer 工作只“调度”不等待；即使 Maintenance lane 仍在处理上一轮，
+      // Critical lane 也会继续每 5 秒做 Guardian/CDP/WSS 健康检查。
+      scheduleMaintenanceLane()
      // 运行态错误已经写入日志；完整健康迭代成功后清掉 state 里的 transient lastError，
       // 避免 CLI 永远显示一个几小时前已经自动恢复的问题。
       lastError = null
