@@ -2886,11 +2886,71 @@ async function main() {
   let maintenanceLaneLastError = null
   let maintenanceLaneLastStep = null
   let latestCdpTargets = []
+  let evidenceLegacyFallbacks = 0
 
   const log = async (message, extra = null) => {
     const line = `[${new Date().toISOString()}] ${message}${extra ? ` ${JSON.stringify(extra)}` : ''}\n`
     await fs.appendFile(logPath, line).catch(() => {})
     console.error(line.trim())
+  }
+
+  /**
+   * 为一次 raw Body/Mapping observation 准备并持久化冷证据。
+   *
+   * 正常路径：
+   *   async JSON gzip -> CAS blob（相同 SHA 复用）-> observation event JSONL -> Hot SQLite 只 merge canonical。
+   *
+   * 降级路径：
+   *   外置 store 任一步失败时，仍把“已经准备好的 gzip”交给 legacy live_observations 写入。
+   *   因此瘦身只影响存储布局，不改变“原始证据至少有一份 durable copy”的安全边界。
+   */
+  const prepareObservationEvidence = async ({
+    payload,
+    conversationId,
+    observationKind,
+    endpoint = null,
+    pageCursor = null,
+    observedAt = Date.now(),
+  }) => {
+    let preparedObservation = null
+    try {
+      preparedObservation = await prepareArchiveEvidence(payload)
+    }
+    catch (error) {
+      evidenceLegacyFallbacks += 1
+      await log('cold evidence preparation failed; falling back to legacy SQLite observation', {
+        conversationId,
+        observationKind,
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => {})
+      return { preparedObservation: null, skipLegacyObservation: false, storedEvidence: null }
+    }
+
+    if (!externalEvidenceEnabled) {
+      return { preparedObservation, skipLegacyObservation: false, storedEvidence: null }
+    }
+
+    try {
+      const storedEvidence = await evidenceStore.recordObservation({
+        conversationId,
+        observationKind,
+        endpoint,
+        pageCursor,
+        observedAt,
+        prepared: preparedObservation,
+      })
+      return { preparedObservation, skipLegacyObservation: true, storedEvidence }
+    }
+    catch (error) {
+      evidenceLegacyFallbacks += 1
+      await log('cold evidence store failed; falling back to legacy SQLite observation', {
+        conversationId,
+        observationKind,
+        sha256: preparedObservation.sha256,
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => {})
+      return { preparedObservation, skipLegacyObservation: false, storedEvidence: null }
+    }
   }
 
   /**
@@ -3917,6 +3977,11 @@ async function main() {
     updatedAt: Date.now(),
     startupPhase: guardian ? 'running' : 'initializing',
     database: dbPath,
+    evidence: {
+      enabled: externalEvidenceEnabled,
+      legacyFallbacks: evidenceLegacyFallbacks,
+      ...evidenceStore.stats(),
+    },
     turnTrace: turnTracePath,
     cdp: cdpHttp,
     controlPlane: {
