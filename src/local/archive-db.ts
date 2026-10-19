@@ -1885,7 +1885,12 @@ export class ChatArchiveDb {
        * daemon 可提前在线程池完成 forensic observation 的 JSON/gzip 准备。
        * 若省略则保持旧同步 fallback，供 CLI/测试/其它调用方使用。
        */
-      preparedObservation?: PreparedLiveObservation
+      preparedObservation?: PreparedArchiveEvidence
+      /**
+       * 外部 Cold Evidence 已经 durable 落盘时，Hot SQLite 不再重复写 raw_json_gzip。
+       * 旧 CLI/测试/尚未迁移的 SSE 路径省略此项，继续使用 legacy live_observations fallback。
+       */
+      skipLegacyObservation?: boolean
     } = {},
   ): LiveMergeResult {
     const mergeStartedAt = performance.now()
@@ -2204,22 +2209,28 @@ export class ChatArchiveDb {
       messageWriteMs = performance.now() - messageWriteStartedAt
 
       const observationStartedAt = performance.now()
-      const compressedObservation = options.preparedObservation?.compressed
-        ?? gzipSync(Buffer.from(rawText, 'utf8'))
-      observationGzipBytes = compressedObservation.byteLength
-      this.db.prepare(`
-        INSERT INTO live_observations (
-          conversation_id, observation_kind, endpoint, page_cursor, observed_at, sha256, raw_json_gzip
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        conversationId,
-        options.observationKind ?? 'body-page',
-        options.endpoint ?? null,
-        options.pageCursor ?? null,
-        observedAt,
-        options.preparedObservation?.sha256 ?? sha256Text(rawText),
-        compressedObservation,
-      )
+      if (options.skipLegacyObservation === true) {
+        // raw payload 已经先进入外置 CAS + event journal；Hot SQLite 只承担 canonical/runtime。
+        observationGzipBytes = options.preparedObservation?.compressed.byteLength ?? 0
+      }
+      else {
+        const compressedObservation = options.preparedObservation?.compressed
+          ?? gzipSync(Buffer.from(rawText, 'utf8'))
+        observationGzipBytes = compressedObservation.byteLength
+        this.db.prepare(`
+          INSERT INTO live_observations (
+            conversation_id, observation_kind, endpoint, page_cursor, observed_at, sha256, raw_json_gzip
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          conversationId,
+          options.observationKind ?? 'body-page',
+          options.endpoint ?? null,
+          options.pageCursor ?? null,
+          observedAt,
+          options.preparedObservation?.sha256 ?? sha256Text(rawText),
+          compressedObservation,
+        )
+      }
       observationMs = performance.now() - observationStartedAt
 
       const derivedStartedAt = performance.now()
@@ -2334,6 +2345,8 @@ export class ChatArchiveDb {
       observedAt?: number
       endpoint?: string
       observationKind?: string
+      preparedObservation?: PreparedArchiveEvidence
+      skipLegacyObservation?: boolean
     } = {},
   ): LiveMappingMergeResult {
     const rawConversation = record(payload)
@@ -2346,7 +2359,7 @@ export class ChatArchiveDb {
     const canonical = adaptConversation(rawConversation)
     const observedAt = options.observedAt ?? Date.now()
     const now = Date.now()
-    const rawText = json(payload)
+    const rawText = options.preparedObservation?.rawText ?? json(payload)
     const messageIds = Object.values(mapping)
       .map(node => stringValue(record(record(node).message).id))
       .filter((id): id is string => Boolean(id))
@@ -2563,18 +2576,20 @@ export class ChatArchiveDb {
         ordinal += 1
       }
 
-      this.db.prepare(`
-        INSERT INTO live_observations (
-          conversation_id, observation_kind, endpoint, page_cursor, observed_at, sha256, raw_json_gzip
-        ) VALUES (?, ?, ?, NULL, ?, ?, ?)
-      `).run(
-        conversationId,
-        options.observationKind ?? 'mapping-snapshot',
-        options.endpoint ?? null,
-        observedAt,
-        sha256Text(rawText),
-        gzipSync(Buffer.from(rawText, 'utf8')),
-      )
+      if (options.skipLegacyObservation !== true) {
+        this.db.prepare(`
+          INSERT INTO live_observations (
+            conversation_id, observation_kind, endpoint, page_cursor, observed_at, sha256, raw_json_gzip
+          ) VALUES (?, ?, ?, NULL, ?, ?, ?)
+        `).run(
+          conversationId,
+          options.observationKind ?? 'mapping-snapshot',
+          options.endpoint ?? null,
+          observedAt,
+          options.preparedObservation?.sha256 ?? sha256Text(rawText),
+          options.preparedObservation?.compressed ?? gzipSync(Buffer.from(rawText, 'utf8')),
+        )
+      }
 
       this.rebuildConversationDerivedInsideTransaction(conversationId, messageIds)
       this.db.exec('COMMIT')
