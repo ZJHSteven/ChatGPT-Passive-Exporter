@@ -333,6 +333,51 @@ test('daemon state 暴露控制平面 event-loop lag，避免把本机 starvatio
   expect(daemon).toContain("controlPlaneStage = 'idle'")
 })
 
+test('Critical 主循环只调度 Maintenance lane，不再直接等待后台重任务', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+  const loopStart = daemon.indexOf('while (!stopping) {')
+  const loopEnd = daemon.indexOf("await log('daemon stopping')", loopStart)
+  expect(loopStart).toBeGreaterThan(-1)
+  expect(loopEnd).toBeGreaterThan(loopStart)
+  const loop = daemon.slice(loopStart, loopEnd)
+
+  expect(loop).toContain('scheduleMaintenanceLane()')
+  expect(loop).toContain('latestCdpTargets = Array.isArray(targets) ? targets : []')
+  expect(loop).not.toContain('await refreshPassivePageObservers(targets)')
+  expect(loop).not.toContain("await reconcileCatalog('periodic')")
+  expect(loop).not.toContain('await drainDirty()')
+  expect(loop).not.toContain('await drainCheckpointWatches()')
+  expect(loop).not.toContain('await maybeRunGapRepair()')
+  expect(loop).not.toContain('await hydratePendingGeneratedImageAssets()')
+})
+
+test('Maintenance lane 自己隔离错误，后台失败不得关闭 Guardian', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+  const laneStart = daemon.indexOf('const runMaintenanceStep = async (step, work) =>')
+  const loopStart = daemon.indexOf("controlPlaneStage = 'idle'", laneStart)
+  expect(laneStart).toBeGreaterThan(-1)
+  expect(loopStart).toBeGreaterThan(laneStart)
+  const lane = daemon.slice(laneStart, loopStart)
+
+  expect(lane).toContain("await log('daemon maintenance step failed'")
+  expect(lane).toContain('maintenanceLaneLastError = `${step}: ${message}`')
+  expect(lane).toContain('if (maintenanceLaneScheduled || maintenanceLaneInFlight || stopping) return false')
+  expect(lane).toContain("await runMaintenanceStep('dirty-drain'")
+  expect(lane).toContain("await runMaintenanceStep('periodic-reconcile'")
+  expect(lane).not.toContain('guardian?.page?.close()')
+
+  // state 面必须能直接判断“Critical 正常、Maintenance 慢/失败”，不能再只看到一个 daemon lastError。
+  expect(daemon).toContain('maintenanceLane: {')
+  expect(daemon).toContain('lastError: maintenanceLaneLastError')
+  expect(daemon).toContain('maxMs: Math.round(maintenanceLaneMaxMs * 100) / 100')
+})
+
 test('同一条 DevSpace audit 内部分段 yield，durable cursor 仍只在整条处理成功后推进', async () => {
   const daemon = await fs.readFile(
     new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
