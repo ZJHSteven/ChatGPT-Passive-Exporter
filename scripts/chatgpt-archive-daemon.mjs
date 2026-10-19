@@ -2862,6 +2862,19 @@ async function main() {
   let activeImageResolverSuccesses = 0
   let activeImageResolverErrors = 0
   let lastActiveImageResolverAt = 0
+  // 5 秒 Critical tick 与后台 Maintenance lane 必须是两个故障域。
+  //
+  // Critical lane 只负责 Guardian/CDP/WSS/限流与状态心跳；Maintenance lane 才负责
+  // observer attach、reconcile、dirty/checkpoint drain、gap repair、image hydration 等允许耗时的任务。
+  // 这组 telemetry 用于证明“后台任务慢”不会再伪装成“整个 daemon 主循环失联”。
+  let maintenanceLaneInFlight = false
+  let maintenanceLaneScheduled = false
+  let maintenanceLaneRuns = 0
+  let maintenanceLaneLastMs = 0
+  let maintenanceLaneMaxMs = 0
+  let maintenanceLaneLastError = null
+  let maintenanceLaneLastStep = null
+  let latestCdpTargets = []
 
   const log = async (message, extra = null) => {
     const line = `[${new Date().toISOString()}] ${message}${extra ? ` ${JSON.stringify(extra)}` : ''}\n`
@@ -3903,6 +3916,15 @@ async function main() {
       eventLoopLagOver1000Ms: controlPlaneLagOver1000Ms,
       stage: controlPlaneStage,
       recentSlowLags: controlPlaneRecentSlowLags.slice(-40),
+      maintenanceLane: {
+        inFlight: maintenanceLaneInFlight,
+        scheduled: maintenanceLaneScheduled,
+        runs: maintenanceLaneRuns,
+        lastMs: Math.round(maintenanceLaneLastMs * 100) / 100,
+        maxMs: Math.round(maintenanceLaneMaxMs * 100) / 100,
+        lastStep: maintenanceLaneLastStep,
+        lastError: maintenanceLaneLastError,
+      },
     },
     bridge: {
       enabled: bridgeEnabled,
