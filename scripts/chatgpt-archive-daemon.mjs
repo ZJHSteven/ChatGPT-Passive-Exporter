@@ -2449,14 +2449,17 @@ async function main() {
   // Node 事件循环是 cooperative scheduling：任一同步 SQLite/JS 段不返回，这些控制面就都无法调度。
   // 用固定 250ms 心跳直接量“实际失去调度多久”，避免以后再把 event-loop starvation 误判成网络慢。
   const CONTROL_PLANE_TICK_MS = 250
-  let controlPlaneExpectedAt = Date.now() + CONTROL_PLANE_TICK_MS
+  // 延迟必须用 monotonic clock；Date.now() 受 Windows/NTP 墙钟校正影响，不适合做 event-loop drift。
+  let controlPlaneExpectedMono = performance.now() + CONTROL_PLANE_TICK_MS
+  let controlPlanePreviousCpu = process.cpuUsage()
+  let controlPlanePreviousElu = performance.eventLoopUtilization()
   let controlPlaneLagLastMs = 0
   let controlPlaneLagMaxMs = 0
   let controlPlaneLagOver100Ms = 0
   let controlPlaneLagOver1000Ms = 0
   let controlPlaneStage = 'startup'
   const controlPlaneRecentSlowLags = []
-  const recordControlPlaneSlowPath = ({ at = Date.now(), lagMs, stage, source }) => {
+  const recordControlPlaneSlowPath = ({ at = Date.now(), lagMs, stage, source, cpuMs = null, elu = null }) => {
     const durationMs = Math.max(0, Number(lagMs) || 0)
     if (durationMs < 100) return
     controlPlaneRecentSlowLags.push({
@@ -2464,6 +2467,8 @@ async function main() {
       lagMs: Math.round(durationMs * 100) / 100,
       stage,
       source,
+      ...(Number.isFinite(Number(cpuMs)) ? { cpuMs: Math.round(Number(cpuMs) * 100) / 100 } : {}),
+      ...(Number.isFinite(Number(elu)) ? { elu: Math.round(Number(elu) * 10_000) / 10_000 } : {}),
     })
     if (controlPlaneRecentSlowLags.length > 40) controlPlaneRecentSlowLags.shift()
   }
@@ -2486,7 +2491,13 @@ async function main() {
   const yieldControlPlane = () => new Promise(resolve => setImmediate(resolve))
   const controlPlaneLagTimer = setInterval(() => {
     const now = Date.now()
-    const lagMs = Math.max(0, now - controlPlaneExpectedAt)
+    const nowMono = performance.now()
+    const lagMs = Math.max(0, nowMono - controlPlaneExpectedMono)
+    const cpu = process.cpuUsage(controlPlanePreviousCpu)
+    controlPlanePreviousCpu = process.cpuUsage()
+    const cpuMs = (Number(cpu.user || 0) + Number(cpu.system || 0)) / 1000
+    const eluDelta = performance.eventLoopUtilization(controlPlanePreviousElu)
+    controlPlanePreviousElu = performance.eventLoopUtilization()
     controlPlaneLagLastMs = lagMs
     controlPlaneLagMaxMs = Math.max(controlPlaneLagMaxMs, lagMs)
     if (lagMs >= 100) controlPlaneLagOver100Ms += 1
@@ -2496,8 +2507,10 @@ async function main() {
       lagMs,
       stage: controlPlaneStage,
       source: 'timer-drift',
+      cpuMs,
+      elu: eluDelta.utilization,
     })
-    controlPlaneExpectedAt = now + CONTROL_PLANE_TICK_MS
+    controlPlaneExpectedMono = nowMono + CONTROL_PLANE_TICK_MS
   }, CONTROL_PLANE_TICK_MS)
   controlPlaneLagTimer.unref?.()
   // 进程一拿到 statePath 就先覆盖“旧 daemon 的 PID 身份”，不要等到历史 seed、
