@@ -231,6 +231,7 @@ export interface LiveMergeResult {
   timings: {
     totalMs: number
     prepareMs: number
+    fingerprintReadMs: number
     existingReadMs: number
     writerLockWaitMs: number
     conversationHeadMs: number
@@ -241,6 +242,9 @@ export interface LiveMergeResult {
     postMergeMs: number
     fullRewriteMessages: number
     observationOnlyTouches: number
+    fingerprintHits: number
+    fatRowsRead: number
+    fingerprintWrites: number
     rawJsonBytes: number
     observationGzipBytes: number
   }
@@ -564,7 +568,7 @@ function visibleForMarkdown(conversation: CanonicalConversation): boolean {
  * - FTS 只索引可读 User/Assistant 正文，不把巨大 tool result、connector JSON、raw CoT
  *   塞进全文索引；这些仍可从 message/resource 表按需审计。
  */
-const ARCHIVE_SCHEMA_VERSION = 2
+const ARCHIVE_SCHEMA_VERSION = 3
 
 export class ChatArchiveDb {
   readonly db: DatabaseSync
@@ -596,6 +600,11 @@ export class ChatArchiveDb {
       this.migrateV2()
       schemaVersion = 2
       this.db.exec('PRAGMA user_version=2')
+    }
+    if (schemaVersion < 3) {
+      this.migrateV3()
+      schemaVersion = 3
+      this.db.exec('PRAGMA user_version=3')
     }
   }
 
@@ -1235,6 +1244,26 @@ export class ChatArchiveDb {
     this.ensureColumn('messages', 'raw_hash', 'TEXT')
   }
 
+  /**
+   * v3：窄 message raw fingerprint side table。
+   *
+   * `messages.raw_hash` 是在 4.9GB 肥表尾部 ALTER 出来的列；直接从 messages 读取它仍可能需要
+   * 访问承载 raw_json 的大 record/overflow page。side table 则只有主键+64字节 hash，可作为真正
+   * 的热 no-op 判定结构。这里故意不做历史 backfill：首次自然 Body 触碰旧消息时才从旧 raw_json
+   * 核验并懒填，避免升级时扫描 44 万条历史肥 row。
+   */
+  private migrateV3(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS message_raw_fingerprints (
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL,
+        raw_hash TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (conversation_id, message_id)
+      ) WITHOUT ROWID;
+    `)
+  }
+
   /** SQLite 没有通用的 `ADD COLUMN IF NOT EXISTS`，所以先用 PRAGMA 检查旧库。 */
   private ensureColumn(table: string, column: string, definition: string): void {
     const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>
@@ -1398,6 +1427,9 @@ export class ChatArchiveDb {
     const getConversationTitle = this.db.prepare(
       'SELECT title FROM conversations WHERE id = ?',
     )
+    const invalidateMessageFingerprints = this.db.prepare(
+      'DELETE FROM message_raw_fingerprints WHERE conversation_id = ?',
+    )
 
     let conversationCount = 0
     let nodeCount = 0
@@ -1412,6 +1444,9 @@ export class ChatArchiveDb {
         const conversationId = stringValue(rawConversation.conversation_id) ?? stringValue(rawConversation.id)
         const mapping = record(rawConversation.mapping)
         if (!conversationId || Object.keys(mapping).length === 0) continue
+        // official import 可以改 canonical raw_json；fingerprint 只是 plural no-op cache，任何非 plural
+        // raw writer 都先整 conversation 失效，避免陈旧 hash 让后续 Body 错误走快路。
+        invalidateMessageFingerprints.run(conversationId)
 
         // Markdown 仍按当前分支生成；完整树则进入 mapping_nodes/messages。
         const canonical = adaptConversation(rawConversation)
@@ -1924,6 +1959,31 @@ export class ChatArchiveDb {
     const rawText = options.preparedObservation?.rawText ?? json(payload)
     const messageIds = conversation.messages.map(message => message.id)
     const knownBefore = this.knownMessageIds(conversationId, messageIds)
+    const incomingRawJson = new Map<string, string>()
+    const incomingRawHash = new Map<string, string>()
+    for (const message of conversation.messages) {
+      const rawJson = json(record(message.raw))
+      incomingRawJson.set(message.id, rawJson)
+      incomingRawHash.set(message.id, sha256Text(rawJson))
+    }
+
+    type MessageFingerprintRow = { messageId: string, rawHash: string }
+    const existingFingerprints = new Map<string, string>()
+    const knownIds = messageIds.filter(id => knownBefore.has(id))
+    const fingerprintReadStartedAt = performance.now()
+    for (let offset = 0; offset < knownIds.length; offset += 300) {
+      const ids = knownIds.slice(offset, offset + 300)
+      if (ids.length === 0) continue
+      const placeholders = ids.map(() => '?').join(',')
+      const rows = this.db.prepare(`
+        SELECT message_id AS messageId, raw_hash AS rawHash
+        FROM message_raw_fingerprints
+        WHERE conversation_id = ? AND message_id IN (${placeholders})
+      `).all(conversationId, ...ids) as unknown as MessageFingerprintRow[]
+      for (const row of rows) existingFingerprints.set(row.messageId, row.rawHash)
+    }
+    const fingerprintReadMs = performance.now() - fingerprintReadStartedAt
+
     type ExistingMessageContent = {
       messageId: string
       text?: unknown
@@ -1931,23 +1991,30 @@ export class ChatArchiveDb {
       rawJson?: unknown
     }
     const existingMessageContent = new Map<string, ExistingMessageContent>()
-    const existingReadStartedAt = performance.now()
-    const knownIds = messageIds.filter(id => knownBefore.has(id))
-    // 旧实现对已知 message 每条单独 SELECT text/content_json/raw_json。长聊天一次 Body 可有
-    // 2k~5k message，结果就是几千次 B-tree lookup + JS<->SQLite 边界穿越，而且都发生在
-    // BEGIN IMMEDIATE 之后，既拖慢 event loop 又无谓延长 writer lock。这里改为事务前分块批量读。
-    for (let offset = 0; offset < knownIds.length; offset += 300) {
-      const ids = knownIds.slice(offset, offset + 300)
-      if (ids.length === 0) continue
-      const placeholders = ids.map(() => '?').join(',')
-      const rows = this.db.prepare(`
-        SELECT message_id AS messageId, text, content_json AS contentJson, raw_json AS rawJson
-        FROM messages
-        WHERE conversation_id = ? AND message_id IN (${placeholders})
-      `).all(conversationId, ...ids) as unknown as ExistingMessageContent[]
-      for (const row of rows) existingMessageContent.set(row.messageId, row)
+    const loadExistingMessageContent = (ids: string[]) => {
+      for (let offset = 0; offset < ids.length; offset += 300) {
+        const chunk = ids.slice(offset, offset + 300)
+        if (chunk.length === 0) continue
+        const placeholders = chunk.map(() => '?').join(',')
+        const rows = this.db.prepare(`
+          SELECT message_id AS messageId, text, content_json AS contentJson, raw_json AS rawJson
+          FROM messages
+          WHERE conversation_id = ? AND message_id IN (${placeholders})
+        `).all(conversationId, ...chunk) as unknown as ExistingMessageContent[]
+        for (const row of rows) existingMessageContent.set(row.messageId, row)
+      }
     }
-    const existingReadMs = performance.now() - existingReadStartedAt
+    const existingReadStartedAt = performance.now()
+    // fingerprint 命中说明 incoming raw canonical 与上次已核验版本完全相同，不再把对应
+    // raw_json/content_json 从 4.9GB messages 肥表搬进 Node。缺 fingerprint 或 hash 不同才回退
+    // 旧全文核验；因此这条快路是 additive cache，不是新的 source of truth。
+    const fatReadIds = knownIds.filter((messageId) => {
+      const stored = existingFingerprints.get(messageId)
+      const incoming = incomingRawHash.get(messageId)
+      return !stored || !incoming || stored !== incoming
+    })
+    loadExistingMessageContent(fatReadIds)
+    let existingReadMs = performance.now() - existingReadStartedAt
     const prepareFinishedAt = performance.now()
 
     const upsertConversation = this.db.prepare(`
@@ -2059,6 +2126,8 @@ export class ChatArchiveDb {
 
     const touchedMessageIds: string[] = []
     const observationOnlyMessageIds: string[] = []
+    const fingerprintUpdates = new Map<string, string>()
+    let fingerprintHits = 0
     let conversationHeadMs = 0
     let messageWriteMs = 0
     let writerLockWaitMs = 0
@@ -2077,6 +2146,16 @@ export class ChatArchiveDb {
       const conversationExists = Boolean(existingConversation)
       const mergedTitle = preferredConversationTitle(existingConversation?.title, conversation.title, conversationId)
       const conversationTitleChanged = Boolean(existingConversation && existingConversation.title !== mergedTitle)
+      if (conversationTitleChanged) {
+        // title 变化需要让当前页 FTS title 走原来的完整刷新语义。绝大多数 Body 不会改 title，
+        // 因此只有这个极少分支允许在拿到 writer lock 后补读此前被 fingerprint 快路省掉的 raw。
+        const missingForTitleRefresh = knownIds.filter(messageId => !existingMessageContent.has(messageId))
+        if (missingForTitleRefresh.length > 0) {
+          const titleRefreshReadStartedAt = performance.now()
+          loadExistingMessageContent(missingForTitleRefresh)
+          existingReadMs += performance.now() - titleRefreshReadStartedAt
+        }
+      }
       if (updateCurrentState || !conversationExists) {
         upsertConversation.run(
           conversationId,
@@ -2113,6 +2192,19 @@ export class ChatArchiveDb {
       conversation.messages.forEach((message, pageOrdinal) => {
         if (options.insertUnknownOnly === true && knownBefore.has(message.id)) return
         const rawMessage = record(message.raw)
+        const originalRawJson = incomingRawJson.get(message.id) ?? json(rawMessage)
+        const originalRawHash = incomingRawHash.get(message.id) ?? sha256Text(originalRawJson)
+        const storedFingerprint = existingFingerprints.get(message.id)
+        if (
+          !conversationTitleChanged
+          && knownBefore.has(message.id)
+          && storedFingerprint
+          && storedFingerprint === originalRawHash
+        ) {
+          fingerprintHits += 1
+          observationOnlyMessageIds.push(message.id)
+          return
+        }
         let effectiveRawMessage = rawMessage
         let effectiveText = message.text
         const author = record(rawMessage.author)
@@ -2145,18 +2237,25 @@ export class ChatArchiveDb {
           }
         }
 
-        const effectiveRawJson = json(effectiveRawMessage)
+        const effectiveRawJson = effectiveRawMessage === rawMessage
+          ? originalRawJson
+          : json(effectiveRawMessage)
+        const effectiveRawHash = effectiveRawMessage === rawMessage
+          ? originalRawHash
+          : sha256Text(effectiveRawJson)
         // first-party Body 经常重复返回完全相同的 canonical message。旧实现即使 raw_json
         // 一个字节都没变，也会重写大 TEXT/JSON、DELETE+INSERT message_parts，并把该行再次
         // 送进三套 FTS/resources rebuild；newMessages=0 的真实页面因此仍可同步耗时数百毫秒。
         // raw canonical 完全相同时，正文/metadata/状态/资源派生都不可能改变，只推进“本次又看见”
         // 的观察时间即可。若标题变化则保留旧完整路径，让本页 FTS title 按原语义刷新。
         if (!conversationTitleChanged && typeof existing?.rawJson === 'string' && existing.rawJson === effectiveRawJson) {
+          fingerprintUpdates.set(message.id, effectiveRawHash)
           observationOnlyMessageIds.push(message.id)
           return
         }
 
         touchedMessageIds.push(message.id)
+        fingerprintUpdates.set(message.id, effectiveRawHash)
 
         upsertMessage.run(
           conversationId,
@@ -2217,6 +2316,20 @@ export class ChatArchiveDb {
           })
         }
       })
+      const fingerprintEntries = [...fingerprintUpdates.entries()]
+      for (let offset = 0; offset < fingerprintEntries.length; offset += 100) {
+        const entries = fingerprintEntries.slice(offset, offset + 100)
+        const valuesSql = entries.map(() => '(?, ?, ?, ?)').join(',')
+        const params = entries.flatMap(([messageId, rawHash]) => [conversationId, messageId, rawHash, observedAt])
+        this.db.prepare(`
+          INSERT INTO message_raw_fingerprints (
+            conversation_id, message_id, raw_hash, updated_at
+          ) VALUES ${valuesSql}
+          ON CONFLICT(conversation_id, message_id) DO UPDATE SET
+            raw_hash=excluded.raw_hash,
+            updated_at=excluded.updated_at
+        `).run(...params)
+      }
       // no-op Body 常常一次重复数百条完全相同 message。逐条对 messages/mapping/image
       // 各跑一条 UPDATE，会制造 N*3 次 JS<->SQLite 边界调用。更关键的是 messages 是挂着巨大
       // raw_json 的肥 row：SQLite 即使只改 last_seen_at，也会重写整条 record/overflow payload。
@@ -2345,6 +2458,7 @@ export class ChatArchiveDb {
       timings: {
         totalMs: performance.now() - mergeStartedAt,
         prepareMs: prepareFinishedAt - mergeStartedAt,
+        fingerprintReadMs,
         existingReadMs,
         writerLockWaitMs,
         conversationHeadMs,
@@ -2355,6 +2469,9 @@ export class ChatArchiveDb {
         postMergeMs: performance.now() - postMergeStartedAt,
         fullRewriteMessages: touchedMessageIds.length,
         observationOnlyTouches: observationOnlyMessageIds.length,
+        fingerprintHits,
+        fatRowsRead: existingMessageContent.size,
+        fingerprintWrites: fingerprintUpdates.size,
         rawJsonBytes: Buffer.byteLength(rawText, 'utf8'),
         observationGzipBytes,
       },
@@ -2498,6 +2615,11 @@ export class ChatArchiveDb {
 
     this.db.exec('BEGIN IMMEDIATE')
     try {
+      // singular mapping 同样能覆盖 message.raw_json。先失效整个 conversation 的窄 cache；
+      // 下一次 plural Body 会安全回退全文核验并懒填，而不是信任可能陈旧的 fingerprint。
+      this.db.prepare(
+        'DELETE FROM message_raw_fingerprints WHERE conversation_id = ?',
+      ).run(conversationId)
       const existingConversation = this.db.prepare(
         'SELECT title FROM conversations WHERE id = ?',
       ).get(conversationId) as { title?: string } | undefined

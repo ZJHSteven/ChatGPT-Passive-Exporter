@@ -118,14 +118,28 @@ describe('ChatArchiveDb', () => {
         }],
       })
 
-      db.mergeLiveMessagesPage(page('finished'), { observedAt: 1000 })
+      const firstMerge = db.mergeLiveMessagesPage(page('finished'), { observedAt: 1000 })
+      expect(firstMerge.timings).toMatchObject({
+        fingerprintHits: 0,
+        fatRowsRead: 0,
+        fingerprintWrites: 1,
+      })
+      expect(db.db.prepare(`
+        SELECT count(*) AS n FROM message_raw_fingerprints
+        WHERE conversation_id='noop-merge' AND message_id='a1'
+      `).get()).toEqual({ n: 1 })
       const first = db.db.prepare(`
         SELECT raw_json AS rawJson, last_seen_at AS lastSeenAt,
                source_observed_at AS sourceObservedAt, status
         FROM messages WHERE conversation_id='noop-merge' AND message_id='a1'
       `).get() as { rawJson: string, lastSeenAt: number, sourceObservedAt: number, status: string }
 
-      db.mergeLiveMessagesPage(page('finished'), { observedAt: 2000 })
+      const repeatedMerge = db.mergeLiveMessagesPage(page('finished'), { observedAt: 2000 })
+      expect(repeatedMerge.timings).toMatchObject({
+        fingerprintHits: 1,
+        fatRowsRead: 0,
+        fingerprintWrites: 0,
+      })
       const repeated = db.db.prepare(`
         SELECT raw_json AS rawJson, last_seen_at AS lastSeenAt,
                source_observed_at AS sourceObservedAt, status
@@ -144,7 +158,9 @@ describe('ChatArchiveDb', () => {
         "SELECT count(*) AS n FROM live_observations WHERE conversation_id='noop-merge'",
       ).get()).toMatchObject({ n: 2 })
 
-      db.mergeLiveMessagesPage(page('in_progress'), { observedAt: 3000 })
+      const changedMerge = db.mergeLiveMessagesPage(page('in_progress'), { observedAt: 3000 })
+      expect(changedMerge.timings.fingerprintHits).toBe(0)
+      expect(changedMerge.timings.fatRowsRead).toBe(1)
       const changed = db.db.prepare(`
         SELECT raw_json AS rawJson, last_seen_at AS lastSeenAt,
                source_observed_at AS sourceObservedAt, status
@@ -154,6 +170,64 @@ describe('ChatArchiveDb', () => {
       expect(changed.rawJson).not.toBe(first.rawJson)
       expect(changed.lastSeenAt).toBe(3000)
       expect(changed.sourceObservedAt).toBe(3000)
+    }
+    finally {
+      db.close()
+    }
+  })
+
+  test('singular mapping 改 raw canonical 时会失效 plural fingerprint cache', () => {
+    const db = tempDb()
+    try {
+      const plural = {
+        title: 'fingerprint invalidation',
+        conversation_id: 'fingerprint-invalidation',
+        current_node: 'a1',
+        messages: [{
+          id: 'a1',
+          author: { role: 'assistant' },
+          recipient: 'all',
+          content: { content_type: 'text', parts: ['plural version'] },
+          metadata: {},
+        }],
+      }
+      db.mergeLiveMessagesPage(plural, { observedAt: 1000 })
+      expect(db.db.prepare(`
+        SELECT count(*) AS n FROM message_raw_fingerprints
+        WHERE conversation_id='fingerprint-invalidation'
+      `).get()).toEqual({ n: 1 })
+
+      db.mergeLiveMappingSnapshot({
+        title: 'fingerprint invalidation',
+        conversation_id: 'fingerprint-invalidation',
+        current_node: 'a1',
+        mapping: {
+          root: { id: 'root', parent: null, children: ['a1'], message: null },
+          a1: {
+            id: 'a1', parent: 'root', children: [],
+            message: {
+              id: 'a1',
+              author: { role: 'assistant' },
+              recipient: 'all',
+              content: { content_type: 'text', parts: ['mapping version'] },
+              metadata: {},
+            },
+          },
+        },
+      }, { observedAt: 2000 })
+
+      expect(db.db.prepare(`
+        SELECT count(*) AS n FROM message_raw_fingerprints
+        WHERE conversation_id='fingerprint-invalidation'
+      `).get()).toEqual({ n: 0 })
+
+      const merged = db.mergeLiveMessagesPage(plural, { observedAt: 3000 })
+      expect(merged.timings.fingerprintHits).toBe(0)
+      expect(merged.timings.fatRowsRead).toBe(1)
+      expect(db.db.prepare(`
+        SELECT text FROM messages
+        WHERE conversation_id='fingerprint-invalidation' AND message_id='a1'
+      `).get()).toEqual({ text: 'plural version' })
     }
     finally {
       db.close()
@@ -175,7 +249,7 @@ describe('ChatArchiveDb', () => {
     tempDirs.push(dir)
     const file = path.join(dir, 'archive.sqlite')
     const first = new ChatArchiveDb(file)
-    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 2 })
+    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 })
     first.close()
 
     const blocker = new DatabaseSync(file)
@@ -211,7 +285,7 @@ describe('ChatArchiveDb', () => {
     expect(() => new ChatArchiveDb(file)).toThrow(/newer than supported/u)
   })
 
-  test('v1 到 v2 只执行 raw_hash delta，不重跑历史 Genesis migration', () => {
+  test('v1 升到当前 schema 只执行增量 delta，不重跑历史 Genesis migration', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatgpt-archive-v2-delta-'))
     tempDirs.push(dir)
     const file = path.join(dir, 'archive.sqlite')
@@ -227,14 +301,55 @@ describe('ChatArchiveDb', () => {
 
     const upgraded = new ChatArchiveDb(file)
     try {
-      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 2 })
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 })
       const columns = upgraded.db.prepare("PRAGMA table_info('messages')").all() as Array<{ name: string }>
       expect(columns.map(column => column.name)).toContain('raw_hash')
+      expect(upgraded.db.prepare(`
+        SELECT 1 AS ok FROM sqlite_master
+        WHERE type='table' AND name='message_raw_fingerprints'
+      `).get()).toEqual({ ok: 1 })
       // 若这里错误重跑旧 migrate()，conversations 等整套 Genesis schema 会被创建出来。
       expect(upgraded.db.prepare(`
         SELECT 1 AS ok FROM sqlite_master
         WHERE type='table' AND name='conversations'
       `).get()).toBeUndefined()
+    }
+    finally {
+      upgraded.close()
+    }
+  })
+
+  test('v2 到 v3 只创建窄 fingerprint side table，不回填历史 message', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatgpt-archive-v3-delta-'))
+    tempDirs.push(dir)
+    const file = path.join(dir, 'archive.sqlite')
+    const v2 = new DatabaseSync(file)
+    v2.exec(`
+      CREATE TABLE conversations (
+        id TEXT PRIMARY KEY
+      );
+      CREATE TABLE messages (
+        row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL,
+        raw_hash TEXT,
+        UNIQUE(conversation_id, message_id)
+      );
+      INSERT INTO conversations(id) VALUES ('legacy-cid');
+      INSERT INTO messages(conversation_id, message_id, raw_hash)
+      VALUES ('legacy-cid', 'legacy-message', NULL);
+      PRAGMA user_version=2;
+    `)
+    v2.close()
+
+    const upgraded = new ChatArchiveDb(file)
+    try {
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 })
+      expect(upgraded.db.prepare('SELECT count(*) AS n FROM message_raw_fingerprints').get())
+        .toEqual({ n: 0 })
+      expect(upgraded.db.prepare(
+        "SELECT raw_hash AS rawHash FROM messages WHERE message_id='legacy-message'",
+      ).get()).toEqual({ rawHash: null })
     }
     finally {
       upgraded.close()
