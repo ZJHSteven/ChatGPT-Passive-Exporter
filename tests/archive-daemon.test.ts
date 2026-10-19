@@ -827,11 +827,12 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       ...guardian,
       webSocketDebuggerUrl: '',
     })).toBe(false)
-    expect(shouldAttachPassivePageObserver({
+    const sleepingTarget = {
       ...guardian,
       title: '💤 ChatGPT',
       url: 'https://chatgpt.com/',
-    })).toBe(false)
+    }
+    expect(shouldAttachPassivePageObserver(sleepingTarget)).toBe(false)
   })
 
   test('普通 passive target 连续 attach 失败仍保持固定低频探测', () => {
