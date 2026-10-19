@@ -8,6 +8,7 @@ import {
   devSpaceVirtualConversationId,
   preferredConversationTitle,
 } from '../src/local/archive-db.ts'
+import { prepareArchiveEvidence } from '../src/local/archive-evidence-store.ts'
 import { devSpaceToolArgsFingerprint } from '../src/local/devspace-audit-bridge.ts'
 
 const tempDirs: string[] = []
@@ -1102,6 +1103,80 @@ describe('ChatArchiveDb', () => {
       expect(db.searchConversations('重庆').some(hit => hit.conversationId === 'conversation-cn')).toBe(true)
       expect(db.db.prepare('SELECT count(*) AS n FROM live_observations').get()).toMatchObject({ n: 1 })
       expect(db.listIncidents({ status: 'open' })).toHaveLength(0)
+    }
+    finally {
+      db.close()
+    }
+  })
+
+  test('外置 Evidence durable 后，canonical body/mapping 可跳过 legacy live_observations BLOB', async () => {
+    const db = tempDb()
+    try {
+      const live = {
+        title: 'External evidence fixture',
+        conversation_id: 'external-evidence-chat',
+        current_node: 'assistant-1',
+        messages: [
+          {
+            id: 'user-1',
+            author: { role: 'user' },
+            recipient: 'all',
+            content: { content_type: 'text', parts: ['问题'] },
+            metadata: { turn_exchange_id: 'turn-1' },
+          },
+          {
+            id: 'assistant-1',
+            author: { role: 'assistant' },
+            recipient: 'all',
+            channel: 'final',
+            content: { content_type: 'text', parts: ['回答'] },
+            metadata: { turn_exchange_id: 'turn-1' },
+          },
+        ],
+      }
+      const preparedBody = await prepareArchiveEvidence(live)
+      const merged = db.mergeLiveMessagesPage(live, {
+        observedAt: 1000,
+        preparedObservation: preparedBody,
+        skipLegacyObservation: true,
+      })
+      expect(merged.newMessageCount).toBe(2)
+      expect(db.getMessages('external-evidence-chat')).toHaveLength(2)
+      expect(db.db.prepare('SELECT count(*) AS n FROM live_observations').get()).toMatchObject({ n: 0 })
+
+      const mapping = {
+        title: 'External evidence fixture',
+        conversation_id: 'external-evidence-chat',
+        current_node: 'assistant-1',
+        mapping: {
+          root: { id: 'root', parent: null, children: ['user-1'], message: null },
+          'user-1': {
+            id: 'user-1', parent: 'root', children: ['assistant-1'],
+            message: live.messages[0],
+          },
+          'assistant-1': {
+            id: 'assistant-1', parent: 'user-1', children: [],
+            message: live.messages[1],
+          },
+        },
+      }
+      const preparedMapping = await prepareArchiveEvidence(mapping)
+      const mapped = db.mergeLiveMappingSnapshot(mapping, {
+        observedAt: 2000,
+        observationKind: 'mapping-snapshot:test-external',
+        preparedObservation: preparedMapping,
+        skipLegacyObservation: true,
+      })
+      expect(mapped.nodeCount).toBe(3)
+      expect(db.db.prepare('SELECT count(*) AS n FROM live_observations').get()).toMatchObject({ n: 0 })
+      expect(db.db.prepare(`
+        SELECT parent_id AS parentId, parent_source AS parentSource
+        FROM mapping_nodes
+        WHERE conversation_id='external-evidence-chat' AND node_id='assistant-1'
+      `).get()).toMatchObject({
+        parentId: 'user-1',
+        parentSource: 'live-singular-mapping',
+      })
     }
     finally {
       db.close()
