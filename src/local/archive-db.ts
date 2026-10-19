@@ -564,7 +564,7 @@ function visibleForMarkdown(conversation: CanonicalConversation): boolean {
  * - FTS 只索引可读 User/Assistant 正文，不把巨大 tool result、connector JSON、raw CoT
  *   塞进全文索引；这些仍可从 message/resource 表按需审计。
  */
-const ARCHIVE_SCHEMA_VERSION = 1
+const ARCHIVE_SCHEMA_VERSION = 2
 
 export class ChatArchiveDb {
   readonly db: DatabaseSync
@@ -579,17 +579,23 @@ export class ChatArchiveDb {
     // 再叠加外层事件回调缺少隔离，就可能把常驻 daemon 整个打死。
     // 5 秒只用于等待本机极短事务；真正长期锁仍会明确失败，不会无限挂起。
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;')
-    const schemaVersion = Number((this.db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0)
+    let schemaVersion = Number((this.db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0)
     if (schemaVersion > ARCHIVE_SCHEMA_VERSION) {
       this.db.close()
       throw new Error(`Archive schema v${schemaVersion} is newer than supported v${ARCHIVE_SCHEMA_VERSION}`)
     }
-    if (schemaVersion !== ARCHIVE_SCHEMA_VERSION) {
+    // v0 是 user_version 引入前的历史库/全新库，只有它需要执行那套完整 Genesis migration。
+    // 之后必须严格按版本做 delta migration；否则仅仅增加一个列，也会让 12GB 生产库重新执行
+    // 历史 incident/mapping backfill，既慢又扩大升级风险。
+    if (schemaVersion < 1) {
       this.migrate()
-      // user_version 是这套本地 schema 的稳态快速门。以后任何 migration 变化都必须 bump
-      // ARCHIVE_SCHEMA_VERSION；否则 12GB 生产库每次启动都会重复做几十项 table/index/column
-      // 探测，冷文件缓存下可把控制面启动阻塞到秒级。
-      this.db.exec(`PRAGMA user_version=${ARCHIVE_SCHEMA_VERSION}`)
+      schemaVersion = 1
+      this.db.exec('PRAGMA user_version=1')
+    }
+    if (schemaVersion < 2) {
+      this.migrateV2()
+      schemaVersion = 2
+      this.db.exec('PRAGMA user_version=2')
     }
   }
 
@@ -1217,6 +1223,16 @@ export class ChatArchiveDb {
         throw error
       }
     }
+  }
+
+  /**
+   * v2：为 Hot message 增加窄 raw hash。
+   *
+   * 这是纯 schema delta，不回填 44 万历史行。历史 raw_hash 保持 NULL，首次被自然 Body 触碰时
+   * 再懒填；因此升级成本与 4.9GB messages payload 大小无关，也不会制造一次全库 writer lock。
+   */
+  private migrateV2(): void {
+    this.ensureColumn('messages', 'raw_hash', 'TEXT')
   }
 
   /** SQLite 没有通用的 `ADD COLUMN IF NOT EXISTS`，所以先用 PRAGMA 检查旧库。 */

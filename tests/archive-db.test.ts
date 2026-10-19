@@ -169,7 +169,7 @@ describe('ChatArchiveDb', () => {
     tempDirs.push(dir)
     const file = path.join(dir, 'archive.sqlite')
     const first = new ChatArchiveDb(file)
-    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 1 })
+    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 2 })
     first.close()
 
     const blocker = new DatabaseSync(file)
@@ -203,6 +203,36 @@ describe('ChatArchiveDb', () => {
     newer.exec('PRAGMA user_version=999')
     newer.close()
     expect(() => new ChatArchiveDb(file)).toThrow(/newer than supported/u)
+  })
+
+  test('v1 到 v2 只执行 raw_hash delta，不重跑历史 Genesis migration', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatgpt-archive-v2-delta-'))
+    tempDirs.push(dir)
+    const file = path.join(dir, 'archive.sqlite')
+    const legacy = new DatabaseSync(file)
+    legacy.exec(`
+      CREATE TABLE messages (
+        row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id TEXT NOT NULL
+      );
+      PRAGMA user_version=1;
+    `)
+    legacy.close()
+
+    const upgraded = new ChatArchiveDb(file)
+    try {
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 2 })
+      const columns = upgraded.db.prepare("PRAGMA table_info('messages')").all() as Array<{ name: string }>
+      expect(columns.map(column => column.name)).toContain('raw_hash')
+      // 若这里错误重跑旧 migrate()，conversations 等整套 Genesis schema 会被创建出来。
+      expect(upgraded.db.prepare(`
+        SELECT 1 AS ok FROM sqlite_master
+        WHERE type='table' AND name='conversations'
+      `).get()).toBeUndefined()
+    }
+    finally {
+      upgraded.close()
+    }
   })
 
   test('持久化 resume token 与自动恢复退避状态', () => {
