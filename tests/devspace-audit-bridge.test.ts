@@ -252,6 +252,22 @@ describe('DevSpace audit bridge', () => {
           '2026-10-03T06:02:30.000Z',
           '2026-10-03T06:02:31.000Z',
         )
+        // 旧 generation 即使后来补写了一个更晚的 finished_at，也不能重新污染当前 idle 起点。
+        // metadataToolState 的 running/finished 必须统一围绕“最新 start 的 60 秒 batch”计算；
+        // 否则一个几小时前的迟到 UPDATE 会让当前 turn 的 idle generation 倒退/重置。
+        writer.prepare(`
+          INSERT INTO tool_audit
+            (id, metadata_id, request_meta_json, tool, args_json, started_at, finished_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          'audit-old-late-finish',
+          'meta-1',
+          '{"keys":[]}',
+          'exec_command',
+          '{"cmd":"old-generation"}',
+          '2026-10-03T05:00:00.000Z',
+          '2026-10-03T06:10:00.000Z',
+        )
       }
       finally {
         writer.close()
@@ -260,6 +276,7 @@ describe('DevSpace audit bridge', () => {
         runningTools: 1,
         latestAuditId: 'audit-4',
         lastFinishedAuditId: 'audit-4',
+        latestFinishedAt: Date.parse('2026-10-03T06:02:31.000Z'),
       })
 
       const firstPage = bridge.pollAfter({

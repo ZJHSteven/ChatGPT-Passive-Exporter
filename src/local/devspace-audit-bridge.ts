@@ -309,18 +309,24 @@ export class DevSpaceAuditBridge {
    */
   metadataToolState(metadataId: string): DevSpaceMetadataToolState | null {
     if (!this.open() || !this.db) return null
-    const summary = this.db.prepare(`
-      SELECT
-        MAX(started_at) AS latestStartedAt,
-        MAX(finished_at) AS latestFinishedAt
+    // `tool_audit_metadata_started_idx(metadata_id, started_at DESC)` 是 DevSpace 当前已有的稳定索引。
+    // 旧实现虽然也以 metadata_id 过滤，但同时做 MAX(finished_at) / ORDER BY finished_at；finished_at
+    // 没有任何索引，于是 SQLite 必须对该 metadata 的全部历史行回 800MiB 肥表（result_json 也在同一
+    // row）读取 finished_at。真实生产里热缓存通常几毫秒，冷页/并发写时却能同步卡主线程 1~4 秒。
+    //
+    // 这里先用 covering started 索引拿最新 start，然后只读取“当前并行 batch”的有界窗口。
+    // 这与下面原本的 orphan 语义一致：真正并行工具 start 很接近；若后来已有 >60s 更新的新 start，
+    // 更早未完成记录本来就不再阻止 idle，因此 latest finish 也应由当前 generation 决定，而不是
+    // 再扫描 metadata 的全部历史。
+    const latestStart = this.db.prepare(`
+      SELECT started_at AS startedAt
       FROM tool_audit
       WHERE metadata_id = ?
-    `).get(metadataId) as {
-      latestStartedAt?: string | null
-      latestFinishedAt?: string | null
-    } | undefined
-    if (!summary?.latestStartedAt) return null
-    const latestStartedAtMs = Date.parse(summary.latestStartedAt)
+      ORDER BY started_at DESC
+      LIMIT 1
+    `).get(metadataId) as { startedAt?: string } | undefined
+    if (!latestStart?.startedAt) return null
+    const latestStartedAtMs = Date.parse(latestStart.startedAt)
     if (!Number.isFinite(latestStartedAtMs)) return null
 
     /**
@@ -331,28 +337,33 @@ export class DevSpaceAuditBridge {
      * 后来已经出现了明显更晚（>60s）的新 tool start 时，旧 NULL 才视为孤儿记录。
      */
     const concurrentBatchFloor = new Date(latestStartedAtMs - 60_000).toISOString()
-    const running = this.db.prepare(`
-      SELECT COUNT(*) AS count
+    const currentBatch = this.db.prepare(`
+      SELECT id, started_at AS startedAt, finished_at AS finishedAt
       FROM tool_audit
       WHERE metadata_id = ?
-        AND finished_at IS NULL
         AND started_at >= ?
-    `).get(metadataId, concurrentBatchFloor) as { count?: number } | undefined
+    `).all(metadataId, concurrentBatchFloor) as Array<{
+      id: string
+      startedAt: string
+      finishedAt: string | null
+    }>
+    if (currentBatch.length === 0) return null
 
-    const latest = this.db.prepare(`
-      SELECT id, started_at AS startedAt
-      FROM tool_audit
-      WHERE metadata_id = ?
-      ORDER BY started_at DESC, id DESC
-      LIMIT 1
-    `).get(metadataId) as { id?: string, startedAt?: string } | undefined
-    const lastFinished = this.db.prepare(`
-      SELECT id, finished_at AS finishedAt
-      FROM tool_audit
-      WHERE metadata_id = ? AND finished_at IS NOT NULL
-      ORDER BY finished_at DESC, id DESC
-      LIMIT 1
-    `).get(metadataId) as { id?: string, finishedAt?: string } | undefined
+    const latest = currentBatch.reduce((best, row) => {
+      if (!best) return row
+      if (row.startedAt > best.startedAt) return row
+      if (row.startedAt === best.startedAt && row.id > best.id) return row
+      return best
+    }, null as typeof currentBatch[number] | null)
+    const finishedRows = currentBatch.filter(row => Boolean(row.finishedAt))
+    const lastFinished = finishedRows.reduce((best, row) => {
+      if (!best) return row
+      const rowFinished = String(row.finishedAt || '')
+      const bestFinished = String(best.finishedAt || '')
+      if (rowFinished > bestFinished) return row
+      if (rowFinished === bestFinished && row.id > best.id) return row
+      return best
+    }, null as typeof currentBatch[number] | null)
 
     // DevSpace 可能在 Archive 之后才热升级到 v10；首次缺表时允许重新探测。
     if (!this.hasMetadataContextTable) {
@@ -379,9 +390,9 @@ export class DevSpaceAuditBridge {
     return {
       metadataId,
       title: typeof context?.title === 'string' && context.title.trim() ? context.title.trim() : null,
-      runningTools: Math.max(0, Number(running?.count || 0)),
+      runningTools: currentBatch.filter(row => !row.finishedAt).length,
       latestStartedAt: latestStartedAtMs,
-      latestFinishedAt: parseOptionalTime(summary.latestFinishedAt),
+      latestFinishedAt: parseOptionalTime(lastFinished?.finishedAt),
       latestAuditId: latest?.id ?? null,
       lastFinishedAuditId: lastFinished?.id ?? null,
     }
