@@ -113,6 +113,12 @@ export async function prepareArchiveEvidence(payload: unknown): Promise<Prepared
 export class ArchiveEvidenceStore {
   readonly rootDir: string
   private readonly counters: ArchiveEvidenceStoreStats
+  /**
+   * 同一天多个 CDP response / WSS complete 可能并发写 observation event。
+   * CAS blob 可并行准备，但 JSONL 时间线必须严格串行 append，避免两个 append 的完成顺序
+   * 与调用顺序不一致，甚至在极端文件系统实现下出现行交叉。
+   */
+  private eventWriteTail: Promise<void> = Promise.resolve()
 
   constructor(rootDir: string) {
     this.rootDir = path.resolve(rootDir)
@@ -198,6 +204,24 @@ export class ArchiveEvidenceStore {
     }
   }
 
+  private async appendEvent(eventPath: string, line: string): Promise<void> {
+    const write = this.eventWriteTail
+      .catch(() => {})
+      .then(async () => {
+        await fs.mkdir(path.dirname(eventPath), { recursive: true })
+        const handle = await fs.open(eventPath, 'a')
+        try {
+          await handle.writeFile(line, 'utf8')
+          await handle.sync()
+        }
+        finally {
+          await handle.close()
+        }
+      })
+    this.eventWriteTail = write.catch(() => {})
+    await write
+  }
+
   /**
    * 保存一次 observation：payload 去重，但 event 永不去重。
    */
@@ -208,7 +232,6 @@ export class ArchiveEvidenceStore {
       const eventId = randomUUID()
       const eventRelativePath = this.eventRelativePath(input.observedAt)
       const eventPath = path.join(this.rootDir, eventRelativePath)
-      await fs.mkdir(path.dirname(eventPath), { recursive: true })
 
       const event = {
         version: 1,
@@ -225,14 +248,7 @@ export class ArchiveEvidenceStore {
           gzipBytes: prepared.compressed.byteLength,
         },
       }
-      const handle = await fs.open(eventPath, 'a')
-      try {
-        await handle.writeFile(`${JSON.stringify(event)}\n`, 'utf8')
-        await handle.sync()
-      }
-      finally {
-        await handle.close()
-      }
+      await this.appendEvent(eventPath, `${JSON.stringify(event)}\n`)
 
       this.counters.events += 1
       this.counters.rawBytesObserved += prepared.rawBytes
