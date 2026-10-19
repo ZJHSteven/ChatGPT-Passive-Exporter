@@ -83,6 +83,7 @@ import {
   recordFamilySuccess,
   restoreFamilyRateLimitSnapshot,
 } from '../src/local/rate-limit-state.ts'
+import { adaptConversation } from '../src/core/adapter.ts'
 import { RequestEventLedger } from '../src/local/request-event-ledger.ts'
 import {
   extractProjectCatalogPayload,
@@ -3658,29 +3659,40 @@ async function main() {
   }
 
   /**
-   * first-party body 到达后，用同一套 canonical tool+args fingerprint 淘汰 provisional。
-   * 这里只读 canonical messages 表，绝不会把 recovery 自己生成的 call 节点拿来和自己匹配。
+   * first-party body 到达后，用本次内存里的 canonical messages 淘汰 provisional。
+   *
+   * 旧实现先把 Body merge 进 SQLite，再根据该 conversation 所有未 supersede recovery 的全历史
+   * min/max 去回扫 messages。生产里 recovery backlog 可跨数天，导致一次 latest Body 实际扫描
+   * 上千 tool/assistant rows；还会为了只算 min/max 把 result_json/args_json 全读进 Node。
+   *
+   * 这里直接复用同一份 first-party payload：匹配规则仍由现有 supersede* 方法负责，只改变 canonical
+   * 证据来源。先用 payload 的时间范围确认附近确有 active recovery；没有就 O(1) 退出。
    */
-  const reconcileDevSpaceRecoveryWithCanonical = (conversationId) => runControlPlaneStage(
+  const reconcileDevSpaceRecoveryWithCanonical = (conversationId, payload) => runControlPlaneStage(
     'devspace-recovery-reconcile',
     () => {
-    const activeRecovery = archive.listDevSpaceRecoveryAudits(conversationId, false)
-    if (activeRecovery.length === 0) return 0
-    const minAt = Math.max(0, Math.min(...activeRecovery.map(row => Number(row.startedAt))) - 120_000)
-    const maxAt = Math.max(...activeRecovery.map(row => Number(row.startedAt))) + 120_000
-    const rows = archive.db.prepare(`
-      SELECT message_id AS messageId, create_time AS createTime, text
-      FROM messages
+    const canonical = adaptConversation(payload)
+    const timestamped = canonical.messages.filter(message => Number.isFinite(message.createTime))
+    if (timestamped.length === 0) return 0
+    const messageTimes = timestamped.map(message => Number(message.createTime) * 1000)
+    const minAt = Math.max(0, Math.min(...messageTimes) - 120_000)
+    const maxAt = Math.max(...messageTimes) + 120_000
+    const activeNearby = archive.db.prepare(`
+      SELECT 1 AS ok
+      FROM devspace_recovery_audits
       WHERE conversation_id = ?
-        AND recipient = 'api_tool.call_tool'
-        AND create_time IS NOT NULL
-        AND create_time BETWEEN ? AND ?
-        AND text <> ''
-      ORDER BY create_time ASC, row_id ASC
-    `).all(conversationId, minAt / 1000, maxAt / 1000)
+        AND superseded_at IS NULL
+        AND started_at BETWEEN ? AND ?
+      LIMIT 1
+    `).get(conversationId, minAt, maxAt)
+    if (!activeNearby) return 0
+
     let superseded = 0
-    for (const row of rows) {
-      const call = parseDevSpaceBodyToolCall(String(row.text || ''), Number(row.createTime) * 1000)
+    for (const message of canonical.messages) {
+      if (message.recipient !== 'api_tool.call_tool') continue
+      if (!Number.isFinite(message.createTime) || !message.text) continue
+      const startedAt = Number(message.createTime) * 1000
+      const call = parseDevSpaceBodyToolCall(message.text, startedAt)
       if (!call) continue
       // checkpoint 的 provisional assistant 语义不能仅因为 canonical tool-call 到达就消失；
       // 它要等真正 assistant commentary 明确复述 summary 才覆盖。
@@ -3691,30 +3703,32 @@ async function main() {
         conversationId,
         toolFingerprint,
         canonicalStartedAt: call.startedAtMs,
-        canonicalMessageId: String(row.messageId || ''),
+        canonicalMessageId: message.id,
         observedAt: Date.now(),
       })
       if (matchedAuditId) superseded += 1
     }
 
-    const assistantRows = archive.db.prepare(`
-      SELECT message_id AS messageId, create_time AS createTime, text
-      FROM messages
+    const hasCheckpointNearby = archive.db.prepare(`
+      SELECT 1 AS ok
+      FROM devspace_recovery_audits
       WHERE conversation_id = ?
-        AND role = 'assistant'
-        AND hidden = 0
-        AND create_time IS NOT NULL
-        AND create_time BETWEEN ? AND ?
-        AND text <> ''
-        AND COALESCE(channel, '') <> 'analysis'
-      ORDER BY create_time ASC, row_id ASC
-    `).all(conversationId, minAt / 1000, maxAt / 1000)
-    for (const row of assistantRows) {
+        AND tool = 'checkpoint'
+        AND superseded_at IS NULL
+        AND started_at BETWEEN ? AND ?
+      LIMIT 1
+    `).get(conversationId, minAt, maxAt)
+    if (!hasCheckpointNearby) return superseded
+
+    for (const message of canonical.messages) {
+      if (message.role !== 'assistant' || message.hidden || !message.text || message.channel === 'analysis') continue
+      if (!Number.isFinite(message.createTime)) continue
+      const assistantStartedAt = Number(message.createTime) * 1000
       const matchedCheckpointId = archive.supersedeDevSpaceCheckpointFromAssistant({
         conversationId,
-        assistantText: String(row.text || ''),
-        assistantStartedAt: Number(row.createTime) * 1000,
-        canonicalMessageId: String(row.messageId || ''),
+        assistantText: message.text,
+        assistantStartedAt,
+        canonicalMessageId: message.id,
         observedAt: Date.now(),
       })
       if (matchedCheckpointId) superseded += 1
@@ -5641,6 +5655,7 @@ async function main() {
     let pages = 0
     let passivePagesUsed = passiveFirst ? 1 : 0
     let newMessages = 0
+    let recoverySuperseded = 0
     let databaseMergeMs = 0
     let latestDiagnostic = null
     let imageGenerationEvent = null
@@ -5749,6 +5764,7 @@ async function main() {
         if (shouldNotifyIncidentTransition(incidentBefore, incidentAfter)) newIncident = incidentAfter
       }
       newMessages += merged.newMessageCount
+      recoverySuperseded += reconcileDevSpaceRecoveryWithCanonical(conversationId, normalized)
       pages += 1
 
       const pageInfo = pagePayload.page_info || {}
@@ -5817,7 +5833,6 @@ async function main() {
           }
         }
 
-        const recoverySuperseded = reconcileDevSpaceRecoveryWithCanonical(conversationId)
         if (recoverySuperseded > 0) {
           await log('canonical body superseded DevSpace recovery overlay', {
             conversationId,
@@ -7476,7 +7491,7 @@ async function main() {
       // 没有触发 binding reconcile，导致“Body 已在库里但 metadata 仍 unbound”。
       const passiveDiagnostic = diagnoseLatestRun(normalized)
       publishDevSpaceBindingEvidenceFromBody(conversationId, passiveDiagnostic)
-      const recoverySuperseded = reconcileDevSpaceRecoveryWithCanonical(conversationId)
+      const recoverySuperseded = reconcileDevSpaceRecoveryWithCanonical(conversationId, normalized)
       if (recoverySuperseded > 0) {
         void log('passive canonical body superseded DevSpace recovery overlay', {
           conversationId,

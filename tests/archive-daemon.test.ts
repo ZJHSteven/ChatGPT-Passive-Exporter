@@ -237,6 +237,25 @@ test('所有 canonical ingress 都必须给 DevSpace binding 一次 reconcile �
   expect(passive).toContain('publishDevSpaceBindingEvidenceFromBody(conversationId, passiveDiagnostic)')
 })
 
+test('DevSpace recovery reconcile 只消费当前 canonical payload，不回扫全历史 recovery/messages', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+  const start = daemon.indexOf('const reconcileDevSpaceRecoveryWithCanonical =')
+  const end = daemon.indexOf('const notifyActorDomDrift', start)
+  expect(start).toBeGreaterThan(-1)
+  expect(end).toBeGreaterThan(start)
+  const reconcile = daemon.slice(start, end)
+
+  expect(reconcile).toContain('adaptConversation(payload)')
+  expect(reconcile).toContain('supersedeDevSpaceRecoveryAudit({')
+  expect(reconcile).toContain('supersedeDevSpaceCheckpointFromAssistant({')
+  expect(reconcile).not.toContain('listDevSpaceRecoveryAudits(')
+  expect(reconcile).not.toContain('FROM messages')
+  expect(reconcile).not.toContain('result_json')
+})
+
 test('DevSpace binding uses one persistent Matching Queue for canonical evidence', async () => {
   const daemon = await fs.readFile(
     new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
