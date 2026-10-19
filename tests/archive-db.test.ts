@@ -100,7 +100,7 @@ describe('ChatArchiveDb', () => {
     }
   })
 
-  test('完全相同的 live message 只推进观察时间，任何 canonical 变化仍走完整 merge', () => {
+  test('完全相同的 live message 不重写肥 row；观察事实由 conversation/evidence 承担，canonical 变化仍完整 merge', () => {
     const db = tempDb()
     try {
       const page = (status: string) => ({
@@ -133,10 +133,16 @@ describe('ChatArchiveDb', () => {
       `).get() as { rawJson: string, lastSeenAt: number, sourceObservedAt: number, status: string }
       expect(repeated).toMatchObject({
         rawJson: first.rawJson,
-        lastSeenAt: 2000,
-        sourceObservedAt: 2000,
+        lastSeenAt: 1000,
+        sourceObservedAt: 1000,
         status: 'finished',
       })
+      expect(db.db.prepare(
+        "SELECT last_seen_at AS lastSeenAt FROM conversations WHERE id='noop-merge'",
+      ).get()).toMatchObject({ lastSeenAt: 2000 })
+      expect(db.db.prepare(
+        "SELECT count(*) AS n FROM live_observations WHERE conversation_id='noop-merge'",
+      ).get()).toMatchObject({ n: 2 })
 
       db.mergeLiveMessagesPage(page('in_progress'), { observedAt: 3000 })
       const changed = db.db.prepare(`

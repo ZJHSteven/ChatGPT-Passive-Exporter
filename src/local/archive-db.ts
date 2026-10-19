@@ -2218,18 +2218,15 @@ export class ChatArchiveDb {
         }
       })
       // no-op Body 常常一次重复数百条完全相同 message。逐条对 messages/mapping/image
-      // 各跑一条 UPDATE，会制造 N*3 次 JS<->SQLite 边界调用；589 条真实页仅“seen-time touch”
-      // 就约 90~100ms。按 300 个 id 一批更新，语义不变，但把上千 statement 压成个位数。
+      // 各跑一条 UPDATE，会制造 N*3 次 JS<->SQLite 边界调用。更关键的是 messages 是挂着巨大
+      // raw_json 的肥 row：SQLite 即使只改 last_seen_at，也会重写整条 record/overflow payload。
+      // Cold Evidence event 已经永久记录“本次再次观察到同一 payload”，conversation.last_seen_at
+      // 也会推进；因此 raw canonical 完全相同的 message 不应再改自身 version timestamp。
+      // mapping/image 目前仍保留 seen-time 语义，先单独去掉最昂贵的 messages 肥-row rewrite。
       for (let offset = 0; offset < observationOnlyMessageIds.length; offset += 300) {
         const ids = observationOnlyMessageIds.slice(offset, offset + 300)
         if (ids.length === 0) continue
         const placeholders = ids.map(() => '?').join(',')
-        this.db.prepare(`
-          UPDATE messages
-          SET last_seen_at=max(COALESCE(last_seen_at, ?), ?),
-              source_observed_at=max(COALESCE(source_observed_at, 0), ?)
-          WHERE conversation_id=? AND message_id IN (${placeholders})
-        `).run(observedAt, observedAt, observedAt, conversationId, ...ids)
         this.db.prepare(`
           UPDATE mapping_nodes
           SET last_seen_at=max(last_seen_at, ?),
