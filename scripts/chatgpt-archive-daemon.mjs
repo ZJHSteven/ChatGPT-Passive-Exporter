@@ -5677,15 +5677,25 @@ async function main() {
         }
       }
 
+      const observationKind = `body-page:${trigger}`
+      const observationEndpoint = pages === 0 ? basePath : `${basePath}/messages`
+      const observationAt = Date.now()
       const observationPrepareStartedAt = performance.now()
-      const preparedObservation = await prepareLiveObservation(normalized)
+      const evidence = await prepareObservationEvidence({
+        payload: normalized,
+        conversationId,
+        observationKind,
+        endpoint: observationEndpoint,
+        pageCursor: cursor,
+        observedAt: observationAt,
+      })
       const asyncObservationPrepareMs = performance.now() - observationPrepareStartedAt
       const mergeStartedAt = performance.now()
       const merged = runControlPlaneStage(`conversation-merge:${trigger}`, () => archive.mergeLiveMessagesPage(normalized, {
-        observedAt: Date.now(),
-        endpoint: pages === 0 ? basePath : `${basePath}/messages`,
+        observedAt: observationAt,
+        endpoint: observationEndpoint,
         pageCursor: cursor,
-        observationKind: `body-page:${trigger}`,
+        observationKind,
         preserveObservedTextPrefix: true,
         updateCurrentState: pages === 0,
         classifyTerminal: pages === 0 && classifyTerminalNow,
@@ -5696,7 +5706,8 @@ async function main() {
           && (!watchdogTurnChanged || watchdogTurnAlreadyTimedOut)
           && (confirmedTerminal || trigger.startsWith('watchdog:')),
         incidentKind: requestedIncidentKind,
-        preparedObservation,
+        preparedObservation: evidence.preparedObservation,
+        skipLegacyObservation: evidence.skipLegacyObservation,
       }))
       if (Number(merged.timings?.totalMs || 0) >= 100) {
         await log('slow canonical merge profile', {
@@ -5747,11 +5758,22 @@ async function main() {
               if (!mappingPayload?.mapping || typeof mappingPayload.mapping !== 'object') {
                 throw new Error(`conversation ${conversationId} singular response has no mapping`)
               }
+              const mappingObservedAt = Date.now()
+              const mappingObservationKind = `mapping-snapshot:${trigger}`
+              const mappingEvidence = await prepareObservationEvidence({
+                payload: mappingPayload,
+                conversationId,
+                observationKind: mappingObservationKind,
+                endpoint: singularPath,
+                observedAt: mappingObservedAt,
+              })
               const mappingMergeStartedAt = performance.now()
               const mappingResult = archive.mergeLiveMappingSnapshot(mappingPayload, {
-                observedAt: Date.now(),
+                observedAt: mappingObservedAt,
                 endpoint: singularPath,
-                observationKind: `mapping-snapshot:${trigger}`,
+                observationKind: mappingObservationKind,
+                preparedObservation: mappingEvidence.preparedObservation,
+                skipLegacyObservation: mappingEvidence.skipLegacyObservation,
               })
               databaseMergeMs += performance.now() - mappingMergeStartedAt
               newMessages += mappingResult.newMessageCount
@@ -7357,10 +7379,21 @@ async function main() {
 
     if (route.kind === 'mapping') {
       if (!payload?.mapping || typeof payload.mapping !== 'object') return
+      const observationKind = 'mapping-snapshot:passive-native'
+      const endpoint = `/backend-api/conversation/${conversationId}`
+      const evidence = await prepareObservationEvidence({
+        payload,
+        conversationId,
+        observationKind,
+        endpoint,
+        observedAt: capturedAt,
+      })
       archive.mergeLiveMappingSnapshot(payload, {
         observedAt: capturedAt,
-        endpoint: `/backend-api/conversation/${conversationId}`,
-        observationKind: 'mapping-snapshot:passive-native',
+        endpoint,
+        observationKind,
+        preparedObservation: evidence.preparedObservation,
+        skipLegacyObservation: evidence.skipLegacyObservation,
       })
       // mapping snapshot 同样是 canonical conversation ingress。它可能是页面恢复时唯一自然
       // 发出的 conversation 请求；如果这里只 merge 不 reconcile，已经落库的 tool calls 仍会
@@ -7386,20 +7419,29 @@ async function main() {
     passiveBodyResponses += 1
 
     if (route.kind === 'body-latest') {
+      const observationKind = 'body-page:passive-native'
+      const endpoint = `/backend-api/conversations/${conversationId}`
       const observationPrepareStartedAt = performance.now()
-      const preparedObservation = await prepareLiveObservation(normalized)
+      const evidence = await prepareObservationEvidence({
+        payload: normalized,
+        conversationId,
+        observationKind,
+        endpoint,
+        observedAt: capturedAt,
+      })
       const asyncObservationPrepareMs = performance.now() - observationPrepareStartedAt
       const passiveMerged = runControlPlaneStage('conversation-merge:passive-native', () => archive.mergeLiveMessagesPage(normalized, {
         observedAt: capturedAt,
-        endpoint: `/backend-api/conversations/${conversationId}`,
+        endpoint,
         pageCursor: null,
-        observationKind: 'body-page:passive-native',
+        observationKind,
         preserveObservedTextPrefix: true,
         updateCurrentState: true,
         classifyTerminal: false,
         allowIncompleteTailIncident: false,
         incidentKind: 'abnormal-terminal',
-        preparedObservation,
+        preparedObservation: evidence.preparedObservation,
+        skipLegacyObservation: evidence.skipLegacyObservation,
       }))
       if (Number(passiveMerged.timings?.totalMs || 0) >= 100) {
         await log('slow canonical merge profile', {
