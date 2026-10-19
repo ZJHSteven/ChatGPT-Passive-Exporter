@@ -70,6 +70,37 @@
 - 重点验证 `live_observations` 虽然查询冷，但目前与 canonical hot merge 同事务写入 `gzipSync(rawText)` + blob insert；若其CPU/WAL/page-cache成本显著，就把 observation journal 从热事务移出，优先拆到独立冷库/sidecar，而不是让协议取证拖住 message writer。
 - writer sidecar 设计必须避免主 daemon 继续持有同步写连接等待 SQLite writer lock；目标不是“换线程执行同一把锁”，而是控制面不再同步等待重写入。
 
+## 2026-10-19 Archive 长期存储与主循环瘦身 ExecPlan
+
+背景：生产 `data/` 已约 14.0GB，主库约 12.0GB；2026-10-18 容量审计已确认 `messages≈4.39GiB`、`live_observations≈3.06GiB`、三套 FTS≈2.15GiB，当时三者已占绝大部分主库。2026-10-19 重新定点审计又确认 `messages` 主表本身已约4.90GB。当前问题不是 SQLite 容量上限，而是长期运行的数据布局与 daemon 故障域仍保持科研原型形态：canonical、runtime、search index、raw evidence、protocol observation、repair/recovery 都混在同一主库/主进程。
+
+### 目标存储边界
+1. **Hot Core**：conversation identity、canonical message 的热字段、mapping/head、incident、Watchdog、DevSpace binding/audit cursor、sync debt 等高频状态。日常控制面 SQL 必须只碰窄表/窄 covering index，不允许因为 raw JSON/大正文而回表扫 overflow page。
+2. **Search Index**：FTS 是可重建派生物，不再视为 canonical source of truth。最终独立到专用 search SQLite（优先 contentless/external-content 设计），允许独立 rebuild/replace；Hot Core 不因 FTS rebuild 或 bigram/trigram 维护长期持 writer lock。
+3. **Cold Evidence**：raw conversation/body、raw message JSON、mapping snapshot、protocol response/body、巨大 DevSpace result 等按内容寻址（SHA-256）压缩落文件/CAS；SQLite 只保存 event/index/ref。相同 payload 只存一次，每一次 observation event 仍永久保留时间、kind、endpoint、header/protocol/status/source 等 provenance。
+4. **可重建派生物**：message_parts、resources 中纯派生内容、FTS private content、副本型 snapshot 必须明确标记 rebuildable，不得和 source-of-truth 数据享有同等保留成本。
+5. 长期容量目标不是“12GB 压成某个固定值”，而是让**日增长主要由真正新增 canonical message + 新的唯一 evidence bytes 决定**；重复观察同一 body、重复 FTS 内容副本、重复 raw JSON 不再线性增长主库。
+
+### Phase A：先收主循环/故障域（本轮实施）
+1. 把 daemon 5s 主循环拆成两条 lane：
+   - Critical lane：Guardian 建立/存在性、CDP runtime health、UI health、WSS gap、rate-limit block/cooldown、state heartbeat。
+   - Maintenance lane：passive observer attach、DevSpace 60s fallback、periodic reconcile、watchdog diagnosis queue、dirty/checkpoint drain、gap repair、unbound diagnosis、image hydration、protocol maintenance。
+2. Maintenance lane 单实例运行（`maintenanceLaneInFlight`），每个大步骤之间 cooperative yield；慢网络等待或普通 maintenance error 不再延迟下一次 Critical tick。
+3. **故障域隔离**：Maintenance 捕获自己的错误并记录状态；不得走主循环 catch、不得关闭 Guardian。只有 Guardian/CDP/WSS 核心健康失败才允许触发 Guardian rebuild。
+4. 增加 lane telemetry：runs/lastMs/maxMs/lastError/inFlight，写入 daemon state；以后判断“主循环慢”先区分 critical vs maintenance。
+5. 回归测试锁定：main loop 不再直接 `await drainDirty/reconcile/gapRepair/hydrate`；maintenance failure 不得调用 `guardian.page.close()`。
+
+### Phase B：停止容量线性放大
+1. `live_observations` 先做 event/payload 分离：event 永久保留；payload 按 sha256 去重。2026-10-18 已实测完全重复 gzip payload≈1.447GiB，约占 observation payload 47.5%，这一刀无损且收益最高。
+2. raw message JSON 从 `messages` 肥 row 剥离：先做压缩 CAS/冷 blob 引用，再根据 hash 做 message-level raw evidence dedupe；Hot message row 保留搜索/Reader/运行所需字段。
+3. FTS 迁到独立 rebuildable search DB，并实测 external-content/contentless；当前三套 `_content` 副本约560MB，可先无损去掉私有内容副本。
+4. 迁移必须在线下 maintenance/sidecar 完成，生产 daemon 不允许启动时扫12GB做 schema/data migration。
+
+### Phase C：writer sidecar
+1. canonical write / derived index / evidence writer 统一走专用 child process 或 writer service；主 daemon 只 enqueue 小任务，不持有会等待 writer lock 的同步写路径。
+2. Cold Evidence 采用“先 durable blob/CAS，后 Hot Core 写引用”的提交顺序；跨多个 WAL SQLite 不假设原子事务。
+3. 增加容量日报：Hot Core/Search/Cold Evidence 文件大小、每日新增 canonical bytes、unique evidence bytes、dedupe saved bytes、重复 observation 数、磁盘 runway。
+
 ## 2026-10-16 Bark / Watchdog 手机通知第二轮人因化
 
 ### 现场问题
