@@ -552,11 +552,17 @@ export function shouldRunHistoricalDevSpaceBackfill(hadExistingBindings, created
 }
 
 export function shouldAttachPassivePageObserver(target) {
+  const title = String(target?.title || '').trim()
   return Boolean(
     target?.type === 'page'
     && typeof target?.webSocketDebuggerUrl === 'string'
     && target.webSocketDebuggerUrl
     && String(target?.url || '').startsWith('https://chatgpt.com/')
+    // 当前 Chrome/本机休眠页会以“💤 ChatGPT”暴露 target，但 renderer CDP session 完全不响应：
+    // Runtime.evaluate / Page.getFrameTree / Network.enable 均会超时。休眠期间页面本来也不会产生
+    // Network 事件，因此 attach 没有任何观测收益，只会每次白等 timeout。醒来后 title 恢复，
+    // 下一轮 target refresh 会自然重新进入 eligible 集合。
+    && !title.startsWith('💤')
   )
 }
 
