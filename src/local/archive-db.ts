@@ -231,6 +231,8 @@ export interface LiveMergeResult {
   timings: {
     totalMs: number
     prepareMs: number
+    existingReadMs: number
+    writerLockWaitMs: number
     conversationHeadMs: number
     messageWriteMs: number
     observationMs: number
@@ -1906,6 +1908,30 @@ export class ChatArchiveDb {
     const rawText = options.preparedObservation?.rawText ?? json(payload)
     const messageIds = conversation.messages.map(message => message.id)
     const knownBefore = this.knownMessageIds(conversationId, messageIds)
+    type ExistingMessageContent = {
+      messageId: string
+      text?: unknown
+      contentJson?: unknown
+      rawJson?: unknown
+    }
+    const existingMessageContent = new Map<string, ExistingMessageContent>()
+    const existingReadStartedAt = performance.now()
+    const knownIds = messageIds.filter(id => knownBefore.has(id))
+    // 旧实现对已知 message 每条单独 SELECT text/content_json/raw_json。长聊天一次 Body 可有
+    // 2k~5k message，结果就是几千次 B-tree lookup + JS<->SQLite 边界穿越，而且都发生在
+    // BEGIN IMMEDIATE 之后，既拖慢 event loop 又无谓延长 writer lock。这里改为事务前分块批量读。
+    for (let offset = 0; offset < knownIds.length; offset += 300) {
+      const ids = knownIds.slice(offset, offset + 300)
+      if (ids.length === 0) continue
+      const placeholders = ids.map(() => '?').join(',')
+      const rows = this.db.prepare(`
+        SELECT message_id AS messageId, text, content_json AS contentJson, raw_json AS rawJson
+        FROM messages
+        WHERE conversation_id = ? AND message_id IN (${placeholders})
+      `).all(conversationId, ...ids) as unknown as ExistingMessageContent[]
+      for (const row of rows) existingMessageContent.set(row.messageId, row)
+    }
+    const existingReadMs = performance.now() - existingReadStartedAt
     const prepareFinishedAt = performance.now()
 
     const upsertConversation = this.db.prepare(`
@@ -1968,11 +1994,6 @@ export class ChatArchiveDb {
         raw_json=excluded.raw_json,
         source_observed_at=max(COALESCE(messages.source_observed_at, 0), excluded.source_observed_at)
     `)
-    const getExistingMessageContent = this.db.prepare(`
-      SELECT text, content_json AS contentJson, raw_json AS rawJson
-      FROM messages
-      WHERE conversation_id = ? AND message_id = ?
-    `)
     const insertPart = this.db.prepare(`
       INSERT INTO message_parts (
         conversation_id, message_id, part_index, source_field, part_kind, text_value, json_value
@@ -2024,11 +2045,14 @@ export class ChatArchiveDb {
     const observationOnlyMessageIds: string[] = []
     let conversationHeadMs = 0
     let messageWriteMs = 0
+    let writerLockWaitMs = 0
     let observationMs = 0
     let derivedMs = 0
     let commitMs = 0
     let observationGzipBytes = 0
+    const writerLockStartedAt = performance.now()
     this.db.exec('BEGIN IMMEDIATE')
+    writerLockWaitMs = performance.now() - writerLockStartedAt
     try {
       const conversationHeadStartedAt = performance.now()
       const existingConversation = this.db.prepare(
@@ -2081,11 +2105,7 @@ export class ChatArchiveDb {
         const finishDetails = record(metadata.finish_details)
         const parentId = stringValue(metadata.parent_id)
         const existing = knownBefore.has(message.id)
-          ? getExistingMessageContent.get(conversationId, message.id) as {
-              text?: unknown
-              contentJson?: unknown
-              rawJson?: unknown
-            } | undefined
+          ? existingMessageContent.get(message.id)
           : undefined
 
         if (options.preserveObservedTextPrefix === true) {
@@ -2312,6 +2332,8 @@ export class ChatArchiveDb {
       timings: {
         totalMs: performance.now() - mergeStartedAt,
         prepareMs: prepareFinishedAt - mergeStartedAt,
+        existingReadMs,
+        writerLockWaitMs,
         conversationHeadMs,
         messageWriteMs,
         observationMs,
