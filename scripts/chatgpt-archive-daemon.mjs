@@ -9632,6 +9632,134 @@ async function main() {
     fallbackPollMs: DEVSPACE_FALLBACK_POLL_MS,
   })
 
+  /**
+   * Maintenance lane 的单个步骤隔离器。
+   *
+   * 旧主循环把所有后台工作都包在 Guardian 的总 try/catch 里：任何 reconcile / hydrate /
+   * dirty-drain 抛错，最后都会关闭 Guardian page，导致一个普通后台故障被升级成浏览器核心重建。
+   * 这里把错误局限在当前 maintenance step：记日志、记 telemetry，然后继续下一个后台步骤。
+   */
+  const runMaintenanceStep = async (step, work) => {
+    maintenanceLaneLastStep = step
+    try {
+      await work()
+    }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      maintenanceLaneLastError = `${step}: ${message}`
+      await log('daemon maintenance step failed', {
+        step,
+        error: message,
+      }).catch(() => {})
+    }
+    // 即使一个 step 很快，也主动把控制权交回 event loop；后续 writer/repair 再变重时，
+    // 不允许整条 maintenance lane 重新退化成一个长同步调用栈。
+    await yieldControlPlane()
+  }
+
+  /**
+   * 允许耗时、允许失败、但不允许杀 Guardian 的后台 lane。
+   *
+   * 每次最多同时运行一个实例。Critical 5s tick 只负责调用 scheduleMaintenanceLane()，
+   * 不 await 本函数，因此 CDP/Guardian/WSS 健康检查不会再等待 catalog/reconcile/image 等慢任务。
+   */
+  const runMaintenanceLane = async () => {
+    if (maintenanceLaneInFlight || stopping) return
+    maintenanceLaneInFlight = true
+    maintenanceLaneRuns += 1
+    maintenanceLaneLastError = null
+    const started = performance.now()
+    try {
+      await runMaintenanceStep('resume-recovery', async () => {
+        if (resumeStartupRecoveryDone || !authHeaders) return
+        const scheduled = recoverRecentOrphanedResumeCredentials()
+        resumeStartupRecoveryDone = true
+        if (scheduled > 0) {
+          await log('recent orphaned live turn resumes scheduled after daemon startup', { scheduled })
+        }
+      })
+
+      await runMaintenanceStep('devspace-fallback', async () => {
+        if (Date.now() - devSpaceLastFallbackPollAt < DEVSPACE_FALLBACK_POLL_MS) return
+        await pollDevSpaceAudits()
+        refreshPendingDevSpaceRecoveryAudits()
+        // finish 门铃丢失时，低频按当前已追踪 metadata 重读 idle 状态。
+        refreshTrackedDevSpaceIdleCandidates()
+        devSpaceLastFallbackPollAt = Date.now()
+      })
+
+      await runMaintenanceStep('devspace-thresholds', () => {
+        runControlPlaneStage('maintenance:devspace-thresholds', () => {
+          checkDevSpaceIdleNotifications()
+          checkUnboundDevSpaceTimeouts()
+        })
+      })
+
+      await runMaintenanceStep('watchdog-diagnostics', () => {
+        runControlPlaneStage('maintenance:watchdog-diagnostics', () => queueWatchdogDiagnostics())
+      })
+
+      // canonical/diagnostic 工作优先于 observer/image 等外围维护；这样一旦有 ready backlog，
+      // 当前 maintenance turn 会先推进一个最重要的同步单元，再做其它低优先级任务。
+      await runMaintenanceStep('dirty-drain', async () => await drainDirty())
+      await runMaintenanceStep('checkpoint-drain', async () => await drainCheckpointWatches())
+      await runMaintenanceStep('gap-repair', async () => await maybeRunGapRepair())
+      await runMaintenanceStep('unbound-diagnosis', () => {
+        runControlPlaneStage('maintenance:unbound-diagnosis', () => {
+          completeUnboundDevSpaceIdleDiagnoses()
+          completeUnboundWatchdogDiagnoses()
+        })
+      })
+
+      await runMaintenanceStep('passive-observers', async () => {
+        await refreshPassivePageObservers(latestCdpTargets)
+      })
+
+      await runMaintenanceStep('image-hydration', async () => {
+        await hydratePendingGeneratedImageAssets()
+      })
+
+      await runMaintenanceStep('periodic-reconcile', async () => {
+        if (!(reconcileHours > 0
+          && authHeaders
+          && familyRateLimitAllowed(rateLimits, 'catalog')
+          && !cooldownRecoveryPending
+          && !guardianConversationRestBlockUncertain
+          && Date.now() - lastReconcileAt >= reconcileHours * 3600_000)) return
+        await reconcileCatalog('periodic').catch(async (error) => {
+          await log('periodic reconciliation failed; passive Guardian remains online', {
+            error: error instanceof Error ? error.message : String(error),
+          })
+        })
+      })
+
+      await runMaintenanceStep('protocol-maintenance', () => {
+        if (protocolLedger?.refreshBaselineLock()) scheduleProtocolLedgerFlush()
+      })
+    }
+    finally {
+      maintenanceLaneLastMs = performance.now() - started
+      maintenanceLaneMaxMs = Math.max(maintenanceLaneMaxMs, maintenanceLaneLastMs)
+      maintenanceLaneLastStep = null
+      maintenanceLaneInFlight = false
+    }
+  }
+
+  const scheduleMaintenanceLane = () => {
+    if (maintenanceLaneScheduled || maintenanceLaneInFlight || stopping) return false
+    maintenanceLaneScheduled = true
+    setImmediate(() => {
+      maintenanceLaneScheduled = false
+      void runMaintenanceLane().catch(async (error) => {
+        // runMaintenanceLane 理论上只会在 finally 外的极端错误到这里；仍然只记录，绝不关闭 Guardian。
+        const message = error instanceof Error ? error.message : String(error)
+        maintenanceLaneLastError = `lane: ${message}`
+        await log('daemon maintenance lane failed', { error: message }).catch(() => {})
+      })
+    })
+    return true
+  }
+
   controlPlaneStage = 'idle'
   await log('daemon starting', { pid: process.pid, dbPath, cdpHttp })
   while (!stopping) {
