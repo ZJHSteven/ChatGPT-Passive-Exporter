@@ -25,8 +25,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   ChatArchiveDb,
   devSpaceVirtualConversationId,
-  prepareLiveObservation,
 } from '../src/local/archive-db.ts'
+import {
+  ArchiveEvidenceStore,
+  prepareArchiveEvidence,
+} from '../src/local/archive-evidence-store.ts'
 import {
   ActiveTurnRecorder,
   buildBodySnapshotTrace,
@@ -106,6 +109,7 @@ const DEFAULT_LIVE_SSE_DIR = path.join(PROJECT_ROOT, 'data', 'live-sse')
 const DEFAULT_NOTIFICATION_CONFIG = path.join(PROJECT_ROOT, 'data', 'archive-notification.local.json')
 const DEFAULT_PROTOCOL_LEDGER = path.join(PROJECT_ROOT, 'data', 'protocol-fingerprints.json')
 const DEFAULT_REQUEST_EVENT_LEDGER = path.join(PROJECT_ROOT, 'data', 'archive-request-events.jsonl')
+const DEFAULT_ARCHIVE_EVIDENCE_DIR = path.join(PROJECT_ROOT, 'data', 'evidence', 'archive')
 const DEFAULT_ACTOR_STATE = path.join(PROJECT_ROOT, 'data', 'archive-actor-state.json')
 const DEFAULT_ACTOR_SUBMISSION_QUEUE = path.join(PROJECT_ROOT, 'data', 'archive-actor-submissions.json')
 const DEFAULT_DOM_LEDGER = path.join(PROJECT_ROOT, 'data', 'dom-fingerprints.json')
@@ -2348,6 +2352,12 @@ async function main() {
   const requestEventLedgerPath = flags.has('request-event-ledger')
     ? path.resolve(String(flags.get('request-event-ledger')))
     : DEFAULT_REQUEST_EVENT_LEDGER
+  const archiveEvidenceDir = flags.has('evidence-dir')
+    ? path.resolve(String(flags.get('evidence-dir')))
+    : DEFAULT_ARCHIVE_EVIDENCE_DIR
+  // 紧急回滚阀：若外置 CAS 在某台机器/文件系统上出现不可接受的问题，可显式恢复旧 SQLite
+  // live_observations BLOB 写入。默认必须走外置 Evidence Store，避免新数据继续把 Hot DB 撑大。
+  const externalEvidenceEnabled = !flags.has('legacy-live-observations')
   // Phase 5 Bridge 默认只监听 loopback。即使用户显式传了其它 host，也必须再给
   // `--allow-remote-bridge` 才允许启动，避免一次参数误写把本地 Archive/Actor 控制面暴露出去。
   const bridgeEnabled = !flags.has('no-bridge')
@@ -2528,6 +2538,7 @@ async function main() {
     lastError: null,
   }, null, 2)).catch(() => {})
   const archive = new ChatArchiveDb(dbPath)
+  const evidenceStore = new ArchiveEvidenceStore(archiveEvidenceDir)
   const requestEventLedger = new RequestEventLedger(requestEventLedgerPath)
   const devSpaceAuditBridge = new DevSpaceAuditBridge(devSpaceDbPath)
   const devSpaceAuditWakeListener = new DevSpaceAuditWakeListener()
