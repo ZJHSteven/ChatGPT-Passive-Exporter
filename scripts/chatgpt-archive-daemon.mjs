@@ -1659,7 +1659,7 @@ function buildCheckpointNotificationBody(summary, next = null, maxBytes = CHECKP
   const clean = value => String(value || '').replace(/\r\n?/gu, '\n').trim()
   const summaryText = clean(summary)
   const nextText = clean(next)
-  const separator = nextText ? '\l\n下一步：' : ''
+  const separator = nextText ? '\n\n下一步：' : ''
   const full = `${summaryText}${separator}${nextText}`
   const byteLength = value => Buffer.byteLength(value, 'utf8')
   const safeBudget = Math.max(64, Math.trunc(Number(maxBytes) || CHECKPOINT_NOTIFICATION_BODY_MAX_UTF8_BYTES))
