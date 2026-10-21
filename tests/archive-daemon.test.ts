@@ -687,6 +687,38 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(payload).not.toHaveProperty('url')
   })
 
+
+  test('Checkpoint notification keeps full text until UTF-8 byte budget', () => {
+    const summary = `stage:${'\u7532'.repeat(400)}`
+    const next = `next:${'\u4e59'.repeat(120)}`
+    const payload = buildDevSpaceCheckpointNotificationPayload({
+      title: 'long checkpoint',
+      metadataId: 'v1/abcdefgh12345678',
+      summary,
+      next,
+    })
+    expect(payload.body).toBe(`${summary}\n\n\u4e0b\u4e00\u6b65\uff1a${next}`)
+    expect(payload.body).not.toContain('\u2026')
+
+    const parsedLong = extractDevSpaceCheckpoint(JSON.stringify({
+      summary: '\u7532'.repeat(1900),
+      next: '\u4e59'.repeat(950),
+    }))
+    expect(parsedLong?.summary).toHaveLength(1900)
+    expect(parsedLong?.next).toHaveLength(950)
+
+    const huge = buildDevSpaceCheckpointNotificationPayload({
+      title: 'oversized checkpoint',
+      metadataId: 'v1/abcdefgh12345678',
+      summary: '\u7532'.repeat(1500),
+      next: '\u4e59'.repeat(800),
+    })
+    expect(Buffer.byteLength(huge.body, 'utf8')).toBeLessThanOrEqual(3000)
+    expect(huge.body).toContain('\n\n\u4e0b\u4e00\u6b65\uff1a')
+    expect(huge.body).toContain('\u2026')
+    expect(huge.body).not.toContain('\uFFFD')
+  })
+
   test('通知文本按 Unicode code point 安全压缩，不把换行带进锁屏单行摘要', () => {
     expect(compactNotificationText('第一行\n  第二行', 20)).toBe('第一行 第二行')
     expect(compactNotificationText('A😀BC', 4)).toBe('A😀BC')
