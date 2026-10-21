@@ -1604,11 +1604,9 @@ export function extractDevSpaceCheckpoint(argsJson) {
     const next = typeof parsed.next === 'string' && parsed.next.trim()
       ? parsed.next.trim()
       : null
-    const clamp = value => value.length > 1800 ? `${value.slice(0, 1799)}…` : value
-    return {
-      summary: clamp(summary),
-      next: next ? clamp(next) : null,
-    }
+    // checkpoint 工具本身已经用 schema 限制 summary<=2000、next<=1000。
+    // 这里不再做第二层 1800 字符截断，否则合法 checkpoint 会在进入通知层前永久丢尾巴。
+    return { summary, next }
   }
   catch {
     return null
@@ -1645,6 +1643,73 @@ export function buildDevSpaceConclusionNotificationPayload({
   return payload
 }
 
+const CHECKPOINT_NOTIFICATION_BODY_MAX_UTF8_BYTES = 3000
+
+/**
+ * 把 Checkpoint 正文压到一个保守的 APNs body 字节预算内。
+ *
+ * APNs 普通通知的完整 payload 上限是 4096 bytes；Bark 还需要 title/subtitle/url/group 等字段，
+ * 因此这里给正文留 3000 bytes，并把剩余空间留给传输层元数据。和旧版按“字符数”截断不同：
+ * - 常见 checkpoint 只要整体不超过预算，就原样完整显示，展开通知可以看到全文；
+ * - 只有真的接近 APNs 上限时才截断；
+ * - 按 UTF-8 字节计算，避免中文看似字符不多、实际 payload 已经超限；
+ * - summary 与 next 都保留一部分预算，超长时不会出现“前文吃满空间导致下一步完全消失”。
+ */
+function buildCheckpointNotificationBody(summary, next = null, maxBytes = CHECKPOINT_NOTIFICATION_BODY_MAX_UTF8_BYTES) {
+  const clean = value => String(value || '').replace(/
+?/gu, '
+').trim()
+  const summaryText = clean(summary)
+  const nextText = clean(next)
+  const separator = nextText ? '
+
+下一步：' : ''
+  const full = `${summaryText}${separator}${nextText}`
+  const byteLength = value => Buffer.byteLength(value, 'utf8')
+  const safeBudget = Math.max(64, Math.trunc(Number(maxBytes) || CHECKPOINT_NOTIFICATION_BODY_MAX_UTF8_BYTES))
+
+  if (byteLength(full) <= safeBudget) return full
+
+  const truncateUtf8 = (value, budget) => {
+    const ellipsis = '…'
+    const ellipsisBytes = byteLength(ellipsis)
+    const safe = Math.max(0, Math.trunc(Number(budget) || 0))
+    if (byteLength(value) <= safe) return value
+    if (safe < ellipsisBytes) return ''
+    const chars = []
+    let used = ellipsisBytes
+    for (const char of value) {
+      const size = byteLength(char)
+      if (used + size > safe) break
+      chars.push(char)
+      used += size
+    }
+    return `${chars.join('')}${ellipsis}`
+  }
+
+  if (!nextText) return truncateUtf8(summaryText, safeBudget)
+
+  const separatorBytes = byteLength(separator)
+  const contentBudget = Math.max(0, safeBudget - separatorBytes)
+  const summaryBytes = byteLength(summaryText)
+  const nextBytes = byteLength(nextText)
+
+  // 默认给 next 约 1/3 的空间，至少 384 bytes；如果任一段本身较短，
+  // 立即把它没用完的预算让给另一段，尽可能多保留原文。
+  let nextBudget = Math.min(nextBytes, Math.max(384, Math.floor(contentBudget / 3)))
+  let summaryBudget = Math.max(0, contentBudget - nextBudget)
+  if (summaryBytes < summaryBudget) {
+    summaryBudget = summaryBytes
+    nextBudget = Math.max(0, contentBudget - summaryBudget)
+  }
+  else if (nextBytes < nextBudget) {
+    nextBudget = nextBytes
+    summaryBudget = Math.max(0, contentBudget - nextBudget)
+  }
+
+  return `${truncateUtf8(summaryText, summaryBudget)}${separator}${truncateUtf8(nextText, nextBudget)}`
+}
+
 export function buildDevSpaceCheckpointNotificationPayload({
   conversationId = null,
   title = null,
@@ -1660,10 +1725,7 @@ export function buildDevSpaceCheckpointNotificationPayload({
       metadataId,
       unbound: !conversationId,
     }),
-    body: [
-      compactNotificationText(summary, 180),
-      next ? `下一步：${compactNotificationText(next, 90)}` : null,
-    ].filter(Boolean).join('\n'),
+    body: buildCheckpointNotificationBody(summary, next),
     group: conversationNotificationGroup({ conversationId, metadataId }),
   }
   if (conversationId) payload.url = `https://chatgpt.com/c/${conversationId}`
