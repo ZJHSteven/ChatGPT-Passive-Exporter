@@ -1656,14 +1656,10 @@ const CHECKPOINT_NOTIFICATION_BODY_MAX_UTF8_BYTES = 3000
  * - summary 与 next 都保留一部分预算，超长时不会出现“前文吃满空间导致下一步完全消失”。
  */
 function buildCheckpointNotificationBody(summary, next = null, maxBytes = CHECKPOINT_NOTIFICATION_BODY_MAX_UTF8_BYTES) {
-  const clean = value => String(value || '').replace(/
-?/gu, '
-').trim()
+  const clean = value => String(value || '').replace(/\r\n?/gu, '\n').trim()
   const summaryText = clean(summary)
   const nextText = clean(next)
-  const separator = nextText ? '
-
-下一步：' : ''
+  const separator = nextText ? '\l\n下一步：' : ''
   const full = `${summaryText}${separator}${nextText}`
   const byteLength = value => Buffer.byteLength(value, 'utf8')
   const safeBudget = Math.max(64, Math.trunc(Number(maxBytes) || CHECKPOINT_NOTIFICATION_BODY_MAX_UTF8_BYTES))
