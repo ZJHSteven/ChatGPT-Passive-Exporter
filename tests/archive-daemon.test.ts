@@ -682,7 +682,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(payload.subtitle).toBe('Archive 临时 Conversation · 未绑定')
     expect(payload.body).toContain('阶段一已经完成。')
     expect(payload.body).toContain('下一步：开始生产 E2E。')
-    expect(payload.body.split('\n')).toHaveLength(2)
+    expect(payload.body.split('\n')).toHaveLength(3)
     expect(payload.group).toBe('Chat/meta/abcdefgh')
     expect(payload).not.toHaveProperty('url')
   })
