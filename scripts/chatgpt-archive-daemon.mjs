@@ -2226,15 +2226,16 @@ export function shouldRetireIdleLiveTransport(
 }
 
 /**
- * conversation 级 terminal_state 只能在“它比当前 resume token 更新”时证明当前 turn 已经结束。
+ * conversation 级 legacy terminal_state 只作为 Body completion state 的持久化列；只有它比
+ * 当前 resume token 更新时，才可证明该 token 所属 turn 已经完成。
  * 同一个 CID 可以连续发送多个 turn；上一轮的 final 不能阻止下一轮恢复。
  */
-export function terminalStateSupersedesResumeCredential(row, credentialSeenAt) {
-  if (row?.terminalState !== 'final') return false
-  const terminalSeenAt = Number(row?.lastSeenAt)
+export function bodyCompletionStateSupersedesResumeCredential(row, credentialSeenAt) {
+  if (row?.bodyCompletionState !== 'final') return false
+  const completionSeenAt = Number(row?.lastSeenAt)
   const tokenSeenAt = Number(credentialSeenAt)
-  if (!Number.isFinite(terminalSeenAt) || !Number.isFinite(tokenSeenAt)) return false
-  return terminalSeenAt >= tokenSeenAt
+  if (!Number.isFinite(completionSeenAt) || !Number.isFinite(tokenSeenAt)) return false
+  return completionSeenAt >= tokenSeenAt
 }
 
 export function listPath(offset, limit, template = null) {
@@ -5354,14 +5355,14 @@ async function main() {
         const current = archive.getLiveResumeCredential(conversationId, credential.turnExchangeId)
         if (!current) return
         const row = archive.db.prepare(`
-          SELECT terminal_state AS terminalState, last_seen_at AS lastSeenAt
+          SELECT terminal_state AS bodyCompletionState, last_seen_at AS lastSeenAt
           FROM conversations
           WHERE id = ?
           LIMIT 1
         `).get(conversationId)
         // 同一个 conversation 可以继续发送下一轮。只有比当前 resume token 更新的 canonical
         // final 才证明“这一轮已经结束”；上一轮遗留的 final 不能把新 turn 的 resume 短路。
-        if (terminalStateSupersedesResumeCredential(row, current.lastSeenAt)) return
+        if (bodyCompletionStateSupersedesResumeCredential(row, current.lastSeenAt)) return
 
         if (!guardian?.page || guardian.page.closed || !authHeaders) {
           // 本机 Chrome/Guardian 临时离线不消耗 resume 尝试额度；等待 daemon 自愈后再试。
@@ -7798,7 +7799,7 @@ async function main() {
           updateTime: nextUpdateTime,
         })
         const archived = archive.db.prepare(
-          'SELECT update_time AS updateTime, terminal_state AS terminalState FROM conversations WHERE id = ?',
+          'SELECT update_time AS updateTime, terminal_state AS bodyCompletionState FROM conversations WHERE id = ?',
         ).get(id)
         const catalogObservationCompleted = archive.hasCatalogWatchdogCompleted(id, item.update_time ?? null)
         if (shouldStartCatalogWatchdog({
@@ -7806,7 +7807,7 @@ async function main() {
           catalogObservationCompleted,
           catalogUpdateTime: item.update_time ?? null,
           archivedUpdateTime: archived?.updateTime ?? null,
-          archivedTerminalState: archived?.terminalState ?? null,
+          archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
         })) {
           armCheckpointWatch(id, 'project-catalog:' + reason + ':async-active', now)
         }
@@ -7815,7 +7816,7 @@ async function main() {
           catalogObservationCompleted,
           catalogUpdateTime: item.update_time ?? null,
           archivedUpdateTime: archived?.updateTime ?? null,
-          archivedTerminalState: archived?.terminalState ?? null,
+          archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
         })) {
           const nextActive = {
             startedAt: current?.firstSeenAt ?? now,
@@ -7919,7 +7920,7 @@ async function main() {
       const asyncState = classifyCatalogAsyncStatus(item.async_status)
       if (asyncState === 'active') {
         const archived = archive.db.prepare(`
-          SELECT update_time AS updateTime, terminal_state AS terminalState
+          SELECT update_time AS updateTime, terminal_state AS bodyCompletionState
           FROM conversations WHERE id = ?
         `).get(id)
         const catalogObservationCompleted = archive.hasCatalogWatchdogCompleted(id, item.update_time ?? null)
@@ -7928,7 +7929,7 @@ async function main() {
           catalogObservationCompleted,
           catalogUpdateTime: item.update_time ?? null,
           archivedUpdateTime: archived?.updateTime ?? null,
-          archivedTerminalState: archived?.terminalState ?? null,
+          archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
         })) {
           armCheckpointWatch(id, `passive-catalog:${targetId || 'unknown'}`, capturedAt)
         }
@@ -8998,7 +8999,7 @@ async function main() {
             // 没有可靠 turn-start 时，把“第一次看到 active”作为保守 late-start 下界。
             // 真实 POST 一定发生得更早，所以 watchdog 只会更晚报警，不会提前误报。
             const archived = archive.db.prepare(`
-              SELECT update_time AS updateTime, terminal_state AS terminalState
+              SELECT update_time AS updateTime, terminal_state AS bodyCompletionState
               FROM conversations WHERE id = ?
             `).get(id)
             const catalogObservationCompleted = archive.hasCatalogWatchdogCompleted(id, item.update_time ?? null)
@@ -9007,7 +9008,7 @@ async function main() {
               catalogObservationCompleted,
               catalogUpdateTime: item.update_time ?? null,
               archivedUpdateTime: archived?.updateTime ?? null,
-              archivedTerminalState: archived?.terminalState ?? null,
+              archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
             })) {
               armCheckpointWatch(id, `reconcile:${reason}:async-active`, now)
             }
@@ -9016,7 +9017,7 @@ async function main() {
               catalogObservationCompleted,
               catalogUpdateTime: item.update_time ?? null,
               archivedUpdateTime: archived?.updateTime ?? null,
-              archivedTerminalState: archived?.terminalState ?? null,
+              archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
             })) {
               const nextActive = {
                 startedAt: current?.firstSeenAt ?? now,
