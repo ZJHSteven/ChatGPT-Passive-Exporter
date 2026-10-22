@@ -2794,10 +2794,14 @@ async function main() {
   let guardianConversationRestBlockUncertain = true
   // catalogActive 只表示“低频 conversation list 曾看见 async_status=3/5”。它不是可靠
   // turn start；若没有更强证据，activeTurns 可以用“首次观察时刻”作为保守 late-start 下界，
-  // 但必须以 catalog:* 标记，并在一次诊断后保留 tombstone，不能把它伪装成 reliable start。
+  // 但必须以 catalog:* 标记。一次 timeout 后的 anti-resurrection 由独立 catalog watermark
+  // 负责，不能再把 conversation 留在 activeTurns 里充当墓碑。
   // 这个集合另外用于识别 active→complete 与 update_time progress。
   const catalogActive = new Map()
   const activeTurns = new Map()
+  const pendingWatchdogDiagnoses = new Map()
+  const postCompletionDevSpaceCandidates = new Map()
+  const recentConversationComplete = new Map()
   const persistActiveTurn = (conversationId, active) => {
     archive.upsertActiveWatchdog({
       conversationId,
@@ -2835,6 +2839,30 @@ async function main() {
       startType: persisted.startType,
       lastDiagnosticTurnKey: persisted.lastDiagnosticTurnKey,
     }
+    if (Number.isFinite(Number(persisted.lastWatchdogAt))) {
+      const completedAt = Number(persisted.lastWatchdogAt)
+      recentConversationComplete.set(persisted.conversationId, completedAt)
+      if (Number(persisted.watchdogPendingAt || 0) > 0) {
+        pendingWatchdogDiagnoses.set(persisted.conversationId, {
+          ...restored,
+          completedAt,
+        })
+      }
+      else {
+        if (/^(?:catalog|project-catalog):/u.test(String(persisted.startType || ''))) {
+          const archived = archive.db.prepare(
+            'SELECT update_time AS updateTime FROM conversations WHERE id = ?',
+          ).get(persisted.conversationId)
+          archive.markCatalogWatchdogCompleted(
+            persisted.conversationId,
+            archived?.updateTime ?? null,
+            completedAt,
+          )
+        }
+        archive.deleteActiveWatchdogIfStartedAt(persisted.conversationId, persisted.startedAt)
+      }
+      continue
+    }
     activeTurns.set(persisted.conversationId, restored)
   }
   // metadata 尚未解出 canonical conversation 时，也先保存 first-tool 的真实时间。
@@ -2842,7 +2870,6 @@ async function main() {
   const unboundDevSpaceTurns = new Map()
   let devSpaceBindingProbeGeneration = ''
   let devSpaceBindingProbedConversationIds = []
-  const recentConversationComplete = new Map()
   // DevSpace audit 从 durable (started_at, audit_id) 高水位续读。首次升级时会在 daemon
   // startup 明确 bootstrap 到当时头部；之后无论离线多久都从持久游标继续，不再靠 2 分钟回看。
   let devSpaceAuditCursor = archive.getDevSpaceAuditCursor(DEVSPACE_AUDIT_CONSUMER_KEY)
@@ -2938,22 +2965,17 @@ async function main() {
       })
     }
   }
-  // activeTurns 现在承载“所有已纳入 watchdog 的 active”：既可能来自可靠 WSS/actor start，
-  // 也可能来自 catalog 首次观察到 active 的保守 late-start。两者不能在取证输出里混称 reliable。
+  // activeTurns 只承载“当前 generation 仍在运行”的计时器。已经跨过 45m 的 generation
+  // 不再留在这里；pending diagnosis 与 catalog anti-resurrection 都有独立状态。
   const isCatalogLateActive = (active) => /^(?:catalog|project-catalog):/u.test(String(active?.startType || ''))
-  const isWatchdogLatched = (active) => Number.isFinite(Number(active?.lastWatchdogAt))
   const reliableActiveIds = () => [...activeTurns.entries()]
-    .filter(([, active]) => !isCatalogLateActive(active) && !isWatchdogLatched(active))
+    .filter(([, active]) => !isCatalogLateActive(active))
     .map(([conversationId]) => conversationId)
   const catalogLateActiveIds = () => [...activeTurns.entries()]
-    .filter(([, active]) => isCatalogLateActive(active) && !isWatchdogLatched(active))
+    .filter(([, active]) => isCatalogLateActive(active))
     .map(([conversationId]) => conversationId)
-  const timedOutWatchdogIds = () => [...activeTurns.entries()]
-    .filter(([, active]) => isWatchdogLatched(active))
-    .map(([conversationId]) => conversationId)
-  const pendingWatchdogDiagnosisIds = () => [...activeTurns.entries()]
-    .filter(([, active]) => isWatchdogLatched(active) && Number(active?.watchdogPendingAt || 0) > 0)
-    .map(([conversationId]) => conversationId)
+  const timedOutWatchdogIds = () => [...pendingWatchdogDiagnoses.keys()]
+  const pendingWatchdogDiagnosisIds = () => [...pendingWatchdogDiagnoses.keys()]
   const turnRecorder = new ActiveTurnRecorder(turnTracePath)
   const eventCounts = new Map()
   // eventCounts 继续按 type 聚合，保持现有状态输出兼容；另加 topic 维度用于 Phase 3 取证。
