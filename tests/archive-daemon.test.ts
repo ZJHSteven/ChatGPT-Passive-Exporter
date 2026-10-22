@@ -66,6 +66,9 @@ import {
   shouldRetainSeenDevSpaceAudit,
   shouldRunHistoricalDevSpaceBackfill,
   shouldCloseWatchdogGenerationAfterSync,
+  postCompletionBodyConfirmsNewTurn,
+  syncTriggerPriority,
+  preferredSyncTrigger,
   shouldRepairConversationTransport,
   shouldRetireWssSocketsForFrameNavigation,
   shouldAttachPassivePageObserver,
@@ -1272,26 +1275,41 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shouldPromoteWatchdogTimeoutToActiveZombie(active, { ...incident, terminalEvidence: 'final' }, true)).toBe(false)
   })
 
-  test('catalog generation 已诊断后保持 tombstone；真实 progress 只能记证据，不能重新武装', () => {
+  test('catalog generation 超时后结束；同一 catalog observation 由独立 watermark 防复活', () => {
     expect(shouldCloseWatchdogGenerationAfterSync('watchdog:catalog-active-timeout', {
       watchdogTurnChanged: false,
       watchdogTurnAlreadyTimedOut: false,
-    })).toBe(false)
+    })).toBe(true)
 
-    const diagnosed = {
+    expect(shouldStartCatalogWatchdog({
+      alreadyActive: false,
+      catalogObservationCompleted: true,
+      catalogUpdateTime: 100,
+      archivedUpdateTime: 100,
+      archivedTerminalState: 'none',
+    })).toBe(false)
+    expect(shouldStartCatalogWatchdog({
+      alreadyActive: false,
+      catalogObservationCompleted: false,
+      catalogUpdateTime: 101,
+      archivedUpdateTime: 100,
+      archivedTerminalState: 'none',
+    })).toBe(true)
+
+    const active = {
       startedAt: 1_000,
       lastEventAt: 1_000,
-      lastWatchdogAt: 46 * 60_000,
+      lastWatchdogAt: null,
       watchdogPendingAt: null,
       startType: 'catalog:async-active:gap-repair',
       lastDiagnosticTurnKey: 'turn-a',
     }
-    const progressed = recordCatalogWatchdogProgress(diagnosed, 100 * 60_000)
+    const progressed = recordCatalogWatchdogProgress(active, 100 * 60_000)
     expect(progressed).toEqual({
-      ...diagnosed,
+      ...active,
       lastEventAt: 100 * 60_000,
     })
-    expect(shouldQueueWatchdogDiagnostic(progressed, 100 * 60_000 + 45 * 60_000, 45 * 60_000)).toBe(false)
+    expect(shouldQueueWatchdogDiagnostic(progressed, 100 * 60_000 + 45 * 60_000, 45 * 60_000)).toBe(true)
   })
 
   test('DevSpace audit overlap 的 seen-id 只在 cursor 已越过查询下界后删除', () => {
@@ -1442,23 +1460,46 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     })
   })
 
-  test('watchdog 诊断后保留 tombstone；明确 terminal/new turn 再由其它路径结束或替换', () => {
+  test('watchdog timeout 本身结束 generation；Body diagnosis 不再决定 generation 是否结束', () => {
     expect(shouldCloseWatchdogGenerationAfterSync('watchdog:active-timeout', {
       watchdogTurnChanged: false,
       watchdogTurnAlreadyTimedOut: false,
-    })).toBe(false)
+    })).toBe(true)
     expect(shouldCloseWatchdogGenerationAfterSync('watchdog:catalog-active-timeout', {
       watchdogTurnChanged: true,
       watchdogTurnAlreadyTimedOut: false,
-    })).toBe(false)
+    })).toBe(true)
     expect(shouldCloseWatchdogGenerationAfterSync('watchdog:catalog-active-timeout', {
       watchdogTurnChanged: true,
       watchdogTurnAlreadyTimedOut: true,
-    })).toBe(false)
+    })).toBe(true)
     expect(shouldCloseWatchdogGenerationAfterSync('wss:conversation-turn-complete', {
       watchdogTurnChanged: false,
       watchdogTurnAlreadyTimedOut: true,
     })).toBe(false)
+  })
+
+  test('post-completion DevSpace activity 只有 Body user turn 真正晚于 completion 才确认新 generation', () => {
+    expect(postCompletionBodyConfirmsNewTurn(10_000, 10_001)).toBe(true)
+    expect(postCompletionBodyConfirmsNewTurn(10_000, 10_000)).toBe(false)
+    expect(postCompletionBodyConfirmsNewTurn(10_000, 9_999)).toBe(false)
+    expect(postCompletionBodyConfirmsNewTurn(10_000, null)).toBe(false)
+    expect(postCompletionBodyConfirmsNewTurn(0, 10_001)).toBe(false)
+  })
+
+  test('Body ready queue 永不让低优先级 binding probe 覆盖 lifecycle 请求', () => {
+    expect(syncTriggerPriority('watchdog:active-timeout'))
+      .toBeGreaterThan(syncTriggerPriority('wss:conversation-turn-complete'))
+    expect(syncTriggerPriority('wss:conversation-turn-complete'))
+      .toBeGreaterThan(syncTriggerPriority('devspace:post-completion-turn-check'))
+    expect(syncTriggerPriority('devspace:post-completion-turn-check'))
+      .toBeGreaterThan(syncTriggerPriority('devspace:binding-probe'))
+
+    expect(preferredSyncTrigger('wss:conversation-turn-complete', 'devspace:binding-probe'))
+      .toBe('wss:conversation-turn-complete')
+    expect(preferredSyncTrigger('devspace:binding-probe', 'watchdog:active-timeout'))
+      .toBe('watchdog:active-timeout')
+    expect(preferredSyncTrigger(null, 'devspace:binding-probe')).toBe('devspace:binding-probe')
   })
 
   test('daemon 重启继承未过期的 429 cooldown，但不复活旧 cooldown', () => {
