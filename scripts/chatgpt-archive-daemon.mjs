@@ -1373,6 +1373,23 @@ export function buildUnboundWatchdogDiagnosisNotificationPayload({
   }
 }
 
+export function buildSupersededUnboundWatchdogDiagnosisNotificationPayload({
+  conversationId,
+  metadataId,
+  title = null,
+  newGenerationStartedAt,
+}) {
+  return {
+    title: 'Watchdog · 诊断',
+    subtitle: notificationConversationSubtitle({ title, conversationId, metadataId }),
+    body: `CID 已解析 · 超时后已进入新 turn · 新起点 ${formatBeijingClock(newGenerationStartedAt || Date.now())}`,
+    group: conversationNotificationGroup({ conversationId, metadataId }),
+    ...(conversationId
+      ? { url: `https://chatgpt.com/c/${encodeURIComponent(conversationId)}` }
+      : {}),
+  }
+}
+
 /** 正常 final 也作为 turn 的最终可见结果发送，和异常 incident 对称。 */
 export function buildTurnFinalNotificationPayload({ conversationId, title, diagnostic }) {
   const finalLine = diagnostic?.hasImageGenerationFinal
