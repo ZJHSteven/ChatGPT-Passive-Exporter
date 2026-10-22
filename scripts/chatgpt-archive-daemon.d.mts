@@ -65,11 +65,18 @@ export function shouldStartCatalogWatchdog(input?: {
   archivedBodyCompletionState?: unknown
 }): boolean
 
-/** catalog 服务端 update_time 真正前进后，从 progress 时刻重新武装 watchdog。 */
+/** catalog update_time 前进只推进 lastEventAt 证据，不能修改 generation.startedAt。 */
 export function recordCatalogWatchdogProgress<T extends Record<string, unknown> | null | undefined>(
   active: T,
   now?: number,
 ): T
+
+/** completion 后 Body user turn 的真实起点严格更晚时，才确认 DevSpace activity 属于新 turn。 */
+export function postCompletionBodyConfirmsNewTurn(completedAt: unknown, bodyTurnStartedAt: unknown): boolean
+
+/** Body ready queue 触发器优先级；lifecycle/Watchdog 必须高于后台 binding probe。 */
+export function syncTriggerPriority(trigger: unknown): number
+export function preferredSyncTrigger(existingTrigger: unknown, nextTrigger: unknown): unknown
 
 /** DevSpace overlap 中仍可能被下一轮 poll 返回的 audit id 必须继续保留去重。 */
 export function shouldRetainSeenDevSpaceAudit(
