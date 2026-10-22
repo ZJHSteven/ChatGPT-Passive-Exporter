@@ -51,7 +51,8 @@ export interface ArchiveConversationSearchResult {
   bestRank: number | null
   titleMatched: boolean
   /** Bridge 用这两个内部元数据计算 lifecycleState，HTTP 返回前会将它们隐藏。 */
-  terminalState: string | null
+  /** Legacy SQLite `terminal_state`; runtime meaning is the latest canonical Body completion state. */
+  bodyCompletionState: string | null
   lastFinishType: string | null
   snippets: ArchiveSearchHit[]
 }
@@ -73,7 +74,7 @@ interface ArchiveSearchMetaRow {
   id: string
   title: string
   capturedAt: number
-  terminalState: string | null
+  bodyCompletionState: string | null
   lastFinishType: string | null
 }
 
@@ -148,7 +149,7 @@ export interface ArchiveConversationRow {
   importedAt: number
   messageCount: number
   resourceCount: number
-  terminalState: string | null
+  bodyCompletionState: string | null
   incidentState: string | null
   lastFinishType: string | null
   lastFinishReason: string | null
@@ -3904,7 +3905,7 @@ export class ChatArchiveDb {
           id,
           title,
           captured_at AS capturedAt,
-          terminal_state AS terminalState,
+          terminal_state AS bodyCompletionState,
           last_finish_type AS lastFinishType
         FROM conversations
         WHERE id IN (${placeholders})
@@ -3946,7 +3947,7 @@ export class ChatArchiveDb {
         id,
         title,
         captured_at AS capturedAt,
-        terminal_state AS terminalState,
+        terminal_state AS bodyCompletionState,
         last_finish_type AS lastFinishType
       FROM conversations
       WHERE title LIKE ? ESCAPE '\\'
@@ -4033,7 +4034,7 @@ export class ChatArchiveDb {
       hitCount: row.hitCount,
       bestRank: row.bestRank,
       titleMatched: row.titleMatched,
-      terminalState: row.terminalState,
+      bodyCompletionState: row.bodyCompletionState,
       lastFinishType: row.lastFinishType,
       snippets: snippets.get(row.conversationId) ?? [],
     }))
@@ -4097,7 +4098,7 @@ export class ChatArchiveDb {
         imported_at AS importedAt,
         message_count AS messageCount,
         resource_count AS resourceCount,
-        terminal_state AS terminalState,
+        terminal_state AS bodyCompletionState,
         incident_state AS incidentState,
         last_finish_type AS lastFinishType,
         last_finish_reason AS lastFinishReason,
@@ -4119,7 +4120,7 @@ export class ChatArchiveDb {
         imported_at AS importedAt,
         message_count AS messageCount,
         resource_count AS resourceCount,
-        terminal_state AS terminalState,
+        terminal_state AS bodyCompletionState,
         incident_state AS incidentState,
         last_finish_type AS lastFinishType,
         last_finish_reason AS lastFinishReason,
@@ -4793,7 +4794,7 @@ export class ChatArchiveDb {
         importedAt: binding.lastSeenAt,
         messageCount: recoveryMessages.length,
         resourceCount: 0,
-        terminalState: null,
+        bodyCompletionState: null,
         incidentState: null,
         lastFinishType: null,
         lastFinishReason: null,
