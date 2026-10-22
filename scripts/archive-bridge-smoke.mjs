@@ -59,7 +59,7 @@ function parseSseBlock(block) {
     conversationId: typeof data?.conversationId === 'string' ? data.conversationId : null,
     detail: typeof data?.event === 'string' ? data.event : null,
     transport: typeof data?.transport === 'string' ? data.transport : null,
-    terminalEvidence: typeof data?.terminalEvidence === 'string' ? data.terminalEvidence : null,
+    bodyCompletionEvidence: typeof data?.bodyCompletionEvidence === 'string' ? data.bodyCompletionEvidence : null,
     tailShape: typeof data?.tailShape === 'string' ? data.tailShape : null,
   }
 }

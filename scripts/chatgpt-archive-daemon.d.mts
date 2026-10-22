@@ -42,15 +42,15 @@ export function summarizeTurnTopicWssFrame(payloadData: unknown): TurnTopicWssSu
 export function classifyConversationEvent(type: unknown, updateType?: unknown): ArchiveWssEventBehavior
 
 /** 判断某种同步 trigger 是否允许把异常尾部升级成 realtime incident。 */
-export function shouldClassifyTerminalForTrigger(trigger: unknown): boolean
+export function shouldClassifyCompletionForTrigger(trigger: unknown): boolean
 
 /** 判断 trigger 是否已提供 WSS/catalog 层面的“服务端确定结束”证据。 */
-export function isConfirmedTerminalTrigger(trigger: unknown): boolean
+export function isConfirmedCompletionTrigger(trigger: unknown): boolean
 
 /** complete 已到但 body 尚未显式终止时，是否应先做一次有界 settle 再立 incident。 */
-export function shouldDeferConfirmedTerminalIncident(
+export function shouldDeferConfirmedCompletionIncident(
   trigger: unknown,
-  diagnostic: { terminalEvidence?: unknown } | null | undefined,
+  diagnostic: { bodyCompletionEvidence?: unknown } | null | undefined,
 ): boolean
 
 /** 把 conversation list async_status 分类为 active / complete / unknown。 */
@@ -175,7 +175,7 @@ export function shouldPromoteWatchdogTimeoutToActiveZombie(
     turnKey?: unknown
     status?: unknown
     lifecycleClass?: unknown
-    terminalEvidence?: unknown
+    bodyCompletionEvidence?: unknown
   } | null | undefined,
   catalogStillActive?: boolean,
 ): boolean
@@ -281,7 +281,7 @@ export function unboundWatchdogStartNotificationKey(metadataId: unknown, started
 export function buildWatchdogDiagnosisNotificationPayload(input: {
   conversationId: string
   title?: string | null
-  diagnostic?: { terminalEvidence?: unknown, tailShape?: unknown, headState?: unknown } | null
+  diagnostic?: { bodyCompletionEvidence?: unknown, tailShape?: unknown, headState?: unknown } | null
   incident?: {
     reason?: unknown
     incidentKind?: unknown
@@ -344,7 +344,7 @@ export function buildDevSpaceIdleNotificationPayload(input: {
 export function buildDevSpaceIdleDiagnosisNotificationPayload(input: {
   conversationId: string
   title?: string | null
-  diagnostic?: { terminalEvidence?: unknown, tailShape?: unknown } | null
+  diagnostic?: { bodyCompletionEvidence?: unknown, tailShape?: unknown } | null
   tailGap?: {
     canonicalTailAt?: number | null
     recoveryLastAt?: number | null
@@ -409,7 +409,7 @@ export function buildDevSpaceCheckpointNotificationPayload(input: {
 
 export function shouldNotifyTurnFinal(
   trigger: unknown,
-  diagnostic: { terminalEvidence?: unknown } | null | undefined,
+  diagnostic: { bodyCompletionEvidence?: unknown } | null | undefined,
 ): boolean
 
 /** 单次 CDP 健康探活失败不立即拆 Guardian；连续达到阈值后才允许重建。 */
@@ -550,13 +550,13 @@ export function shouldNotifyIncidentTransition(
     id?: unknown
     incidentKind?: unknown
     lifecycleClass?: unknown
-    terminalEvidence?: unknown
+    bodyCompletionEvidence?: unknown
   },
   after: null | {
     id?: unknown
     incidentKind?: unknown
     lifecycleClass?: unknown
-    terminalEvidence?: unknown
+    bodyCompletionEvidence?: unknown
   },
 ): boolean
 

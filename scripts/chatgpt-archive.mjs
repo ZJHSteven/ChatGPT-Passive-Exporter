@@ -789,7 +789,7 @@ async function recoverFile(db, filePath) {
           endpoint: 'offline://browser-memory-recovery',
           observationKind: 'browser-memory-recovery',
           updateCurrentState: false,
-          classifyTerminal: false,
+          classifyCompletionIncident: false,
           allowIncompleteTailIncident: false,
           updateIncidents: false,
           insertUnknownOnly: true,
