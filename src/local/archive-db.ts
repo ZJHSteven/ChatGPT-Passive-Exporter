@@ -509,6 +509,11 @@ function json(value: unknown): string {
   return JSON.stringify(value)
 }
 
+function catalogWatchdogUpdateTimeKey(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '__unknown__'
+  return String(value)
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -568,7 +573,7 @@ function visibleForMarkdown(conversation: CanonicalConversation): boolean {
  * - FTS 只索引可读 User/Assistant 正文，不把巨大 tool result、connector JSON、raw CoT
  *   塞进全文索引；这些仍可从 message/resource 表按需审计。
  */
-const ARCHIVE_SCHEMA_VERSION = 3
+const ARCHIVE_SCHEMA_VERSION = 4
 
 export class ChatArchiveDb {
   readonly db: DatabaseSync
@@ -605,6 +610,11 @@ export class ChatArchiveDb {
       this.migrateV3()
       schemaVersion = 3
       this.db.exec('PRAGMA user_version=3')
+    }
+    if (schemaVersion < 4) {
+      this.migrateV4()
+      schemaVersion = 4
+      this.db.exec('PRAGMA user_version=4')
     }
   }
 
@@ -1056,6 +1066,16 @@ export class ChatArchiveDb {
 
       CREATE INDEX IF NOT EXISTS turn_notification_ledger_conversation
         ON turn_notification_ledger(conversation_id, sent_at DESC);
+
+      -- Catalog Watchdog 的局部 anti-resurrection 水位。
+      -- 只记“某个 conversation 的这一份 catalog update_time 已经跨过一次 Watchdog 硬边界”，
+      -- 不再把整个 conversation 留在 active_watchdogs 里充当墓碑。update_time 真正变化时可自然开始
+      -- 新的 catalog observation generation；DevSpace/WSS 等可靠 activity 完全不受该表影响。
+      CREATE TABLE IF NOT EXISTS catalog_watchdog_watermarks (
+        conversation_id TEXT PRIMARY KEY,
+        update_time_key TEXT NOT NULL,
+        completed_at INTEGER NOT NULL
+      );
     `)
 
     // 旧 prototype 数据库已经存在于用户机器上，因此采用“增量加列”而不是粗暴 DROP/重建。
@@ -1261,6 +1281,17 @@ export class ChatArchiveDb {
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (conversation_id, message_id)
       ) WITHOUT ROWID;
+    `)
+  }
+
+  /** v4：把 catalog stale-active 防复活从 active Watchdog generation 中拆成独立持久水位。 */
+  private migrateV4(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS catalog_watchdog_watermarks (
+        conversation_id TEXT PRIMARY KEY,
+        update_time_key TEXT NOT NULL,
+        completed_at INTEGER NOT NULL
+      );
     `)
   }
 
@@ -5338,6 +5369,31 @@ export class ChatArchiveDb {
 
   deleteActiveWatchdog(conversationId: string): void {
     this.db.prepare('DELETE FROM active_watchdogs WHERE conversation_id = ?').run(conversationId)
+  }
+
+  markCatalogWatchdogCompleted(conversationId: string, catalogUpdateTime: unknown, completedAt = Date.now()): void {
+    const updateTimeKey = catalogWatchdogUpdateTimeKey(catalogUpdateTime)
+    this.db.prepare(`
+      INSERT INTO catalog_watchdog_watermarks (conversation_id, update_time_key, completed_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(conversation_id) DO UPDATE SET
+        update_time_key=excluded.update_time_key,
+        completed_at=excluded.completed_at
+    `).run(
+      conversationId,
+      updateTimeKey,
+      Math.max(0, Math.trunc(completedAt)),
+    )
+  }
+
+  hasCatalogWatchdogCompleted(conversationId: string, catalogUpdateTime: unknown): boolean {
+    const row = this.db.prepare(`
+      SELECT update_time_key AS updateTimeKey
+      FROM catalog_watchdog_watermarks
+      WHERE conversation_id = ?
+      LIMIT 1
+    `).get(conversationId) as { updateTimeKey?: string } | undefined
+    return row?.updateTimeKey === catalogWatchdogUpdateTimeKey(catalogUpdateTime)
   }
 
   listActiveWatchdogs(limit = 1000): ActiveWatchdogStateRow[] {
