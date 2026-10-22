@@ -68,6 +68,7 @@ import {
   shouldCloseWatchdogGenerationAfterSync,
   postCompletionBodyConfirmsNewTurn,
   bodyCompletionBelongsToCurrentGeneration,
+  mergePostCompletionDevSpaceCandidate,
   syncTriggerPriority,
   preferredSyncTrigger,
   shouldRepairConversationTransport,
@@ -1513,6 +1514,44 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       completedAt: null,
       bodyTurnStartedAt: null,
     })).toBe(true)
+  })
+
+  test('late binding 必须把新 generation 起点回填到 completion 后最早 DevSpace audit', () => {
+    const completedAt = Date.parse('2026-10-21T15:55:49.000Z')
+    const first = Date.parse('2026-10-21T15:59:28.000Z')
+    const second = Date.parse('2026-10-21T15:59:47.000Z')
+    const third = Date.parse('2026-10-21T16:00:05.000Z')
+
+    const initial = mergePostCompletionDevSpaceCandidate(null, {
+      conversationId: 'gpu-cid',
+      metadataId: 'meta-gpu',
+      completedAt,
+      auditAt: second,
+      latestAuditAt: third,
+    })
+    const backfilled = mergePostCompletionDevSpaceCandidate(initial, {
+      conversationId: 'gpu-cid',
+      metadataId: 'meta-gpu',
+      completedAt,
+      auditAt: first,
+      latestAuditAt: third,
+    })
+
+    expect(backfilled).toMatchObject({
+      completedAt,
+      earliestAuditAt: first,
+      latestAuditAt: third,
+    })
+    expect(mergePostCompletionDevSpaceCandidate(backfilled, {
+      conversationId: 'gpu-cid',
+      metadataId: 'meta-gpu',
+      completedAt,
+      auditAt: third + 1_000,
+      latestAuditAt: third + 1_000,
+    })).toMatchObject({
+      earliestAuditAt: first,
+      latestAuditAt: third + 1_000,
+    })
   })
 
   test('Body ready queue 永不让低优先级 binding probe 覆盖 lifecycle 请求', () => {

@@ -81,6 +81,17 @@ export function bodyCompletionBelongsToCurrentGeneration(input?: {
   bodyTurnKey?: unknown
 }): boolean
 
+export function mergePostCompletionDevSpaceCandidate(
+  existing: Record<string, unknown> | null | undefined,
+  input?: {
+    conversationId?: unknown
+    metadataId?: unknown
+    completedAt?: unknown
+    auditAt?: unknown
+    latestAuditAt?: unknown
+  },
+): Record<string, unknown> | null
+
 /** Body ready queue 触发器优先级；lifecycle/Watchdog 必须高于后台 binding probe。 */
 export function syncTriggerPriority(trigger: unknown): number
 export function preferredSyncTrigger(existingTrigger: unknown, nextTrigger: unknown): unknown
