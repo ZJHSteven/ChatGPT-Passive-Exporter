@@ -1,3 +1,22 @@
+## 2026-10-22 Watchdog generation 生命周期收口
+
+### 已确认语义
+- 不再恢复或新增 `>=60s` idle-resume identity probe。1m/3m/5m DevSpace idle 是独立链；其中只有现有 5m 路径允许一次 bounded Body diagnosis。
+- `Final`、WSS `conversation-turn-complete`、45m Watchdog timeout 都表示“当前 Watchdog generation 已结束”。45m 到点必须先立即通知；随后 Body 只负责异常分类/取证，不再决定 generation 是否结束。
+- 后续出现真实 DevSpace activity 时，不凭时间间隔或 metadata 猜新 turn。先保留最早 post-completion audit 时间，再通过事件驱动的异步 Body 校验确认 Body 中当前 user/turn 已发生在上一 completion 之后；确认后新 generation 的 `startedAt` 回填到最早 DevSpace activity，可向前修正，不能等下一条工具才起表。
+- catalog stale `async_status=active` 的 anti-resurrection 只能局部作用于同一个 catalog observation generation，不能再用 conversation 级 active Watchdog tombstone 锁死后续真实 turn。
+- Body completion evidence（当前代码旧名 `terminalEvidence`）只是 canonical Body 的局部分类 `final/client-stopped/interrupted/none`；它与 Watchdog generation completion、incident lifecycle 三者独立。代码/文档要收缩命名，避免再把三者统称 terminal。
+
+### ExecPlan
+1. 增加纯 helper 与回归，固定 reliable timeout 的生命周期：45m 到点后 generation 立即从 active set 退出，pending Body diagnosis 独立持有旧 generation identity；Body 成功后只完成 diagnosis，不得误删随后已建立的新 generation。
+2. 新建 durable catalog-observation diagnosis watermark（conversation + catalog update_time），替代 catalog active Watchdog tombstone；同一未变化 catalog observation 不得重建 Watchdog，update_time 真正变化后才允许新 catalog generation。
+3. 增加 post-completion DevSpace candidate：主循环仅记录 earliest/latest audit 并排一次 `devspace:post-completion-turn-check`；Body worker 成功后若 body 当前 user turn 的 create_time 晚于上一 completion，才建立新 generation，`startedAt=earliestAuditAt`。
+4. late binding 时扫描该 metadata 在 recent completion 之后已经 durable 落盘的 audit，补入同一个 candidate，解决《控制GPU性能释放》23:59:28 已有 activity、00:05:15 才起 Watchdog 的漏回填。
+5. 为 ready queue 加 trigger priority/不降级合并：Watchdog/WSS complete 等 lifecycle Body 高于 post-completion check，高于 checkpoint/catalog，后台 `devspace:binding-probe` 最低；低优先级请求不得覆盖或推迟已排队的高优先级请求。
+6. 将运行时/诊断层 `terminalEvidence` 重命名为 `bodyCompletionEvidence`（持久化旧 SQLite 列名暂保留兼容映射），并在设计注释中明确“Body completion evidence ≠ generation completion ≠ incident resolution”。
+7. 所有昂贵 Body/repair 保持在现有 ready/worker/cooperative maintenance lane；WSS/DevSpace audit 主路径只能做 O(1)/小范围索引查询与排队，禁止同步等待网络或长 SQLite merge。
+8. 定向测试覆盖四个生产事故边界后跑 daemon tests、Archive DB tests、全量 `npm run check`；通过后再受控 reload production daemon，并验 Bridge/WSS/DevSpace wake/LifeOps/主循环 lag 与真实 start/timeout 行为。
+
 ## 2026-10-19 《整理磁盘容量》Watchdog generation 串轮取证
 
 ### 已确认事实
