@@ -6899,6 +6899,27 @@ async function main() {
       recoveryMirrored,
     })
     if (lifecycleState === 'active') activateBoundDevSpaceTurn(binding, input.startAt)
+    else if (completedAt > 0) {
+      // late binding 时 provisional firstSeenAt 可能仍落在上一轮 completion 之前，而同 metadata
+      // 已经在 completion 之后产生了 durable tool audit。把这些已有事实补回 candidate，不能再等
+      // 下一条工具调用才发现新 generation，否则 startedAt 会被人为推迟数分钟。
+      const postCompleteAudits = devSpaceAuditBridge.auditsForMetadata(
+        input.metadataId,
+        completedAt + 1,
+        Math.max(Number(input.observedAt || 0), Date.now()) + 1,
+        5000,
+      ).filter(event => Number(event.startedAtMs) > completedAt)
+      if (postCompleteAudits.length > 0) {
+        const earliestAuditAt = Math.min(...postCompleteAudits.map(event => Number(event.startedAtMs)))
+        const latestAuditAt = Math.max(...postCompleteAudits.map(event => Number(event.startedAtMs)))
+        queuePostCompletionDevSpaceCandidate(
+          binding,
+          earliestAuditAt,
+          completedAt,
+          latestAuditAt,
+        )
+      }
+    }
     if (timedOutBeforeBinding) {
       const provisionalStartedAt = Number(
         provisional?.startedAt
