@@ -273,7 +273,8 @@ export interface ArchiveIncidentRow {
   resolvedAt: number | null
   status: 'open' | 'resolved'
   reason: string
-  terminalEvidence: string
+  /** Legacy SQLite column `terminal_evidence`; runtime meaning is canonical Body completion evidence only. */
+  bodyCompletionEvidence: string
   tailShape: string
   /** canonical current_node 与本次 plural messages[] 的相对关系。 */
   headState: string | null
@@ -2441,8 +2442,8 @@ export class ChatArchiveDb {
       // `other` 只表示“没有识别到 final，也没有识别到明确的 reasoning/tool 运行尾型”。
       // 其中会混入 user-only、system-only、编辑/分支残片等情况；历史补账不能仅凭“后面有
       // 新 user turn”就把这些模糊形态全部登记成事故。显式 interrupted/client_stopped 例外。
-      const explicitHistoricalAbnormal = historical.terminalEvidence === 'client-stopped'
-        || historical.terminalEvidence === 'interrupted'
+      const explicitHistoricalAbnormal = historical.bodyCompletionEvidence === 'client-stopped'
+        || historical.bodyCompletionEvidence === 'interrupted'
       // 运行中 steering 会在同一 turn_exchange_id / request_id 内插入新的 user message。
       // 这类 turn 随后即使以 reasoning-ended-no-final 收尾，也不能仅凭“后来出现新 turn”
       // 自动推断为异常；只有显式 interrupted/client_stopped 才保留历史 incident。
@@ -3231,7 +3232,7 @@ export class ChatArchiveDb {
     const currentIncident = this.db.prepare(`
       SELECT id, status, incident_kind AS incidentKind,
              lifecycle_class AS lifecycleClass,
-             terminal_evidence AS terminalEvidence,
+             terminal_evidence AS bodyCompletionEvidence,
              reason
       FROM incidents
       WHERE conversation_id=? AND turn_key=?
@@ -3241,12 +3242,12 @@ export class ChatArchiveDb {
       status: string
       incidentKind: string
       lifecycleClass: string | null
-      terminalEvidence: string | null
+      bodyCompletionEvidence: string | null
       reason: string | null
     } | undefined
 
-    const explicitAbnormal = diagnostic.terminalEvidence === 'client-stopped'
-      || diagnostic.terminalEvidence === 'interrupted'
+    const explicitAbnormal = diagnostic.bodyCompletionEvidence === 'client-stopped'
+      || diagnostic.bodyCompletionEvidence === 'interrupted'
 
     // head history 只有在 current_node 真正变化时才插一行；因此同一个 head 出现两次以上，
     // 就意味着中间至少去过另一个 head（A→B→A）。这里只记录证据，不把“主动切 branch”
@@ -3289,7 +3290,7 @@ export class ChatArchiveDb {
       return
     }
 
-    if (diagnostic.terminalEvidence === 'final' && currentIncident?.status === 'open') {
+    if (diagnostic.bodyCompletionEvidence === 'final' && currentIncident?.status === 'open') {
       this.db.prepare(`
         UPDATE incidents
         SET status='resolved', resolved_at=COALESCE(resolved_at, ?), last_observed_at=?
@@ -3311,7 +3312,7 @@ export class ChatArchiveDb {
     if (
       !allowCreate
       && currentIncident?.status === 'open'
-      && diagnostic.terminalEvidence !== 'final'
+      && diagnostic.bodyCompletionEvidence !== 'final'
     ) {
       // reconcile 只能补“body 现在长什么样”，不能推翻已经由更强 lifecycle 信号建立的事实。
       // 两类典型降级必须阻止：
@@ -3319,18 +3320,18 @@ export class ChatArchiveDb {
       //    不能把 reason 刷回“不能据此判死”；
       // 2. 已明确 client_stopped/interrupted，后续某个缺少 finish_details 的普通快照不能把
       //    terminal_evidence 从 interrupted 降回 none。
-      const preserveExplicitTerminal = currentIncident.lifecycleClass === 'explicit-interrupted'
-        && diagnostic.terminalEvidence === 'none'
-      const refreshedTerminalEvidence = preserveExplicitTerminal
-        ? currentIncident.terminalEvidence
-        : diagnostic.terminalEvidence
+      const preserveExplicitCompletion = currentIncident.lifecycleClass === 'explicit-interrupted'
+        && diagnostic.bodyCompletionEvidence === 'none'
+      const refreshedBodyCompletionEvidence = preserveExplicitCompletion
+        ? currentIncident.bodyCompletionEvidence
+        : diagnostic.bodyCompletionEvidence
       const refreshedReason = currentIncident.lifecycleClass === 'active-zombie'
         ? `conversation list 持续保持 active 超过 watchdog 阈值，且尚未观察到正常收口；${diagnostic.summary}`
         : currentIncident.incidentKind === 'watchdog-timeout'
           ? `超过 watchdog 阈值仍未收到 conversation-turn-complete；${diagnostic.summary}`
         : currentIncident.lifecycleClass === 'complete-no-final'
           ? `已确认 turn 完成但没有 final；${diagnostic.summary}`
-          : preserveExplicitTerminal
+          : preserveExplicitCompletion
             ? (currentIncident.reason || diagnostic.summary)
             : diagnostic.summary
       this.db.prepare(`
@@ -3347,7 +3348,7 @@ export class ChatArchiveDb {
       `).run(
         observedAt,
         refreshedReason,
-        refreshedTerminalEvidence,
+        refreshedBodyCompletionEvidence,
         diagnostic.tailShape,
         diagnostic.headState,
         headRollbackObserved ? 1 : 0,
@@ -3357,11 +3358,11 @@ export class ChatArchiveDb {
       )
     }
 
-    const inferredAbnormal = diagnostic.terminalEvidence === 'none'
+    const inferredAbnormal = diagnostic.bodyCompletionEvidence === 'none'
       && diagnostic.tailShape !== 'final'
       && (requestedKind === 'watchdog-timeout' || requestedKind === 'active-zombie' || !diagnostic.hasInTurnSteering)
     const abnormal = explicitAbnormal || (allowIncompleteTailIncident && inferredAbnormal)
-    if (allowCreate && abnormal && diagnostic.terminalEvidence !== 'final') {
+    if (allowCreate && abnormal && diagnostic.bodyCompletionEvidence !== 'final') {
       // 同一 turn 从“超时疑似卡住”演进成明确 client_stopped/interrupted 时，升级同一条 incident，
       // 不再因为 terminal/tail 字段变化制造第二条事故记录。
       const effectiveKind: 'watchdog-timeout' | 'active-zombie' | 'abnormal-terminal' = explicitAbnormal
@@ -3425,7 +3426,7 @@ export class ChatArchiveDb {
         observedAt,
         observedAt,
         reason,
-        diagnostic.terminalEvidence,
+        diagnostic.bodyCompletionEvidence,
         diagnostic.tailShape,
         diagnostic.headState,
         headRollbackObserved ? 1 : 0,
@@ -3456,7 +3457,7 @@ export class ChatArchiveDb {
         SET terminal_state=?, incident_state=?, last_finish_reason=?, last_monitor_checked_at=?
         WHERE id=?
       `).run(
-        diagnostic.terminalEvidence,
+        diagnostic.bodyCompletionEvidence,
         Number(currentOpen.n) > 0 ? 'open' : null,
         diagnostic.interruptedReason ?? null,
         observedAt,
@@ -3474,7 +3475,7 @@ export class ChatArchiveDb {
                lifecycle_class AS lifecycleClass,
                detected_at AS detectedAt, last_observed_at AS lastObservedAt,
                resolved_at AS resolvedAt, status, reason,
-               terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
+               terminal_evidence AS bodyCompletionEvidence, tail_shape AS tailShape,
                head_state AS headState, head_rollback AS headRollbackObserved,
                off_head_same_turn_count AS offHeadSameTurnCount,
                source, diagnostic_json AS diagnosticJson,
@@ -3490,7 +3491,7 @@ export class ChatArchiveDb {
              lifecycle_class AS lifecycleClass,
              detected_at AS detectedAt, last_observed_at AS lastObservedAt,
              resolved_at AS resolvedAt, status, reason,
-             terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
+             terminal_evidence AS bodyCompletionEvidence, tail_shape AS tailShape,
              head_state AS headState, head_rollback AS headRollbackObserved,
              off_head_same_turn_count AS offHeadSameTurnCount,
              source, diagnostic_json AS diagnosticJson,
@@ -4454,7 +4455,7 @@ export class ChatArchiveDb {
     turnExchangeId?: string | null
     lastMessageId?: string | null
     metadataId?: string | null
-    terminalEvidence?: string | null
+    bodyCompletionEvidence?: string | null
     minGapMs?: number
     beforeAt?: number | null
   }): DevSpaceTailGapSummary {
@@ -4538,7 +4539,7 @@ export class ChatArchiveDb {
       recoveryAuditCount,
       recoveryToolCount,
       checkpointCount,
-      hasTailGap: String(input.terminalEvidence || 'none') !== 'final'
+      hasTailGap: String(input.bodyCompletionEvidence || 'none') !== 'final'
         && recoveryAuditCount > 0
         && gapMs >= minGapMs,
     }
@@ -4593,7 +4594,7 @@ export class ChatArchiveDb {
     reason: string
   }): ArchiveIncidentRow | null {
     const diagnostic = input.diagnostic
-    if (diagnostic.terminalEvidence === 'final') return null
+    if (diagnostic.bodyCompletionEvidence === 'final') return null
     const observedAt = Math.max(0, Math.trunc(input.observedAt ?? Date.now()))
     const turnKey = diagnostic.turnExchangeId
       ?? diagnostic.userMessageId
@@ -4607,7 +4608,7 @@ export class ChatArchiveDb {
              turn_key AS turnKey, incident_kind AS incidentKind, lifecycle_class AS lifecycleClass,
              detected_at AS detectedAt, last_observed_at AS lastObservedAt,
              resolved_at AS resolvedAt, status, reason,
-             terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
+             terminal_evidence AS bodyCompletionEvidence, tail_shape AS tailShape,
              head_state AS headState, head_rollback AS headRollbackObserved,
              off_head_same_turn_count AS offHeadSameTurnCount,
              source, diagnostic_json AS diagnosticJson
@@ -4641,7 +4642,7 @@ export class ChatArchiveDb {
       observedAt,
       observedAt,
       input.reason,
-      diagnostic.terminalEvidence,
+      diagnostic.bodyCompletionEvidence,
       diagnostic.tailShape,
       diagnostic.headState,
       headRollbackObserved ? 1 : 0,
@@ -4659,7 +4660,7 @@ export class ChatArchiveDb {
              turn_key AS turnKey, incident_kind AS incidentKind, lifecycle_class AS lifecycleClass,
              detected_at AS detectedAt, last_observed_at AS lastObservedAt,
              resolved_at AS resolvedAt, status, reason,
-             terminal_evidence AS terminalEvidence, tail_shape AS tailShape,
+             terminal_evidence AS bodyCompletionEvidence, tail_shape AS tailShape,
              head_state AS headState, head_rollback AS headRollbackObserved,
              off_head_same_turn_count AS offHeadSameTurnCount,
              source, diagnostic_json AS diagnosticJson
@@ -4678,7 +4679,7 @@ export class ChatArchiveDb {
     turnKey?: string | null
     lastMessageId?: string | null
     metadataId?: string | null
-    terminalEvidence?: string | null
+    bodyCompletionEvidence?: string | null
     observedAt?: number
     beforeAt?: number | null
   }): { summary: DevSpaceTailGapSummary, incidentId: string | null } {
@@ -4706,18 +4707,18 @@ export class ChatArchiveDb {
     const incidents = this.db.prepare(`
       SELECT id, conversation_id AS conversationId,
              turn_exchange_id AS turnExchangeId, turn_key AS turnKey,
-             terminal_evidence AS terminalEvidence
+             terminal_evidence AS bodyCompletionEvidence
       FROM incidents
     `).all() as unknown as Array<{
       id: string
       conversationId: string
       turnExchangeId: string | null
       turnKey: string
-      terminalEvidence: string
+      bodyCompletionEvidence: string
     }>
     let changed = 0
     for (const incident of incidents) {
-      if (incident.terminalEvidence === 'final') continue
+      if (incident.bodyCompletionEvidence === 'final') continue
       const tailRow = incident.turnExchangeId
         ? this.db.prepare(`
             SELECT MAX(create_time) AS tailSec
@@ -4742,7 +4743,7 @@ export class ChatArchiveDb {
         conversationId: incident.conversationId,
         turnExchangeId: incident.turnExchangeId,
         lastMessageId: incident.turnExchangeId ? null : incident.turnKey,
-        terminalEvidence: incident.terminalEvidence,
+        bodyCompletionEvidence: incident.bodyCompletionEvidence,
         minGapMs,
         beforeAt,
       })
