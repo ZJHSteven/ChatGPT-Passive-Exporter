@@ -8865,32 +8865,49 @@ async function main() {
 
   const queueWatchdogDiagnostics = () => {
     const now = Date.now()
-    for (const [conversationId, active] of activeTurns) {
-      if (active.watchdogPendingAt) {
-        stopCheckpointWatch(conversationId, 'watchdog-pending', now)
-        // daemon 重启后恢复 timed-out generation 时仍补发一次“到点”事实；持久 ledger 会去重。
-        enqueueLifeOpsWatchdogTimeout(conversationId, active, now)
-        dispatchWatchdogTimeoutNotification(conversationId, active, now)
-        if (!ready.has(conversationId)) {
-          const watchdogTrigger = watchdogTriggerForStartType(active.startType)
-          markSyncReady(conversationId, watchdogTrigger, 0)
-          void log('restored pending watchdog diagnostic; re-queued body sync', {
-            conversationId,
-            pendingAt: active.watchdogPendingAt,
-            startType: active.startType,
-            trigger: watchdogTrigger,
-          })
-        }
-        continue
+    for (const [conversationId, pending] of pendingWatchdogDiagnoses) {
+      stopCheckpointWatch(conversationId, 'watchdog-pending', now)
+      // daemon 重启后恢复 pending diagnosis 时仍补发一次“到点”事实；持久 ledger 会去重。
+      enqueueLifeOpsWatchdogTimeout(conversationId, pending, now)
+      dispatchWatchdogTimeoutNotification(conversationId, pending, now)
+      if (!ready.has(conversationId)) {
+        const watchdogTrigger = watchdogTriggerForStartType(pending.startType)
+        markSyncReady(conversationId, watchdogTrigger, 0)
+        void log('restored pending watchdog diagnosis; re-queued body sync', {
+          conversationId,
+          pendingAt: pending.watchdogPendingAt,
+          startType: pending.startType,
+          trigger: watchdogTrigger,
+        })
       }
+    }
+    for (const [conversationId, active] of activeTurns) {
       if (!shouldQueueWatchdogDiagnostic(active, now, watchdogMs)) continue
-      // 同一个仍活跃 turn 至多每个 watchdog 窗口做一次诊断抓取；没有 complete 时不轮询。
-      // Watchdog 一旦接管，checkpoint 高频追踪必须立刻终止，不能让同一 zombie 一边被判超时
-      // 一边继续 7~10 秒主动 polling。
+      // 45m 硬边界本身就是当前 generation 的 completion。先停止 checkpoint、持久化独立
+      // pending diagnosis，再从 activeTurns 摘除；Body 只负责随后异常分类，不再决定是否结束。
       stopCheckpointWatch(conversationId, 'watchdog-timeout', now)
       active.lastWatchdogAt = now
       active.watchdogPendingAt = now
       persistActiveTurn(conversationId, active)
+      pendingWatchdogDiagnoses.set(conversationId, {
+        ...active,
+        completedAt: now,
+      })
+      recentConversationComplete.set(conversationId, now)
+      postCompletionDevSpaceCandidates.delete(conversationId)
+      if (isCatalogLateActive(active)) {
+        archive.markCatalogWatchdogCompleted(
+          conversationId,
+          catalogActive.get(conversationId)?.updateTime ?? null,
+          now,
+        )
+      }
+      activeTurns.delete(conversationId)
+      archive.updateDevSpaceBindingTurn({
+        conversationId,
+        observedAt: now,
+        lifecycleState: 'closed',
+      })
       // Watchdog 到点事实与 body 是否可立即拉取无关：第一条通知现在始终立即发送。
       enqueueLifeOpsWatchdogTimeout(conversationId, active, now)
       dispatchWatchdogTimeoutNotification(conversationId, active, now)
@@ -8902,6 +8919,7 @@ async function main() {
         lastEventAgoMs: now - active.lastEventAt,
         startType: active.startType,
         trigger: watchdogTrigger,
+        generationCompletedAt: now,
       })
     }
   }
