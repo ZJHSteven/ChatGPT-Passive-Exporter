@@ -2260,12 +2260,12 @@ describe('ChatArchiveDb', () => {
       })
 
       expect(db.db.prepare(`
-        SELECT current_node AS currentNode, terminal_state AS terminalState,
+        SELECT current_node AS currentNode, terminal_state AS bodyCompletionState,
                incident_state AS incidentState, title
         FROM conversations WHERE id='page-state'
       `).get()).toMatchObject({
         currentNode: 'tool-result',
-        terminalState: 'none',
+        bodyCompletionState: 'none',
         incidentState: 'open',
         title: '分页状态 fixture',
       })
@@ -2459,13 +2459,13 @@ describe('ChatArchiveDb', () => {
       expect(resolved[0]?.reason).toContain('未观察到该 turn 的 conversation-turn-complete 证据')
 
       const currentState = db.db.prepare(`
-        SELECT current_node AS currentNode, terminal_state AS terminalState,
+        SELECT current_node AS currentNode, terminal_state AS bodyCompletionState,
                incident_state AS incidentState, title
         FROM conversations WHERE id='historical-turn-ledger'
       `).get()
       expect(currentState).toMatchObject({
         currentNode: 'r-new',
-        terminalState: 'none',
+        bodyCompletionState: 'none',
         incidentState: 'open',
         title: '历史 turn 补账 fixture',
       })
