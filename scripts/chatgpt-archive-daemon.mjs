@@ -2982,13 +2982,17 @@ async function main() {
     limit: 1000,
   })) {
     const startedAt = Number(binding.firstSeenAt || binding.lastSeenAt || Date.now())
-    unboundDevSpaceTurns.set(binding.metadataId, {
-      startedAt,
-      lastEventAt: binding.lastSeenAt,
-      lastAuditId: binding.lastAuditId,
-      repairQueuedAt: null,
-    })
     const timedOutAt = Number(binding.unboundWatchdogAt || 0)
+    // unbound_watchdog_at 存在时，旧 provisional generation 已经在 45m 硬边界结束；
+    // 重启后只能恢复 pending diagnosis，不能把它重新塞回 active provisional 集合。
+    if (timedOutAt <= 0) {
+      unboundDevSpaceTurns.set(binding.metadataId, {
+        startedAt,
+        lastEventAt: binding.lastSeenAt,
+        lastAuditId: binding.lastAuditId,
+        repairQueuedAt: null,
+      })
+    }
     const diagnosisKey = unboundWatchdogDiagnosisNotificationKey(binding.metadataId, startedAt)
     if (timedOutAt > 0 && !archive.hasTurnNotification(diagnosisKey)) {
       pendingUnboundWatchdogDiagnoses.set(binding.metadataId, {
@@ -3008,14 +3012,6 @@ async function main() {
     const startedAt = Number(binding.firstSeenAt || binding.lastSeenAt || timedOutAt)
     const diagnosisKey = unboundWatchdogDiagnosisNotificationKey(binding.metadataId, startedAt)
     if (archive.hasTurnNotification(diagnosisKey)) continue
-    if (!unboundDevSpaceTurns.has(binding.metadataId)) {
-      unboundDevSpaceTurns.set(binding.metadataId, {
-        startedAt,
-        lastEventAt: binding.lastSeenAt,
-        lastAuditId: binding.lastAuditId,
-        repairQueuedAt: null,
-      })
-    }
     if (!pendingUnboundWatchdogDiagnoses.has(binding.metadataId)) {
       pendingUnboundWatchdogDiagnoses.set(binding.metadataId, {
         metadataId: binding.metadataId,
