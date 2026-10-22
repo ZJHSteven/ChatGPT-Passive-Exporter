@@ -74,6 +74,13 @@ export function recordCatalogWatchdogProgress<T extends Record<string, unknown> 
 /** completion 后 Body user turn 的真实起点严格更晚时，才确认 DevSpace activity 属于新 turn。 */
 export function postCompletionBodyConfirmsNewTurn(completedAt: unknown, bodyTurnStartedAt: unknown): boolean
 
+export function bodyCompletionBelongsToCurrentGeneration(input?: {
+  completedAt?: unknown
+  bodyTurnStartedAt?: unknown
+  activeTurnKey?: unknown
+  bodyTurnKey?: unknown
+}): boolean
+
 /** Body ready queue 触发器优先级；lifecycle/Watchdog 必须高于后台 binding probe。 */
 export function syncTriggerPriority(trigger: unknown): number
 export function preferredSyncTrigger(existingTrigger: unknown, nextTrigger: unknown): unknown

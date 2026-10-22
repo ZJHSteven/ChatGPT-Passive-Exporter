@@ -67,6 +67,7 @@ import {
   shouldRunHistoricalDevSpaceBackfill,
   shouldCloseWatchdogGenerationAfterSync,
   postCompletionBodyConfirmsNewTurn,
+  bodyCompletionBelongsToCurrentGeneration,
   syncTriggerPriority,
   preferredSyncTrigger,
   shouldRepairConversationTransport,
@@ -1485,6 +1486,33 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(postCompletionBodyConfirmsNewTurn(10_000, 9_999)).toBe(false)
     expect(postCompletionBodyConfirmsNewTurn(10_000, null)).toBe(false)
     expect(postCompletionBodyConfirmsNewTurn(0, 10_001)).toBe(false)
+  })
+
+  test('延迟旧 Body completion 不能跨 completion 边界结束新的 generation', () => {
+    expect(bodyCompletionBelongsToCurrentGeneration({
+      completedAt: 10_000,
+      bodyTurnStartedAt: 9_000,
+    })).toBe(false)
+    expect(bodyCompletionBelongsToCurrentGeneration({
+      completedAt: 10_000,
+      bodyTurnStartedAt: 10_001,
+    })).toBe(true)
+    expect(bodyCompletionBelongsToCurrentGeneration({
+      completedAt: 10_000,
+      bodyTurnStartedAt: 20_000,
+      activeTurnKey: 'turn-new',
+      bodyTurnKey: 'turn-old',
+    })).toBe(false)
+    expect(bodyCompletionBelongsToCurrentGeneration({
+      completedAt: 10_000,
+      bodyTurnStartedAt: 9_000,
+      activeTurnKey: 'turn-new',
+      bodyTurnKey: 'turn-new',
+    })).toBe(true)
+    expect(bodyCompletionBelongsToCurrentGeneration({
+      completedAt: null,
+      bodyTurnStartedAt: null,
+    })).toBe(true)
   })
 
   test('Body ready queue 永不让低优先级 binding probe 覆盖 lifecycle 请求', () => {
