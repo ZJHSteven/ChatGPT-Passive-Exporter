@@ -55,6 +55,7 @@ import {
   passiveObservationMatchesReady,
   preferredWatchdogStartTitle,
   recordCatalogWatchdogProgress,
+  catalogObservationStartedAt,
   shouldBlockGuardianConversationRest,
   shouldApplyGuardianConversationRestBlockCommand,
   shouldRetryConversationPageFetch,
@@ -1313,6 +1314,14 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       lastEventAt: 100 * 60_000,
     })
     expect(shouldQueueWatchdogDiagnostic(progressed, 100 * 60_000 + 45 * 60_000, 45 * 60_000)).toBe(true)
+  })
+
+  test('catalog update_time 变化必须开启新的 observation 起点，未变化才沿用 firstSeenAt', () => {
+    const current = { firstSeenAt: 1_000, updateTime: 100 }
+    expect(catalogObservationStartedAt(current, 100, 5_000)).toBe(1_000)
+    expect(catalogObservationStartedAt(current, '100', 5_000)).toBe(1_000)
+    expect(catalogObservationStartedAt(current, 101, 5_000)).toBe(5_000)
+    expect(catalogObservationStartedAt(null, 101, 5_000)).toBe(5_000)
   })
 
   test('DevSpace audit overlap 的 seen-id 只在 cursor 已越过查询下界后删除', () => {

@@ -71,6 +71,12 @@ export function recordCatalogWatchdogProgress<T extends Record<string, unknown> 
   now?: number,
 ): T
 
+export function catalogObservationStartedAt(
+  current: { firstSeenAt?: unknown, updateTime?: unknown } | null | undefined,
+  nextUpdateTime: unknown,
+  now?: number,
+): number
+
 /** completion 后 Body user turn 的真实起点严格更晚时，才确认 DevSpace activity 属于新 turn。 */
 export function postCompletionBodyConfirmsNewTurn(completedAt: unknown, bodyTurnStartedAt: unknown): boolean
 
