@@ -480,18 +480,18 @@ export function classifyCatalogAsyncStatus(value) {
  * 但这个观察时刻可以作为一个保守的 late-start 下界：真实 turn 一定不晚于它开始。
  *
  * 为避免把已经正常 final、只是 catalog 的 async_status 暂时滞留为 3 的旧 turn 反复拉进
- * watchdog，这里会比较 catalog.update_time 与 Archive 已落盘的 terminal snapshot。
+ * watchdog，这里会比较 catalog.update_time 与 Archive 已落盘的 Body completion snapshot。
  */
 export function shouldStartCatalogWatchdog({
   alreadyActive = false,
   catalogObservationCompleted = false,
   catalogUpdateTime = null,
   archivedUpdateTime = null,
-  archivedTerminalState = null,
+  archivedBodyCompletionState = null,
 } = {}) {
   if (alreadyActive || catalogObservationCompleted) return false
-  const terminal = String(archivedTerminalState ?? '').trim().toLowerCase()
-  const hasTerminal = terminal && terminal !== 'none' && terminal !== 'unknown'
+  const completion = String(archivedBodyCompletionState ?? '').trim().toLowerCase()
+  const hasCompletion = completion && completion !== 'none' && completion !== 'unknown'
   const parseTime = (value) => {
     if (value === null || value === undefined || value === '') return null
     const numeric = Number(value)
@@ -499,17 +499,17 @@ export function shouldStartCatalogWatchdog({
   }
   const catalogTime = parseTime(catalogUpdateTime)
   const archivedTime = parseTime(archivedUpdateTime)
-  if (hasTerminal && catalogTime !== null && archivedTime !== null && catalogTime <= archivedTime) return false
+  if (hasCompletion && catalogTime !== null && archivedTime !== null && catalogTime <= archivedTime) return false
   return true
 }
 
 /**
  * catalog update_time 前进代表服务端确实出现了新进展。
  *
- * 对已经超时诊断过的 catalog generation，不能继续沿用最早 firstSeenAt；否则下一次
- * 诊断文案会显示数百分钟的陈旧 age，而且首次 watchdog 甚至可能在刚发生进展后立刻触发。
- * 每次真实 progress 都从该观察时刻重新武装一个完整 watchdog 窗口，同时保留上次 body
- * 的 turn key，便于下次诊断识别“同 turn 恢复后又卡住”还是已经换到新 turn。
+ * catalog progress 只能推进 lastEventAt 作为证据，绝不能修改 generation.startedAt。
+ * Watchdog 的 45m 是硬边界，不因 catalog update_time 前进而续命。已经 timeout 的 generation
+ * 已经离开 activeTurns；后续新的 catalog observation 若 update_time 真正变化，会通过独立
+ * watermark 判据自然建立新的弱 generation。
  */
 export function recordCatalogWatchdogProgress(active, now = Date.now()) {
   if (!active || typeof active !== 'object') return active
