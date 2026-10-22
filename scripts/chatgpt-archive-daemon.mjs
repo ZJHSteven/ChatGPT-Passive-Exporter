@@ -6236,21 +6236,18 @@ async function main() {
       const [conversationId, trigger] = nextReady
       ready.delete(conversationId)
       try {
-        const watchdogGenerationStartedAt = String(trigger || '').startsWith('watchdog:')
-          ? Number(activeTurns.get(conversationId)?.startedAt || 0)
-          : 0
+        const watchdogPending = String(trigger || '').startsWith('watchdog:')
+          ? pendingWatchdogDiagnoses.get(conversationId) ?? null
+          : null
+        const watchdogGenerationStartedAt = Number(watchdogPending?.startedAt || 0)
         const result = await syncConversation(conversationId, trigger)
         syncedConversations += 1
-        if (String(trigger || '').startsWith('watchdog:')) {
-          const active = activeTurns.get(conversationId)
-          if (active) {
-            active.watchdogPendingAt = null
-            persistActiveTurn(conversationId, active)
-          }
-        }
         // body 一旦给出 turn_exchange_id，就可以把 earlier provisional metadata 做后验校验；
         // 该步骤只读局部时间窗，不扫描整库。
         publishDevSpaceBindingEvidenceFromBody(conversationId, result.diagnostic)
+        // late binding 可能正是在上面的 canonical evidence publish 中才找到 metadata；因此
+        // post-completion candidate 必须在 publish 之后消费，才能复用这一次 Body 直接确认新 turn。
+        completePostCompletionDevSpaceCandidate(conversationId, result)
         if (String(trigger || '').startsWith('watchdog:')) {
           const tailGaps = attachWatchdogDevSpaceTailGapEvidence(conversationId, result.diagnostic)
           if (tailGaps.length > 0) {
@@ -6265,23 +6262,25 @@ async function main() {
         // 5 分钟静默 probe 的结果必须在这次成功 body sync 后显式收口。即使真正拉 body 的
         // trigger 是 WSS complete / Watchdog，也复用同一个结果，不再额外请求。
         const idleDiagnoses = completePendingDevSpaceIdleDiagnoses(conversationId, result)
-        const watchdogGenerationDone = shouldCloseWatchdogGenerationAfterSync(trigger, result)
-        if (watchdogGenerationDone && activeTurns.has(conversationId)) {
-          clearActiveTurn(conversationId)
-          stopCheckpointWatch(conversationId, 'watchdog-diagnostic-complete', Date.now())
-          archive.updateDevSpaceBindingTurn({
-            conversationId,
-            turnExchangeId: result.diagnostic.turnExchangeId ?? null,
-            requestId: result.diagnostic.requestId ?? null,
-            observedAt: Date.now(),
-            lifecycleState: 'closed',
-          })
-          await log('watchdog diagnostic closed active generation', {
+        if (String(trigger || '').startsWith('watchdog:') && watchdogPending) {
+          pendingWatchdogDiagnoses.delete(conversationId)
+          archive.deleteActiveWatchdogIfStartedAt(conversationId, watchdogPending.startedAt)
+          if (!activeTurns.has(conversationId)) {
+            archive.updateDevSpaceBindingTurn({
+              conversationId,
+              turnExchangeId: result.diagnostic.turnExchangeId ?? null,
+              requestId: result.diagnostic.requestId ?? null,
+              observedAt: Date.now(),
+              lifecycleState: 'closed',
+            })
+          }
+          await log('watchdog diagnosis completed for already-ended generation', {
             conversationId,
             trigger,
+            generationStartedAt: watchdogPending.startedAt,
+            generationCompletedAt: watchdogPending.completedAt ?? watchdogPending.lastWatchdogAt ?? null,
             turnKey: watchdogDiagnosticTurnKey(result.diagnostic),
             watchdogTurnChanged: result.watchdogTurnChanged,
-            watchdogTurnAlreadyTimedOut: result.watchdogTurnAlreadyTimedOut,
           })
         }
         // 一次 overlap 同步成功以后，本地副本已经追到本次 observation，因此才清 dirty。
@@ -6289,6 +6288,8 @@ async function main() {
         readySince.delete(conversationId)
         readyNotBefore.delete(conversationId)
         if (result.diagnostic.terminalEvidence !== 'none') {
+          recentConversationComplete.set(conversationId, Date.now())
+          postCompletionDevSpaceCandidates.delete(conversationId)
           clearActiveTurn(conversationId)
           catalogActive.delete(conversationId)
           stopCheckpointWatch(conversationId, 'body-terminal', Date.now())
