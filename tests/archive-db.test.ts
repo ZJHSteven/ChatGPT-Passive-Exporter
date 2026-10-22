@@ -545,7 +545,7 @@ describe('ChatArchiveDb', () => {
       }, {
         observedAt: 1000,
         updateCurrentState: true,
-        classifyTerminal: false,
+        classifyCompletionIncident: false,
         updateIncidents: false,
       })
 
@@ -637,7 +637,7 @@ describe('ChatArchiveDb', () => {
       }, {
         observedAt: 2_000,
         updateCurrentState: true,
-        classifyTerminal: false,
+        classifyCompletionIncident: false,
         updateIncidents: false,
       })
 
@@ -671,7 +671,7 @@ describe('ChatArchiveDb', () => {
         turnExchangeId: merged.diagnostic.turnExchangeId,
         lastMessageId: merged.diagnostic.lastMessageId,
         metadataId: 'meta-tail-gap',
-        terminalEvidence: merged.diagnostic.terminalEvidence,
+        bodyCompletionEvidence: merged.diagnostic.bodyCompletionEvidence,
       })
       expect(summary).toMatchObject({
         hasTailGap: true,
@@ -698,7 +698,7 @@ describe('ChatArchiveDb', () => {
         turnKey: incident!.turnKey,
         lastMessageId: merged.diagnostic.lastMessageId,
         metadataId: 'meta-tail-gap',
-        terminalEvidence: merged.diagnostic.terminalEvidence,
+        bodyCompletionEvidence: merged.diagnostic.bodyCompletionEvidence,
         observedAt: 16_000,
       })
       expect(attached.incidentId).toBe(incident!.id)
@@ -1182,7 +1182,7 @@ describe('ChatArchiveDb', () => {
             metadata: { turn_exchange_id: 'turn-image', reasoning_status: 'reasoning_ended' },
           },
         ],
-      }, { observedAt: 1234, classifyTerminal: true, allowIncompleteTailIncident: true })
+      }, { observedAt: 1234, classifyCompletionIncident: true, allowIncompleteTailIncident: true })
 
       const generatedResources = db.getResources('imagegen-conversation').filter(item => item.kind === 'generated-image')
       expect(generatedResources).toHaveLength(2)
@@ -1274,7 +1274,7 @@ describe('ChatArchiveDb', () => {
         ],
       }
 
-      const merged = db.mergeLiveMessagesPage(live, { observedAt: 1234, classifyTerminal: true })
+      const merged = db.mergeLiveMessagesPage(live, { observedAt: 1234, classifyCompletionIncident: true })
       expect(merged.newMessageCount).toBe(2)
       expect(db.getMessages('conversation-cn').map(item => item.messageId)).toEqual(
         expect.arrayContaining(['u1', 'tool-call', 'a2', 'u3', 'a3']),
@@ -1386,7 +1386,7 @@ describe('ChatArchiveDb', () => {
             metadata: { turn_exchange_id: 'turn-old' },
           },
         ],
-      }, { observedAt: 1000, classifyTerminal: true })
+      }, { observedAt: 1000, classifyCompletionIncident: true })
 
       db.mergeLiveMessagesPage({
         title: 'Recovery fixture',
@@ -1414,7 +1414,7 @@ describe('ChatArchiveDb', () => {
         observationKind: 'browser-memory-recovery',
         endpoint: 'offline://browser-memory-recovery',
         updateCurrentState: false,
-        classifyTerminal: false,
+        classifyCompletionIncident: false,
         updateIncidents: false,
         insertUnknownOnly: true,
       })
@@ -1886,7 +1886,7 @@ describe('ChatArchiveDb', () => {
           },
         ],
       }
-      db.mergeLiveMessagesPage(broken, { classifyTerminal: true, observedAt: 1000 })
+      db.mergeLiveMessagesPage(broken, { classifyCompletionIncident: true, observedAt: 1000 })
       expect(db.listIncidents({ status: 'open' })).toHaveLength(1)
 
       const recovered = {
@@ -1913,7 +1913,7 @@ describe('ChatArchiveDb', () => {
           },
         ],
       }
-      db.mergeLiveMessagesPage(recovered, { classifyTerminal: true, observedAt: 2000 })
+      db.mergeLiveMessagesPage(recovered, { classifyCompletionIncident: true, observedAt: 2000 })
       expect(db.listIncidents({ status: 'open' })).toHaveLength(0)
       expect(db.listIncidents({ status: 'resolved' })).toHaveLength(1)
       const row = db.db.prepare('SELECT incident_state AS incidentState FROM conversations WHERE id=?').get('incident-conversation')
@@ -1948,7 +1948,7 @@ describe('ChatArchiveDb', () => {
       // 单独看到这种 body 形态时不能判死：模拟 watchdog / reconnect 尚无 confirmed complete。
       db.mergeLiveMessagesPage(contextOnly, {
         observedAt: 1000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: false,
       })
       expect(db.listIncidents({ status: 'open' })).toHaveLength(0)
@@ -1957,7 +1957,7 @@ describe('ChatArchiveDb', () => {
       // 此时同一个结构性尾型才成为 confirmed complete-no-final 的异常账目。
       db.mergeLiveMessagesPage(contextOnly, {
         observedAt: 2000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: true,
         observationKind: 'wss:conversation-turn-complete',
       })
@@ -2014,7 +2014,7 @@ describe('ChatArchiveDb', () => {
 
       db.mergeLiveMessagesPage(body, {
         observedAt: 1000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: true,
         observationKind: 'body-page:wss:conversation-turn-complete',
       })
@@ -2056,15 +2056,15 @@ describe('ChatArchiveDb', () => {
 
       db.mergeLiveMessagesPage({
         title: 'rollback', conversation_id: 'rollback-incident', current_node: 'a', messages,
-      }, { observedAt: 1000, classifyTerminal: false })
+      }, { observedAt: 1000, classifyCompletionIncident: false })
       db.mergeLiveMessagesPage({
         title: 'rollback', conversation_id: 'rollback-incident', current_node: 'b', messages,
-      }, { observedAt: 2000, classifyTerminal: false })
+      }, { observedAt: 2000, classifyCompletionIncident: false })
       db.mergeLiveMessagesPage({
         title: 'rollback', conversation_id: 'rollback-incident', current_node: 'a', messages,
       }, {
         observedAt: 3000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: true,
         observationKind: 'body-page:wss:conversation-turn-complete',
       })
@@ -2105,7 +2105,7 @@ describe('ChatArchiveDb', () => {
       // 先模拟“旧版分类器在 WSS complete 时已经立案、但只记成 other”的历史账。
       db.mergeLiveMessagesPage(contextOnly, {
         observedAt: 1000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: true,
         observationKind: 'body-page:wss:conversation-turn-complete',
       })
@@ -2119,7 +2119,7 @@ describe('ChatArchiveDb', () => {
       // 它只能刷新已经存在的同 turn incident，不能把 source 改成 reconcile。
       db.mergeLiveMessagesPage(contextOnly, {
         observedAt: 2000,
-        classifyTerminal: false,
+        classifyCompletionIncident: false,
         observationKind: 'body-page:reconcile:startup',
       })
 
@@ -2138,7 +2138,7 @@ describe('ChatArchiveDb', () => {
         conversation_id: 'incident-refresh-no-create',
       }, {
         observedAt: 3000,
-        classifyTerminal: false,
+        classifyCompletionIncident: false,
         observationKind: 'body-page:reconcile:startup',
       })
       expect(db.listIncidents()).toHaveLength(1)
@@ -2169,7 +2169,7 @@ describe('ChatArchiveDb', () => {
       }
       db.mergeLiveMessagesPage(running, {
         observedAt: 1000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: false,
       })
       expect(db.listIncidents({ status: 'open' })).toHaveLength(0)
@@ -2191,7 +2191,7 @@ describe('ChatArchiveDb', () => {
       }
       db.mergeLiveMessagesPage(stopped, {
         observedAt: 2000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: false,
       })
       expect(db.listIncidents({ status: 'open' }).some(item => item.conversationId === 'watchdog-stopped')).toBe(true)
@@ -2229,7 +2229,7 @@ describe('ChatArchiveDb', () => {
       }
       db.mergeLiveMessagesPage(latest, {
         observedAt: 2000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: true,
         incidentKind: 'watchdog-timeout',
         updateCurrentState: true,
@@ -2255,7 +2255,7 @@ describe('ChatArchiveDb', () => {
       }
       db.mergeLiveMessagesPage(oldPage, {
         observedAt: 2100,
-        classifyTerminal: false,
+        classifyCompletionIncident: false,
         updateCurrentState: false,
       })
 
@@ -2294,7 +2294,7 @@ describe('ChatArchiveDb', () => {
       }
       db.mergeLiveMessagesPage(timedOut, {
         observedAt: 1000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: true,
         incidentKind: 'watchdog-timeout',
       })
@@ -2308,7 +2308,7 @@ describe('ChatArchiveDb', () => {
           { id: 'a1', author: { role: 'assistant' }, recipient: 'all', channel: 'final', content: { content_type: 'text', parts: ['中断'] }, metadata: { turn_exchange_id: 'turn-1', finish_details: { type: 'interrupted', reason: 'client_stopped' } } },
         ],
       }
-      db.mergeLiveMessagesPage(interrupted, { observedAt: 1100, classifyTerminal: true })
+      db.mergeLiveMessagesPage(interrupted, { observedAt: 1100, classifyCompletionIncident: true })
       expect(db.listIncidents()).toHaveLength(1)
       expect(db.listIncidents()[0]).toMatchObject({
         id: firstId,
@@ -2323,13 +2323,13 @@ describe('ChatArchiveDb', () => {
       // body 诊断，不能把已经确认的 explicit interrupted 降回 terminalEvidence=none。
       db.mergeLiveMessagesPage(timedOut, {
         observedAt: 1200,
-        classifyTerminal: false,
+        classifyCompletionIncident: false,
         observationKind: 'body-page:reconcile:startup',
       })
       expect(db.listIncidents()[0]).toMatchObject({
         id: firstId,
         lifecycleClass: 'explicit-interrupted',
-        terminalEvidence: 'client-stopped',
+        bodyCompletionEvidence: 'client-stopped',
       })
       expect(db.listIncidents()[0]?.reason).toContain('client_stopped')
 
@@ -2342,7 +2342,7 @@ describe('ChatArchiveDb', () => {
       }
       db.mergeLiveMessagesPage(secondTurn, {
         observedAt: 2000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: true,
         incidentKind: 'watchdog-timeout',
       })
@@ -2368,7 +2368,7 @@ describe('ChatArchiveDb', () => {
         ],
       }, {
         observedAt: 1000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: true,
         incidentKind: 'active-zombie',
       })
@@ -2378,7 +2378,7 @@ describe('ChatArchiveDb', () => {
         turnKey: 'turn-zombie',
         incidentKind: 'active-zombie',
         lifecycleClass: 'active-zombie',
-        terminalEvidence: 'none',
+        bodyCompletionEvidence: 'none',
       })
       expect(incident?.reason).toContain('conversation list 持续保持 active')
     }
@@ -2409,7 +2409,7 @@ describe('ChatArchiveDb', () => {
       }
       db.mergeLiveMessagesPage(current, {
         observedAt: 1000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: true,
         incidentKind: 'watchdog-timeout',
         updateCurrentState: true,
@@ -2440,7 +2440,7 @@ describe('ChatArchiveDb', () => {
       db.mergeLiveMessagesPage(historicalPage, {
         observedAt: 2000,
         updateCurrentState: false,
-        classifyTerminal: false,
+        classifyCompletionIncident: false,
         observationKind: 'cursor-page',
       })
 
@@ -2453,7 +2453,7 @@ describe('ChatArchiveDb', () => {
         turnKey: 'turn-old',
         incidentKind: 'abnormal-terminal',
         lifecycleClass: 'abnormal-terminal',
-        terminalEvidence: 'none',
+        bodyCompletionEvidence: 'none',
       })
       expect(resolved[0]?.reason).toContain('历史 turn 后续已经出现更新的 user turn')
       expect(resolved[0]?.reason).toContain('未观察到该 turn 的 conversation-turn-complete 证据')
@@ -2509,7 +2509,7 @@ describe('ChatArchiveDb', () => {
         ],
       }, {
         observedAt: 1000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: true,
         incidentKind: 'active-zombie',
         observationKind: 'body-page:watchdog:active-timeout',
@@ -2552,7 +2552,7 @@ describe('ChatArchiveDb', () => {
         ],
       }, {
         observedAt: 2000,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         observationKind: 'passive-native',
         updateCurrentState: true,
       })
@@ -2591,7 +2591,7 @@ describe('ChatArchiveDb', () => {
       }, {
         observedAt: 3000,
         updateCurrentState: true,
-        classifyTerminal: true,
+        classifyCompletionIncident: true,
         allowIncompleteTailIncident: true,
       })
 
