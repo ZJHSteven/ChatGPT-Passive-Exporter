@@ -10206,6 +10206,14 @@ async function main() {
       queued: bindingQueueQueuedAtStartup,
     })
   }
+  if (pendingUnboundWatchdogDiagnoses.size > 0) {
+    // 旧 unbound generation 已经结束，重启只恢复 diagnosis/repair work；不能恢复 active candidate。
+    // gap repair 本身会在 maintenance lane 等待 WSS/auth/cooldown 条件成熟，不阻塞 startup hot path。
+    void scheduleGapRepair('devspace-unbound-timeout')
+    await log('pending unbound watchdog diagnoses scheduled catalog repair after startup', {
+      pending: pendingUnboundWatchdogDiagnoses.size,
+    })
+  }
   // 启动恢复不再扫描 DevSpace 全局“最近 started OR finished”。真实 800MiB tool_audit 上，
   // 旧 OR+GROUP BY+ORDER BY 即使最终只返回 1 个 metadata，冷缓存也实测 3.8s，热缓存仍
   // 约 0.55s。这里从 Archive 已持久化事实反推候选：
