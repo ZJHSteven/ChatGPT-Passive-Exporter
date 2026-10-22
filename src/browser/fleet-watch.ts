@@ -203,12 +203,12 @@ export function classifyCompletedRun(diagnostic: RunDiagnostic): {
   state: 'complete' | 'abnormal' | 'complete-indeterminate'
   reason?: string
 } {
-  if (diagnostic.terminalEvidence === 'final') return { state: 'complete' }
+  if (diagnostic.bodyCompletionEvidence === 'final') return { state: 'complete' }
 
-  if (diagnostic.terminalEvidence === 'client-stopped') {
+  if (diagnostic.bodyCompletionEvidence === 'client-stopped') {
     return { state: 'abnormal', reason: '服务器已结束，payload 明确记录 client_stopped。' }
   }
-  if (diagnostic.terminalEvidence === 'interrupted') {
+  if (diagnostic.bodyCompletionEvidence === 'interrupted') {
     return {
       state: 'abnormal',
       reason: diagnostic.interruptedReason
@@ -708,10 +708,10 @@ export function installFleetWatch(
           const diagnostic = diagnoseLatestRun(tail.payload)
           let classification: ReturnType<typeof classifyCompletedRun> | null = null
 
-          if (diagnostic.terminalEvidence === 'client-stopped' || diagnostic.terminalEvidence === 'interrupted') {
+          if (diagnostic.bodyCompletionEvidence === 'client-stopped' || diagnostic.bodyCompletionEvidence === 'interrupted') {
             classification = classifyCompletedRun(diagnostic)
           }
-          else if (diagnostic.terminalEvidence !== 'final'
+          else if (diagnostic.bodyCompletionEvidence !== 'final'
             && (diagnostic.tailShape === 'tool-call-open' || diagnostic.tailShape === 'reasoning-open')) {
             // 仅对“看起来残缺”的尾部支付 status 成本；正常 final 不需要额外查询。
             const first = await runWatch.checkConversationServerStatus(item.id)
@@ -744,7 +744,7 @@ export function installFleetWatch(
             }
             if (recordIncident(auditEntry, classification.reason, 'history-audit')) historyAudit.incidentCount += 1
           }
-          else if (diagnostic.terminalEvidence !== 'final' && diagnostic.tailShape !== 'final') {
+          else if (diagnostic.bodyCompletionEvidence !== 'final' && diagnostic.tailShape !== 'final') {
             historyAudit.indeterminateCount += 1
           }
 

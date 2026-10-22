@@ -255,7 +255,7 @@ function severityFor(
   diagnostic?: RunDiagnostic,
   serverStatus?: ServerStatusResult,
 ): WatchSeverity {
-  if (diagnostic?.terminalEvidence === 'client-stopped' || diagnostic?.terminalEvidence === 'interrupted') return 'critical'
+  if (diagnostic?.bodyCompletionEvidence === 'client-stopped' || diagnostic?.bodyCompletionEvidence === 'interrupted') return 'critical'
   if (serverStatus?.status === 'COMPLETE' && generation.active) return 'critical'
   if (iframe.total >= 200 || iframe.oaiSandbox >= 200) return 'critical'
   if (iframe.total >= 100 || iframe.oaiSandbox >= 100 || (perf.usedJsHeapMb ?? 0) >= 3000) return 'danger'
@@ -601,7 +601,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
     latestDiagnostic = diagnoseLatestRun(payload)
     widgetPressure = analyzeWidgetPressure(payload)
     pushEvent('conversation-diagnostic', {
-      terminalEvidence: latestDiagnostic.terminalEvidence,
+      bodyCompletionEvidence: latestDiagnostic.bodyCompletionEvidence,
       tailShape: latestDiagnostic.tailShape,
       summary: latestDiagnostic.summary,
       turnExchangeId: latestDiagnostic.turnExchangeId,
@@ -941,7 +941,7 @@ export function installRunWatch(options: RunWatchOptions = {}): RunWatchControll
       `Generation UI: ${snap.generation.active ? 'ACTIVE' : 'idle'} / stalled ${Math.round(snap.generation.stalledForMs / 1000)} s / last progress ${new Date(snap.generation.lastProgressAt).toLocaleTimeString()}`,
     ]
     if (snap.latestDiagnostic) {
-      lines.push(`Payload terminal evidence: ${snap.latestDiagnostic.terminalEvidence}`)
+      lines.push(`Body completion evidence: ${snap.latestDiagnostic.bodyCompletionEvidence}`)
       lines.push(`Payload tail: ${snap.latestDiagnostic.tailShape}`)
       lines.push(`Payload note: ${snap.latestDiagnostic.summary}`)
     }
