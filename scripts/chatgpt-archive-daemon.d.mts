@@ -59,6 +59,7 @@ export function classifyCatalogAsyncStatus(value: unknown): 'active' | 'complete
 /** catalog 首次观察到 active 时，是否应以该时刻建立保守 late-start watchdog。 */
 export function shouldStartCatalogWatchdog(input?: {
   alreadyActive?: boolean
+  catalogObservationCompleted?: boolean
   catalogUpdateTime?: unknown
   archivedUpdateTime?: unknown
   archivedBodyCompletionState?: unknown
