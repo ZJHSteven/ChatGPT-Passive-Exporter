@@ -6685,10 +6685,100 @@ async function main() {
     }
   }
 
+  const queuePostCompletionDevSpaceCandidate = (
+    binding,
+    auditAt,
+    completedAt,
+    latestAuditAt = auditAt,
+  ) => {
+    if (!binding?.conversationId) return false
+    const conversationId = binding.conversationId
+    const first = Number(auditAt)
+    const last = Number(latestAuditAt)
+    const completed = Number(completedAt)
+    if (!Number.isFinite(first) || !Number.isFinite(last) || !Number.isFinite(completed)) return false
+    if (first <= completed || last <= completed) return false
+
+    const existing = postCompletionDevSpaceCandidates.get(conversationId)
+    const candidate = {
+      conversationId,
+      metadataId: binding.metadataId,
+      completedAt: completed,
+      earliestAuditAt: existing
+        ? Math.min(Number(existing.earliestAuditAt), first)
+        : first,
+      latestAuditAt: existing
+        ? Math.max(Number(existing.latestAuditAt), last)
+        : last,
+      lastCheckedAt: existing?.lastCheckedAt ?? null,
+      lastCheckedAuditAt: existing?.lastCheckedAuditAt ?? null,
+    }
+    postCompletionDevSpaceCandidates.set(conversationId, candidate)
+    archive.updateDevSpaceBindingTurn({
+      conversationId,
+      observedAt: candidate.latestAuditAt,
+      lifecycleState: 'closed',
+    })
+
+    // 一个 completion generation 只主动排一次 turn-check。若 Body 当时仍落后，candidate 保留；
+    // 后续任何自然 Body（尤其现有 5m idle diagnosis）都可再次完成确认，不按 tool 频率主动拉取。
+    if (!existing) {
+      markSyncReady(conversationId, 'devspace:post-completion-turn-check', 0)
+      void log('DevSpace activity after completed generation queued one Body turn check', {
+        conversationId,
+        metadataId: binding.metadataId,
+        completedAt: completed,
+        earliestAuditAt: candidate.earliestAuditAt,
+        latestAuditAt: candidate.latestAuditAt,
+      })
+    }
+    return true
+  }
+
+  const completePostCompletionDevSpaceCandidate = (conversationId, result, now = Date.now()) => {
+    const candidate = postCompletionDevSpaceCandidates.get(conversationId)
+    if (!candidate) return false
+    candidate.lastCheckedAt = now
+    candidate.lastCheckedAuditAt = candidate.latestAuditAt
+    postCompletionDevSpaceCandidates.set(conversationId, candidate)
+    if (!postCompletionBodyConfirmsNewTurn(candidate.completedAt, result?.bodyTurnStartedAt)) return false
+
+    const nextActive = devSpaceFirstToolWatchdogState(candidate.earliestAuditAt)
+    nextActive.lastEventAt = Math.max(candidate.earliestAuditAt, candidate.latestAuditAt)
+    nextActive.lastDiagnosticTurnKey = watchdogDiagnosticTurnKey(result?.diagnostic)
+    activeTurns.set(conversationId, nextActive)
+    persistActiveTurn(conversationId, nextActive)
+    dispatchWatchdogStartNotification(
+      conversationId,
+      nextActive,
+      conversationTitle(conversationId),
+      candidate.metadataId,
+    )
+    armCheckpointWatch(conversationId, 'devspace:first-tool', candidate.earliestAuditAt)
+    archive.updateDevSpaceBindingTurn({
+      conversationId,
+      turnExchangeId: result?.diagnostic?.turnExchangeId ?? null,
+      requestId: result?.diagnostic?.requestId ?? null,
+      observedAt: now,
+      lifecycleState: 'active',
+    })
+    postCompletionDevSpaceCandidates.delete(conversationId)
+    void log('Body confirmed post-completion DevSpace activity as new turn; watchdog start backfilled', {
+      conversationId,
+      metadataId: candidate.metadataId,
+      completedAt: candidate.completedAt,
+      bodyTurnStartedAt: result.bodyTurnStartedAt,
+      startedAt: nextActive.startedAt,
+      lastEventAt: nextActive.lastEventAt,
+      turnKey: nextActive.lastDiagnosticTurnKey,
+    })
+    return true
+  }
+
   /**
-   * metadata 已经绑定时，每个新 DevSpace tool call 都是“该 conversation 当前有 active turn”
-   * 的强证据。startedAt 只在 activeTurns 原本不存在时写一次；同一轮后续调用仅推进
-   * lastEventAt，因此不会把 45 分钟 watchdog 不断向后重置。
+   * metadata 已经绑定时，每个新 DevSpace tool call 都是“该 conversation 有真实工具活动”的强证据。
+   * 正在运行的 generation 只推进 lastEventAt；已完成 generation 之后的 activity 则先进入
+   * post-completion candidate，等待异步 Body 确认新 turn，不能仅凭时间间隔直接起表。
    */
   const activateBoundDevSpaceTurn = (binding, auditAt) => {
     if (!binding?.conversationId) return
@@ -6703,10 +6793,13 @@ async function main() {
       return
     }
     const current = activeTurns.get(conversationId)
-    const watchdogLatched = isWatchdogLatched(current)
     if (current) {
       current.lastEventAt = Math.max(Number(current.lastEventAt || 0), auditAt)
       persistActiveTurn(conversationId, current)
+    }
+    else if (completedAt > 0) {
+      queuePostCompletionDevSpaceCandidate(binding, auditAt, completedAt)
+      return
     }
     else {
       const nextActive = devSpaceFirstToolWatchdogState(auditAt)
@@ -6719,13 +6812,11 @@ async function main() {
         metadataId: binding.metadataId,
       })
     }
-    // Watchdog 一旦到点，这一代进入 timed-out tombstone。后续同 turn 的 DevSpace tool 只说明
-    // “它可能还在继续跑”，不能据此把同一代重新当 running，更不能重新开启 checkpoint/body polling。
-    if (!watchdogLatched) armCheckpointWatch(conversationId, 'devspace:first-tool', auditAt)
+    armCheckpointWatch(conversationId, 'devspace:first-tool', auditAt)
     archive.updateDevSpaceBindingTurn({
       conversationId,
       observedAt: auditAt,
-      lifecycleState: watchdogLatched ? 'timed_out' : 'active',
+      lifecycleState: 'active',
     })
   }
 
