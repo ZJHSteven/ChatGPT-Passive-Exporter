@@ -5,7 +5,7 @@ import type { RunDiagnostic } from '../src/core/run-diagnostics'
 
 function diagnostic(overrides: Partial<RunDiagnostic> = {}): RunDiagnostic {
   return {
-    terminalEvidence: 'client-stopped',
+    bodyCompletionEvidence: 'client-stopped',
     interruptedReason: 'client_stopped',
     hasFinal: false,
     hasImageGenerationFinal: false,
@@ -54,7 +54,7 @@ describe('recovery hard gate', () => {
 
   it('reasoning-open 可进入 Luna 二次审批', () => {
     expect(evaluateRecoveryEligibility(incident({
-      diagnostic: diagnostic({ terminalEvidence: 'none', tailShape: 'reasoning-open' }),
+      diagnostic: diagnostic({ bodyCompletionEvidence: 'none', tailShape: 'reasoning-open' }),
     }), { now: 1_000_100 }).eligible).toBe(true)
   })
 

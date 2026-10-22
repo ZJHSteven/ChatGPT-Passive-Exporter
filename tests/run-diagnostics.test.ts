@@ -27,7 +27,7 @@ describe('最后一轮快照诊断', () => {
       message({ id: 'a1', channel: 'final', metadata: { finish_details: { type: 'stop', stop_tokens: [200002] } } }),
     ]))
 
-    expect(result.terminalEvidence).toBe('final')
+    expect(result.bodyCompletionEvidence).toBe('final')
     expect(result.tailShape).toBe('final')
     expect(result.hasFinal).toBe(true)
   })
@@ -79,7 +79,7 @@ describe('最后一轮快照诊断', () => {
       }),
     ]))
 
-    expect(result.terminalEvidence).toBe('final')
+    expect(result.bodyCompletionEvidence).toBe('final')
     expect(result.tailShape).toBe('image-generation-final')
     expect(result.hasFinal).toBe(false)
     expect(result.hasImageGenerationFinal).toBe(true)
@@ -103,7 +103,7 @@ describe('最后一轮快照诊断', () => {
       }),
     ]))
 
-    expect(result.terminalEvidence).toBe('client-stopped')
+    expect(result.bodyCompletionEvidence).toBe('client-stopped')
     expect(result.interruptedReason).toBe('client_stopped')
     expect(result.turnExchangeId).toBe('turn-1')
     expect(result.requestId).toBe('request-1')
@@ -116,7 +116,7 @@ describe('最后一轮快照诊断', () => {
       message({ id: 'call1', recipient: 'api_tool.call_tool', content: { content_type: 'code', text: '{}' } }),
     ]))
 
-    expect(result.terminalEvidence).toBe('none')
+    expect(result.bodyCompletionEvidence).toBe('none')
     expect(result.tailShape).toBe('tool-call-open')
     expect(result.summary).toContain('不能据此判死')
     expect(result.assistantToolCalls).toBe(1)
@@ -131,7 +131,7 @@ describe('最后一轮快照诊断', () => {
       message({ id: 'tool1', author: { role: 'tool' }, content: { content_type: 'code', text: '{"ok":true}' } }),
     ]))
 
-    expect(result.terminalEvidence).toBe('none')
+    expect(result.bodyCompletionEvidence).toBe('none')
     expect(result.tailShape).toBe('tool-result-returned')
     expect(result.summary).toContain('不能据此判死')
     expect(result.assistantToolCalls).toBe(1)
@@ -146,7 +146,7 @@ describe('最后一轮快照诊断', () => {
       message({ id: 'thought2', content: { content_type: 'thoughts' }, metadata: { reasoning_status: 'is_reasoning' } }),
     ]))
 
-    expect(result.terminalEvidence).toBe('none')
+    expect(result.bodyCompletionEvidence).toBe('none')
     expect(result.tailShape).toBe('reasoning-open')
   })
 
@@ -160,8 +160,8 @@ describe('最后一轮快照诊断', () => {
     ]))
 
     expect(results).toHaveLength(2)
-    expect(results[0]).toMatchObject({ turnExchangeId: 'turn-1', tailShape: 'tool-result-returned', terminalEvidence: 'none' })
-    expect(results[1]).toMatchObject({ turnExchangeId: 'turn-2', tailShape: 'final', terminalEvidence: 'final' })
+    expect(results[0]).toMatchObject({ turnExchangeId: 'turn-1', tailShape: 'tool-result-returned', bodyCompletionEvidence: 'none' })
+    expect(results[1]).toMatchObject({ turnExchangeId: 'turn-2', tailShape: 'final', bodyCompletionEvidence: 'final' })
   })
 
   test('same turn_exchange_id user steering stays inside one logical turn', () => {
@@ -205,7 +205,7 @@ describe('最后一轮快照诊断', () => {
       message({ id: 'recap', content: { content_type: 'reasoning_recap', parts: ['完成推理'] }, metadata: { turn_exchange_id: 'turn-1', reasoning_status: 'reasoning_ended' } }),
     ]))
 
-    expect(result.terminalEvidence).toBe('none')
+    expect(result.bodyCompletionEvidence).toBe('none')
     expect(result.tailShape).toBe('reasoning-ended-no-final')
     expect(result.summary).toContain('final')
   })
@@ -227,7 +227,7 @@ describe('最后一轮快照诊断', () => {
       }),
     ]))
 
-    expect(result.terminalEvidence).toBe('none')
+    expect(result.bodyCompletionEvidence).toBe('none')
     expect(result.tailShape).toBe('context-only-no-output')
     expect(result.hasFinal).toBe(false)
     expect(result.hasReasoningEnded).toBe(false)

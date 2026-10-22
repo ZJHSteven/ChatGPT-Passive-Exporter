@@ -16,7 +16,7 @@ describe('Turn trace reader', () => {
       JSON.stringify({ version: 1, at: 1000, kind: 'wss-lifecycle', conversationId: 'a', completesTurn: true, activeBefore: 3 }),
       JSON.stringify({ version: 1, at: 9000, kind: 'wss-lifecycle', conversationId: 'b', completesTurn: true, activeBefore: 2 }),
       JSON.stringify({ version: 1, at: 17000, kind: 'wss-lifecycle', conversationId: 'c', completesTurn: true, activeBefore: 1 }),
-      JSON.stringify({ version: 1, at: 1200, kind: 'body-snapshot', conversationId: 'a', requestId: 'r-a', turnExchangeId: 't-a', terminalEvidence: 'none', tailShape: 'reasoning-ended-no-final' }),
+      JSON.stringify({ version: 1, at: 1200, kind: 'body-snapshot', conversationId: 'a', requestId: 'r-a', turnExchangeId: 't-a', bodyCompletionEvidence: 'none', tailShape: 'reasoning-ended-no-final' }),
       JSON.stringify({ version: 1, at: 200000, kind: 'wss-lifecycle', conversationId: 'd', completesTurn: true, activeBefore: 0 }),
     ].join('\n'))
 
@@ -35,16 +35,16 @@ describe('Turn trace reader', () => {
             activeBefore: 3,
             requestId: 'r-a',
             turnExchangeId: 't-a',
-            terminalEvidence: 'none',
+            bodyCompletionEvidence: 'none',
             tailShape: 'reasoning-ended-no-final',
           },
           {
             conversationId: 'b', completeAt: 9000, activeBefore: 2,
-            requestId: null, turnExchangeId: null, terminalEvidence: null, tailShape: null,
+            requestId: null, turnExchangeId: null, bodyCompletionEvidence: null, tailShape: null,
           },
           {
             conversationId: 'c', completeAt: 17000, activeBefore: 1,
-            requestId: null, turnExchangeId: null, terminalEvidence: null, tailShape: null,
+            requestId: null, turnExchangeId: null, bodyCompletionEvidence: null, tailShape: null,
           },
         ],
       },

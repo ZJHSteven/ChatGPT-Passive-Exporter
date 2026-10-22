@@ -68,7 +68,7 @@ describe('Active Turn Recorder', () => {
         turnExchangeId: 'turn-1',
         userMessageId: 'user-1',
         lastMessageId: 'recap-1',
-        terminalEvidence: 'none',
+        bodyCompletionEvidence: 'none',
         hasFinal: false,
         hasImageGenerationFinal: false,
         imageGenerationCount: 0,
@@ -90,7 +90,7 @@ describe('Active Turn Recorder', () => {
     expect(trace).toMatchObject({
       requestId: 'request-1',
       turnExchangeId: 'turn-1',
-      terminalEvidence: 'none',
+      bodyCompletionEvidence: 'none',
       tailShape: 'reasoning-ended-no-final',
       currentNode: 'call-open',
       currentNodeStatus: 'in_progress',

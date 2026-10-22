@@ -5,7 +5,7 @@ import type { RunDiagnostic } from '../src/core/run-diagnostics'
 
 function diagnostic(overrides: Partial<RunDiagnostic>): RunDiagnostic {
   return {
-    terminalEvidence: 'none',
+    bodyCompletionEvidence: 'none',
     hasFinal: false,
     hasImageGenerationFinal: false,
     imageGenerationCount: 0,
@@ -51,7 +51,7 @@ describe('Fleet Watch 服务端双信号', () => {
 describe('Fleet Watch COMPLETE 后验分类', () => {
   test('COMPLETE + final 是正常完成', () => {
     expect(classifyCompletedRun(diagnostic({
-      terminalEvidence: 'final',
+      bodyCompletionEvidence: 'final',
       hasFinal: true,
       tailShape: 'final',
     }))).toEqual({ state: 'complete' })
@@ -59,7 +59,7 @@ describe('Fleet Watch COMPLETE 后验分类', () => {
 
   test('COMPLETE + client_stopped 是明确异常', () => {
     const result = classifyCompletedRun(diagnostic({
-      terminalEvidence: 'client-stopped',
+      bodyCompletionEvidence: 'client-stopped',
       interruptedReason: 'client_stopped',
       tailShape: 'tool-call-open',
     }))
@@ -69,7 +69,7 @@ describe('Fleet Watch COMPLETE 后验分类', () => {
 
   test('只有在服务器 COMPLETE 前提下，open tool tail 才升级为异常', () => {
     const snapshotOnly = diagnostic({ tailShape: 'tool-call-open' })
-    expect(snapshotOnly.terminalEvidence).toBe('none')
+    expect(snapshotOnly.bodyCompletionEvidence).toBe('none')
     expect(snapshotOnly.summary).not.toContain('已死')
 
     const completed = classifyCompletedRun(snapshotOnly)
