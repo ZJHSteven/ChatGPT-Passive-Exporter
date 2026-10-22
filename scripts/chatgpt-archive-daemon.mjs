@@ -6933,7 +6933,12 @@ async function main() {
   const bindDevSpaceMetadataToConversation = (input) => {
     const existing = archive.getDevSpaceMetadataBinding(input.metadataId)
     const provisional = unboundDevSpaceTurns.get(input.metadataId)
-    const timedOutBeforeBinding = Boolean(existing?.unboundWatchdogAt || provisional?.repairQueuedAt)
+    const pendingUnboundTimeout = pendingUnboundWatchdogDiagnoses.get(input.metadataId) ?? null
+    const timedOutBeforeBinding = Boolean(
+      pendingUnboundTimeout
+      || existing?.unboundWatchdogAt
+      || provisional?.repairQueuedAt,
+    )
     if (existing?.conversationId && existing.conversationId !== input.conversationId) {
       if (!shouldSupersedeDevSpaceBinding(existing, input)) {
         void log('DevSpace metadata binding conflict left unchanged', {
