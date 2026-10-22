@@ -5681,8 +5681,8 @@ async function main() {
 
   const syncConversation = async (conversationId, trigger, options = {}) => {
     const syncReadyAt = Number(readySince.get(conversationId) || Date.now())
-    const classifyTerminal = shouldClassifyTerminalForTrigger(trigger)
-    const confirmedTerminal = isConfirmedTerminalTrigger(trigger)
+    const classifyCompletion = shouldClassifyCompletionForTrigger(trigger)
+    const confirmedCompletion = isConfirmedCompletionTrigger(trigger)
     const requestedIncidentKind = incidentKindForTrigger(trigger, {
       catalogStillActive: catalogActive.has(conversationId),
     })
@@ -5748,10 +5748,10 @@ async function main() {
         }
       }
     }
-    const terminalSettleNeeded = classifyTerminal
-      && shouldDeferConfirmedTerminalIncident(trigger, preliminaryDiagnostic)
-    const classifyTerminalNow = classifyTerminal && !terminalSettleNeeded
-    const incidentBefore = classifyTerminalNow ? latestOpenIncident(conversationId) : null
+    const completionSettleNeeded = classifyCompletion
+      && shouldDeferConfirmedCompletionIncident(trigger, preliminaryDiagnostic)
+    const classifyCompletionNow = classifyCompletion && !completionSettleNeeded
+    const incidentBefore = classifyCompletionNow ? latestOpenIncident(conversationId) : null
 
     const baseMeta = {
       title: first.title,
@@ -5814,7 +5814,7 @@ async function main() {
           exactMapping: false,
           passivePagesUsed,
           databaseMergeMs,
-          terminalSettleNeeded,
+          completionSettleNeeded,
           watchdogTurnChanged,
           watchdogTurnStartedAt,
           watchdogTurnAlreadyTimedOut,
@@ -5844,13 +5844,13 @@ async function main() {
         observationKind,
         preserveObservedTextPrefix: true,
         updateCurrentState: pages === 0,
-        classifyTerminal: pages === 0 && classifyTerminalNow,
+        classifyCompletionIncident: pages === 0 && classifyCompletionNow,
         // watchdog 的语义是“已经超时，所以这个 turn 本身就是需要调查的 incident”。
         // COMPLETE 只决定它是不是 confirmed terminal；不能拿“尚未 COMPLETE”把 watchdog 变成空操作。
         allowIncompleteTailIncident: pages === 0
-          && !terminalSettleNeeded
+          && !completionSettleNeeded
           && !watchdogTurnChanged
-          && (confirmedTerminal || trigger.startsWith('watchdog:')),
+          && (confirmedCompletion || trigger.startsWith('watchdog:')),
         incidentKind: requestedIncidentKind,
         preparedObservation: evidence.preparedObservation,
         skipLegacyObservation: evidence.skipLegacyObservation,
@@ -5871,7 +5871,7 @@ async function main() {
       if (pages === 0 && merged.diagnostic.hasImageGenerationFinal) {
         imageGenerationEvent = archive.getImageGenerationEvent(conversationId, merged.diagnostic.turnExchangeId)
       }
-      if (pages === 0 && classifyTerminalNow) {
+      if (pages === 0 && classifyCompletionNow) {
         const incidentAfter = latestOpenIncident(conversationId)
         if (shouldNotifyIncidentTransition(incidentBefore, incidentAfter)) newIncident = incidentAfter
       }
@@ -5969,7 +5969,7 @@ async function main() {
           exactMapping,
           passivePagesUsed,
           databaseMergeMs,
-          terminalSettleNeeded,
+          completionSettleNeeded,
           watchdogTurnChanged,
           watchdogTurnStartedAt,
           watchdogTurnAlreadyTimedOut,
@@ -6121,7 +6121,7 @@ async function main() {
         })
         checkpointWatches.set(conversationId, next)
         checkpointBodyRefreshes += 1
-        if (diagnostic.terminalEvidence !== 'none') {
+        if (diagnostic.bodyCompletionEvidence !== 'none') {
           stopCheckpointWatch(conversationId, 'passive-body-terminal')
           markSyncReady(conversationId, 'checkpoint:passive-body-terminal', 0)
         }
@@ -6166,7 +6166,7 @@ async function main() {
       })
 
       // status 仍 streaming 但 canonical body 已出现明确终态时，优先相信更具体的 body 证据。
-      if (result.diagnostic.terminalEvidence !== 'none') {
+      if (result.diagnostic.bodyCompletionEvidence !== 'none') {
         stopCheckpointWatch(conversationId, 'body-terminal-while-status-streaming')
         markSyncReady(conversationId, 'checkpoint:body-terminal', 0)
       }
@@ -6287,7 +6287,7 @@ async function main() {
         dirty.delete(conversationId)
         readySince.delete(conversationId)
         readyNotBefore.delete(conversationId)
-        if (result.diagnostic.terminalEvidence !== 'none') {
+        if (result.diagnostic.bodyCompletionEvidence !== 'none') {
           recentConversationComplete.set(conversationId, Date.now())
           postCompletionDevSpaceCandidates.delete(conversationId)
           clearActiveTurn(conversationId)
@@ -6301,7 +6301,7 @@ async function main() {
             lifecycleState: 'closed',
           })
         }
-        if (result.terminalSettleNeeded) {
+        if (result.completionSettleNeeded) {
           // 给第一方页面一个短窗口自然拉取/持久化最终 body。markSyncReady 现在就登记
           // readySince、但通过 notBefore 延迟执行，因此窗口内页面自然产生的 body response
           // 可以被 passive cache 复用；只有窗口结束仍没有足够新的 passive body 时，才会
@@ -6323,7 +6323,7 @@ async function main() {
           dbMergeMs: Math.round(result.databaseMergeMs * 100) / 100,
           exactMapping: result.exactMapping,
           passivePagesUsed: result.passivePagesUsed,
-          terminal: result.diagnostic.terminalEvidence,
+          bodyCompletion: result.diagnostic.bodyCompletionEvidence,
           tail: result.diagnostic.tailShape,
         })
         // Body sync 是我们第一次能够稳定拿到 request_id / turn_exchange_id / tool activity 的位置。
@@ -6350,19 +6350,19 @@ async function main() {
           conversationId,
           turnExchangeId: result.diagnostic.turnExchangeId ?? null,
           requestId: result.diagnostic.requestId ?? null,
-          terminalEvidence: result.diagnostic.terminalEvidence ?? null,
+          bodyCompletionEvidence: result.diagnostic.bodyCompletionEvidence ?? null,
           tailShape: result.diagnostic.tailShape ?? null,
         })
         // Inbox 只接收“已经有明确意义”的 Turn：
         // - 正常路径必须已经观察到 final；
         // - Incident / Watchdog 可以在没有 final 时进入；
-        // - complete 但 body 仍落后一拍（terminalSettleNeeded）先等 bounded settle，不误报成健康事件。
+        // - complete 但 body 仍落后一拍（completionSettleNeeded）先等 bounded settle，不误报成健康事件。
         // Worksite 本身只同步 metadata/link，不读取正文；同 Conversation 后续 Turn 更新同一引用。
         if (lifeOpsSync) {
           const currentIncident = result.newIncident || latestOpenIncident(conversationId)
           const watchdogTrigger = String(trigger || '').startsWith('watchdog:')
-          const shouldEnqueueInboxTurn = !result.terminalSettleNeeded && (
-            result.diagnostic.terminalEvidence === 'final'
+          const shouldEnqueueInboxTurn = !result.completionSettleNeeded && (
+            result.diagnostic.bodyCompletionEvidence === 'final'
             || Boolean(currentIncident)
             || watchdogTrigger
           )
@@ -6388,7 +6388,7 @@ async function main() {
                 metadataId: override?.metadataId ?? null,
                 inboxKind: currentIncident || watchdogTrigger ? 'incident' : 'turn',
                 inboxHealth: currentIncident || watchdogTrigger ? 'incident' : 'healthy',
-                finalState: result.diagnostic.terminalEvidence ?? null,
+                finalState: result.diagnostic.bodyCompletionEvidence ?? null,
                 incidentType,
                 incidentState: currentIncident?.status
                   || (watchdogTrigger ? 'diagnosed' : null),
@@ -6542,7 +6542,7 @@ async function main() {
         endpoint: source.endpoint ?? null,
         observationKind: 'live-sse-complete',
         preserveObservedTextPrefix: true,
-        classifyTerminal: false,
+        classifyCompletionIncident: false,
         updateCurrentState: true,
         updateIncidents: false,
         allowIncompleteTailIncident: false,
@@ -6636,7 +6636,7 @@ async function main() {
         endpoint: source.endpoint ?? null,
         observationKind: 'live-sse-partial',
         preserveObservedTextPrefix: true,
-        classifyTerminal: false,
+        classifyCompletionIncident: false,
         updateCurrentState: false,
         updateIncidents: false,
         allowIncompleteTailIncident: false,
@@ -7709,7 +7709,7 @@ async function main() {
         observationKind,
         preserveObservedTextPrefix: true,
         updateCurrentState: true,
-        classifyTerminal: false,
+        classifyCompletionIncident: false,
         allowIncompleteTailIncident: false,
         incidentKind: 'abnormal-terminal',
         preparedObservation: evidence.preparedObservation,
