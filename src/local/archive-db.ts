@@ -5371,6 +5371,14 @@ export class ChatArchiveDb {
     this.db.prepare('DELETE FROM active_watchdogs WHERE conversation_id = ?').run(conversationId)
   }
 
+  deleteActiveWatchdogIfStartedAt(conversationId: string, startedAt: number): boolean {
+    const result = this.db.prepare(`
+      DELETE FROM active_watchdogs
+      WHERE conversation_id = ? AND started_at = ?
+    `).run(conversationId, Math.max(0, Math.trunc(startedAt)))
+    return Number(result.changes) > 0
+  }
+
   markCatalogWatchdogCompleted(conversationId: string, catalogUpdateTime: unknown, completedAt = Date.now()): void {
     const updateTimeKey = catalogWatchdogUpdateTimeKey(catalogUpdateTime)
     this.db.prepare(`
