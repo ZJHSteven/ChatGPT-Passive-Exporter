@@ -828,6 +828,33 @@ export function postCompletionBodyConfirmsNewTurn(completedAt, bodyTurnStartedAt
 }
 
 /**
+ * 判断一份 Body completion evidence 是否有资格影响“当前”generation。
+ *
+ * - 若双方都有 turn key，必须精确相同；
+ * - 否则只要存在上一 completion 边界，就要求 Body user create_time 严格晚于该边界；
+ * - 只有首个、尚无任何 completion 边界的 generation 才允许在缺 key 时保守接受。
+ *
+ * 该判据专门阻止“旧 WSS/Watchdog 触发的延迟 Body final”跨到下一 turn 后误删 candidate/active。
+ */
+export function bodyCompletionBelongsToCurrentGeneration({
+  completedAt = null,
+  bodyTurnStartedAt = null,
+  activeTurnKey = null,
+  bodyTurnKey = null,
+} = {}) {
+  const activeKey = typeof activeTurnKey === 'string' && activeTurnKey.trim() ? activeTurnKey.trim() : null
+  const bodyKey = typeof bodyTurnKey === 'string' && bodyTurnKey.trim() ? bodyTurnKey.trim() : null
+  if (activeKey && bodyKey) return activeKey === bodyKey
+
+  const completed = Number(completedAt)
+  if (Number.isFinite(completed) && completed > 0) {
+    const bodyStart = Number(bodyTurnStartedAt)
+    return Number.isFinite(bodyStart) && bodyStart > completed
+  }
+  return true
+}
+
+/**
  * Body ready queue 优先级。Lifecycle / Watchdog 必须先于后台 binding probe，避免低价值
  * probe 的 429/排队把 complete/timeout 的时间快照拖进下一 turn。
  */
