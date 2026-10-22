@@ -2115,7 +2115,7 @@ describe('ChatArchiveDb', () => {
         WHERE conversation_id='incident-refresh' AND turn_key='turn-refresh'
       `).run()
 
-      // startup/reconnect 不是新的 terminal trigger，因此 classifyTerminal=false。
+      // startup/reconnect 不是新的 completion trigger，因此 classifyCompletionIncident=false。
       // 它只能刷新已经存在的同 turn incident，不能把 source 改成 reconcile。
       db.mergeLiveMessagesPage(contextOnly, {
         observedAt: 2000,
@@ -2320,7 +2320,7 @@ describe('ChatArchiveDb', () => {
       expect(db.listIncidents()[0]?.reason).toContain('client_stopped')
 
       // 后续普通 reconcile 即使拿到一个缺少 finish_details 的旧/不完整快照，也只能刷新
-      // body 诊断，不能把已经确认的 explicit interrupted 降回 terminalEvidence=none。
+      // Body 诊断不能把已经确认的 explicit interrupted 降回 bodyCompletionEvidence=none。
       db.mergeLiveMessagesPage(timedOut, {
         observedAt: 1200,
         classifyCompletionIncident: false,
