@@ -886,6 +886,17 @@ export function mergePostCompletionDevSpaceCandidate(existing, input = {}) {
   }
 }
 
+/** exact Body/tool binding 是否已经落在旧 unbound Watchdog 的 45m completion 之后。 */
+export function unboundBindingResolvesNewerGeneration(watchdogAt, ...candidateStarts) {
+  const completed = Number(watchdogAt)
+  if (!Number.isFinite(completed) || completed <= 0) return false
+  const newestStart = Math.max(
+    0,
+    ...candidateStarts.map(value => Number(value)).filter(Number.isFinite),
+  )
+  return newestStart > completed
+}
+
 /**
  * Body ready queue 优先级。Lifecycle / Watchdog 必须先于后台 binding probe，避免低价值
  * probe 的 429/排队把 complete/timeout 的时间快照拖进下一 turn。
