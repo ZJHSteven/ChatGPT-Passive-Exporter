@@ -484,11 +484,12 @@ export function classifyCatalogAsyncStatus(value) {
  */
 export function shouldStartCatalogWatchdog({
   alreadyActive = false,
+  catalogObservationCompleted = false,
   catalogUpdateTime = null,
   archivedUpdateTime = null,
   archivedTerminalState = null,
 } = {}) {
-  if (alreadyActive) return false
+  if (alreadyActive || catalogObservationCompleted) return false
   const terminal = String(archivedTerminalState ?? '').trim().toLowerCase()
   const hasTerminal = terminal && terminal !== 'none' && terminal !== 'unknown'
   const parseTime = (value) => {
@@ -809,11 +810,45 @@ export function reconcileWatchdogDiagnosticTurn(active, diagnostic, now = Date.n
  * - 新 turn 自己其实也早已超过 45min：本次诊断直接覆盖它，完成后也关闭。
  */
 export function shouldCloseWatchdogGenerationAfterSync(trigger, result) {
-  if (!String(trigger || '').startsWith('watchdog:')) return false
-  // body 诊断完成后仍保留这一代 tombstone。只有明确 terminal 或明确发现新的 turn identity
-  // 才由其它路径清除/替换；这样旧 first-tool、catalog update_time、async progress 都没有
-  // “clear 后重新创建同一代”的机会。
-  return false
+  return String(trigger || '').startsWith('watchdog:')
+}
+
+/**
+ * WSS complete / Watchdog timeout 之后的 DevSpace activity 只证明“可能开始了新 turn”。
+ * 只有 Body 当前 user turn 的真实 create_time 严格晚于上一 completion，才确认新 generation。
+ * 这里只判断证据，不发 Body 请求，也不修改 startedAt。
+ */
+export function postCompletionBodyConfirmsNewTurn(completedAt, bodyTurnStartedAt) {
+  const completed = Number(completedAt)
+  const bodyStart = Number(bodyTurnStartedAt)
+  return Number.isFinite(completed)
+    && completed > 0
+    && Number.isFinite(bodyStart)
+    && bodyStart > completed
+}
+
+/**
+ * Body ready queue 优先级。Lifecycle / Watchdog 必须先于后台 binding probe，避免低价值
+ * probe 的 429/排队把 complete/timeout 的时间快照拖进下一 turn。
+ */
+export function syncTriggerPriority(trigger) {
+  const normalized = String(trigger || '').toLowerCase()
+  if (normalized.startsWith('watchdog:')) return 100
+  if (normalized.startsWith('wss:') && normalized.includes('complete')) return 95
+  if (normalized.includes('async-complete') || normalized.includes('body-terminal')) return 90
+  if (normalized === 'devspace:post-completion-turn-check') return 85
+  if (normalized.startsWith('checkpoint:') || normalized.startsWith('reconcile:checkpoint:')) return 75
+  if (normalized.startsWith('catalog:') || normalized.startsWith('project-catalog:')) return 55
+  if (normalized === 'devspace:binding-probe') return 10
+  return 50
+}
+
+export function preferredSyncTrigger(existingTrigger, nextTrigger) {
+  if (!existingTrigger) return nextTrigger
+  if (!nextTrigger) return existingTrigger
+  return syncTriggerPriority(nextTrigger) > syncTriggerPriority(existingTrigger)
+    ? nextTrigger
+    : existingTrigger
 }
 
 /**
