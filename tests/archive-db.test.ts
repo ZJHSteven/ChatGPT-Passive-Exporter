@@ -249,7 +249,7 @@ describe('ChatArchiveDb', () => {
     tempDirs.push(dir)
     const file = path.join(dir, 'archive.sqlite')
     const first = new ChatArchiveDb(file)
-    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 })
+    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
     first.close()
 
     const blocker = new DatabaseSync(file)
@@ -301,12 +301,16 @@ describe('ChatArchiveDb', () => {
 
     const upgraded = new ChatArchiveDb(file)
     try {
-      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 })
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
       const columns = upgraded.db.prepare("PRAGMA table_info('messages')").all() as Array<{ name: string }>
       expect(columns.map(column => column.name)).toContain('raw_hash')
       expect(upgraded.db.prepare(`
         SELECT 1 AS ok FROM sqlite_master
         WHERE type='table' AND name='message_raw_fingerprints'
+      `).get()).toEqual({ ok: 1 })
+      expect(upgraded.db.prepare(`
+        SELECT 1 AS ok FROM sqlite_master
+        WHERE type='table' AND name='catalog_watchdog_watermarks'
       `).get()).toEqual({ ok: 1 })
       // 若这里错误重跑旧 migrate()，conversations 等整套 Genesis schema 会被创建出来。
       expect(upgraded.db.prepare(`
@@ -319,7 +323,7 @@ describe('ChatArchiveDb', () => {
     }
   })
 
-  test('v2 到 v3 只创建窄 fingerprint side table，不回填历史 message', () => {
+  test('v2 到当前版本只创建窄 side tables，不回填历史 message', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatgpt-archive-v3-delta-'))
     tempDirs.push(dir)
     const file = path.join(dir, 'archive.sqlite')
@@ -344,8 +348,10 @@ describe('ChatArchiveDb', () => {
 
     const upgraded = new ChatArchiveDb(file)
     try {
-      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 })
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
       expect(upgraded.db.prepare('SELECT count(*) AS n FROM message_raw_fingerprints').get())
+        .toEqual({ n: 0 })
+      expect(upgraded.db.prepare('SELECT count(*) AS n FROM catalog_watchdog_watermarks').get())
         .toEqual({ n: 0 })
       expect(upgraded.db.prepare(
         "SELECT raw_hash AS rawHash FROM messages WHERE message_id='legacy-message'",
@@ -353,6 +359,28 @@ describe('ChatArchiveDb', () => {
     }
     finally {
       upgraded.close()
+    }
+  })
+
+  test('catalog watchdog watermark 只锁住同一 catalog update_time，update_time 变化后允许新 generation', () => {
+    const db = tempDb()
+    try {
+      expect(db.hasCatalogWatchdogCompleted('cid-catalog', 100)).toBe(false)
+      db.markCatalogWatchdogCompleted('cid-catalog', 100, 1_000)
+      expect(db.hasCatalogWatchdogCompleted('cid-catalog', 100)).toBe(true)
+      expect(db.hasCatalogWatchdogCompleted('cid-catalog', '100')).toBe(true)
+      expect(db.hasCatalogWatchdogCompleted('cid-catalog', 101)).toBe(false)
+
+      db.markCatalogWatchdogCompleted('cid-catalog', 101, 2_000)
+      expect(db.hasCatalogWatchdogCompleted('cid-catalog', 100)).toBe(false)
+      expect(db.hasCatalogWatchdogCompleted('cid-catalog', 101)).toBe(true)
+
+      db.markCatalogWatchdogCompleted('cid-null', null, 3_000)
+      expect(db.hasCatalogWatchdogCompleted('cid-null', null)).toBe(true)
+      expect(db.hasCatalogWatchdogCompleted('cid-null', undefined)).toBe(true)
+    }
+    finally {
+      db.close()
     }
   })
 
