@@ -2818,8 +2818,9 @@ async function main() {
     })
   }
   const clearActiveTurn = (conversationId) => {
+    const current = activeTurns.get(conversationId)
     activeTurns.delete(conversationId)
-    archive.deleteActiveWatchdog(conversationId)
+    if (current) archive.deleteActiveWatchdogIfStartedAt(conversationId, current.startedAt)
   }
   // daemon 重启必须恢复“原计时器”，而不是由最近一次 DevSpace audit 重新开表。
   // active_watchdogs 是 conversation 级状态，因此不受同一 CID 多 metadata 的影响。
@@ -4330,9 +4331,7 @@ async function main() {
       timedOut: timedOutWatchdogIds().length,
       timedOutAwaitingDiagnosis: pendingWatchdogDiagnosisIds().length,
       oldestActiveMs: (reliableActiveIds().length + catalogLateActiveIds().length) > 0
-        ? Math.max(...[...activeTurns.values()]
-            .filter(item => !isWatchdogLatched(item))
-            .map(item => Date.now() - item.startedAt))
+        ? Math.max(...[...activeTurns.values()].map(item => Date.now() - item.startedAt))
         : 0,
       activeTurns: [...activeTurns.entries()].map(([conversationId, active]) => ({
         conversationId,
@@ -8662,9 +8661,8 @@ async function main() {
     if (behavior.startsTurn) {
       const current = activeTurns.get(event.conversationId)
       const explicitNewTurn = Boolean(behavior.explicitTurnStart)
-      const latched = isWatchdogLatched(current)
-      const createdGeneration = !current || (latched && explicitNewTurn)
-      const nextActive = latched && explicitNewTurn
+      const createdGeneration = !current || explicitNewTurn
+      const nextActive = explicitNewTurn
         ? {
             startedAt: now,
             lastEventAt: now,
@@ -8692,6 +8690,7 @@ async function main() {
     }
     if (behavior.completesTurn) {
       recentConversationComplete.set(event.conversationId, now)
+      postCompletionDevSpaceCandidates.delete(event.conversationId)
       clearActiveTurn(event.conversationId)
       catalogActive.delete(event.conversationId)
       stopCheckpointWatch(event.conversationId, `wss:${event.type}`, now)
