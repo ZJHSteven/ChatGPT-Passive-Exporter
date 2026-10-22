@@ -6216,12 +6216,14 @@ async function main() {
       && Boolean(authHeaders)
       && Boolean(guardian?.page)
       && !guardian?.page?.closed
-    const nextReady = [...ready.entries()].find(([conversationId]) => {
-      if (now < Number(readyNotBefore.get(conversationId) || 0)) return false
-      if (activeWindowAvailable) return true
-      const readyAt = Number(readySince.get(conversationId) || now)
-      return Boolean(reusablePassiveBodyPage(conversationId, null, readyAt))
-    })
+    const nextReady = [...ready.entries()]
+      .filter(([conversationId]) => {
+        if (now < Number(readyNotBefore.get(conversationId) || 0)) return false
+        if (activeWindowAvailable) return true
+        const readyAt = Number(readySince.get(conversationId) || now)
+        return Boolean(reusablePassiveBodyPage(conversationId, null, readyAt))
+      })
+      .sort(([, triggerA], [, triggerB]) => syncTriggerPriority(triggerB) - syncTriggerPriority(triggerA))[0]
     if (!nextReady) return
     syncInFlight = true
     try {
@@ -6445,15 +6447,17 @@ async function main() {
         lastError = error instanceof Error ? error.message : String(error)
         await log('conversation sync failed', { conversationId, trigger, error: lastError })
         // 失败不能把 dirty 事实抹掉；同时保留 ready，等 auth/cooldown/页面恢复后再试。
-        ready.set(conversationId, trigger)
+        const existingTrigger = ready.get(conversationId)
+        ready.set(conversationId, preferredSyncTrigger(existingTrigger, trigger))
         if (lastError.startsWith('active body API cooldown until ')
           || lastError.startsWith('legacy active API cooldown until ')) {
-          readyNotBefore.set(
-            conversationId,
-            Math.max(Date.now() + 5000, familyBackoffUntil(rateLimits, 'body', Date.now())),
-          )
+          const retryAt = Math.max(Date.now() + 5000, familyBackoffUntil(rateLimits, 'body', Date.now()))
+          readyNotBefore.set(conversationId, Math.max(Number(readyNotBefore.get(conversationId) || 0), retryAt))
         }
-        else readyNotBefore.set(conversationId, Date.now() + 5000)
+        else readyNotBefore.set(
+          conversationId,
+          Math.max(Number(readyNotBefore.get(conversationId) || 0), Date.now() + 5000),
+        )
       }
     }
     finally {
@@ -6470,10 +6474,18 @@ async function main() {
   const markSyncReady = (conversationId, trigger, delayMs = 500) => {
     if (!conversationId) return
     const now = Date.now()
-    dirty.set(conversationId, trigger)
-    ready.set(conversationId, trigger)
+    const existingTrigger = ready.get(conversationId)
+    const selectedTrigger = preferredSyncTrigger(existingTrigger, trigger)
+    dirty.set(conversationId, selectedTrigger)
+    ready.set(conversationId, selectedTrigger)
     if (!readySince.has(conversationId)) readySince.set(conversationId, now)
-    readyNotBefore.set(conversationId, now + Math.max(0, Number(delayMs) || 0))
+    const requestedNotBefore = now + Math.max(0, Number(delayMs) || 0)
+    const existingNotBefore = Number(readyNotBefore.get(conversationId) || 0)
+    // 低优先级后来者不能把高优先级 lifecycle 请求推迟；同优先级重复排队也取更早截止。
+    readyNotBefore.set(
+      conversationId,
+      existingNotBefore > 0 ? Math.min(existingNotBefore, requestedNotBefore) : requestedNotBefore,
+    )
     setTimeout(() => { void drainDirty() }, delayMs)
   }
 
