@@ -872,7 +872,7 @@ export function shouldPromoteWatchdogTimeoutToActiveZombie(active, incident, cat
   if (!active.lastDiagnosticTurnKey || active.lastDiagnosticTurnKey !== incident.turnKey) return false
   if (incident.status !== 'open') return false
   if (incident.lifecycleClass !== 'watchdog-timeout') return false
-  return String(incident.terminalEvidence || 'none') === 'none'
+  return String(incident.bodyCompletionEvidence || 'none') === 'none'
 }
 
 /**
@@ -1555,7 +1555,7 @@ export function shouldNotifyIncidentTransition(before, after) {
   if (before.id !== after.id) return true
   return before.incidentKind !== after.incidentKind
     || before.lifecycleClass !== after.lifecycleClass
-    || before.terminalEvidence !== after.terminalEvidence
+    || before.bodyCompletionEvidence !== after.bodyCompletionEvidence
 }
 
 /**
@@ -3466,7 +3466,7 @@ async function main() {
         turnExchangeId: diagnostic.turnExchangeId ?? null,
         lastMessageId: diagnostic.lastMessageId ?? null,
         metadataId,
-        terminalEvidence: diagnostic.terminalEvidence ?? null,
+        bodyCompletionEvidence: diagnostic.bodyCompletionEvidence ?? null,
         minGapMs: 5_000,
       })
 
@@ -3474,7 +3474,7 @@ async function main() {
       if (tailGap.hasTailGap) {
         const reason = [
           `canonical Body 尾部落后于 DevSpace 执行事实 ${formatDurationMs(tailGap.gapMs)}`,
-          `Body tail=${diagnostic.tailShape || 'unknown'} / terminal=${diagnostic.terminalEvidence || 'none'}`,
+          `Body tail=${diagnostic.tailShape || 'unknown'} / completion=${diagnostic.bodyCompletionEvidence || 'none'}`,
           `尾部之后仍有 ${tailGap.recoveryAuditCount} 条 recovery audit（tool ${tailGap.recoveryToolCount} / checkpoint ${tailGap.checkpointCount}）`,
         ].join('；')
         evidenceIncident = archive.ensureIncidentForEvidence({
@@ -3491,7 +3491,7 @@ async function main() {
             turnKey: evidenceIncident.turnKey,
             lastMessageId: diagnostic.lastMessageId ?? null,
             metadataId,
-            terminalEvidence: diagnostic.terminalEvidence ?? null,
+            bodyCompletionEvidence: diagnostic.bodyCompletionEvidence ?? null,
             observedAt: now,
           })
         }
@@ -3528,7 +3528,7 @@ async function main() {
       void log('DevSpace 5m idle diagnosis completed', {
         metadataId,
         conversationId,
-        terminal: diagnostic.terminalEvidence,
+        bodyCompletion: diagnostic.bodyCompletionEvidence,
         tail: diagnostic.tailShape,
         canonicalTailGap: tailGap.hasTailGap,
         gapMs: tailGap.gapMs,
@@ -4499,7 +4499,7 @@ async function main() {
       SELECT i.id, i.turn_exchange_id AS turnExchangeId, i.turn_key AS turnKey,
              i.incident_kind AS incidentKind, i.lifecycle_class AS lifecycleClass,
              i.detected_at AS detectedAt, i.last_observed_at AS lastObservedAt, i.status,
-             i.reason, i.terminal_evidence AS terminalEvidence, i.tail_shape AS tailShape,
+             i.reason, i.terminal_evidence AS bodyCompletionEvidence, i.tail_shape AS tailShape,
              i.head_state AS headState, i.source, i.diagnostic_json AS diagnosticJson,
              c.title
       FROM incidents i
@@ -4518,7 +4518,7 @@ async function main() {
   const incidentSnapshots = (conversationId) => archive.db.prepare(`
     SELECT i.id, i.turn_exchange_id AS turnExchangeId, i.turn_key AS turnKey,
            i.incident_kind AS incidentKind, i.lifecycle_class AS lifecycleClass,
-           i.reason, i.terminal_evidence AS terminalEvidence, i.tail_shape AS tailShape,
+           i.reason, i.terminal_evidence AS bodyCompletionEvidence, i.tail_shape AS tailShape,
            i.detected_at AS detectedAt, i.last_observed_at AS lastObservedAt, i.status,
            c.title
     FROM incidents i
@@ -4547,7 +4547,7 @@ async function main() {
         turnKey: incident.turnKey,
         lastMessageId: diagnostic?.lastMessageId ?? null,
         metadataId: binding.metadataId,
-        terminalEvidence: diagnostic?.terminalEvidence ?? null,
+        bodyCompletionEvidence: diagnostic?.bodyCompletionEvidence ?? null,
         observedAt,
         beforeAt: observedAt,
       })
@@ -4671,7 +4671,7 @@ async function main() {
   const dispatchIncidentNotification = (conversationId, incident) => {
     if (!notificationConfig || !incident) return
     const body = compactNotificationText(
-      incident.reason || `${incident.terminalEvidence || 'abnormal'} / ${incident.tailShape || 'unknown tail'}`,
+      incident.reason || `${incident.bodyCompletionEvidence || 'abnormal'} / ${incident.tailShape || 'unknown tail'}`,
       180,
     )
     const payload = {
