@@ -7037,14 +7037,25 @@ async function main() {
     }
     if (timedOutBeforeBinding) {
       const provisionalStartedAt = Number(
-        provisional?.startedAt
+        pendingUnboundTimeout?.startedAt
+        ?? provisional?.startedAt
         ?? existing?.firstSeenAt
         ?? input.startAt
         ?? input.observedAt,
       )
+      const watchdogAt = Number(
+        pendingUnboundTimeout?.watchdogAt
+        ?? existing?.unboundWatchdogAt
+        ?? provisional?.repairQueuedAt
+        ?? 0,
+      )
+      const newGenerationStartedAt = Math.max(
+        Number(input.startAt || 0),
+        Number(provisional?.startedAt || 0),
+      )
+      const bindingResolvedNewerGeneration = watchdogAt > 0
+        && newGenerationStartedAt > watchdogAt
       const sourceEventId = unboundWatchdogLifeOpsEventId(input.metadataId, provisionalStartedAt)
-      // metadata-only Incident 现在已经解出了 canonical identity。先用同 key 原地补齐 LifeOps，
-      // 再让下面的 watchdog body diagnosis 给同一事件补 final/incident 细节。
       enqueueLifeOpsEvent({
         sourceEventId,
         metadataId: input.metadataId,
@@ -7058,11 +7069,15 @@ async function main() {
         inboxKind: 'incident',
         inboxHealth: 'incident',
         incidentType: 'active-zombie-unbound',
-        incidentState: 'bound-awaiting-diagnosis',
+        incidentState: bindingResolvedNewerGeneration
+          ? 'bound-superseded-by-new-turn'
+          : 'bound-awaiting-diagnosis',
         metadata: {
           bindingEvidence: input.evidence ?? null,
           bindingConfidence: input.confidence ?? null,
           provisionalStartedAt,
+          watchdogAt: watchdogAt || null,
+          newGenerationStartedAt: bindingResolvedNewerGeneration ? newGenerationStartedAt : null,
         },
       })
       lifeOpsEventOverrideByConversation.set(input.conversationId, {
@@ -7070,13 +7085,66 @@ async function main() {
         metadataId: input.metadataId,
         startedAt: provisionalStartedAt,
       })
-      // timeout 只是“强制诊断”的触发器。现在 CID 已经通过 exact body match 解出，
-      // 才把真正 conversation 交给现有 watchdog 诊断/incident/Bark 流程。
-      markSyncReady(input.conversationId, 'watchdog:devspace-timeout', 0)
-      void log('timed-out DevSpace metadata bound; queued conversation watchdog diagnostic', {
-        metadataId: input.metadataId,
-        conversationId: input.conversationId,
-      })
+      if (bindingResolvedNewerGeneration) {
+        pendingUnboundWatchdogDiagnoses.delete(input.metadataId)
+        dispatchPersistentNotification({
+          notificationKey: unboundWatchdogDiagnosisNotificationKey(input.metadataId, provisionalStartedAt),
+          kind: 'watchdog-diagnosis:bound-superseded',
+          conversationId: input.conversationId,
+          turnKey: input.turnExchangeId ?? input.metadataId,
+          payload: buildSupersededUnboundWatchdogDiagnosisNotificationPayload({
+            conversationId: input.conversationId,
+            metadataId: input.metadataId,
+            title: conversationTitle(input.conversationId),
+            newGenerationStartedAt,
+          }),
+          successLog: 'superseded unbound watchdog diagnosis notification sent',
+          failureLog: 'superseded unbound watchdog diagnosis notification failed',
+          logFields: {
+            metadataId: input.metadataId,
+            oldStartedAt: provisionalStartedAt,
+            watchdogAt,
+            newGenerationStartedAt,
+          },
+        })
+        void log('timed-out unbound generation bound after newer generation start; skipped stale latest-Body diagnosis', {
+          metadataId: input.metadataId,
+          conversationId: input.conversationId,
+          oldStartedAt: provisionalStartedAt,
+          watchdogAt,
+          newGenerationStartedAt,
+          turnExchangeId: input.turnExchangeId ?? null,
+        })
+      }
+      else {
+        const completedAtForGeneration = watchdogAt || Number(input.observedAt || Date.now())
+        const boundPending = {
+          startedAt: provisionalStartedAt,
+          lastEventAt: completedAtForGeneration,
+          lastWatchdogAt: completedAtForGeneration,
+          watchdogPendingAt: completedAtForGeneration,
+          startType: 'devspace:unbound-first-tool',
+          lastDiagnosticTurnKey: input.turnExchangeId ?? null,
+          completedAt: completedAtForGeneration,
+        }
+        pendingUnboundWatchdogDiagnoses.delete(input.metadataId)
+        pendingWatchdogDiagnoses.set(input.conversationId, boundPending)
+        persistActiveTurn(input.conversationId, boundPending)
+        recentConversationComplete.set(input.conversationId, boundPending.completedAt)
+        archive.updateDevSpaceBindingTurn({
+          conversationId: input.conversationId,
+          observedAt: boundPending.completedAt,
+          lifecycleState: 'closed',
+        })
+        markSyncReady(input.conversationId, 'watchdog:devspace-timeout', 0)
+        void log('timed-out DevSpace metadata bound; promoted old generation to pending conversation diagnosis', {
+          metadataId: input.metadataId,
+          conversationId: input.conversationId,
+          generationStartedAt: boundPending.startedAt,
+          generationCompletedAt: boundPending.completedAt,
+          turnExchangeId: input.turnExchangeId ?? null,
+        })
+      }
     }
     return binding
   }
