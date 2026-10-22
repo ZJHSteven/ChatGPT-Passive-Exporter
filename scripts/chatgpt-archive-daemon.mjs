@@ -6939,6 +6939,19 @@ async function main() {
       || existing?.unboundWatchdogAt
       || provisional?.repairQueuedAt,
     )
+    const pendingUnboundWatchdogAt = Number(
+      pendingUnboundTimeout?.watchdogAt
+      ?? existing?.unboundWatchdogAt
+      ?? provisional?.repairQueuedAt
+      ?? 0,
+    )
+    const bindingGenerationStartedAt = Math.max(
+      Number(input.startAt || 0),
+      Number(provisional?.startedAt || 0),
+    )
+    const bindingResolvedNewerGeneration = timedOutBeforeBinding
+      && pendingUnboundWatchdogAt > 0
+      && bindingGenerationStartedAt > pendingUnboundWatchdogAt
     if (existing?.conversationId && existing.conversationId !== input.conversationId) {
       if (!shouldSupersedeDevSpaceBinding(existing, input)) {
         void log('DevSpace metadata binding conflict left unchanged', {
@@ -7013,7 +7026,9 @@ async function main() {
       recoveryRebound,
       recoveryMirrored,
     })
-    if (lifecycleState === 'active') activateBoundDevSpaceTurn(binding, input.startAt)
+    if (lifecycleState === 'active' && (!timedOutBeforeBinding || bindingResolvedNewerGeneration)) {
+      activateBoundDevSpaceTurn(binding, input.startAt)
+    }
     else if (completedAt > 0) {
       // late binding 时 provisional firstSeenAt 可能仍落在上一轮 completion 之前，而同 metadata
       // 已经在 completion 之后产生了 durable tool audit。把这些已有事实补回 candidate，不能再等
@@ -7043,18 +7058,8 @@ async function main() {
         ?? input.startAt
         ?? input.observedAt,
       )
-      const watchdogAt = Number(
-        pendingUnboundTimeout?.watchdogAt
-        ?? existing?.unboundWatchdogAt
-        ?? provisional?.repairQueuedAt
-        ?? 0,
-      )
-      const newGenerationStartedAt = Math.max(
-        Number(input.startAt || 0),
-        Number(provisional?.startedAt || 0),
-      )
-      const bindingResolvedNewerGeneration = watchdogAt > 0
-        && newGenerationStartedAt > watchdogAt
+      const watchdogAt = pendingUnboundWatchdogAt
+      const newGenerationStartedAt = bindingGenerationStartedAt
       const sourceEventId = unboundWatchdogLifeOpsEventId(input.metadataId, provisionalStartedAt)
       enqueueLifeOpsEvent({
         sourceEventId,
