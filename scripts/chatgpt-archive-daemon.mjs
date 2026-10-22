@@ -7730,6 +7730,12 @@ async function main() {
       // 没有触发 binding reconcile，导致“Body 已在库里但 metadata 仍 unbound”。
       const passiveDiagnostic = diagnoseLatestRun(normalized)
       publishDevSpaceBindingEvidenceFromBody(conversationId, passiveDiagnostic)
+      // post-completion candidate 若正等 Body 身份确认，优先复用页面自然产生的 Body，零额外请求。
+      // publish 可能刚在这一份 Body 上完成 late binding 并补出 candidate，因此必须排在 publish 后。
+      completePostCompletionDevSpaceCandidate(conversationId, {
+        diagnostic: passiveDiagnostic,
+        bodyTurnStartedAt: watchdogTurnStartedAtFromPayload(normalized, passiveDiagnostic),
+      }, capturedAt)
       const recoverySuperseded = reconcileDevSpaceRecoveryWithCanonical(conversationId, normalized)
       if (recoverySuperseded > 0) {
         void log('passive canonical body superseded DevSpace recovery overlay', {
