@@ -6798,19 +6798,14 @@ async function main() {
     if (first <= completed || last <= completed) return false
 
     const existing = postCompletionDevSpaceCandidates.get(conversationId)
-    const candidate = {
+    const candidate = mergePostCompletionDevSpaceCandidate(existing, {
       conversationId,
       metadataId: binding.metadataId,
       completedAt: completed,
-      earliestAuditAt: existing
-        ? Math.min(Number(existing.earliestAuditAt), first)
-        : first,
-      latestAuditAt: existing
-        ? Math.max(Number(existing.latestAuditAt), last)
-        : last,
-      lastCheckedAt: existing?.lastCheckedAt ?? null,
-      lastCheckedAuditAt: existing?.lastCheckedAuditAt ?? null,
-    }
+      auditAt: first,
+      latestAuditAt: last,
+    })
+    if (!candidate) return false
     postCompletionDevSpaceCandidates.set(conversationId, candidate)
     archive.updateDevSpaceBindingTurn({
       conversationId,
