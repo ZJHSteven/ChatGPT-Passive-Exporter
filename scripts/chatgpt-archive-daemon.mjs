@@ -6961,8 +6961,11 @@ async function main() {
       Number(provisional?.startedAt || 0),
     )
     const bindingResolvedNewerGeneration = timedOutBeforeBinding
-      && pendingUnboundWatchdogAt > 0
-      && bindingGenerationStartedAt > pendingUnboundWatchdogAt
+      && unboundBindingResolvesNewerGeneration(
+        pendingUnboundWatchdogAt,
+        input.startAt,
+        provisional?.startedAt,
+      )
     if (existing?.conversationId && existing.conversationId !== input.conversationId) {
       if (!shouldSupersedeDevSpaceBinding(existing, input)) {
         void log('DevSpace metadata binding conflict left unchanged', {
