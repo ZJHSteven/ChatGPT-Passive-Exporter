@@ -44,7 +44,7 @@ import {
   extractConversationEvents,
   summarizeTurnTopicWssFrame,
   incidentKindForTrigger,
-  isConfirmedTerminalTrigger,
+  isConfirmedCompletionTrigger,
   restoreCooldownUntil,
   resumeRetryDelayMs,
   shouldRetireIdleLiveTransport,
@@ -89,8 +89,8 @@ import {
   shouldRebuildGuardianForMissingWss,
   shouldSupersedeDevSpaceBinding,
   shortDevSpaceMetadataAlias,
-  shouldClassifyTerminalForTrigger,
-  shouldDeferConfirmedTerminalIncident,
+  shouldClassifyCompletionForTrigger,
+  shouldDeferConfirmedCompletionIncident,
   watchdogTriggerForStartType,
   syncSubrequestFetchOptions,
 } from '../scripts/chatgpt-archive-daemon.mjs'
@@ -749,8 +749,8 @@ describe('ChatGPT Archive daemon WSS parser', () => {
   })
 
   test('5 分钟 bound body probe 可识别显式异常，但本身不是 confirmed complete 证据', () => {
-    expect(shouldClassifyTerminalForTrigger('devspace-idle:bound-probe')).toBe(true)
-    expect(isConfirmedTerminalTrigger('devspace-idle:bound-probe')).toBe(false)
+    expect(shouldClassifyCompletionForTrigger('devspace-idle:bound-probe')).toBe(true)
+    expect(isConfirmedCompletionTrigger('devspace-idle:bound-probe')).toBe(false)
   })
 
   test('工具静默通知把事件放 title、会话放 subtitle，并按 conversation 分组', () => {
@@ -801,7 +801,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     const payload = buildDevSpaceIdleDiagnosisNotificationPayload({
       conversationId: 'conversation-a',
       title: '恢复并继续 ClassFlow',
-      diagnostic: { terminalEvidence: 'none', tailShape: 'tool-result-returned' },
+      diagnostic: { bodyCompletionEvidence: 'none', tailShape: 'tool-result-returned' },
       canonicalMessageCount: 5317,
       tailGap: {
         canonicalTailAt: Date.UTC(2026, 9, 10, 10, 0, 0),
@@ -1170,50 +1170,50 @@ describe('ChatGPT Archive daemon WSS parser', () => {
   })
 
   test('realtime complete/watchdog/gap repair 允许 incident；startup 历史补账不允许', () => {
-    expect(shouldClassifyTerminalForTrigger('wss:conversation-turn-complete')).toBe(true)
-    expect(shouldClassifyTerminalForTrigger('watchdog:active-timeout')).toBe(true)
-    expect(shouldClassifyTerminalForTrigger('reconcile:startup')).toBe(false)
-    expect(shouldClassifyTerminalForTrigger('reconcile:periodic')).toBe(true)
-    expect(shouldClassifyTerminalForTrigger('reconcile:wss-reconnect')).toBe(true)
-    expect(shouldClassifyTerminalForTrigger('reconcile:guardian-recover')).toBe(true)
-    expect(shouldClassifyTerminalForTrigger('reconcile:gap-repair')).toBe(true)
-    expect(shouldClassifyTerminalForTrigger('reconcile:cooldown-recover')).toBe(true)
-    expect(shouldClassifyTerminalForTrigger('wss:conversation-created')).toBe(false)
+    expect(shouldClassifyCompletionForTrigger('wss:conversation-turn-complete')).toBe(true)
+    expect(shouldClassifyCompletionForTrigger('watchdog:active-timeout')).toBe(true)
+    expect(shouldClassifyCompletionForTrigger('reconcile:startup')).toBe(false)
+    expect(shouldClassifyCompletionForTrigger('reconcile:periodic')).toBe(true)
+    expect(shouldClassifyCompletionForTrigger('reconcile:wss-reconnect')).toBe(true)
+    expect(shouldClassifyCompletionForTrigger('reconcile:guardian-recover')).toBe(true)
+    expect(shouldClassifyCompletionForTrigger('reconcile:gap-repair')).toBe(true)
+    expect(shouldClassifyCompletionForTrigger('reconcile:cooldown-recover')).toBe(true)
+    expect(shouldClassifyCompletionForTrigger('wss:conversation-created')).toBe(false)
 
-    expect(isConfirmedTerminalTrigger('wss:conversation-turn-complete')).toBe(true)
-    expect(isConfirmedTerminalTrigger('reconcile:periodic:async-complete')).toBe(true)
-    expect(isConfirmedTerminalTrigger('reconcile:periodic:async-complete:settle')).toBe(true)
-    expect(isConfirmedTerminalTrigger('watchdog:active-timeout')).toBe(false)
-    expect(isConfirmedTerminalTrigger('reconcile:wss-reconnect')).toBe(false)
+    expect(isConfirmedCompletionTrigger('wss:conversation-turn-complete')).toBe(true)
+    expect(isConfirmedCompletionTrigger('reconcile:periodic:async-complete')).toBe(true)
+    expect(isConfirmedCompletionTrigger('reconcile:periodic:async-complete:settle')).toBe(true)
+    expect(isConfirmedCompletionTrigger('watchdog:active-timeout')).toBe(false)
+    expect(isConfirmedCompletionTrigger('reconcile:wss-reconnect')).toBe(false)
     expect(shouldNotifyHistoricalIncidentForTrigger('reconcile:startup')).toBe(false)
     expect(shouldNotifyHistoricalIncidentForTrigger('watchdog:active-timeout')).toBe(false)
     expect(shouldNotifyHistoricalIncidentForTrigger('reconcile:gap-repair')).toBe(false)
   })
 
   test('complete 首次 body 未收敛时只延迟立案一次，settle 复核不再循环', () => {
-    expect(shouldDeferConfirmedTerminalIncident(
+    expect(shouldDeferConfirmedCompletionIncident(
       'wss:conversation-turn-complete',
-      { terminalEvidence: 'none' },
+      { bodyCompletionEvidence: 'none' },
     )).toBe(true)
-    expect(shouldDeferConfirmedTerminalIncident(
+    expect(shouldDeferConfirmedCompletionIncident(
       'wss:conversation-turn-complete:settle',
-      { terminalEvidence: 'none' },
+      { bodyCompletionEvidence: 'none' },
     )).toBe(false)
-    expect(shouldDeferConfirmedTerminalIncident(
+    expect(shouldDeferConfirmedCompletionIncident(
       'reconcile:periodic:async-complete',
-      { terminalEvidence: 'none' },
+      { bodyCompletionEvidence: 'none' },
     )).toBe(true)
-    expect(shouldDeferConfirmedTerminalIncident(
+    expect(shouldDeferConfirmedCompletionIncident(
       'wss:conversation-turn-complete',
-      { terminalEvidence: 'final' },
+      { bodyCompletionEvidence: 'final' },
     )).toBe(false)
-    expect(shouldDeferConfirmedTerminalIncident(
+    expect(shouldDeferConfirmedCompletionIncident(
       'wss:conversation-turn-complete',
-      { terminalEvidence: 'interrupted' },
+      { bodyCompletionEvidence: 'interrupted' },
     )).toBe(false)
-    expect(shouldDeferConfirmedTerminalIncident(
+    expect(shouldDeferConfirmedCompletionIncident(
       'watchdog:active-timeout',
-      { terminalEvidence: 'none' },
+      { bodyCompletionEvidence: 'none' },
     )).toBe(false)
   })
 
