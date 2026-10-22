@@ -77,7 +77,7 @@ export interface BodySnapshotTrace extends ActiveTurnTraceBase {
   turnExchangeId: string | null
   userMessageId: string | null
   lastMessageId: string | null
-  terminalEvidence: RunDiagnostic['terminalEvidence']
+  bodyCompletionEvidence: RunDiagnostic['bodyCompletionEvidence']
   interruptedReason: string | null
   tailShape: RunDiagnostic['tailShape']
   currentNode: string | null
@@ -163,7 +163,7 @@ export function buildBodySnapshotTrace(input: {
     turnExchangeId: input.diagnostic.turnExchangeId ?? null,
     userMessageId: input.diagnostic.userMessageId ?? null,
     lastMessageId: input.diagnostic.lastMessageId ?? null,
-    terminalEvidence: input.diagnostic.terminalEvidence,
+    bodyCompletionEvidence: input.diagnostic.bodyCompletionEvidence,
     interruptedReason: input.diagnostic.interruptedReason ?? null,
     tailShape: input.diagnostic.tailShape,
     currentNode: input.diagnostic.currentNode ?? null,

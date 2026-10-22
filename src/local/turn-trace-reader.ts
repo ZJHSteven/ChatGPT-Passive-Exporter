@@ -7,7 +7,7 @@ export interface CompletionBurstItem {
   activeBefore: number
   requestId: string | null
   turnExchangeId: string | null
-  terminalEvidence: string | null
+  bodyCompletionEvidence: string | null
   tailShape: string | null
 }
 
@@ -131,7 +131,7 @@ export function clusterCompletionBursts(
         activeBefore: record.activeBefore,
         requestId: body?.requestId ?? null,
         turnExchangeId: body?.turnExchangeId ?? null,
-        terminalEvidence: body?.terminalEvidence ?? null,
+        bodyCompletionEvidence: body?.bodyCompletionEvidence ?? null,
         tailShape: body?.tailShape ?? null,
       }
     })

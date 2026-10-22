@@ -58,13 +58,13 @@ export function evaluateRecoveryEligibility(
     return { eligible: true, reason: '服务器已终止且仅 reasoning 尾部未收口，可交给 Luna 再做语义审批。' }
   }
 
-  if (diagnostic.terminalEvidence === 'client-stopped' || diagnostic.terminalEvidence === 'interrupted') {
+  if (diagnostic.bodyCompletionEvidence === 'client-stopped' || diagnostic.bodyCompletionEvidence === 'interrupted') {
     return { eligible: true, reason: 'payload 有明确中断证据，且尾部不是未回执 tool call。' }
   }
 
   return {
     eligible: false,
-    reason: `事故缺少允许自动恢复的明确形态：terminal=${diagnostic.terminalEvidence}, tail=${diagnostic.tailShape}。`,
+    reason: `事故缺少允许自动恢复的明确形态：bodyCompletion=${diagnostic.bodyCompletionEvidence}, tail=${diagnostic.tailShape}。`,
   }
 }
 

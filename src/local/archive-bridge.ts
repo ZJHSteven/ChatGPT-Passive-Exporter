@@ -113,7 +113,7 @@ export interface ArchiveBridgeEvent {
   requestId?: string | null
   event?: string | null
   transport?: string | null
-  terminalEvidence?: string | null
+  bodyCompletionEvidence?: string | null
   tailShape?: string | null
 }
 
