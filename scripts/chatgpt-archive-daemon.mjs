@@ -525,6 +525,22 @@ export function recordCatalogWatchdogProgress(active, now = Date.now()) {
   }
 }
 
+/** catalog update_time 变化会开启新的弱 observation generation；未变化才沿用原 firstSeenAt。 */
+export function catalogObservationStartedAt(current, nextUpdateTime, now = Date.now()) {
+  const observedAt = Number(now)
+  const currentFirstSeenAt = Number(current?.firstSeenAt)
+  const progressed = Boolean(
+    current
+    && nextUpdateTime !== null
+    && nextUpdateTime !== undefined
+    && String(nextUpdateTime) !== String(current.updateTime ?? ''),
+  )
+  if (progressed) return Number.isFinite(observedAt) ? observedAt : Date.now()
+  return Number.isFinite(currentFirstSeenAt) && currentFirstSeenAt > 0
+    ? currentFirstSeenAt
+    : (Number.isFinite(observedAt) ? observedAt : Date.now())
+}
+
 /**
  * DevSpace audit polling 会故意回看一个短 overlap，避免 cursor 边界丢事件。
  * 因此 seen-id 只能在对应事件已经落到“下一次查询下界”之外后删除；按 wall-clock 年龄
