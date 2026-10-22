@@ -61,7 +61,7 @@ export function shouldStartCatalogWatchdog(input?: {
   alreadyActive?: boolean
   catalogUpdateTime?: unknown
   archivedUpdateTime?: unknown
-  archivedTerminalState?: unknown
+  archivedBodyCompletionState?: unknown
 }): boolean
 
 /** catalog 服务端 update_time 真正前进后，从 progress 时刻重新武装 watchdog。 */
@@ -195,8 +195,8 @@ export function shouldRetireIdleLiveTransport(
     hasResumeCredential?: boolean
   },
 ): boolean
-export function terminalStateSupersedesResumeCredential(
-  row: { terminalState?: unknown, lastSeenAt?: unknown } | null | undefined,
+export function bodyCompletionStateSupersedesResumeCredential(
+  row: { bodyCompletionState?: unknown, lastSeenAt?: unknown } | null | undefined,
   credentialSeenAt: unknown,
 ): boolean
 

@@ -49,7 +49,7 @@ import {
   resumeRetryDelayMs,
   shouldRetireIdleLiveTransport,
   shouldTripObserved429,
-  terminalStateSupersedesResumeCredential,
+  bodyCompletionStateSupersedesResumeCredential,
   unboundWatchdogDiagnosisNotificationKey,
   sanitizeCapturedHeaders,
   passiveObservationMatchesReady,
@@ -588,16 +588,16 @@ test('SSE 只有拿到 resume capability 且持续无任何 bytes 才判为 idle
 })
 
 test('上一轮 conversation final 不能挡住更新的 resume token', () => {
-  expect(terminalStateSupersedesResumeCredential({
-    terminalState: 'final',
+  expect(bodyCompletionStateSupersedesResumeCredential({
+    bodyCompletionState: 'final',
     lastSeenAt: 10_000,
   }, 12_000)).toBe(false)
-  expect(terminalStateSupersedesResumeCredential({
-    terminalState: 'final',
+  expect(bodyCompletionStateSupersedesResumeCredential({
+    bodyCompletionState: 'final',
     lastSeenAt: 12_000,
   }, 12_000)).toBe(true)
-  expect(terminalStateSupersedesResumeCredential({
-    terminalState: 'none',
+  expect(bodyCompletionStateSupersedesResumeCredential({
+    bodyCompletionState: 'none',
     lastSeenAt: 20_000,
   }, 12_000)).toBe(false)
 })
@@ -1232,19 +1232,19 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       alreadyActive: false,
       catalogUpdateTime: 200,
       archivedUpdateTime: 100,
-      archivedTerminalState: 'final',
+      archivedBodyCompletionState: 'final',
     })).toBe(true)
     expect(shouldStartCatalogWatchdog({
       alreadyActive: false,
       catalogUpdateTime: 100,
       archivedUpdateTime: 100,
-      archivedTerminalState: 'final',
+      archivedBodyCompletionState: 'final',
     })).toBe(false)
     expect(shouldStartCatalogWatchdog({
       alreadyActive: false,
       catalogUpdateTime: 100,
       archivedUpdateTime: 100,
-      archivedTerminalState: 'none',
+      archivedBodyCompletionState: 'none',
     })).toBe(true)
     expect(shouldStartCatalogWatchdog({ alreadyActive: true })).toBe(false)
 
@@ -1286,14 +1286,14 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       catalogObservationCompleted: true,
       catalogUpdateTime: 100,
       archivedUpdateTime: 100,
-      archivedTerminalState: 'none',
+      archivedBodyCompletionState: 'none',
     })).toBe(false)
     expect(shouldStartCatalogWatchdog({
       alreadyActive: false,
       catalogObservationCompleted: false,
       catalogUpdateTime: 101,
       archivedUpdateTime: 100,
-      archivedTerminalState: 'none',
+      archivedBodyCompletionState: 'none',
     })).toBe(true)
 
     const active = {

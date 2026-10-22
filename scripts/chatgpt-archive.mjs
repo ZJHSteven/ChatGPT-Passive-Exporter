@@ -172,7 +172,7 @@ export async function waitForCanonicalActorFinal({ databasePath, conversationId,
     while (Date.now() < deadline) {
       const summary = archive.getConversationSummary(conversationId)
       if (
-        summary?.terminalState === 'final'
+        summary?.bodyCompletionState === 'final'
         && Number(summary.capturedAt || 0) >= Number(submittedAt || 0)
       ) {
         const finalMessage = latestAssistantFinal(archive.getMessages(conversationId), submittedAt)
