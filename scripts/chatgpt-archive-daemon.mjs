@@ -7642,13 +7642,12 @@ async function main() {
   )
 
   const queueTimedOutDevSpaceBindingProbes = () => {
-    const timedOutEntries = [...unboundDevSpaceTurns.entries()]
-      .filter(([, candidate]) => Boolean(candidate.repairQueuedAt))
+    const timedOutEntries = [...pendingUnboundWatchdogDiagnoses.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
     if (timedOutEntries.length === 0) return 0
 
     const generation = timedOutEntries
-      .map(([metadataId, candidate]) => `${metadataId}:${Number(candidate.repairQueuedAt)}`)
+      .map(([metadataId, pending]) => `${metadataId}:${Number(pending.watchdogAt)}`)
       .join('|')
     const candidateConversationIds = new Set([
       ...activeTurns.keys(),
@@ -7706,14 +7705,14 @@ async function main() {
       // 持久 notification key 保证这个 provisional 事件跨循环/重启只成功发送一次。
       enqueueLifeOpsUnboundWatchdog(metadataId, candidate, now)
       dispatchUnboundWatchdogNotification(metadataId, candidate, now)
-      if (!candidate.repairQueuedAt) {
-        candidate.repairQueuedAt = now
-        void log('unbound DevSpace watchdog exceeded threshold; queued catalog repair', {
-          metadataId,
-          activeForMs: now - startedAt,
-        })
-        void scheduleGapRepair('devspace-unbound-timeout')
-      }
+      void log('unbound DevSpace watchdog exceeded threshold; generation completed and queued catalog repair', {
+        metadataId,
+        activeForMs: now - startedAt,
+      })
+      // 45m 到点后这代 provisional generation 立即结束。CID 解析/Body 诊断由上面的
+      // pendingUnboundWatchdogDiagnoses 独立持有；后续真实 audit 会从新的 first_seen_at 起表。
+      unboundDevSpaceTurns.delete(metadataId)
+      void scheduleGapRepair('devspace-unbound-timeout')
     }
   }
 
