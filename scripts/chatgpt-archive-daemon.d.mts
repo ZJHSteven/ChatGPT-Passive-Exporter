@@ -92,6 +92,11 @@ export function mergePostCompletionDevSpaceCandidate(
   },
 ): Record<string, unknown> | null
 
+export function unboundBindingResolvesNewerGeneration(
+  watchdogAt: unknown,
+  ...candidateStarts: unknown[]
+): boolean
+
 /** Body ready queue 触发器优先级；lifecycle/Watchdog 必须高于后台 binding probe。 */
 export function syncTriggerPriority(trigger: unknown): number
 export function preferredSyncTrigger(existingTrigger: unknown, nextTrigger: unknown): unknown

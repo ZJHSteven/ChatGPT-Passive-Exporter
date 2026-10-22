@@ -69,6 +69,7 @@ import {
   postCompletionBodyConfirmsNewTurn,
   bodyCompletionBelongsToCurrentGeneration,
   mergePostCompletionDevSpaceCandidate,
+  unboundBindingResolvesNewerGeneration,
   syncTriggerPriority,
   preferredSyncTrigger,
   shouldRepairConversationTransport,
@@ -1552,6 +1553,27 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       earliestAuditAt: first,
       latestAuditAt: third + 1_000,
     })
+  })
+
+  test('unbound timeout 后 exact binding 只在工具起点跨过 watchdogAt 时归为新 generation', () => {
+    const watchdogAt = Date.parse('2026-10-21T16:31:44.000Z')
+    expect(unboundBindingResolvesNewerGeneration(
+      watchdogAt,
+      Date.parse('2026-10-21T16:30:00.000Z'),
+    )).toBe(false)
+    expect(unboundBindingResolvesNewerGeneration(
+      watchdogAt,
+      Date.parse('2026-10-21T16:31:44.000Z'),
+    )).toBe(false)
+    expect(unboundBindingResolvesNewerGeneration(
+      watchdogAt,
+      Date.parse('2026-10-21T16:32:01.000Z'),
+    )).toBe(true)
+    expect(unboundBindingResolvesNewerGeneration(
+      watchdogAt,
+      Date.parse('2026-10-21T16:20:00.000Z'),
+      Date.parse('2026-10-21T16:40:00.000Z'),
+    )).toBe(true)
   })
 
   test('Body ready queue 永不让低优先级 binding probe 覆盖 lifecycle 请求', () => {
