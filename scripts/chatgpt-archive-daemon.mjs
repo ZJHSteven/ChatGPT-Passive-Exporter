@@ -8001,8 +8001,9 @@ async function main() {
           && nextUpdateTime !== null
           && String(nextUpdateTime) !== String(current.updateTime ?? ''),
         )
+        const observationStartedAt = catalogObservationStartedAt(current, nextUpdateTime, now)
         catalogActive.set(id, {
-          firstSeenAt: current?.firstSeenAt ?? now,
+          firstSeenAt: observationStartedAt,
           lastSeenAt: now,
           asyncStatus: item.async_status,
           updateTime: nextUpdateTime,
@@ -8028,7 +8029,7 @@ async function main() {
           archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
         })) {
           const nextActive = {
-            startedAt: current?.firstSeenAt ?? now,
+            startedAt: observationStartedAt,
             lastEventAt: now,
             lastWatchdogAt: null,
             watchdogPendingAt: null,
@@ -9189,8 +9190,9 @@ async function main() {
               && nextUpdateTime !== null
               && String(nextUpdateTime) !== String(current.updateTime ?? ''),
             )
+            const observationStartedAt = catalogObservationStartedAt(current, nextUpdateTime, now)
             catalogActive.set(id, {
-              firstSeenAt: current?.firstSeenAt ?? now,
+              firstSeenAt: observationStartedAt,
               lastSeenAt: now,
               asyncStatus: item.async_status,
               updateTime: nextUpdateTime,
@@ -9229,7 +9231,7 @@ async function main() {
               archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
             })) {
               const nextActive = {
-                startedAt: current?.firstSeenAt ?? now,
+                startedAt: observationStartedAt,
                 lastEventAt: now,
                 lastWatchdogAt: null,
                 watchdogPendingAt: null,
