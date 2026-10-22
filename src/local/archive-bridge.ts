@@ -25,7 +25,7 @@ export interface ArchiveBridgeConversationRow {
   importedAt: number
   messageCount: number
   resourceCount: number
-  terminalState?: string | null
+  bodyCompletionState?: string | null
   incidentState?: string | null
   lastFinishType?: string | null
   lastFinishReason?: string | null
@@ -298,7 +298,7 @@ function conversationLifecycle(
   if (incident) return { state: 'aborted', active, incident }
   if (active) return { state: 'running', active, incident }
   const conversation = archive.list(1000).find(row => row.id === conversationId)
-  if (conversation?.terminalState || conversation?.lastFinishType) {
+  if (conversation?.bodyCompletionState || conversation?.lastFinishType) {
     return { state: 'completed', active, incident }
   }
   return { state: 'idle', active, incident }
@@ -344,7 +344,7 @@ export function buildArchiveBridgeWorksite(
     reviewState: 'unread',
     inboxKind: lifecycle.state === 'aborted' ? 'incident' : 'turn',
     inboxHealth: lifecycle.state === 'aborted' ? 'incident' : 'healthy',
-    finalState: conversation.lastFinishType ?? conversation.terminalState ?? null,
+    finalState: conversation.lastFinishType ?? conversation.bodyCompletionState ?? null,
     incidentType: lifecycle.incident && typeof lifecycle.incident.lifecycleClass === 'string'
       ? lifecycle.incident.lifecycleClass
       : null,
@@ -356,7 +356,7 @@ export function buildArchiveBridgeWorksite(
       currentNode: conversation.currentNode,
       messageCount: conversation.messageCount,
       resourceCount: conversation.resourceCount,
-      terminalState: conversation.terminalState ?? null,
+      bodyCompletionState: conversation.bodyCompletionState ?? null,
       incidentState: conversation.incidentState ?? null,
       lastFinishType: conversation.lastFinishType ?? null,
       lastFinishReason: conversation.lastFinishReason ?? null,
@@ -655,7 +655,7 @@ export class ArchiveBridgeServer {
             ? 'aborted'
             : activeIds.has(row.id)
               ? 'running'
-              : row.terminalState || row.lastFinishType
+              : row.bodyCompletionState || row.lastFinishType
                 ? 'completed'
                 : 'idle',
         })),
@@ -696,16 +696,16 @@ export class ArchiveBridgeServer {
       )
       const conversations = rows.map(row => {
         const conversationId = typeof row.conversationId === 'string' ? row.conversationId : ''
-        const terminalState = typeof row.terminalState === 'string' ? row.terminalState : null
+        const bodyCompletionState = typeof row.bodyCompletionState === 'string' ? row.bodyCompletionState : null
         const lastFinishType = typeof row.lastFinishType === 'string' ? row.lastFinishType : null
-        const { terminalState: _terminalState, lastFinishType: _lastFinishType, ...publicRow } = row
+        const { bodyCompletionState: _bodyCompletionState, lastFinishType: _lastFinishType, ...publicRow } = row
         return {
           ...publicRow,
           lifecycleState: openIncidentIds.has(conversationId)
             ? 'aborted'
             : activeIds.has(conversationId)
               ? 'running'
-              : terminalState || lastFinishType
+              : bodyCompletionState || lastFinishType
                 ? 'completed'
                 : 'idle',
         }
