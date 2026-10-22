@@ -7800,8 +7800,10 @@ async function main() {
         const archived = archive.db.prepare(
           'SELECT update_time AS updateTime, terminal_state AS terminalState FROM conversations WHERE id = ?',
         ).get(id)
+        const catalogObservationCompleted = archive.hasCatalogWatchdogCompleted(id, item.update_time ?? null)
         if (shouldStartCatalogWatchdog({
           alreadyActive: checkpointWatches.has(id),
+          catalogObservationCompleted,
           catalogUpdateTime: item.update_time ?? null,
           archivedUpdateTime: archived?.updateTime ?? null,
           archivedTerminalState: archived?.terminalState ?? null,
@@ -7810,6 +7812,7 @@ async function main() {
         }
         if (shouldStartCatalogWatchdog({
           alreadyActive: activeTurns.has(id),
+          catalogObservationCompleted,
           catalogUpdateTime: item.update_time ?? null,
           archivedUpdateTime: archived?.updateTime ?? null,
           archivedTerminalState: archived?.terminalState ?? null,
@@ -7919,8 +7922,10 @@ async function main() {
           SELECT update_time AS updateTime, terminal_state AS terminalState
           FROM conversations WHERE id = ?
         `).get(id)
+        const catalogObservationCompleted = archive.hasCatalogWatchdogCompleted(id, item.update_time ?? null)
         if (shouldStartCatalogWatchdog({
           alreadyActive: checkpointWatches.has(id),
+          catalogObservationCompleted,
           catalogUpdateTime: item.update_time ?? null,
           archivedUpdateTime: archived?.updateTime ?? null,
           archivedTerminalState: archived?.terminalState ?? null,
@@ -8996,8 +9001,10 @@ async function main() {
               SELECT update_time AS updateTime, terminal_state AS terminalState
               FROM conversations WHERE id = ?
             `).get(id)
+            const catalogObservationCompleted = archive.hasCatalogWatchdogCompleted(id, item.update_time ?? null)
             if (shouldStartCatalogWatchdog({
               alreadyActive: checkpointWatches.has(id),
+              catalogObservationCompleted,
               catalogUpdateTime: item.update_time ?? null,
               archivedUpdateTime: archived?.updateTime ?? null,
               archivedTerminalState: archived?.terminalState ?? null,
@@ -9006,6 +9013,7 @@ async function main() {
             }
             if (shouldStartCatalogWatchdog({
               alreadyActive: activeTurns.has(id),
+              catalogObservationCompleted,
               catalogUpdateTime: item.update_time ?? null,
               archivedUpdateTime: archived?.updateTime ?? null,
               archivedTerminalState: archived?.terminalState ?? null,
