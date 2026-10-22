@@ -6273,6 +6273,7 @@ async function main() {
         // body 一旦给出 turn_exchange_id，就可以把 earlier provisional metadata 做后验校验；
         // 该步骤只读局部时间窗，不扫描整库。
         publishDevSpaceBindingEvidenceFromBody(conversationId, result.diagnostic)
+        const postCompletionCandidateBeforeBody = postCompletionDevSpaceCandidates.get(conversationId) ?? null
         // late binding 可能正是在上面的 canonical evidence publish 中才找到 metadata；因此
         // post-completion candidate 必须在 publish 之后消费，才能复用这一次 Body 直接确认新 turn。
         completePostCompletionDevSpaceCandidate(conversationId, result)
@@ -6315,7 +6316,19 @@ async function main() {
         dirty.delete(conversationId)
         readySince.delete(conversationId)
         readyNotBefore.delete(conversationId)
-        if (result.diagnostic.bodyCompletionEvidence !== 'none') {
+        const activeAfterBody = activeTurns.get(conversationId) ?? null
+        const completionBoundary = Number(
+          postCompletionCandidateBeforeBody?.completedAt
+          ?? recentConversationComplete.get(conversationId)
+          ?? 0,
+        )
+        const bodyCompletionOwnsCurrentGeneration = bodyCompletionBelongsToCurrentGeneration({
+          completedAt: completionBoundary,
+          bodyTurnStartedAt: result.bodyTurnStartedAt,
+          activeTurnKey: activeAfterBody?.lastDiagnosticTurnKey ?? null,
+          bodyTurnKey: watchdogDiagnosticTurnKey(result.diagnostic),
+        })
+        if (result.diagnostic.bodyCompletionEvidence !== 'none' && bodyCompletionOwnsCurrentGeneration) {
           recentConversationComplete.set(conversationId, Date.now())
           postCompletionDevSpaceCandidates.delete(conversationId)
           clearActiveTurn(conversationId)
@@ -6327,6 +6340,18 @@ async function main() {
             requestId: result.diagnostic.requestId ?? null,
             observedAt: Date.now(),
             lifecycleState: 'closed',
+          })
+        }
+        else if (result.diagnostic.bodyCompletionEvidence !== 'none') {
+          await log('stale Body completion ignored for current generation lifecycle', {
+            conversationId,
+            trigger,
+            bodyCompletion: result.diagnostic.bodyCompletionEvidence,
+            bodyTurnStartedAt: result.bodyTurnStartedAt,
+            bodyTurnKey: watchdogDiagnosticTurnKey(result.diagnostic),
+            completionBoundary: completionBoundary || null,
+            activeTurnKey: activeAfterBody?.lastDiagnosticTurnKey ?? null,
+            candidatePreserved: postCompletionDevSpaceCandidates.has(conversationId),
           })
         }
         if (result.completionSettleNeeded) {
