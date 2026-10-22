@@ -138,6 +138,9 @@ const DEVSPACE_AUDIT_BATCH_SIZE = 1
 const DEVSPACE_FALLBACK_POLL_MS = 60_000
 const DEVSPACE_IDLE_ALERT_THRESHOLDS_MS = [60_000, 180_000, 300_000]
 const DEVSPACE_IDLE_STARTUP_LOOKBACK_MS = 6 * 60_000
+// 新 completion 后首次 DevSpace activity 只允许一次主动 Body 身份确认。给页面自然 Body 一个很短的
+// 抢先窗口；若 passive Body 先到，ready queue 会直接复用它，从而省掉主动 GET。这里不是 idle probe。
+const POST_COMPLETION_TURN_CHECK_DELAY_MS = 1_500
 const IMAGE_ASSET_HYDRATE_INTERVAL_MS = 30_000
 const SLEEPING_TARGET_RETRY_MS = 5 * 60_000
 const PASSIVE_OBSERVER_HEALTH_INTERVAL_MS = 30_000
@@ -6789,7 +6792,11 @@ async function main() {
     // 一个 completion generation 只主动排一次 turn-check。若 Body 当时仍落后，candidate 保留；
     // 后续任何自然 Body（尤其现有 5m idle diagnosis）都可再次完成确认，不按 tool 频率主动拉取。
     if (!existing) {
-      markSyncReady(conversationId, 'devspace:post-completion-turn-check', 0)
+      markSyncReady(
+        conversationId,
+        'devspace:post-completion-turn-check',
+        POST_COMPLETION_TURN_CHECK_DELAY_MS,
+      )
       void log('DevSpace activity after completed generation queued one Body turn check', {
         conversationId,
         metadataId: binding.metadataId,
