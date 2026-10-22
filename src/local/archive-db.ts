@@ -1927,8 +1927,8 @@ export class ChatArchiveDb {
       endpoint?: string
       pageCursor?: string | null
       observationKind?: string
-      /** 只有 WSS complete / watchdog terminal verification 才允许新建 incident。 */
-      classifyTerminal?: boolean
+      /** 只有 WSS complete / Watchdog 等 completion trigger 才允许按当前 Body 建立 incident。 */
+      classifyCompletionIncident?: boolean
       /**
        * 这一页是否代表 conversation 的“当前最新头”。
        * cursor 历史页只能补 messages/nodes/raw observation，绝不能覆盖 current_node、head history、
@@ -2466,7 +2466,7 @@ export class ChatArchiveDb {
         conversationId,
         diagnostic,
         observedAt,
-        options.classifyTerminal === true,
+        options.classifyCompletionIncident === true,
         options.allowIncompleteTailIncident !== false,
         options.incidentKind ?? 'abnormal-terminal',
         options.observationKind ?? 'realtime-body',
