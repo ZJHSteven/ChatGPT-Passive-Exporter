@@ -416,7 +416,7 @@ export function classifyConversationEvent(type, updateType = null) {
  * - watchdog 本来就是“我们认为这一轮可能异常长/漏 complete”才主动做的诊断抓取；
  * - 如果抓到明确 abnormal terminal，却因为 trigger 不含 complete 而不建 incident，就失去 watchdog 的意义。
  */
-export function shouldClassifyTerminalForTrigger(trigger) {
+export function shouldClassifyCompletionForTrigger(trigger) {
   const normalized = String(trigger || '').trim().toLowerCase()
   if (normalized.startsWith('watchdog:')) return true
   if (normalized.startsWith('devspace-idle:bound-probe')) return true
@@ -434,12 +434,12 @@ export function shouldClassifyTerminalForTrigger(trigger) {
 /**
  * 某个 trigger 是否已经提供“这一轮服务端确定结束”的外部证据。
  *
- * 这和 shouldClassifyTerminalForTrigger 不同：watchdog / gap repair 可以读取 body 并识别
+ * 这和 shouldClassifyCompletionForTrigger 不同：watchdog / gap repair 可以读取 body 并识别
  * `client_stopped` 这类显式终止，但如果没有 complete 证据，单凭 reasoning/tool 尾巴仍不能
  * 推断“已经死了”。只有 WSS complete 或 catalog 明确 active→async_status=4 才允许把
- * `terminalEvidence=none + 非 final tail` 提升成异常 incident。
+ * `bodyCompletionEvidence=none + 非 final tail` 提升成异常 incident。
  */
-export function isConfirmedTerminalTrigger(trigger) {
+export function isConfirmedCompletionTrigger(trigger) {
   const normalized = String(trigger || '').trim().toLowerCase().replace(/:settle$/u, '')
   if (normalized.startsWith('wss:') && normalized.includes('complete')) return true
   return normalized.startsWith('reconcile:') && normalized.endsWith(':async-complete')
@@ -448,14 +448,14 @@ export function isConfirmedTerminalTrigger(trigger) {
 /**
  * complete 是强 lifecycle 证据，但 conversation body 的持久化可能比 WSS complete 慢一拍。
  *
- * 第一次 complete 同步若仍只看到 terminalEvidence=none，不应立即把 reasoning/tool/in_progress
+ * 第一次 complete 同步若仍只看到 bodyCompletionEvidence=none，不应立即把 reasoning/tool/in_progress
  * 快照推成 complete-no-final 手机告警。先保存事实并进入一次有界 settle；`:settle` 二次复核后
  * 仍无终态，才允许正式立案。显式 final / interrupted 不需要等待。
  */
-export function shouldDeferConfirmedTerminalIncident(trigger, diagnostic) {
+export function shouldDeferConfirmedCompletionIncident(trigger, diagnostic) {
   const normalized = String(trigger || '').trim().toLowerCase()
   if (normalized.endsWith(':settle')) return false
-  return isConfirmedTerminalTrigger(normalized) && diagnostic?.terminalEvidence === 'none'
+  return isConfirmedCompletionTrigger(normalized) && diagnostic?.bodyCompletionEvidence === 'none'
 }
 
 /**
@@ -1093,18 +1093,18 @@ export function buildDevSpaceIdleDiagnosisNotificationPayload({
   tailGap,
   canonicalMessageCount = null,
 }) {
-  const terminal = String(diagnostic?.terminalEvidence || 'none')
+  const completion = String(diagnostic?.bodyCompletionEvidence || 'none')
   const hasTailGap = Boolean(tailGap?.hasTailGap)
   const recoveryCount = Number(tailGap?.recoveryAuditCount || 0)
   const body = hasTailGap
     ? `Body 落后 ${formatDurationMs(tailGap?.gapMs)} · recovery ${recoveryCount}`
-    : terminal === 'final'
+    : completion === 'final'
       ? 'Final 已确认 · 无 Body 缺口'
       : '未确认 Final · 无 Body 缺口'
   return {
     title: hasTailGap
       ? '5m 核验 · Body 缺口'
-      : terminal === 'final'
+      : completion === 'final'
         ? '5m 核验 · Final'
         : '5m 核验 · 未结束',
     subtitle: notificationConversationSubtitle({ title, conversationId }),
@@ -1254,7 +1254,7 @@ export function unboundWatchdogStartNotificationKey(metadataId, startedAt) {
  * 这里不能依赖“是否新建 incident”，否则已有 incident / 同一 incident 更新会造成静默漏报。
  */
 export function buildWatchdogDiagnosisNotificationPayload({ conversationId, title, diagnostic, incident = null }) {
-  const terminal = String(diagnostic?.terminalEvidence || 'none')
+  const completion = String(diagnostic?.bodyCompletionEvidence || 'none')
   const evidenceTypes = Array.isArray(incident?.evidenceTypes)
     ? [...new Set(incident.evidenceTypes.map(value => String(value || '').trim()).filter(Boolean))]
     : []
@@ -1262,7 +1262,7 @@ export function buildWatchdogDiagnosisNotificationPayload({ conversationId, titl
   return {
     title: hasCanonicalTailGap
       ? 'Watchdog · Body 缺口'
-      : terminal === 'final'
+      : completion === 'final'
         ? 'Watchdog · Final 已确认'
         : 'Watchdog · 未确认 Final',
     subtitle: notificationConversationSubtitle({ title, conversationId }),
@@ -1330,10 +1330,10 @@ export function buildTurnFinalNotificationPayload({ conversationId, title, diagn
 
 /**
  * 正常 final 通知只针对在线终态/Watchdog 诊断，不在 startup/periodic 历史补档时轰炸手机。
- * settle trigger 由 isConfirmedTerminalTrigger 自己去掉 `:settle` 后识别。
+ * settle trigger 由 isConfirmedCompletionTrigger 自己去掉 `:settle` 后识别。
  */
 export function shouldNotifyTurnFinal(trigger, diagnostic) {
-  if (diagnostic?.terminalEvidence !== 'final') return false
+  if (diagnostic?.bodyCompletionEvidence !== 'final') return false
   const normalized = String(trigger || '').trim().toLowerCase()
   if (normalized.startsWith('watchdog:')) return true
   if (normalized.startsWith('checkpoint:')) return true
@@ -1341,7 +1341,7 @@ export function shouldNotifyTurnFinal(trigger, diagnostic) {
   if (normalized.startsWith('reconcile:wss-reconnect')) return true
   if (normalized.startsWith('reconcile:guardian-recover')) return true
   if (normalized.startsWith('reconcile:cooldown-recover')) return true
-  return isConfirmedTerminalTrigger(normalized)
+  return isConfirmedCompletionTrigger(normalized)
 }
 
 /**
