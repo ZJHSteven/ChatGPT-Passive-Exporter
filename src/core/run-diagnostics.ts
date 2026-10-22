@@ -2,14 +2,15 @@ import type { RawChatMessage, RawConversationPayload } from './types'
 import { extractImageAssets, isCompletedImageGenerationMessage } from './image-assets.ts'
 
 /**
- * “生命状态证据”和“当前快照尾部形态”必须严格分开。
+ * Canonical Body 自己包含的“完成证据”和“当前快照尾部形态”必须严格分开。
  *
  * 重要原则：
- * - final / finish_details=interrupted 属于终止证据；
+ * - final / finish_details=interrupted 只是 Body completion evidence；
+ * - 它不决定 Watchdog generation 是否结束，也不决定 incident 是否已经解决；
  * - 最后停在 tool call、reasoning 仍 open 只描述“快照现在长什么样”，不能证明 run 已死；
  * - 实时是否仍在运行，需要结合 stream_status / 其它服务器侧状态判断。
  */
-export type RunTerminalEvidence =
+export type RunBodyCompletionEvidence =
   | 'final'
   | 'client-stopped'
   | 'interrupted'
@@ -68,8 +69,8 @@ export interface RunDiagnostic {
   lastContentType?: string
   lastRecipient?: string
 
-  /** 只表示 payload 本身是否含明确“已终止”证据。 */
-  terminalEvidence: RunTerminalEvidence
+  /** 只表示 canonical Body 本身是否含明确完成证据；不代表 generation/incident 生命周期。 */
+  bodyCompletionEvidence: RunBodyCompletionEvidence
   interruptedReason?: string
   hasFinal: boolean
   /** ImageGen 的 tool/final multimodal 节点也是正常业务终态，但不是 assistant final。 */
@@ -397,13 +398,13 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
   const hasToolResultAfterLastCall = lastAssistantToolIndex >= 0
     && turn.slice(lastAssistantToolIndex + 1).some(isToolResult)
 
-  let terminalEvidence: RunTerminalEvidence = 'none'
-  if (interruptedReason === 'client_stopped') terminalEvidence = 'client-stopped'
-  else if (interrupted) terminalEvidence = 'interrupted'
+  let bodyCompletionEvidence: RunBodyCompletionEvidence = 'none'
+  if (interruptedReason === 'client_stopped') bodyCompletionEvidence = 'client-stopped'
+  else if (interrupted) bodyCompletionEvidence = 'interrupted'
   // 对 lifecycle 来说，成功产出 ImageGen 图片与普通 assistant final 一样，都是明确的
-  // “本轮已经产生最终业务输出”。保留 terminalEvidence='final' 可让现有 incident/recovery
+  // “本轮已经产生最终业务输出”。保留 bodyCompletionEvidence='final' 可让现有 incident/recovery
   // 状态机自然把旧假红牌关掉；具体完成形态由 tailShape/字段继续区分。
-  else if (hasFinal || hasImageGenerationFinal) terminalEvidence = 'final'
+  else if (hasFinal || hasImageGenerationFinal) bodyCompletionEvidence = 'final'
 
   let tailShape: RunTailShape = 'other'
   if (hasFinal) tailShape = 'final'
@@ -449,15 +450,15 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
   }
 
   let summary = '当前 payload 没有明确终止证据；仅凭这份快照不能判断 run 是否仍在执行。'
-  if (terminalEvidence === 'final') {
+  if (bodyCompletionEvidence === 'final') {
     summary = hasImageGenerationFinal && !hasFinal
       ? `payload 已包含完成的 ImageGen 结果（${imageGenerationCount} 张图片），可确认这一轮已经正常完成；该终态不要求额外 assistant final。`
       : 'payload 已包含 final answer，可确认这一轮已经正常完成。'
   }
-  else if (terminalEvidence === 'client-stopped') {
+  else if (bodyCompletionEvidence === 'client-stopped') {
     summary = 'payload 明确记录 client_stopped，可确认这一轮被客户端中止。'
   }
-  else if (terminalEvidence === 'interrupted') {
+  else if (bodyCompletionEvidence === 'interrupted') {
     summary = interruptedReason
       ? `payload 明确记录 interrupted：${interruptedReason}。`
       : 'payload 明确记录 interrupted，但没有更具体原因。'
@@ -505,7 +506,7 @@ export function diagnoseLatestRun(payload: RawConversationPayload): RunDiagnosti
     lastRole: representative ? roleOf(representative) : undefined,
     lastContentType: representative ? contentTypeOf(representative) : undefined,
     lastRecipient: typeof representative?.recipient === 'string' ? representative.recipient : undefined,
-    terminalEvidence,
+    bodyCompletionEvidence,
     interruptedReason,
     hasFinal,
     hasImageGenerationFinal,
