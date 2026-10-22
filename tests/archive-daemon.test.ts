@@ -1267,12 +1267,12 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       turnKey: 'turn-a',
       status: 'open',
       lifecycleClass: 'watchdog-timeout',
-      terminalEvidence: 'none',
+      bodyCompletionEvidence: 'none',
     }
     expect(shouldPromoteWatchdogTimeoutToActiveZombie(active, incident, true)).toBe(true)
     expect(shouldPromoteWatchdogTimeoutToActiveZombie(active, incident, false)).toBe(false)
     expect(shouldPromoteWatchdogTimeoutToActiveZombie(active, { ...incident, turnKey: 'turn-b' }, true)).toBe(false)
-    expect(shouldPromoteWatchdogTimeoutToActiveZombie(active, { ...incident, terminalEvidence: 'final' }, true)).toBe(false)
+    expect(shouldPromoteWatchdogTimeoutToActiveZombie(active, { ...incident, bodyCompletionEvidence: 'final' }, true)).toBe(false)
   })
 
   test('catalog generation 超时后结束；同一 catalog observation 由独立 watermark 防复活', () => {
@@ -1582,7 +1582,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     const diagnosis = buildWatchdogDiagnosisNotificationPayload({
       conversationId: 'conversation-a',
       title: '长任务',
-      diagnostic: { terminalEvidence: 'none', tailShape: 'tool-result-returned', headState: 'aligned' },
+      diagnostic: { bodyCompletionEvidence: 'none', tailShape: 'tool-result-returned', headState: 'aligned' },
       incident: {
         reason: '最新工具结果已经回来，但尚无 final。',
         lifecycleClass: 'active-zombie',
@@ -1603,7 +1603,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     const finalDiagnosis = buildWatchdogDiagnosisNotificationPayload({
       conversationId: 'conversation-a',
       title: '长任务',
-      diagnostic: { terminalEvidence: 'final', tailShape: 'final' },
+      diagnostic: { bodyCompletionEvidence: 'final', tailShape: 'final' },
     })
     expect(finalDiagnosis.title).toBe('Watchdog · Final 已确认')
     expect(finalDiagnosis.subtitle).toBe('长任务')
@@ -1613,7 +1613,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     const noFinalNoGap = buildWatchdogDiagnosisNotificationPayload({
       conversationId: 'conversation-a',
       title: '长任务',
-      diagnostic: { terminalEvidence: 'none', tailShape: 'reasoning-open' },
+      diagnostic: { bodyCompletionEvidence: 'none', tailShape: 'reasoning-open' },
       incident: { lifecycleClass: 'watchdog-timeout', evidenceTypes: [] },
     })
     expect(noFinalNoGap.title).toBe('Watchdog · 未确认 Final')
@@ -1623,7 +1623,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     const longDiagnosis = buildWatchdogDiagnosisNotificationPayload({
       conversationId: 'conversation-long',
       title: longDiagnosisTitle,
-      diagnostic: { terminalEvidence: 'none', tailShape: 'tool-result-returned' },
+      diagnostic: { bodyCompletionEvidence: 'none', tailShape: 'tool-result-returned' },
       incident: { lifecycleClass: 'active-zombie', evidenceTypes: ['canonical-tail-gap'] },
     })
     expect(longDiagnosis.title).toBe('Watchdog · Body 缺口')
@@ -1756,7 +1756,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
   })
 
   test('正常 final 只在在线终态/Watchdog 路径通知，历史 startup/periodic 不补轰炸', () => {
-    const diagnostic = { terminalEvidence: 'final', hasImageGenerationFinal: false, imageGenerationCount: 0 }
+    const diagnostic = { bodyCompletionEvidence: 'final', hasImageGenerationFinal: false, imageGenerationCount: 0 }
     expect(shouldNotifyTurnFinal('wss:conversation-turn-complete', diagnostic)).toBe(true)
     expect(shouldNotifyTurnFinal('wss:conversation-turn-complete:settle', diagnostic)).toBe(true)
     expect(shouldNotifyTurnFinal('watchdog:active-timeout', diagnostic)).toBe(true)
@@ -1767,7 +1767,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shouldNotifyTurnFinal('reconcile:cooldown-recover', diagnostic)).toBe(true)
     expect(shouldNotifyTurnFinal('reconcile:startup', diagnostic)).toBe(false)
     expect(shouldNotifyTurnFinal('reconcile:periodic', diagnostic)).toBe(false)
-    expect(shouldNotifyTurnFinal('wss:conversation-turn-complete', { terminalEvidence: 'none' })).toBe(false)
+    expect(shouldNotifyTurnFinal('wss:conversation-turn-complete', { bodyCompletionEvidence: 'none' })).toBe(false)
 
     const payload = buildTurnFinalNotificationPayload({
       conversationId: 'conversation-a',
@@ -2059,14 +2059,14 @@ describe('ChatGPT Archive daemon WSS parser', () => {
 
   test('手机通知只跟随新 incident 或 material lifecycle 升级，不跟随 tail 文案抖动', () => {
     const watchdog = {
-      id: 'incident-1', incidentKind: 'watchdog-timeout', lifecycleClass: 'watchdog-timeout', terminalEvidence: 'none',
+      id: 'incident-1', incidentKind: 'watchdog-timeout', lifecycleClass: 'watchdog-timeout', bodyCompletionEvidence: 'none',
     }
     const sameWatchdog = { ...watchdog, tailShape: 'tool-result-returned', reason: 'body refreshed' }
     const confirmed = {
-      ...watchdog, incidentKind: 'abnormal-terminal', lifecycleClass: 'complete-no-final', terminalEvidence: 'none',
+      ...watchdog, incidentKind: 'abnormal-terminal', lifecycleClass: 'complete-no-final', bodyCompletionEvidence: 'none',
     }
     const interrupted = {
-      ...confirmed, lifecycleClass: 'explicit-interrupted', terminalEvidence: 'client-stopped',
+      ...confirmed, lifecycleClass: 'explicit-interrupted', bodyCompletionEvidence: 'client-stopped',
     }
 
     expect(shouldNotifyIncidentTransition(null, watchdog)).toBe(true)
