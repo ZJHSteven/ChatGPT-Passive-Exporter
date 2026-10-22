@@ -858,6 +858,35 @@ export function bodyCompletionBelongsToCurrentGeneration({
 }
 
 /**
+ * 合并 completion 之后已经 durable 落盘的 DevSpace activity。
+ * earliestAuditAt 永远只向前取最早值，latestAuditAt 只向后推进；新的 completion 边界会开启
+ * 一份全新的 candidate。这样 late binding 可以安全把 Watchdog startedAt 回填到真实首个工具。
+ */
+export function mergePostCompletionDevSpaceCandidate(existing, input = {}) {
+  const completedAt = Number(input.completedAt)
+  const auditAt = Number(input.auditAt)
+  const latestAuditAt = Number(input.latestAuditAt ?? input.auditAt)
+  if (!Number.isFinite(completedAt) || completedAt <= 0) return existing ?? null
+  if (!Number.isFinite(auditAt) || !Number.isFinite(latestAuditAt)) return existing ?? null
+  if (auditAt <= completedAt || latestAuditAt <= completedAt) return existing ?? null
+
+  const sameGeneration = existing && Number(existing.completedAt) === completedAt
+  return {
+    conversationId: input.conversationId ?? existing?.conversationId ?? null,
+    metadataId: input.metadataId ?? existing?.metadataId ?? null,
+    completedAt,
+    earliestAuditAt: sameGeneration
+      ? Math.min(Number(existing.earliestAuditAt), auditAt)
+      : auditAt,
+    latestAuditAt: sameGeneration
+      ? Math.max(Number(existing.latestAuditAt), latestAuditAt)
+      : latestAuditAt,
+    lastCheckedAt: sameGeneration ? existing.lastCheckedAt ?? null : null,
+    lastCheckedAuditAt: sameGeneration ? existing.lastCheckedAuditAt ?? null : null,
+  }
+}
+
+/**
  * Body ready queue 优先级。Lifecycle / Watchdog 必须先于后台 binding probe，避免低价值
  * probe 的 429/排队把 complete/timeout 的时间快照拖进下一 turn。
  */
