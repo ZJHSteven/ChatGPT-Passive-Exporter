@@ -5708,19 +5708,20 @@ async function main() {
       ...first,
       conversation_id: first.conversation_id || conversationId,
     })
+    const bodyTurnStartedAt = watchdogTurnStartedAtFromPayload(first, preliminaryDiagnostic)
     let watchdogTurnChanged = false
     let watchdogTurnStartedAt = null
     let watchdogTurnAlreadyTimedOut = false
     if (String(trigger || '').startsWith('watchdog:')) {
-      const currentActive = activeTurns.get(conversationId)
-      if (currentActive) {
+      const timedOutGeneration = pendingWatchdogDiagnoses.get(conversationId)
+        ?? activeTurns.get(conversationId)
+      if (timedOutGeneration) {
         const diagnosedAt = Date.now()
-        const observedTurnStartedAt = watchdogTurnStartedAtFromPayload(first, preliminaryDiagnostic)
         const reconciled = reconcileWatchdogDiagnosticTurn(
-          currentActive,
+          timedOutGeneration,
           preliminaryDiagnostic,
           diagnosedAt,
-          observedTurnStartedAt,
+          bodyTurnStartedAt,
         )
         watchdogTurnChanged = reconciled.changed
         watchdogTurnStartedAt = Number.isFinite(Number(reconciled.turnStartedAt))
@@ -5731,18 +5732,14 @@ async function main() {
           && watchdogTurnStartedAt !== null
           && diagnosedAt - watchdogTurnStartedAt >= watchdogMs,
         )
-        activeTurns.set(conversationId, reconciled.nextActive)
-        persistActiveTurn(conversationId, reconciled.nextActive)
         if (watchdogTurnChanged) {
-          // 诊断旧 generation 时才发现同一 CID 已切入新 turn：若新 turn 尚未再次超时，
-          // 补发它自己的起点收据；若它已经超时则直接交给现有 timeout 链，避免“开始+超时”连发。
-          if (!watchdogTurnAlreadyTimedOut) {
-            dispatchWatchdogStartNotification(conversationId, reconciled.nextActive, first.title)
-          }
+          // timeout 本身已经结束旧 generation。Body 若已经看到更新 turn，只记录“旧诊断窗口已被
+          // 新 turn 覆盖”；新 generation 必须由 post-completion DevSpace candidate + Body 确认路径
+          // 建立，并回填最早 DevSpace audit，不能在这里拿 Body 发现时刻凭空重开 Watchdog。
           void log('watchdog body belongs to a newer turn; reconciled turn start', {
             conversationId,
             trigger,
-            previousTurnKey: currentActive.lastDiagnosticTurnKey ?? null,
+            previousTurnKey: timedOutGeneration.lastDiagnosticTurnKey ?? null,
             turnKey: reconciled.turnKey,
             turnStartedAt: watchdogTurnStartedAt,
             turnStartSource: reconciled.turnStartSource,
@@ -5821,6 +5818,7 @@ async function main() {
           watchdogTurnChanged,
           watchdogTurnStartedAt,
           watchdogTurnAlreadyTimedOut,
+          bodyTurnStartedAt,
           recoverySuperseded: 0,
         }
       }
@@ -5851,7 +5849,7 @@ async function main() {
         // COMPLETE 只决定它是不是 confirmed terminal；不能拿“尚未 COMPLETE”把 watchdog 变成空操作。
         allowIncompleteTailIncident: pages === 0
           && !terminalSettleNeeded
-          && (!watchdogTurnChanged || watchdogTurnAlreadyTimedOut)
+          && !watchdogTurnChanged
           && (confirmedTerminal || trigger.startsWith('watchdog:')),
         incidentKind: requestedIncidentKind,
         preparedObservation: evidence.preparedObservation,
@@ -5975,6 +5973,7 @@ async function main() {
           watchdogTurnChanged,
           watchdogTurnStartedAt,
           watchdogTurnAlreadyTimedOut,
+          bodyTurnStartedAt,
           recoverySuperseded,
         }
       }
