@@ -516,6 +516,23 @@ export function shouldDeferCatalogWatchdogStartForUnboundDevSpace(unboundDevSpac
   return Number.isFinite(count) && count > 0
 }
 
+/** 同一 catalog observation 被多次看见时保留最早 late-start 下界与最新证据时间。 */
+export function mergeDeferredCatalogWatchdogCandidate(existing, input = {}) {
+  const startedAt = Number(input.startedAt)
+  const lastEventAt = Number(input.lastEventAt ?? input.startedAt)
+  if (!Number.isFinite(startedAt) || startedAt <= 0) return existing ?? null
+  if (!Number.isFinite(lastEventAt) || lastEventAt <= 0) return existing ?? null
+  return {
+    conversationId: input.conversationId ?? existing?.conversationId ?? null,
+    startedAt: existing ? Math.min(Number(existing.startedAt), startedAt) : startedAt,
+    lastEventAt: existing ? Math.max(Number(existing.lastEventAt), lastEventAt) : lastEventAt,
+    startType: input.startType ?? existing?.startType ?? 'catalog:async-active:deferred',
+    title: input.title ?? existing?.title ?? null,
+    updateTime: input.updateTime ?? existing?.updateTime ?? null,
+    bodyTurnExchangeId: existing?.bodyTurnExchangeId ?? null,
+  }
+}
+
 /**
  * catalog update_time 前进代表服务端确实出现了新进展。
  *
@@ -2915,6 +2932,7 @@ async function main() {
   const activeTurns = new Map()
   const pendingWatchdogDiagnoses = new Map()
   const postCompletionDevSpaceCandidates = new Map()
+  const deferredCatalogWatchdogCandidates = new Map()
   const recentConversationComplete = new Map()
   const persistActiveTurn = (conversationId, active) => {
     archive.upsertActiveWatchdog({
