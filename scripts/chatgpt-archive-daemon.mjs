@@ -8174,7 +8174,7 @@ async function main() {
         ).get(id)
         const catalogObservationCompleted = archive.hasCatalogWatchdogCompleted(id, item.update_time ?? null)
         const deferCatalogLifecycle = shouldDeferCatalogWatchdogStartForUnboundDevSpace(
-          unboundDevSpaceTurns.size,
+          unresolvedUnboundDevSpaceGenerationCount(),
         ) && shouldStartCatalogWatchdog({
           alreadyActive: activeTurns.has(id),
           catalogObservationCompleted,
@@ -9398,7 +9398,7 @@ async function main() {
             `).get(id)
             const catalogObservationCompleted = archive.hasCatalogWatchdogCompleted(id, item.update_time ?? null)
             const deferCatalogLifecycle = shouldDeferCatalogWatchdogStartForUnboundDevSpace(
-              unboundDevSpaceTurns.size,
+              unresolvedUnboundDevSpaceGenerationCount(),
             ) && shouldStartCatalogWatchdog({
               alreadyActive: activeTurns.has(id),
               catalogObservationCompleted,
