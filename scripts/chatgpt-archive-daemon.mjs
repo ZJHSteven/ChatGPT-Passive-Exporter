@@ -530,6 +530,8 @@ export function mergeDeferredCatalogWatchdogCandidate(existing, input = {}) {
     title: input.title ?? existing?.title ?? null,
     updateTime: input.updateTime ?? existing?.updateTime ?? null,
     bodyTurnExchangeId: existing?.bodyTurnExchangeId ?? null,
+    bodyCompletionEvidence: existing?.bodyCompletionEvidence ?? null,
+    bodyObservedAt: existing?.bodyObservedAt ?? null,
   }
 }
 
