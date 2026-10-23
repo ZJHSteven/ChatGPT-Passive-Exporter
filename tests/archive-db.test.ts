@@ -1778,6 +1778,84 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('sparse plural/singular snapshots preserve existing turn/request identity', () => {
+    const db = tempDb()
+    try {
+      db.mergeLiveMessagesPage({
+        title: 'Sparse identity fixture',
+        conversation_id: 'sparse-identity',
+        current_node: 'assistant-1',
+        messages: [{
+          id: 'assistant-1', author: { role: 'assistant' }, recipient: 'all', channel: 'commentary',
+          create_time: 1,
+          content: { content_type: 'text', parts: ['first'] },
+          metadata: { turn_exchange_id: 'turn-stable', request_id: 'req-stable' },
+        }],
+      }, { observedAt: 1000 })
+
+      db.mergeLiveMappingSnapshot({
+        title: 'Sparse identity fixture',
+        conversation_id: 'sparse-identity',
+        current_node: 'assistant-1',
+        mapping: {
+          'assistant-1': {
+            id: 'assistant-1', parent: null, children: [],
+            message: {
+              id: 'assistant-1', author: { role: 'assistant' }, recipient: 'all', channel: 'commentary',
+              create_time: 1,
+              content: { content_type: 'text', parts: ['second'] },
+              metadata: {},
+            },
+          },
+        },
+      }, { observedAt: 2000, observationKind: 'sparse-identity:singular' })
+
+      db.mergeLiveMessagesPage({
+        title: 'Sparse identity fixture',
+        conversation_id: 'sparse-identity',
+        current_node: 'assistant-1',
+        messages: [{
+          id: 'assistant-1', author: { role: 'assistant' }, recipient: 'all', channel: 'commentary',
+          create_time: 1,
+          content: { content_type: 'text', parts: ['third'] },
+          metadata: {},
+        }],
+      }, { observedAt: 3000 })
+
+      expect(db.db.prepare(`
+        SELECT turn_exchange_id AS turnId, request_id AS requestId
+        FROM messages
+        WHERE conversation_id='sparse-identity' AND message_id='assistant-1'
+      `).get()).toEqual({ turnId: 'turn-stable', requestId: 'req-stable' })
+
+      db.mergeLiveMappingSnapshot({
+        title: 'Sparse identity fixture',
+        conversation_id: 'sparse-identity',
+        current_node: 'assistant-1',
+        mapping: {
+          'assistant-1': {
+            id: 'assistant-1', parent: null, children: [],
+            message: {
+              id: 'assistant-1', author: { role: 'assistant' }, recipient: 'all', channel: 'commentary',
+              create_time: 1,
+              content: { content_type: 'text', parts: ['fourth'] },
+              metadata: { turn_exchange_id: 'turn-new', request_id: 'req-new' },
+            },
+          },
+        },
+      }, { observedAt: 4000, observationKind: 'sparse-identity:explicit-update' })
+
+      expect(db.db.prepare(`
+        SELECT turn_exchange_id AS turnId, request_id AS requestId
+        FROM messages
+        WHERE conversation_id='sparse-identity' AND message_id='assistant-1'
+      `).get()).toEqual({ turnId: 'turn-new', requestId: 'req-new' })
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('singular mapping 会把 edit/regenerate sibling 精确回填为 branch tree', () => {
     const db = tempDb()
     try {
