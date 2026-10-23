@@ -3847,6 +3847,7 @@ async function main() {
       const binding = archive.getDevSpaceMetadataBinding(metadataId)
       if (binding?.conversationId) {
         pendingUnboundWatchdogDiagnoses.delete(metadataId)
+        flushDeferredCatalogWatchdogCandidates('unbound-watchdog-binding-resolved')
         if (!ready.has(binding.conversationId)) {
           markSyncReady(binding.conversationId, 'watchdog:devspace-timeout', 0)
         }
@@ -3906,6 +3907,7 @@ async function main() {
       // 失败时不清 pending，下一轮可以继续重试；LifeOps 则已经有明确终态分类。
       if (alreadySent) {
         pendingUnboundWatchdogDiagnoses.delete(metadataId)
+        flushDeferredCatalogWatchdogCandidates('unbound-watchdog-diagnosis-resolved')
         void log('unbound watchdog diagnosis completed without canonical binding', {
           metadataId,
           notificationQueued: false,
@@ -7969,6 +7971,7 @@ async function main() {
       if (currentBinding?.conversationId) {
         unboundDevSpaceTurns.delete(metadataId)
         pendingUnboundWatchdogDiagnoses.delete(metadataId)
+        flushDeferredCatalogWatchdogCandidates('durable-binding-cleared-unbound-candidate')
         void log('stale unbound watchdog candidate cleared after durable binding', {
           metadataId,
           conversationId: currentBinding.conversationId,
