@@ -146,6 +146,13 @@ export function devSpaceFirstToolWatchdogState(auditAt: number): {
   lastDiagnosticTurnKey: null
 }
 
+export function shouldStartPostCompletionDevSpaceTurnFromTrace(input?: {
+  traceId?: unknown
+  previousTraceId?: unknown
+  previousTraceStatus?: unknown
+  currentTraceStatus?: unknown
+}): boolean
+
 export function planDevSpaceBindingProbes(input?: {
   generation?: string
   previousGeneration?: string

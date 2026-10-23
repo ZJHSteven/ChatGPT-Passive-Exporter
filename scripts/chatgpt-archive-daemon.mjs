@@ -671,6 +671,24 @@ export function devSpaceFirstToolWatchdogState(auditAt) {
   }
 }
 
+/**
+ * 上一 generation 已经有 canonical verified trace 时，新 trace 可以低延迟证明“这不是上一轮
+ * 的残余工具”。它只负责跳过 post-completion Body 身份确认，不会结束仍在 active 的 generation。
+ * 任一侧 trace conflict / 未验证都退回原有 Body 确认路径。
+ */
+export function shouldStartPostCompletionDevSpaceTurnFromTrace({
+  traceId = null,
+  previousTraceId = null,
+  previousTraceStatus = null,
+  currentTraceStatus = null,
+} = {}) {
+  const current = typeof traceId === 'string' ? traceId.trim().toLowerCase() : ''
+  const previous = typeof previousTraceId === 'string' ? previousTraceId.trim().toLowerCase() : ''
+  if (!current || !previous || current === previous) return false
+  if (previousTraceStatus !== 'verified') return false
+  return currentTraceStatus === 'provisional' || currentTraceStatus === 'verified'
+}
+
 export function planDevSpaceBindingProbes({
   generation = '',
   previousGeneration = '',
@@ -7073,7 +7091,7 @@ async function main() {
    * 正在运行的 generation 只推进 lastEventAt；已完成 generation 之后的 activity 则先进入
    * post-completion candidate，等待异步 Body 确认新 turn，不能仅凭时间间隔直接起表。
    */
-  const activateBoundDevSpaceTurn = (binding, auditAt) => {
+  const activateBoundDevSpaceTurn = (binding, auditAt, traceId = null) => {
     if (!binding?.conversationId) return
     const conversationId = binding.conversationId
     const completedAt = Number(recentConversationComplete.get(conversationId) || 0)
@@ -7091,8 +7109,35 @@ async function main() {
       persistActiveTurn(conversationId, current)
     }
     else if (completedAt > 0) {
-      queuePostCompletionDevSpaceCandidate(binding, auditAt, completedAt)
-      return
+      const previousTrace = binding.lastTurnExchangeId
+        ? archive.getDevSpaceTraceTurnByTurn(conversationId, binding.lastTurnExchangeId)
+        : null
+      const currentTrace = traceId ? archive.getDevSpaceTraceTurnByTrace(traceId) : null
+      if (shouldStartPostCompletionDevSpaceTurnFromTrace({
+        traceId,
+        previousTraceId: previousTrace?.traceId ?? null,
+        previousTraceStatus: previousTrace?.status ?? null,
+        currentTraceStatus: currentTrace?.status ?? null,
+      })) {
+        const nextActive = devSpaceFirstToolWatchdogState(auditAt)
+        nextActive.startType = 'devspace:first-tool-trace'
+        activeTurns.set(conversationId, nextActive)
+        persistActiveTurn(conversationId, nextActive)
+        dispatchWatchdogStartNotification(conversationId, nextActive, null, binding.metadataId)
+        postCompletionDevSpaceCandidates.delete(conversationId)
+        void log('verified previous trace separated post-completion DevSpace activity as new provisional turn', {
+          conversationId,
+          metadataId: binding.metadataId,
+          previousTurnExchangeId: binding.lastTurnExchangeId,
+          previousTraceId: previousTrace?.traceId ?? null,
+          traceId,
+          startedAt: auditAt,
+        })
+      }
+      else {
+        queuePostCompletionDevSpaceCandidate(binding, auditAt, completedAt)
+        return
+      }
     }
     else {
       const nextActive = devSpaceFirstToolWatchdogState(auditAt)
@@ -7378,7 +7423,7 @@ async function main() {
     await yieldControlPlane()
     if (binding.conversationId) {
       runControlPlaneStage('devspace-audit:activate-bound-turn', () =>
-        activateBoundDevSpaceTurn(binding, event.startedAtMs))
+        activateBoundDevSpaceTurn(binding, event.startedAtMs, traceId))
       await yieldControlPlane()
       return
     }

@@ -36,6 +36,7 @@ import {
   decodeCdpResponseBodyBytes,
   devSpaceIdleRepairMode,
   devSpaceFirstToolWatchdogState,
+  shouldStartPostCompletionDevSpaceTurnFromTrace,
   planDevSpaceBindingProbes,
   extractDevSpaceCheckpoint,
   extractDevSpaceConclusion,
@@ -1480,6 +1481,33 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       startedAt: 1_000,
       lastDiagnosticTurnKey: 'turn-current',
     })
+  })
+
+  test('verified previous trace can start the next post-completion generation without waiting for Body', () => {
+    expect(shouldStartPostCompletionDevSpaceTurnFromTrace({
+      traceId: 'trace-b',
+      previousTraceId: 'trace-a',
+      previousTraceStatus: 'verified',
+      currentTraceStatus: 'provisional',
+    })).toBe(true)
+    expect(shouldStartPostCompletionDevSpaceTurnFromTrace({
+      traceId: 'trace-a',
+      previousTraceId: 'trace-a',
+      previousTraceStatus: 'verified',
+      currentTraceStatus: 'verified',
+    })).toBe(false)
+    expect(shouldStartPostCompletionDevSpaceTurnFromTrace({
+      traceId: 'trace-b',
+      previousTraceId: 'trace-a',
+      previousTraceStatus: 'provisional',
+      currentTraceStatus: 'provisional',
+    })).toBe(false)
+    expect(shouldStartPostCompletionDevSpaceTurnFromTrace({
+      traceId: 'trace-b',
+      previousTraceId: 'trace-a',
+      previousTraceStatus: 'verified',
+      currentTraceStatus: 'conflict',
+    })).toBe(false)
   })
 
   test('catalog watchdog 不能把旧 turn 的计时跨到同 conversation 的新 turn', () => {

@@ -896,3 +896,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-24 03:55 +08：恢复 Gap Repair 的 Body-first 语义。Catalog 新/更新 active observation 现在进入正常 Body sync；catalog Watchdog 统一延迟到 canonical Body 到达且 DevSpace matching worker 收口后再决定启动，Body complete 只收尾。5m/45m unbound diagnosis 在 matching work 未完成时不再提前宣告无绑定。目标回归 101/101 PASS，typecheck PASS。
 
 - 2026-10-24 04:01 +08：新增 DevSpace trace provisional turn identity 基础层：DevSpace audit 首次出现时即持久化 trace→metadata；canonical exact tool+args matching 后固化 trace↔conversation/turn_exchange_id/request_id 双向映射；任何 trace remap 或 turn 被第二 trace 抢占均标 conflict 并 fail-closed。运行时复用现有 exact matcher 的 120s 局部时间规则，没有引入离线审计用的 10s 阈值。目标测试 155/155 PASS，typecheck PASS。尚未切换 Watchdog/Recover/LifeOps 消费者。
+
+- 2026-10-24 04:04 +08：Watchdog 成为 trace turn identity 的首个消费者：仅在上一 generation 已完成且上一 canonical turn 的 trace 已 verified 时，新且非 conflict 的 trace 可立即启动下一 provisional DevSpace generation，跳过 post-completion Body 身份确认；相同旧 trace 的残余工具仍走旧路径/不会重开。没有 trace、上一 trace 未 verified 或任一 conflict 都 fail-closed 回退原 Body 确认。目标 156 tests PASS + typecheck PASS。
