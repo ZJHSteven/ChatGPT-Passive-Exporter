@@ -65,7 +65,6 @@ export function shouldStartCatalogWatchdog(input?: {
   archivedBodyCompletionState?: unknown
 }): boolean
 
-export function shouldDeferCatalogWatchdogStartForUnboundDevSpace(unboundDevSpaceCount?: unknown): boolean
 
 export function mergeDeferredCatalogWatchdogCandidate(
   existing: Record<string, unknown> | null | undefined,

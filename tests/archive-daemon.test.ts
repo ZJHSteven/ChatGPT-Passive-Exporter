@@ -70,7 +70,6 @@ import {
   postCompletionBodyConfirmsNewTurn,
   bodyCompletionBelongsToCurrentGeneration,
   mergePostCompletionDevSpaceCandidate,
-  shouldDeferCatalogWatchdogStartForUnboundDevSpace,
   mergeDeferredCatalogWatchdogCandidate,
   unboundBindingResolvesNewerGeneration,
   syncTriggerPriority,
@@ -516,6 +515,50 @@ test('DevSpace binding probe 在 canonical IDs 全已知时必须跳过 merge', 
   expect(sync).toContain('DevSpace binding probe reused stored canonical page; merge skipped')
   expect(sync).toContain('recoverySuperseded: 0')
   expect(daemon).toContain('bindingProbeMergesSkipped: devSpaceBindingProbeMergesSkipped')
+})
+
+test('catalog changed active observation queues normal Body sync before catalog Watchdog start', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+
+  const projectStart = daemon.indexOf('const observeProjectCatalogConversations = async')
+  const projectEnd = daemon.indexOf('const rememberPassiveProjectCatalogResponse', projectStart)
+  const project = daemon.slice(projectStart, projectEnd)
+  expect(project).toContain('queueDeferredCatalogWatchdogCandidate({')
+  expect(project).toContain("markSyncReady(id, 'project-catalog:' + reason, 0)")
+  expect(project).not.toContain("if (asyncState !== 'active') markSyncReady")
+  expect(project).not.toContain('dispatchWatchdogStartNotification(id, nextActive')
+
+  const globalStart = daemon.indexOf('const reconcileCatalog = async')
+  const globalEnd = daemon.indexOf('const scheduleGapRepair', globalStart)
+  const global = daemon.slice(globalStart, globalEnd)
+  expect(global).toContain('queueDeferredCatalogWatchdogCandidate({')
+  expect(global).toContain('markSyncReady(id, `reconcile:${reason}`, 0)')
+  expect(global).not.toContain("if (asyncState !== 'active') markSyncReady")
+})
+
+test('catalog Body candidate waits for canonical matching queue before independent Watchdog start', async () => {
+  const daemon = await fs.readFile(
+    new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+    'utf8',
+  )
+  const bodyStart = daemon.indexOf('const recordDeferredCatalogBodyObservation =')
+  const bodyEnd = daemon.indexOf('const flushDeferredCatalogWatchdogCandidates =', bodyStart)
+  const body = daemon.slice(bodyStart, bodyEnd)
+  expect(body).toContain('hasPendingDevSpaceBindingWork()')
+  expect(body).toContain("startDeferredCatalogWatchdogCandidate(conversationId, 'canonical-body-active-matching-settled')")
+
+  const idleStart = daemon.indexOf('const completeUnboundDevSpaceIdleDiagnoses =')
+  const idleEnd = daemon.indexOf('const completeUnboundWatchdogDiagnoses =', idleStart)
+  expect(daemon.slice(idleStart, idleEnd)).toContain('hasPendingDevSpaceBindingWork()')
+
+  const workerStart = daemon.indexOf('const runDevSpaceBindingWorker =')
+  const workerEnd = daemon.indexOf('const queuePendingDevSpaceBindingQueue =', workerStart)
+  expect(daemon.slice(workerStart, workerEnd)).toContain(
+    "flushDeferredCatalogWatchdogCandidates('canonical-matching-queue-drained')",
+  )
 })
 
 test('unbound gap repair requires Project sidebar discovery before terminal unbound completion', async () => {
@@ -1318,10 +1361,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shouldQueueWatchdogDiagnostic(progressed, 100 * 60_000 + 45 * 60_000, 45 * 60_000)).toBe(true)
   })
 
-  test('存在未绑定 DevSpace generation 时 catalog Watchdog 必须延迟，candidate 保留最早起点', () => {
-    expect(shouldDeferCatalogWatchdogStartForUnboundDevSpace(0)).toBe(false)
-    expect(shouldDeferCatalogWatchdogStartForUnboundDevSpace(1)).toBe(true)
-    expect(shouldDeferCatalogWatchdogStartForUnboundDevSpace(2)).toBe(true)
+  test('catalog Watchdog candidate 保留最早起点并等待 canonical Body 确认', () => {
 
     const first = mergeDeferredCatalogWatchdogCandidate(null, {
       conversationId: 'catalog-a',

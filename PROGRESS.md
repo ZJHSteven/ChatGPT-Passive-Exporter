@@ -892,3 +892,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 
 
 
+
+- 2026-10-24 03:55 +08：恢复 Gap Repair 的 Body-first 语义。Catalog 新/更新 active observation 现在进入正常 Body sync；catalog Watchdog 统一延迟到 canonical Body 到达且 DevSpace matching worker 收口后再决定启动，Body complete 只收尾。5m/45m unbound diagnosis 在 matching work 未完成时不再提前宣告无绑定。目标回归 101/101 PASS，typecheck PASS。

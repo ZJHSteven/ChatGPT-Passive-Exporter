@@ -506,16 +506,6 @@ export function shouldStartCatalogWatchdog({
   return true
 }
 
-/**
- * catalog 只提供 conversation 级弱 active 证据；当现场还有未绑定的 DevSpace generation 时，
- * 立即按 CID 起 Watchdog 会把同一 turn 重复创建一次。此时必须先把 catalog  observation
- * 作为 candidate 保留，等待既有 Body/exact-binding 路径决定 ownership。
- */
-export function shouldDeferCatalogWatchdogStartForUnboundDevSpace(unboundDevSpaceCount = 0) {
-  const count = Number(unboundDevSpaceCount)
-  return Number.isFinite(count) && count > 0
-}
-
 /** 同一 catalog observation 被多次看见时保留最早 late-start 下界与最新证据时间。 */
 export function mergeDeferredCatalogWatchdogCandidate(existing, input = {}) {
   const startedAt = Number(input.startedAt)
@@ -2978,11 +2968,10 @@ async function main() {
     if (!candidate) return null
     deferredCatalogWatchdogCandidates.set(conversationId, candidate)
     if (!existing) {
-      void log('catalog watchdog start deferred while unbound DevSpace generations exist', {
+      void log('catalog watchdog start deferred until canonical Body arrives', {
         conversationId,
         startedAt: candidate.startedAt,
         startType: candidate.startType,
-        unboundDevSpaceGenerations: unboundDevSpaceTurns.size,
         titlePresent: Boolean(String(candidate.title || '').trim()),
       })
     }
@@ -3045,10 +3034,6 @@ async function main() {
     return true
   }
 
-  const unresolvedUnboundDevSpaceGenerationCount = () => (
-    unboundDevSpaceTurns.size + pendingUnboundWatchdogDiagnoses.size
-  )
-
   const recordDeferredCatalogBodyObservation = (conversationId, diagnostic, observedAt = Date.now()) => {
     const candidate = deferredCatalogWatchdogCandidates.get(conversationId)
     if (!candidate) return false
@@ -3061,19 +3046,20 @@ async function main() {
       dropDeferredCatalogWatchdogCandidate(conversationId, 'canonical-body-complete')
       return false
     }
-    if (unresolvedUnboundDevSpaceGenerationCount() === 0) {
-      return startDeferredCatalogWatchdogCandidate(conversationId, 'canonical-body-active-no-unbound-remains')
+    if (hasPendingDevSpaceBindingWork()) {
+      void log('deferred catalog watchdog candidate awaiting canonical matching queue', {
+        conversationId,
+        bodyTurnExchangeId: candidate.bodyTurnExchangeId,
+        pendingEvidence: devSpaceBindingEvidenceWork.size,
+        pendingAuditEvents: devSpaceBindingAuditWork.size,
+      })
+      return false
     }
-    void log('deferred catalog watchdog candidate confirmed active but still awaiting unbound ownership resolution', {
-      conversationId,
-      bodyTurnExchangeId: candidate.bodyTurnExchangeId,
-      unresolvedUnboundDevSpaceGenerations: unresolvedUnboundDevSpaceGenerationCount(),
-    })
-    return false
+    return startDeferredCatalogWatchdogCandidate(conversationId, 'canonical-body-active-matching-settled')
   }
 
   const flushDeferredCatalogWatchdogCandidates = (reason) => {
-    if (unresolvedUnboundDevSpaceGenerationCount() > 0) return 0
+    if (hasPendingDevSpaceBindingWork()) return 0
     let started = 0
     for (const [conversationId, candidate] of [...deferredCatalogWatchdogCandidates.entries()]) {
       if (!candidate.bodyObservedAt) continue
@@ -3162,6 +3148,11 @@ async function main() {
   const devSpaceBindingAuditWork = new Map()
   const devSpaceBindingEvidenceWork = new Map()
   let devSpaceBindingWorkerScheduled = false
+  const hasPendingDevSpaceBindingWork = () => (
+    devSpaceBindingWorkerScheduled
+    || devSpaceBindingEvidenceWork.size > 0
+    || devSpaceBindingAuditWork.size > 0
+  )
   let devSpaceBindingWorkerRuns = 0
   let devSpaceBindingWorkerLastItemMs = 0
   let devSpaceBindingWorkerMaxItemMs = 0
@@ -3800,7 +3791,7 @@ async function main() {
 
   /** gap-repair 结束后仍未绑定时也必须给一条“扫描完成但无法对账”的结果。 */
   const completeUnboundDevSpaceIdleDiagnoses = () => {
-    if (syncInFlight || reconcileInFlight || ready.size > 0) return
+    if (syncInFlight || reconcileInFlight || ready.size > 0 || hasPendingDevSpaceBindingWork()) return
     for (const [metadataId, pending] of [...pendingDevSpaceIdleDiagnoses.entries()]) {
       if (pending.repairMode !== 'unbound-catalog') continue
       if (!pending.catalogRepairCompletedAt) continue
@@ -3840,7 +3831,7 @@ async function main() {
   }
 
   const completeUnboundWatchdogDiagnoses = () => {
-    if (syncInFlight || reconcileInFlight || ready.size > 0) return
+    if (syncInFlight || reconcileInFlight || ready.size > 0 || hasPendingDevSpaceBindingWork()) return
     for (const [metadataId, pending] of [...pendingUnboundWatchdogDiagnoses.entries()]) {
       if (!pending.catalogRepairCompletedAt) continue
 
@@ -7871,6 +7862,9 @@ async function main() {
     if (devSpaceBindingEvidenceWork.size > 0 || devSpaceBindingAuditWork.size > 0) {
       scheduleDevSpaceBindingWorker()
     }
+    else {
+      flushDeferredCatalogWatchdogCandidates('canonical-matching-queue-drained')
+    }
   }
 
   const queuePendingDevSpaceBindingQueue = ({ limit = 1000 } = {}) => {
@@ -8178,54 +8172,25 @@ async function main() {
           'SELECT update_time AS updateTime, terminal_state AS bodyCompletionState FROM conversations WHERE id = ?',
         ).get(id)
         const catalogObservationCompleted = archive.hasCatalogWatchdogCompleted(id, item.update_time ?? null)
-        const deferCatalogLifecycle = shouldDeferCatalogWatchdogStartForUnboundDevSpace(
-          unresolvedUnboundDevSpaceGenerationCount(),
-        ) && shouldStartCatalogWatchdog({
+        const shouldStartCatalogGeneration = shouldStartCatalogWatchdog({
           alreadyActive: activeTurns.has(id),
           catalogObservationCompleted,
           catalogUpdateTime: item.update_time ?? null,
           archivedUpdateTime: archived?.updateTime ?? null,
           archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
         })
-        if (shouldStartCatalogWatchdog({
-          alreadyActive: checkpointWatches.has(id),
-          catalogObservationCompleted,
-          catalogUpdateTime: item.update_time ?? null,
-          archivedUpdateTime: archived?.updateTime ?? null,
-          archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
-        }) && !deferCatalogLifecycle) {
-          armCheckpointWatch(id, 'project-catalog:' + reason + ':async-active', now)
-        }
-        if (shouldStartCatalogWatchdog({
-          alreadyActive: activeTurns.has(id),
-          catalogObservationCompleted,
-          catalogUpdateTime: item.update_time ?? null,
-          archivedUpdateTime: archived?.updateTime ?? null,
-          archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
-        })) {
-          if (deferCatalogLifecycle) {
-            queueDeferredCatalogWatchdogCandidate({
-              conversationId: id,
-              startedAt: observationStartedAt,
-              lastEventAt: now,
-              startType: 'project-catalog:async-active:' + reason,
-              title: item.title ?? null,
-              updateTime: item.update_time ?? null,
-            })
-          }
-          else {
-            const nextActive = {
-              startedAt: observationStartedAt,
-              lastEventAt: now,
-              lastWatchdogAt: null,
-              watchdogPendingAt: null,
-              startType: 'project-catalog:async-active:' + reason,
-              lastDiagnosticTurnKey: null,
-            }
-            activeTurns.set(id, nextActive)
-            persistActiveTurn(id, nextActive)
-            dispatchWatchdogStartNotification(id, nextActive, item.title ?? null)
-          }
+        if (shouldStartCatalogGeneration) {
+          // Catalog 只负责发现“这个 CID 有新的 active observation”。先走正常 Body sync；
+          // Body 到达后再决定是合并到已有 metadata generation、启动独立 catalog Watchdog，
+          // 还是只做 complete 收尾。这里不提前发 New Chat。
+          queueDeferredCatalogWatchdogCandidate({
+            conversationId: id,
+            startedAt: observationStartedAt,
+            lastEventAt: now,
+            startType: 'project-catalog:async-active:' + reason,
+            title: item.title ?? null,
+            updateTime: item.update_time ?? null,
+          })
         }
         else if (catalogProgressed) {
           const active = activeTurns.get(id)
@@ -8255,7 +8220,7 @@ async function main() {
         || String(item.title || '') !== String(local?.title || '')
       if (changed) {
         dirtyCount += 1
-        if (asyncState !== 'active') markSyncReady(id, 'project-catalog:' + reason, 0)
+        markSyncReady(id, 'project-catalog:' + reason, 0)
       }
     }
 
@@ -9403,54 +9368,24 @@ async function main() {
               FROM conversations WHERE id = ?
             `).get(id)
             const catalogObservationCompleted = archive.hasCatalogWatchdogCompleted(id, item.update_time ?? null)
-            const deferCatalogLifecycle = shouldDeferCatalogWatchdogStartForUnboundDevSpace(
-              unresolvedUnboundDevSpaceGenerationCount(),
-            ) && shouldStartCatalogWatchdog({
+            const shouldStartCatalogGeneration = shouldStartCatalogWatchdog({
               alreadyActive: activeTurns.has(id),
               catalogObservationCompleted,
               catalogUpdateTime: item.update_time ?? null,
               archivedUpdateTime: archived?.updateTime ?? null,
               archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
             })
-            if (shouldStartCatalogWatchdog({
-              alreadyActive: checkpointWatches.has(id),
-              catalogObservationCompleted,
-              catalogUpdateTime: item.update_time ?? null,
-              archivedUpdateTime: archived?.updateTime ?? null,
-              archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
-            }) && !deferCatalogLifecycle) {
-              armCheckpointWatch(id, `reconcile:${reason}:async-active`, now)
-            }
-            if (shouldStartCatalogWatchdog({
-              alreadyActive: activeTurns.has(id),
-              catalogObservationCompleted,
-              catalogUpdateTime: item.update_time ?? null,
-              archivedUpdateTime: archived?.updateTime ?? null,
-              archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
-            })) {
-              if (deferCatalogLifecycle) {
-                queueDeferredCatalogWatchdogCandidate({
-                  conversationId: id,
-                  startedAt: observationStartedAt,
-                  lastEventAt: now,
-                  startType: `catalog:async-active:${reason}`,
-                  title: item.title ?? null,
-                  updateTime: item.update_time ?? null,
-                })
-              }
-              else {
-                const nextActive = {
-                  startedAt: observationStartedAt,
-                  lastEventAt: now,
-                  lastWatchdogAt: null,
-                  watchdogPendingAt: null,
-                  startType: `catalog:async-active:${reason}`,
-                  lastDiagnosticTurnKey: null,
-                }
-                activeTurns.set(id, nextActive)
-                persistActiveTurn(id, nextActive)
-                dispatchWatchdogStartNotification(id, nextActive, item.title ?? null)
-              }
+            if (shouldStartCatalogGeneration) {
+              // Gap Repair 是 Catalog → Body → canonical match/diagnosis。Catalog 只创建
+              // 待 Body 确认的 candidate；Body 之前绝不独立发 New Chat Watchdog。
+              queueDeferredCatalogWatchdogCandidate({
+                conversationId: id,
+                startedAt: observationStartedAt,
+                lastEventAt: now,
+                startType: `catalog:async-active:${reason}`,
+                title: item.title ?? null,
+                updateTime: item.update_time ?? null,
+              })
             }
             else if (catalogProgressed) {
               const active = activeTurns.get(id)
@@ -9520,10 +9455,9 @@ async function main() {
           if (changed) {
             stableOverlap = 0
             dirtyCount += 1
-            // running 时只登记 dirty/active，避免为了监控去抓正在生成的半成品；完成/未知则
-            // 按正常 gap reconciliation 直接补 body。若上面刚处理 active→complete，这里重复
-            // set 同一个 Map key 也是幂等的。
-            if (asyncState !== 'active') markSyncReady(id, `reconcile:${reason}`, 0)
+            // Gap Repair 的 changed observation 一律进入正常 Body sync；active/complete 只影响
+            // lifecycle 解释，不再决定是否允许读取 Body。update_time/watermark 负责抑制重复抓取。
+            markSyncReady(id, `reconcile:${reason}`, 0)
           }
           else stableOverlap += 1
         }
