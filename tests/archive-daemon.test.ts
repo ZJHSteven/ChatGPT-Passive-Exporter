@@ -70,6 +70,8 @@ import {
   postCompletionBodyConfirmsNewTurn,
   bodyCompletionBelongsToCurrentGeneration,
   mergePostCompletionDevSpaceCandidate,
+  shouldDeferCatalogWatchdogStartForUnboundDevSpace,
+  mergeDeferredCatalogWatchdogCandidate,
   unboundBindingResolvesNewerGeneration,
   syncTriggerPriority,
   preferredSyncTrigger,
@@ -1316,6 +1318,39 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(shouldQueueWatchdogDiagnostic(progressed, 100 * 60_000 + 45 * 60_000, 45 * 60_000)).toBe(true)
   })
 
+  test('存在未绑定 DevSpace generation 时 catalog Watchdog 必须延迟，candidate 保留最早起点', () => {
+    expect(shouldDeferCatalogWatchdogStartForUnboundDevSpace(0)).toBe(false)
+    expect(shouldDeferCatalogWatchdogStartForUnboundDevSpace(1)).toBe(true)
+    expect(shouldDeferCatalogWatchdogStartForUnboundDevSpace(2)).toBe(true)
+
+    const first = mergeDeferredCatalogWatchdogCandidate(null, {
+      conversationId: 'catalog-a',
+      startedAt: 1_000,
+      lastEventAt: 1_100,
+      startType: 'catalog:async-active:gap-repair',
+      title: 'New Chat',
+      updateTime: 10,
+    })
+    const merged = mergeDeferredCatalogWatchdogCandidate(first, {
+      conversationId: 'catalog-a',
+      startedAt: 1_050,
+      lastEventAt: 1_300,
+      startType: 'catalog:async-active:gap-repair',
+      title: '真实标题',
+      updateTime: 11,
+    })
+    expect(merged).toMatchObject({
+      conversationId: 'catalog-a',
+      startedAt: 1_000,
+      lastEventAt: 1_300,
+      title: '真实标题',
+      updateTime: 11,
+      bodyTurnExchangeId: null,
+      bodyCompletionEvidence: null,
+      bodyObservedAt: null,
+    })
+  })
+
   test('catalog update_time 变化必须开启新的 observation 起点，未变化才沿用 firstSeenAt', () => {
     const current = { firstSeenAt: 1_000, updateTime: 100 }
     expect(catalogObservationStartedAt(current, 100, 5_000)).toBe(1_000)
@@ -1820,7 +1855,13 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       conversationId: 'conversation-a',
       canonicalTitle: 'New chat',
       devSpaceTitles: [],
-    })).toBe('New chat')
+    })).toBe('conversation-a')
+
+    expect(preferredWatchdogStartTitle({
+      conversationId: 'conversation-a',
+      canonicalTitle: '正式标题',
+      devSpaceTitles: ['New Chat', '新对话'],
+    })).toBe('正式标题')
   })
 
   test('未绑定 watchdog 不把 metadata ID 塞进标题', () => {
