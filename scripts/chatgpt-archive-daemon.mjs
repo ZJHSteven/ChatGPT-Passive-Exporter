@@ -1158,7 +1158,7 @@ export function preferredWatchdogStartTitle({
     const title = normalize(value)
     if (!title) return true
     if (cid && title === cid) return true
-    return /^(?:new chat|新聊天)$/iu.test(title)
+    return /^(?:new chat|new conversation|新聊天|新对话)$/iu.test(title)
   }
 
   const canonical = normalize(canonicalTitle)
@@ -1168,7 +1168,7 @@ export function preferredWatchdogStartTitle({
     const candidate = normalize(value)
     if (!isPlaceholder(candidate)) return candidate
   }
-  return canonical || cid || null
+  return !isPlaceholder(canonical) ? canonical : (cid || null)
 }
 
 /** 5 分钟 DevSpace 静默 probe 的最终诊断通知：扫完必须给结果。 */
@@ -3259,8 +3259,8 @@ async function main() {
       .map(binding => binding.displayTitle)
     return preferredWatchdogStartTitle({
       conversationId,
-      canonicalTitle: candidateTitle || canonicalConversationTitle(conversationId),
-      devSpaceTitles,
+      canonicalTitle: canonicalConversationTitle(conversationId),
+      devSpaceTitles: [candidateTitle, ...devSpaceTitles],
     })
   }
 
