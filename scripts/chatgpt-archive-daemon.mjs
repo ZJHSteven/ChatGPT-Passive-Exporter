@@ -507,6 +507,16 @@ export function shouldStartCatalogWatchdog({
 }
 
 /**
+ * catalog 只提供 conversation 级弱 active 证据；当现场还有未绑定的 DevSpace generation 时，
+ * 立即按 CID 起 Watchdog 会把同一 turn 重复创建一次。此时必须先把 catalog  observation
+ * 作为 candidate 保留，等待既有 Body/exact-binding 路径决定 ownership。
+ */
+export function shouldDeferCatalogWatchdogStartForUnboundDevSpace(unboundDevSpaceCount = 0) {
+  const count = Number(unboundDevSpaceCount)
+  return Number.isFinite(count) && count > 0
+}
+
+/**
  * catalog update_time 前进代表服务端确实出现了新进展。
  *
  * catalog progress 只能推进 lastEventAt 作为证据，绝不能修改 generation.startedAt。
