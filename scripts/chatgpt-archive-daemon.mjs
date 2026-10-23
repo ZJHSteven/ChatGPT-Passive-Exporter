@@ -2954,6 +2954,94 @@ async function main() {
     activeTurns.delete(conversationId)
     if (current) archive.deleteActiveWatchdogIfStartedAt(conversationId, current.startedAt)
   }
+
+  const queueDeferredCatalogWatchdogCandidate = ({
+    conversationId,
+    startedAt,
+    lastEventAt,
+    startType,
+    title = null,
+    updateTime = null,
+  }) => {
+    if (!conversationId) return null
+    const existing = deferredCatalogWatchdogCandidates.get(conversationId)
+    const candidate = mergeDeferredCatalogWatchdogCandidate(existing, {
+      conversationId,
+      startedAt,
+      lastEventAt,
+      startType,
+      title,
+      updateTime,
+    })
+    if (!candidate) return null
+    deferredCatalogWatchdogCandidates.set(conversationId, candidate)
+    if (!existing) {
+      void log('catalog watchdog start deferred while unbound DevSpace generations exist', {
+        conversationId,
+        startedAt: candidate.startedAt,
+        startType: candidate.startType,
+        unboundDevSpaceGenerations: unboundDevSpaceTurns.size,
+        titlePresent: Boolean(String(candidate.title || '').trim()),
+      })
+    }
+    return candidate
+  }
+
+  const dropDeferredCatalogWatchdogCandidate = (conversationId, reason) => {
+    const candidate = deferredCatalogWatchdogCandidates.get(conversationId)
+    if (!candidate) return false
+    deferredCatalogWatchdogCandidates.delete(conversationId)
+    void log('deferred catalog watchdog candidate dropped', {
+      conversationId,
+      reason,
+      startedAt: candidate.startedAt,
+      bodyTurnExchangeId: candidate.bodyTurnExchangeId ?? null,
+    })
+    return true
+  }
+
+  const startDeferredCatalogWatchdogCandidate = (conversationId, reason) => {
+    const candidate = deferredCatalogWatchdogCandidates.get(conversationId)
+    if (!candidate) return false
+    if (activeTurns.has(conversationId)) {
+      dropDeferredCatalogWatchdogCandidate(conversationId, 'active-generation-already-exists')
+      return false
+    }
+    if (!catalogActive.has(conversationId)) {
+      dropDeferredCatalogWatchdogCandidate(conversationId, 'catalog-no-longer-active')
+      return false
+    }
+    if (String(candidate.bodyCompletionEvidence || 'none') !== 'none') {
+      dropDeferredCatalogWatchdogCandidate(conversationId, 'canonical-body-already-complete')
+      return false
+    }
+    if (archive.hasCatalogWatchdogCompleted(conversationId, candidate.updateTime ?? null)) {
+      dropDeferredCatalogWatchdogCandidate(conversationId, 'catalog-observation-already-completed')
+      return false
+    }
+
+    const nextActive = {
+      startedAt: Number(candidate.startedAt),
+      lastEventAt: Number(candidate.lastEventAt || candidate.startedAt),
+      lastWatchdogAt: null,
+      watchdogPendingAt: null,
+      startType: String(candidate.startType || 'catalog:async-active:deferred'),
+      lastDiagnosticTurnKey: candidate.bodyTurnExchangeId ?? null,
+    }
+    activeTurns.set(conversationId, nextActive)
+    persistActiveTurn(conversationId, nextActive)
+    dispatchWatchdogStartNotification(conversationId, nextActive, candidate.title ?? null)
+    armCheckpointWatch(conversationId, `${nextActive.startType}:confirmed`, nextActive.startedAt)
+    deferredCatalogWatchdogCandidates.delete(conversationId)
+    void log('deferred catalog watchdog candidate confirmed by canonical Body', {
+      conversationId,
+      reason,
+      startedAt: nextActive.startedAt,
+      bodyTurnExchangeId: nextActive.lastDiagnosticTurnKey,
+      startType: nextActive.startType,
+    })
+    return true
+  }
   // daemon 重启必须恢复“原计时器”，而不是由最近一次 DevSpace audit 重新开表。
   // active_watchdogs 是 conversation 级状态，因此不受同一 CID 多 metadata 的影响。
   //
