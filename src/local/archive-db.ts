@@ -597,7 +597,7 @@ function visibleForMarkdown(conversation: CanonicalConversation): boolean {
  * - FTS 只索引可读 User/Assistant 正文，不把巨大 tool result、connector JSON、raw CoT
  *   塞进全文索引；这些仍可从 message/resource 表按需审计。
  */
-const ARCHIVE_SCHEMA_VERSION = 4
+const ARCHIVE_SCHEMA_VERSION = 5
 
 export class ChatArchiveDb {
   readonly db: DatabaseSync
@@ -639,6 +639,11 @@ export class ChatArchiveDb {
       this.migrateV4()
       schemaVersion = 4
       this.db.exec('PRAGMA user_version=4')
+    }
+    if (schemaVersion < 5) {
+      this.migrateV5()
+      schemaVersion = 5
+      this.db.exec('PRAGMA user_version=5')
     }
   }
 
@@ -1340,6 +1345,35 @@ export class ChatArchiveDb {
         update_time_key TEXT NOT NULL,
         completed_at INTEGER NOT NULL
       );
+    `)
+  }
+
+  /** v5：DevSpace trace-id 的 provisional→canonical turn 双向身份层。 */
+  private migrateV5(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS devspace_trace_turn_bindings (
+        trace_id TEXT PRIMARY KEY,
+        metadata_id TEXT NOT NULL,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        first_audit_id TEXT NOT NULL,
+        last_audit_id TEXT NOT NULL,
+        conversation_id TEXT,
+        turn_exchange_id TEXT,
+        request_id TEXT,
+        status TEXT NOT NULL DEFAULT 'provisional',
+        verified_at INTEGER,
+        conflict_reason TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS devspace_trace_turn_bindings_metadata_time
+        ON devspace_trace_turn_bindings(metadata_id, last_seen_at DESC);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS devspace_trace_turn_verified_turn
+        ON devspace_trace_turn_bindings(conversation_id, turn_exchange_id)
+        WHERE status='verified'
+          AND conversation_id IS NOT NULL
+          AND turn_exchange_id IS NOT NULL;
     `)
   }
 

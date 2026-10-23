@@ -66,6 +66,31 @@ function payload() {
 }
 
 describe('ChatArchiveDb', () => {
+  test('v4 database upgrades to v5 trace turn identity schema without genesis migration', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatgpt-archive-v4-upgrade-'))
+    tempDirs.push(dir)
+    const filePath = path.join(dir, 'archive.sqlite')
+    const legacy = new DatabaseSync(filePath)
+    legacy.exec('PRAGMA user_version=4')
+    legacy.close()
+
+    const db = new ChatArchiveDb(filePath)
+    try {
+      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(5)
+      expect(db.db.prepare(`
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='devspace_trace_turn_bindings'
+      `).get()).toBeTruthy()
+      expect(db.db.prepare(`
+        SELECT name FROM sqlite_master
+        WHERE type='index' AND name='devspace_trace_turn_verified_turn'
+      `).get()).toBeTruthy()
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('DevSpace trace turn identity stays provisional until canonical verification and fails closed on conflicts', () => {
     const db = tempDb()
     try {
@@ -316,7 +341,7 @@ describe('ChatArchiveDb', () => {
     tempDirs.push(dir)
     const file = path.join(dir, 'archive.sqlite')
     const first = new ChatArchiveDb(file)
-    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
+    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
     first.close()
 
     const blocker = new DatabaseSync(file)
@@ -368,7 +393,7 @@ describe('ChatArchiveDb', () => {
 
     const upgraded = new ChatArchiveDb(file)
     try {
-      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
       const columns = upgraded.db.prepare("PRAGMA table_info('messages')").all() as Array<{ name: string }>
       expect(columns.map(column => column.name)).toContain('raw_hash')
       expect(upgraded.db.prepare(`
@@ -415,7 +440,7 @@ describe('ChatArchiveDb', () => {
 
     const upgraded = new ChatArchiveDb(file)
     try {
-      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
       expect(upgraded.db.prepare('SELECT count(*) AS n FROM message_raw_fingerprints').get())
         .toEqual({ n: 0 })
       expect(upgraded.db.prepare('SELECT count(*) AS n FROM catalog_watchdog_watermarks').get())
@@ -2856,3 +2881,4 @@ describe('ChatArchiveDb', () => {
   })
 
 })
+
