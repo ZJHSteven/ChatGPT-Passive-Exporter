@@ -9216,6 +9216,7 @@ async function main() {
     if (behavior.completesTurn) {
       recentConversationComplete.set(event.conversationId, now)
       postCompletionDevSpaceCandidates.delete(event.conversationId)
+      dropDeferredCatalogWatchdogCandidate(event.conversationId, `wss:${event.type}`)
       clearActiveTurn(event.conversationId)
       catalogActive.delete(event.conversationId)
       stopCheckpointWatch(event.conversationId, `wss:${event.type}`, now)
