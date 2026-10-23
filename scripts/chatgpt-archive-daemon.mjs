@@ -7175,6 +7175,7 @@ async function main() {
       lifecycleState,
     })
     unboundDevSpaceTurns.delete(input.metadataId)
+    dropDeferredCatalogWatchdogCandidate(input.conversationId, 'exact-devspace-binding')
     if (!existing?.conversationId) devSpaceBindingsCreated += 1
     mirrorDevSpaceBinding(binding)
     const recoveryRebound = archive.rebindDevSpaceRecoveryAudits(
@@ -7340,6 +7341,7 @@ async function main() {
         })
       }
     }
+    flushDeferredCatalogWatchdogCandidates('unbound-devspace-ownership-resolved')
     return binding
   }
 
