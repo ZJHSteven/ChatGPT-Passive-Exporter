@@ -63,7 +63,9 @@ import {
   DevSpaceAuditBridge,
   defaultDevSpaceDbPath,
   devSpaceToolArgsFingerprint,
+  devSpaceTraceIdFromRequestMetaJson,
   matchDevSpaceCandidateForTurn,
+  matchingDevSpaceTraceIdsForTurn,
   parseDevSpaceBodyToolCall,
 } from '../src/local/devspace-audit-bridge.ts'
 import { DevSpaceAuditWakeListener } from '../src/local/devspace-audit-signal.ts'
@@ -7343,6 +7345,15 @@ async function main() {
   const handleDevSpaceAuditEvent = async (event) => {
     devSpaceAuditsObserved += 1
     devSpaceLastAuditAt = Math.max(Number(devSpaceLastAuditAt || 0), event.startedAtMs)
+    const traceId = devSpaceTraceIdFromRequestMetaJson(event.requestMetaJson)
+    if (traceId) {
+      runControlPlaneStage('devspace-audit:observe-trace', () => archive.observeDevSpaceTraceTurn({
+        traceId,
+        metadataId: event.metadataId,
+        auditId: event.id,
+        observedAt: event.startedAtMs,
+      }))
+    }
     const metadataState = runControlPlaneStage('devspace-audit:metadata-state', () =>
       devSpaceAuditBridge.metadataToolState(event.metadataId))
     await yieldControlPlane()
@@ -7523,7 +7534,7 @@ async function main() {
    */
   const readDevSpaceTurnEvidenceFromStoredTurn = (conversationId, turnExchangeId) => {
     const rows = archive.db.prepare(
-      "SELECT create_time AS createTime, text FROM messages INDEXED BY messages_tool_turn_time WHERE conversation_id=? AND turn_exchange_id=? AND recipient='api_tool.call_tool' AND create_time IS NOT NULL AND text<>'' ORDER BY create_time ASC",
+      "SELECT create_time AS createTime, request_id AS requestId, text FROM messages INDEXED BY messages_tool_turn_time WHERE conversation_id=? AND turn_exchange_id=? AND recipient='api_tool.call_tool' AND create_time IS NOT NULL AND text<>'' ORDER BY create_time ASC",
     ).all(conversationId, turnExchangeId)
     const bodyCalls = rows
       .map(row => parseDevSpaceBodyToolCall(String(row.text || ''), Number(row.createTime) * 1000))
@@ -7532,13 +7543,14 @@ async function main() {
 
     const startAt = Math.min(...bodyCalls.map(call => call.startedAtMs))
     const endAt = Math.max(...bodyCalls.map(call => call.startedAtMs))
+    const requestId = rows.find(row => typeof row.requestId === 'string' && row.requestId)?.requestId ?? null
     const revision = createHash('sha256')
       .update(bodyCalls.map(call =>
         String(call.startedAtMs) + '\\n'
         + String(devSpaceToolArgsFingerprint(call.tool, call.argsJson) ?? ''),
       ).join('\\n--\\n'))
       .digest('hex')
-    return { bodyCalls, startAt, endAt, revision }
+    return { bodyCalls, startAt, endAt, requestId, revision }
   }
 
   const matchDevSpaceBindingFromStoredTurn = (conversationId, turnExchangeId, storedEvidence = null) => {
@@ -7552,6 +7564,10 @@ async function main() {
       alreadyBoundMetadataIds: [],
     })
     if (!match) return null
+    const traceIds = matchingDevSpaceTraceIdsForTurn({
+      activity: match.activity,
+      bodyCalls,
+    })
 
     const provisional = unboundDevSpaceTurns.get(match.activity.metadataId)
     return {
@@ -7559,7 +7575,47 @@ async function main() {
       startAt: provisional?.startedAt ?? match.activity.firstAt,
       exactMatches: match.exactMatches,
       uniqueMatches: match.uniqueMatches,
+      traceIds,
     }
+  }
+
+  const verifyMatchedDevSpaceTraceTurn = ({
+    candidate,
+    storedEvidence,
+    conversationId,
+    turnExchangeId,
+    observedAt = Date.now(),
+  }) => {
+    const traceIds = Array.isArray(candidate?.traceIds) ? candidate.traceIds : []
+    if (traceIds.length !== 1) {
+      if (traceIds.length > 1) {
+        void log('DevSpace canonical turn matched multiple trace ids; trace identity left provisional', {
+          metadataId: candidate?.metadataId ?? null,
+          conversationId,
+          turnExchangeId,
+          traceIds,
+        })
+      }
+      return null
+    }
+    const row = archive.verifyDevSpaceTraceTurn({
+      traceId: traceIds[0],
+      metadataId: candidate.metadataId,
+      conversationId,
+      turnExchangeId,
+      requestId: storedEvidence?.requestId ?? null,
+      verifiedAt: observedAt,
+    })
+    if (row?.status === 'conflict') {
+      void log('DevSpace trace/turn identity conflict detected', {
+        traceId: row.traceId,
+        metadataId: row.metadataId,
+        conversationId,
+        turnExchangeId,
+        conflictReason: row.conflictReason,
+      })
+    }
+    return row
   }
 
   /**
@@ -7688,6 +7744,13 @@ async function main() {
         evidenceRevision: storedEvidence.revision,
         metadataRevision,
       })
+      verifyMatchedDevSpaceTraceTurn({
+        candidate,
+        storedEvidence,
+        conversationId: queueRow.conversationId,
+        turnExchangeId: queueRow.turnExchangeId,
+        observedAt,
+      })
       devSpaceBindingQueueMatches += 1
       return true
     }
@@ -7706,6 +7769,13 @@ async function main() {
       matchedAt: observedAt,
       evidenceRevision: storedEvidence.revision,
       metadataRevision,
+    })
+    verifyMatchedDevSpaceTraceTurn({
+      candidate,
+      storedEvidence,
+      conversationId: queueRow.conversationId,
+      turnExchangeId: queueRow.turnExchangeId,
+      observedAt,
     })
     devSpaceBindingQueueMatches += 1
     void log('DevSpace matching queue consumed canonical turn evidence', {

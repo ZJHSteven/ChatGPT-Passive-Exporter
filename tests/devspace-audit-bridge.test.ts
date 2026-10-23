@@ -5,8 +5,10 @@ import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, test } from 'vitest'
 import {
   DevSpaceAuditBridge,
+  devSpaceTraceIdFromRequestMetaJson,
   groupDevSpaceActivity,
   matchDevSpaceCandidateForTurn,
+  matchingDevSpaceTraceIdsForTurn,
   parseDevSpaceBodyToolCall,
   type DevSpaceAuditEvent,
 } from '../src/local/devspace-audit-bridge.ts'
@@ -28,6 +30,44 @@ const audit = (
 })
 
 describe('DevSpace audit bridge', () => {
+  test('traceparent provides provisional trace identity and canonical matching reuses it', () => {
+    const traceId = '6adb996200000000fc77a88c525c8229'
+    const requestMetaJson = JSON.stringify({
+      'devspace/handlerExtra': {
+        requestInfo: {
+          safeHeaderValues: {
+            traceparent: `00-${traceId}-6f87dd4588c5243a-00`,
+          },
+        },
+      },
+    })
+    expect(devSpaceTraceIdFromRequestMetaJson(requestMetaJson)).toBe(traceId)
+    expect(devSpaceTraceIdFromRequestMetaJson('{}')).toBeNull()
+    expect(devSpaceTraceIdFromRequestMetaJson('not-json')).toBeNull()
+
+    const activities = groupDevSpaceActivity([
+      { ...audit('a1', 'meta-a', 10_000, { cwd: 'A', cmd: 'git status --short' }), requestMetaJson },
+      { ...audit('a2', 'meta-a', 20_000, { cwd: 'A', cmd: 'chatgpt-archive daemon status' }), requestMetaJson },
+      audit('b1', 'meta-b', 11_000, { cwd: 'B', cmd: 'git status --short' }),
+    ])
+    const bodyCalls = [
+      parseDevSpaceBodyToolCall(JSON.stringify({
+        path: '/devspace/link_x/exec_command',
+        args: { cmd: 'git status --short', cwd: 'A' },
+      }), 10_100),
+      parseDevSpaceBodyToolCall(JSON.stringify({
+        path: '/devspace/link_x/exec_command',
+        args: { cmd: 'chatgpt-archive daemon status', cwd: 'A' },
+      }), 20_100),
+    ].filter((value): value is NonNullable<typeof value> => Boolean(value))
+    const matched = matchDevSpaceCandidateForTurn({ activities, bodyCalls })
+    expect(matched?.activity.metadataId).toBe('meta-a')
+    expect(matchingDevSpaceTraceIdsForTurn({
+      activity: matched!.activity,
+      bodyCalls,
+    })).toEqual([traceId])
+  })
+
   test('Backup Tunnel 与 DevSpace 作为同一 MQ transport family 解析', () => {
     expect(parseDevSpaceBodyToolCall(JSON.stringify({
       path: '/Backup Tunnel/link_x/exec_command',

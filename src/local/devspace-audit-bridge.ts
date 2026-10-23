@@ -175,6 +175,34 @@ export function devSpaceToolArgsFingerprint(tool: string, argsJson: string): str
 }
 
 /**
+ * 从 DevSpace 安全落库的 handlerExtra 里提取 W3C trace-id。
+ *
+ * 这里只读取 allowlisted `traceparent`，不碰 Authorization/cookie 等敏感头。trace-id 只是
+ * provisional turn identity；canonical Body 到达前不得把它视为协议级 turn_exchange_id。
+ */
+export function devSpaceTraceIdFromRequestMetaJson(requestMetaJson: string | null | undefined): string | null {
+  if (!requestMetaJson) return null
+  try {
+    const parsed = JSON.parse(requestMetaJson) as Record<string, unknown>
+    const handlerExtra = parsed['devspace/handlerExtra']
+    if (!handlerExtra || typeof handlerExtra !== 'object' || Array.isArray(handlerExtra)) return null
+    const requestInfo = (handlerExtra as Record<string, unknown>).requestInfo
+    if (!requestInfo || typeof requestInfo !== 'object' || Array.isArray(requestInfo)) return null
+    const safeHeaders = (requestInfo as Record<string, unknown>).safeHeaderValues
+    if (!safeHeaders || typeof safeHeaders !== 'object' || Array.isArray(safeHeaders)) return null
+    const traceparent = (safeHeaders as Record<string, unknown>).traceparent
+    if (typeof traceparent !== 'string') return null
+    const match = traceparent.trim().match(/^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$/iu)
+    const traceId = match?.[1]?.toLowerCase() ?? null
+    if (!traceId || /^0{32}$/u.test(traceId)) return null
+    return traceId
+  }
+  catch {
+    return null
+  }
+}
+
+/**
  * 用真实 tool + args + 局部时间一致性做 exact matching。
  *
  * 接受规则故意简单：
@@ -253,6 +281,34 @@ export function matchDevSpaceCandidateForTurn(input: {
     && second.exactMatches === best.exactMatches) return null
   if (best.uniqueMatches < 1 && best.exactMatches < 2) return null
   return best
+}
+
+/**
+ * 在已经由 canonical matcher 选中的 metadata activity 内，收集真正参与该 turn exact
+ * match 的 trace-id。与 metadata matcher 使用同一 fingerprint + 局部时间容差，因此不会再
+ * 另造一套“10 秒窗口”身份规则。
+ */
+export function matchingDevSpaceTraceIdsForTurn(input: {
+  activity: DevSpaceMetadataActivity
+  bodyCalls: DevSpaceBodyToolCall[]
+}): string[] {
+  const bodyByFingerprint = new Map<string, number[]>()
+  for (const call of input.bodyCalls) {
+    const fingerprint = devSpaceToolArgsFingerprint(call.tool, call.argsJson)
+    if (!fingerprint) continue
+    const times = bodyByFingerprint.get(fingerprint) ?? []
+    times.push(call.startedAtMs)
+    bodyByFingerprint.set(fingerprint, times)
+  }
+  const traces = new Set<string>()
+  for (const audit of input.activity.audits) {
+    const fingerprint = devSpaceToolArgsFingerprint(audit.tool, audit.argsJson)
+    const times = fingerprint ? bodyByFingerprint.get(fingerprint) : null
+    if (!times?.some(time => Math.abs(time - audit.startedAtMs) <= DEVSPACE_BINDING_TIME_TOLERANCE_MS)) continue
+    const traceId = devSpaceTraceIdFromRequestMetaJson(audit.requestMetaJson)
+    if (traceId) traces.add(traceId)
+  }
+  return [...traces].sort()
 }
 
 export class DevSpaceAuditBridge {

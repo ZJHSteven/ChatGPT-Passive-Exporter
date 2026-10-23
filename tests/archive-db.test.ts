@@ -66,6 +66,73 @@ function payload() {
 }
 
 describe('ChatArchiveDb', () => {
+  test('DevSpace trace turn identity stays provisional until canonical verification and fails closed on conflicts', () => {
+    const db = tempDb()
+    try {
+      const traceA = '6adb960d0000000089326916dcbaf36c'
+      const traceB = '6adb996200000000fc77a88c525c8229'
+      expect(db.observeDevSpaceTraceTurn({
+        traceId: traceA,
+        metadataId: 'meta-a',
+        auditId: 'audit-1',
+        observedAt: 1_000,
+      })).toMatchObject({
+        traceId: traceA,
+        metadataId: 'meta-a',
+        status: 'provisional',
+        conversationId: null,
+        turnExchangeId: null,
+      })
+      expect(db.observeDevSpaceTraceTurn({
+        traceId: traceA,
+        metadataId: 'meta-a',
+        auditId: 'audit-2',
+        observedAt: 2_000,
+      })).toMatchObject({
+        firstSeenAt: 1_000,
+        lastSeenAt: 2_000,
+        firstAuditId: 'audit-1',
+        lastAuditId: 'audit-2',
+      })
+
+      expect(db.verifyDevSpaceTraceTurn({
+        traceId: traceA,
+        metadataId: 'meta-a',
+        conversationId: 'conversation-a',
+        turnExchangeId: 'turn-a',
+        requestId: 'request-a',
+        verifiedAt: 3_000,
+      })).toMatchObject({
+        status: 'verified',
+        conversationId: 'conversation-a',
+        turnExchangeId: 'turn-a',
+        requestId: 'request-a',
+        verifiedAt: 3_000,
+      })
+      expect(db.getDevSpaceTraceTurnByTurn('conversation-a', 'turn-a')?.traceId).toBe(traceA)
+
+      db.observeDevSpaceTraceTurn({
+        traceId: traceB,
+        metadataId: 'meta-a',
+        auditId: 'audit-3',
+        observedAt: 4_000,
+      })
+      expect(db.verifyDevSpaceTraceTurn({
+        traceId: traceB,
+        metadataId: 'meta-a',
+        conversationId: 'conversation-a',
+        turnExchangeId: 'turn-a',
+        requestId: 'request-a',
+        verifiedAt: 5_000,
+      })?.status).toBe('conflict')
+      expect(db.getDevSpaceTraceTurnByTrace(traceA)).toMatchObject({ status: 'conflict' })
+      expect(db.getDevSpaceTraceTurnByTrace(traceB)).toMatchObject({ status: 'conflict' })
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('占位标题不能覆盖真实标题，但后续真实重命名可以更新', () => {
     expect(preferredConversationTitle('正式标题', 'New chat', 'cid')).toBe('正式标题')
     expect(preferredConversationTitle('正式标题', '新聊天', 'cid')).toBe('正式标题')

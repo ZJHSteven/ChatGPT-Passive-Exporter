@@ -336,6 +336,28 @@ export interface DevSpaceBindingTurnEvidenceRow {
 }
 
 /**
+ * DevSpace W3C trace-id 的低延迟 turn 身份层。
+ *
+ * `provisional` 只表示 DevSpace 侧已经观察到该 trace；`verified` 必须等 canonical
+ * Body/turn exact-match 后才能写入 conversation/turn/request。任何双向 1:1 冲突都进入
+ * `conflict`，消费者必须降级到 canonical turn_exchange_id/request_id。
+ */
+export interface DevSpaceTraceTurnBindingRow {
+  traceId: string
+  metadataId: string
+  firstSeenAt: number
+  lastSeenAt: number
+  firstAuditId: string
+  lastAuditId: string
+  conversationId: string | null
+  turnExchangeId: string | null
+  requestId: string | null
+  status: 'provisional' | 'verified' | 'conflict'
+  verifiedAt: number | null
+  conflictReason: string | null
+}
+
+/**
  * 未绑定 metadata 的稳定 synthetic conversation id。
  *
  * 内部使用 SHA-256 的 16 hex 前缀，避免把超长 openai/session 直接塞进 URL；完整 metadata ID
@@ -978,6 +1000,30 @@ export class ChatArchiveDb {
 
       CREATE INDEX IF NOT EXISTS devspace_binding_turn_evidence_pending_time
         ON devspace_binding_turn_evidence(status, first_tool_at, last_tool_at);
+
+      CREATE TABLE IF NOT EXISTS devspace_trace_turn_bindings (
+        trace_id TEXT PRIMARY KEY,
+        metadata_id TEXT NOT NULL,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        first_audit_id TEXT NOT NULL,
+        last_audit_id TEXT NOT NULL,
+        conversation_id TEXT,
+        turn_exchange_id TEXT,
+        request_id TEXT,
+        status TEXT NOT NULL DEFAULT 'provisional',
+        verified_at INTEGER,
+        conflict_reason TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS devspace_trace_turn_bindings_metadata_time
+        ON devspace_trace_turn_bindings(metadata_id, last_seen_at DESC);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS devspace_trace_turn_verified_turn
+        ON devspace_trace_turn_bindings(conversation_id, turn_exchange_id)
+        WHERE status='verified'
+          AND conversation_id IS NOT NULL
+          AND turn_exchange_id IS NOT NULL;
 
       -- DevSpace Recover overlay：只保存本地审计事实，不冒充 first-party messages。
       -- canonical body 后续出现相同 tool+args 时只打 superseded 标记，保留原始取证链。
@@ -5243,6 +5289,151 @@ export class ChatArchiveDb {
       input.conversationId,
       input.turnExchangeId,
     )
+  }
+
+  observeDevSpaceTraceTurn(input: {
+    traceId: string
+    metadataId: string
+    auditId: string
+    observedAt: number
+  }): DevSpaceTraceTurnBindingRow {
+    const traceId = input.traceId.trim().toLowerCase()
+    const metadataId = input.metadataId.trim()
+    const auditId = input.auditId.trim()
+    const observedAt = Math.max(0, Math.trunc(input.observedAt))
+    const existing = this.getDevSpaceTraceTurnByTrace(traceId)
+    if (existing && existing.metadataId !== metadataId) {
+      const reason = `metadata-mismatch:${existing.metadataId}:${metadataId}`
+      this.db.prepare(`
+        UPDATE devspace_trace_turn_bindings
+        SET last_seen_at=max(last_seen_at, ?),
+            last_audit_id=?,
+            status='conflict',
+            conflict_reason=?
+        WHERE trace_id=?
+      `).run(observedAt, auditId, reason, traceId)
+      return this.getDevSpaceTraceTurnByTrace(traceId)!
+    }
+
+    this.db.prepare(`
+      INSERT INTO devspace_trace_turn_bindings (
+        trace_id, metadata_id,
+        first_seen_at, last_seen_at,
+        first_audit_id, last_audit_id,
+        status
+      ) VALUES (?, ?, ?, ?, ?, ?, 'provisional')
+      ON CONFLICT(trace_id) DO UPDATE SET
+        last_seen_at=max(devspace_trace_turn_bindings.last_seen_at, excluded.last_seen_at),
+        last_audit_id=excluded.last_audit_id
+    `).run(traceId, metadataId, observedAt, observedAt, auditId, auditId)
+    return this.getDevSpaceTraceTurnByTrace(traceId)!
+  }
+
+  verifyDevSpaceTraceTurn(input: {
+    traceId: string
+    metadataId: string
+    conversationId: string
+    turnExchangeId: string
+    requestId?: string | null
+    verifiedAt: number
+  }): DevSpaceTraceTurnBindingRow | null {
+    const traceId = input.traceId.trim().toLowerCase()
+    const metadataId = input.metadataId.trim()
+    const conversationId = input.conversationId.trim()
+    const turnExchangeId = input.turnExchangeId.trim()
+    const requestId = input.requestId?.trim() || null
+    const verifiedAt = Math.max(0, Math.trunc(input.verifiedAt))
+    const existing = this.getDevSpaceTraceTurnByTrace(traceId)
+    if (!existing) return null
+
+    if (existing.metadataId !== metadataId) {
+      this.db.prepare(`
+        UPDATE devspace_trace_turn_bindings
+        SET status='conflict', conflict_reason=?
+        WHERE trace_id=?
+      `).run(`metadata-mismatch:${existing.metadataId}:${metadataId}`, traceId)
+      return this.getDevSpaceTraceTurnByTrace(traceId)
+    }
+    if (existing.status === 'verified'
+      && (existing.conversationId !== conversationId || existing.turnExchangeId !== turnExchangeId)) {
+      this.db.prepare(`
+        UPDATE devspace_trace_turn_bindings
+        SET status='conflict', conflict_reason=?
+        WHERE trace_id=?
+      `).run(
+        `trace-remap:${existing.conversationId}:${existing.turnExchangeId}:${conversationId}:${turnExchangeId}`,
+        traceId,
+      )
+      return this.getDevSpaceTraceTurnByTrace(traceId)
+    }
+
+    const other = this.db.prepare(`
+      SELECT trace_id AS traceId
+      FROM devspace_trace_turn_bindings
+      WHERE conversation_id=? AND turn_exchange_id=? AND status='verified' AND trace_id<>?
+      LIMIT 1
+    `).get(conversationId, turnExchangeId, traceId) as { traceId?: string } | undefined
+    if (other?.traceId) {
+      const reason = `turn-remap:${conversationId}:${turnExchangeId}:${other.traceId}:${traceId}`
+      this.db.prepare(`
+        UPDATE devspace_trace_turn_bindings
+        SET status='conflict', conflict_reason=?
+        WHERE trace_id IN (?, ?)
+      `).run(reason, other.traceId, traceId)
+      return this.getDevSpaceTraceTurnByTrace(traceId)
+    }
+
+    this.db.prepare(`
+      UPDATE devspace_trace_turn_bindings
+      SET conversation_id=?,
+          turn_exchange_id=?,
+          request_id=COALESCE(?, request_id),
+          status='verified',
+          verified_at=?,
+          conflict_reason=NULL
+      WHERE trace_id=?
+    `).run(conversationId, turnExchangeId, requestId, verifiedAt, traceId)
+    return this.getDevSpaceTraceTurnByTrace(traceId)
+  }
+
+  getDevSpaceTraceTurnByTrace(traceId: string): DevSpaceTraceTurnBindingRow | null {
+    const row = this.db.prepare(`
+      SELECT trace_id AS traceId, metadata_id AS metadataId,
+             first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
+             first_audit_id AS firstAuditId, last_audit_id AS lastAuditId,
+             conversation_id AS conversationId,
+             turn_exchange_id AS turnExchangeId,
+             request_id AS requestId,
+             status,
+             verified_at AS verifiedAt,
+             conflict_reason AS conflictReason
+      FROM devspace_trace_turn_bindings
+      WHERE trace_id=?
+    `).get(traceId.trim().toLowerCase()) as DevSpaceTraceTurnBindingRow | undefined
+    return row ?? null
+  }
+
+  getDevSpaceTraceTurnByTurn(
+    conversationId: string,
+    turnExchangeId: string,
+  ): DevSpaceTraceTurnBindingRow | null {
+    const row = this.db.prepare(`
+      SELECT trace_id AS traceId, metadata_id AS metadataId,
+             first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
+             first_audit_id AS firstAuditId, last_audit_id AS lastAuditId,
+             conversation_id AS conversationId,
+             turn_exchange_id AS turnExchangeId,
+             request_id AS requestId,
+             status,
+             verified_at AS verifiedAt,
+             conflict_reason AS conflictReason
+      FROM devspace_trace_turn_bindings
+      WHERE conversation_id=? AND turn_exchange_id=?
+      ORDER BY CASE status WHEN 'verified' THEN 0 WHEN 'provisional' THEN 1 ELSE 2 END,
+               last_seen_at DESC
+      LIMIT 1
+    `).get(conversationId, turnExchangeId) as DevSpaceTraceTurnBindingRow | undefined
+    return row ?? null
   }
 
 
