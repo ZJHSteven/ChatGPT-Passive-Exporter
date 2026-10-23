@@ -1788,8 +1788,12 @@ describe('ChatArchiveDb', () => {
         messages: [{
           id: 'assistant-1', author: { role: 'assistant' }, recipient: 'all', channel: 'commentary',
           create_time: 1,
+          status: 'finished_successfully', end_turn: true,
           content: { content_type: 'text', parts: ['first'] },
-          metadata: { turn_exchange_id: 'turn-stable', request_id: 'req-stable' },
+          metadata: {
+            turn_exchange_id: 'turn-stable', request_id: 'req-stable',
+            finish_details: { type: 'stop' },
+          },
         }],
       }, { observedAt: 1000 })
 
@@ -1823,10 +1827,14 @@ describe('ChatArchiveDb', () => {
       }, { observedAt: 3000 })
 
       expect(db.db.prepare(`
-        SELECT turn_exchange_id AS turnId, request_id AS requestId
+        SELECT turn_exchange_id AS turnId, request_id AS requestId,
+               status, end_turn AS endTurn, finish_type AS finishType
         FROM messages
         WHERE conversation_id='sparse-identity' AND message_id='assistant-1'
-      `).get()).toEqual({ turnId: 'turn-stable', requestId: 'req-stable' })
+      `).get()).toEqual({
+        turnId: 'turn-stable', requestId: 'req-stable',
+        status: 'finished_successfully', endTurn: 1, finishType: 'stop',
+      })
 
       db.mergeLiveMappingSnapshot({
         title: 'Sparse identity fixture',
@@ -1838,18 +1846,26 @@ describe('ChatArchiveDb', () => {
             message: {
               id: 'assistant-1', author: { role: 'assistant' }, recipient: 'all', channel: 'commentary',
               create_time: 1,
+              status: 'in_progress', end_turn: false,
               content: { content_type: 'text', parts: ['fourth'] },
-              metadata: { turn_exchange_id: 'turn-new', request_id: 'req-new' },
+              metadata: {
+                turn_exchange_id: 'turn-new', request_id: 'req-new',
+                finish_details: { type: 'interrupted' },
+              },
             },
           },
         },
       }, { observedAt: 4000, observationKind: 'sparse-identity:explicit-update' })
 
       expect(db.db.prepare(`
-        SELECT turn_exchange_id AS turnId, request_id AS requestId
+        SELECT turn_exchange_id AS turnId, request_id AS requestId,
+               status, end_turn AS endTurn, finish_type AS finishType
         FROM messages
         WHERE conversation_id='sparse-identity' AND message_id='assistant-1'
-      `).get()).toEqual({ turnId: 'turn-new', requestId: 'req-new' })
+      `).get()).toEqual({
+        turnId: 'turn-new', requestId: 'req-new',
+        status: 'in_progress', endTurn: 0, finishType: 'interrupted',
+      })
     }
     finally {
       db.close()
