@@ -9352,13 +9352,22 @@ async function main() {
               FROM conversations WHERE id = ?
             `).get(id)
             const catalogObservationCompleted = archive.hasCatalogWatchdogCompleted(id, item.update_time ?? null)
+            const deferCatalogLifecycle = shouldDeferCatalogWatchdogStartForUnboundDevSpace(
+              unboundDevSpaceTurns.size,
+            ) && shouldStartCatalogWatchdog({
+              alreadyActive: activeTurns.has(id),
+              catalogObservationCompleted,
+              catalogUpdateTime: item.update_time ?? null,
+              archivedUpdateTime: archived?.updateTime ?? null,
+              archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
+            })
             if (shouldStartCatalogWatchdog({
               alreadyActive: checkpointWatches.has(id),
               catalogObservationCompleted,
               catalogUpdateTime: item.update_time ?? null,
               archivedUpdateTime: archived?.updateTime ?? null,
               archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
-            })) {
+            }) && !deferCatalogLifecycle) {
               armCheckpointWatch(id, `reconcile:${reason}:async-active`, now)
             }
             if (shouldStartCatalogWatchdog({
@@ -9368,17 +9377,29 @@ async function main() {
               archivedUpdateTime: archived?.updateTime ?? null,
               archivedBodyCompletionState: archived?.bodyCompletionState ?? null,
             })) {
-              const nextActive = {
-                startedAt: observationStartedAt,
-                lastEventAt: now,
-                lastWatchdogAt: null,
-                watchdogPendingAt: null,
-                startType: `catalog:async-active:${reason}`,
-                lastDiagnosticTurnKey: null,
+              if (deferCatalogLifecycle) {
+                queueDeferredCatalogWatchdogCandidate({
+                  conversationId: id,
+                  startedAt: observationStartedAt,
+                  lastEventAt: now,
+                  startType: `catalog:async-active:${reason}`,
+                  title: item.title ?? null,
+                  updateTime: item.update_time ?? null,
+                })
               }
-              activeTurns.set(id, nextActive)
-              persistActiveTurn(id, nextActive)
-              dispatchWatchdogStartNotification(id, nextActive, item.title ?? null)
+              else {
+                const nextActive = {
+                  startedAt: observationStartedAt,
+                  lastEventAt: now,
+                  lastWatchdogAt: null,
+                  watchdogPendingAt: null,
+                  startType: `catalog:async-active:${reason}`,
+                  lastDiagnosticTurnKey: null,
+                }
+                activeTurns.set(id, nextActive)
+                persistActiveTurn(id, nextActive)
+                dispatchWatchdogStartNotification(id, nextActive, item.title ?? null)
+              }
             }
             else if (catalogProgressed) {
               const active = activeTurns.get(id)
@@ -9417,6 +9438,7 @@ async function main() {
             // 也必须按 complete 清掉，不能永久污染 queue.active/oldestActiveMs。
             const hadCatalogGeneration = wasCatalogActive || isCatalogLateActive(activeTurns.get(id))
             catalogActive.delete(id)
+            dropDeferredCatalogWatchdogCandidate(id, 'catalog-complete')
             clearActiveTurn(id)
             stopCheckpointWatch(id, `reconcile:${reason}:async-complete`, now)
             await turnRecorder.append(buildCatalogObservationTrace({
