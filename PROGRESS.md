@@ -900,3 +900,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-24 04:04 +08：Watchdog 成为 trace turn identity 的首个消费者：仅在上一 generation 已完成且上一 canonical turn 的 trace 已 verified 时，新且非 conflict 的 trace 可立即启动下一 provisional DevSpace generation，跳过 post-completion Body 身份确认；相同旧 trace 的残余工具仍走旧路径/不会重开。没有 trace、上一 trace 未 verified 或任一 conflict 都 fail-closed 回退原 Body 确认。目标 156 tests PASS + typecheck PASS。
 
 - 2026-10-24 04:07 +08：生产 canary 暴露 trace 表只进 Genesis schema、未进 existing-DB migration；已补 Archive schema v5 `migrateV5()`，v4→v5 只创建 trace identity 表/索引，不重跑 Genesis/backfill。生产库已先用同一幂等 DDL 紧急补表，正式 migration 目标回归 157/157 PASS + typecheck PASS。
+
+- 2026-10-24 04:08 +08：生产部署/验收完成。Archive 受控 stop→resume 后 PID 42516，maintenance=false，Bridge 正常，WSS 3 sockets/gap=null，schema v5；真实 DevSpace audit 已写入首条 provisional trace，cursor 正常推进且 daemon/devspace lastError 均为 null。最终全库 31 files / 320 tests PASS，exit 0；此前一次 archive-bridge teardown ENOENT 偶发未复现。
