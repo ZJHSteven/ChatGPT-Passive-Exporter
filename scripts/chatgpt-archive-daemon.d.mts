@@ -65,6 +65,20 @@ export function shouldStartCatalogWatchdog(input?: {
   archivedBodyCompletionState?: unknown
 }): boolean
 
+export function shouldDeferCatalogWatchdogStartForUnboundDevSpace(unboundDevSpaceCount?: unknown): boolean
+
+export function mergeDeferredCatalogWatchdogCandidate(
+  existing: Record<string, unknown> | null | undefined,
+  input?: {
+    conversationId?: unknown
+    startedAt?: unknown
+    lastEventAt?: unknown
+    startType?: unknown
+    title?: unknown
+    updateTime?: unknown
+  },
+): Record<string, unknown> | null
+
 /** catalog update_time 前进只推进 lastEventAt 证据，不能修改 generation.startedAt。 */
 export function recordCatalogWatchdogProgress<T extends Record<string, unknown> | null | undefined>(
   active: T,
