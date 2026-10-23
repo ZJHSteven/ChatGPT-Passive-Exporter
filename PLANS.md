@@ -1099,3 +1099,12 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 13. 生产部署最终验收时暴露独立 startup 门闩：新 daemon 已完成 Bridge、DevSpace seed/cursor、wake listener，并在日志中到达 `guardian ready`，但 state 仍停在 initializing，90 秒 supervisor 最终 fail-closed。源码确认 `establishGuardian()` 在 `guardian ready` 后会同步 await `Page.navigate/Page.reload` 的 CDP command ACK，第一次 `writeState()` 在其后；该 ACK 不是 Guardian readiness 证据，不应阻塞整个 daemon。改为 listener 已挂载后 fire-and-observe 发起导航/reload，command reject/timeout 仅记录日志；仍保留最多 20 秒 auth 等待和后续 Guardian/WSS health gate。这样 supervisor 不会被一个非必要 CDP ACK 卡死，但也不会绕过真正健康检查。
 
 
+
+
+## 2026-10-24 Gap Repair Body-first + Trace provisional turn identity
+
+- [in_progress] 恢复 Gap Repair 完整语义：Catalog 发现新/更新 conversation observation 后进入正常 Body sync；Body merge 后自然进入 canonical match / binding / diagnosis，不再把 active Body 读取当作另一个“binding probe”概念。
+- [in_progress] Catalog Watchdog 改为 Body-first：新的 catalog active observation 先保留 candidate，Body 证明仍 active 且没有已有 metadata generation 时才启动；Body complete 则只收尾，避免 New Chat 双起。
+- [in_progress] 5m unbound diagnosis 必须等待本轮 Body sync 与 canonical matching worker 收口后才能宣告 unbound。
+- [planned] 新增 trace provisional turn identity：第一条 DevSpace audit 即按 trace-id 分 generation；canonical Body 到达后用 turn_exchange_id/request_id + exact tool+args 双向校验并固化，供 Watchdog/Recover/recovery overlay/LifeOps 等 turn-level 消费者使用。
+- [deferred] mergeLiveMessagesPage 真正搬出主 Node event loop：当前 Maintenance lane 仍与 Guardian/Bridge 同进程，长同步 SQLite/FTS merge 仍能造成 event-loop lag；此性能根因今晚只记录，不展开。
