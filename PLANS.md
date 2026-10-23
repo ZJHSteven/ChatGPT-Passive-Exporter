@@ -1,3 +1,11 @@
+# 2026-10-24 catalog/unbound Watchdog 去重与标题稳定性
+
+- [in_progress] 修复 2026-10-23 现场：FPGA 与华北五省两个并发 conversation 均先由 DevSpace metadata 正常启动 unbound Watchdog，5m unbound gap-repair 后 catalog 又各自创建一次 `catalog:async-active:gap-repair` Start，形成每个 conversation 一次重复 New Chat。
+- [pending] catalog active 在现场存在 unbound DevSpace generation 时不得立即发 Start；先登记 pending catalog candidate，并继续走原有 markDirty/Body sync，不新增网络请求。Body/exact binding 若把 CID 并入已有 unbound generation则丢 candidate；若 canonical Body 证明是独立 conversation，再按 catalog 首见时间回填 catalog Watchdog。
+- [pending] 修复通知标题优先级：已存 canonical 真标题 > DevSpace init title > catalog candidate title > CID/metadata alias；`New Chat/New chat/新聊天` 永远视为 placeholder，不能作为最终 Bark subtitle。
+- [pending] 将 5m unbound 诊断文案从“绑定失败”改为“暂未绑定/待绑定”，因为该状态只是 5m 时尚无 canonical binding；FPGA 现场 17:08:31 未绑定、17:10:19 exact 16/16 后成功绑定，证明它不是永久失败。
+- [pending] 回归覆盖：两个 unbound metadata + gap-repair 两个 catalog active 不得产生第二组 Start；binding 后 candidate 合并；无 DevSpace 独立 catalog conversation 仍可在 Body 后启动；placeholder title 不得覆盖已有真标题。
+
 ## 2026-10-22 Watchdog generation 生命周期收口
 
 ### 已确认语义
