@@ -3044,6 +3044,47 @@ async function main() {
     })
     return true
   }
+
+  const unresolvedUnboundDevSpaceGenerationCount = () => (
+    unboundDevSpaceTurns.size + pendingUnboundWatchdogDiagnoses.size
+  )
+
+  const recordDeferredCatalogBodyObservation = (conversationId, diagnostic, observedAt = Date.now()) => {
+    const candidate = deferredCatalogWatchdogCandidates.get(conversationId)
+    if (!candidate) return false
+    candidate.bodyTurnExchangeId = diagnostic?.turnExchangeId ?? candidate.bodyTurnExchangeId ?? null
+    candidate.bodyCompletionEvidence = diagnostic?.bodyCompletionEvidence ?? 'none'
+    candidate.bodyObservedAt = Number(observedAt) || Date.now()
+    deferredCatalogWatchdogCandidates.set(conversationId, candidate)
+
+    if (String(candidate.bodyCompletionEvidence || 'none') !== 'none') {
+      dropDeferredCatalogWatchdogCandidate(conversationId, 'canonical-body-complete')
+      return false
+    }
+    if (unresolvedUnboundDevSpaceGenerationCount() === 0) {
+      return startDeferredCatalogWatchdogCandidate(conversationId, 'canonical-body-active-no-unbound-remains')
+    }
+    void log('deferred catalog watchdog candidate confirmed active but still awaiting unbound ownership resolution', {
+      conversationId,
+      bodyTurnExchangeId: candidate.bodyTurnExchangeId,
+      unresolvedUnboundDevSpaceGenerations: unresolvedUnboundDevSpaceGenerationCount(),
+    })
+    return false
+  }
+
+  const flushDeferredCatalogWatchdogCandidates = (reason) => {
+    if (unresolvedUnboundDevSpaceGenerationCount() > 0) return 0
+    let started = 0
+    for (const [conversationId, candidate] of [...deferredCatalogWatchdogCandidates.entries()]) {
+      if (!candidate.bodyObservedAt) continue
+      if (String(candidate.bodyCompletionEvidence || 'none') !== 'none') {
+        dropDeferredCatalogWatchdogCandidate(conversationId, 'canonical-body-complete')
+        continue
+      }
+      if (startDeferredCatalogWatchdogCandidate(conversationId, reason)) started += 1
+    }
+    return started
+  }
   // daemon 重启必须恢复“原计时器”，而不是由最近一次 DevSpace audit 重新开表。
   // active_watchdogs 是 conversation 级状态，因此不受同一 CID 多 metadata 的影响。
   //
