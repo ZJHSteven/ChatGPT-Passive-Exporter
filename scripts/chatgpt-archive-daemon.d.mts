@@ -177,6 +177,15 @@ export function shouldQueueWatchdogDiagnostic(
   watchdogMs?: number,
 ): boolean
 
+export function persistedWatchdogCompletionAt(lastWatchdogAt: unknown): number | null
+
+export function isSqliteBusyError(error: unknown): boolean
+
+export function retryTransientSqliteBusy<T>(
+  work: (attempt: number) => Promise<T> | T,
+  options?: { attempts?: number, delayMs?: number },
+): Promise<T>
+
 /** 从 body diagnostic 提取 watchdog 用的稳定 turn key。 */
 export function watchdogDiagnosticTurnKey(diagnostic: {
   turnExchangeId?: unknown

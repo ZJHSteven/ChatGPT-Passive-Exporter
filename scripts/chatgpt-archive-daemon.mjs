@@ -748,6 +748,34 @@ export function shouldQueueWatchdogDiagnostic(active, now = Date.now(), watchdog
   return lastWatchdogAt === null || !Number.isFinite(lastWatchdogAt)
 }
 
+export function persistedWatchdogCompletionAt(lastWatchdogAt) {
+  if (lastWatchdogAt === null || lastWatchdogAt === undefined || lastWatchdogAt === '') return null
+  const value = Number(lastWatchdogAt)
+  return Number.isFinite(value) ? value : null
+}
+
+export function isSqliteBusyError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return /(?:SQLITE_BUSY|database (?:table )?is locked)/iu.test(message)
+}
+
+export async function retryTransientSqliteBusy(work, options = {}) {
+  const attempts = Math.max(1, Math.trunc(Number(options.attempts ?? 3)))
+  const delayMs = Math.max(0, Math.trunc(Number(options.delayMs ?? 100)))
+  let attempt = 0
+  while (attempt < attempts) {
+    attempt += 1
+    try {
+      return await work(attempt)
+    }
+    catch (error) {
+      if (!isSqliteBusyError(error) || attempt >= attempts) throw error
+      if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs * attempt))
+    }
+  }
+  throw new Error('SQLite busy retry exhausted')
+}
+
 /**
  * 从一次 body 诊断里提取稳定的 turn 身份。
  *
@@ -3111,8 +3139,9 @@ async function main() {
       startType: persisted.startType,
       lastDiagnosticTurnKey: persisted.lastDiagnosticTurnKey,
     }
-    if (Number.isFinite(Number(persisted.lastWatchdogAt))) {
-      const completedAt = Number(persisted.lastWatchdogAt)
+    const persistedCompletionAt = persistedWatchdogCompletionAt(persisted.lastWatchdogAt)
+    if (persistedCompletionAt !== null) {
+      const completedAt = persistedCompletionAt
       recentConversationComplete.set(persisted.conversationId, completedAt)
       if (Number(persisted.watchdogPendingAt || 0) > 0) {
         pendingWatchdogDiagnoses.set(persisted.conversationId, {
@@ -4016,7 +4045,7 @@ async function main() {
       || devSpaceVirtualConversationId(event.metadataId)
     const mainThreadPrepareMs = performance.now() - profileStartedAt
     phaseStartedAt = performance.now()
-    await archiveMergeWorker.upsertRecoveryAudit({
+    const recoveryAuditInput = {
       auditId: event.id,
       conversationId,
       metadataId: event.metadataId,
@@ -4029,7 +4058,11 @@ async function main() {
       startedAt: event.startedAtMs,
       finishedAt: Number.isFinite(finishedAt) ? finishedAt : null,
       observedAt: Date.now(),
-    })
+    }
+    await retryTransientSqliteBusy(
+      () => archiveMergeWorker.upsertRecoveryAudit(recoveryAuditInput),
+      { attempts: 3, delayMs: 100 },
+    )
     const workerRoundTripMs = performance.now() - phaseStartedAt
     const totalMs = performance.now() - profileStartedAt
     if (mainThreadPrepareMs >= 50) {
@@ -7517,7 +7550,11 @@ async function main() {
     devSpaceAuditPollScheduled = true
     setImmediate(() => {
       devSpaceAuditPollScheduled = false
-      void pollDevSpaceAudits()
+      void pollDevSpaceAudits().catch(error => {
+        void log('scheduled DevSpace audit poll failed', {
+          error: error instanceof Error ? error.message : String(error),
+        }).catch(() => {})
+      })
     })
   }
 
@@ -10631,13 +10668,28 @@ async function main() {
       auditId: devSpaceAuditCursor.auditId,
     })
   }
-  const pendingRecoveryAtStartup = await refreshPendingDevSpaceRecoveryAudits({ collectMetadataIds: true })
-  if (pendingRecoveryAtStartup.refreshed > 0) {
-    await log('pending DevSpace recovery audits refreshed after startup', {
-      refreshed: pendingRecoveryAtStartup.refreshed,
-    })
+  let pendingRecoveryAtStartup = { refreshed: 0, metadataIds: [] }
+  try {
+    pendingRecoveryAtStartup = await refreshPendingDevSpaceRecoveryAudits({ collectMetadataIds: true })
+    if (pendingRecoveryAtStartup.refreshed > 0) {
+      await log('pending DevSpace recovery audits refreshed after startup', {
+        refreshed: pendingRecoveryAtStartup.refreshed,
+      })
+    }
   }
-  await pollDevSpaceAudits()
+  catch (error) {
+    await log('startup pending DevSpace recovery refresh failed; deferred to fallback', {
+      error: error instanceof Error ? error.message : String(error),
+    }).catch(() => {})
+  }
+  try {
+    await pollDevSpaceAudits()
+  }
+  catch (error) {
+    await log('startup DevSpace audit poll failed; deferred to fallback', {
+      error: error instanceof Error ? error.message : String(error),
+    }).catch(() => {})
+  }
   const bindingQueueQueuedAtStartup = queuePendingDevSpaceBindingQueue({
     limit: 1000,
   })
@@ -10673,22 +10725,35 @@ async function main() {
     if (state) refreshDevSpaceIdleCandidate(state.metadataId, Date.now(), state)
   }
   devSpaceLastFallbackPollAt = Date.now()
-  const devSpaceWakeListening = await devSpaceAuditWakeListener.start((signal) => {
+  const devSpaceWakeListening = await devSpaceAuditWakeListener.start(async (signal) => {
     // poll 现在会在同一 audit 内部 cooperative yield；finish 门铃的最终状态重读显式串到
     // 本次 poll 之后，保持旧版“先消费 start/cursor，再覆盖 finish result”的顺序。
-    void pollDevSpaceAudits().finally(() => {
+    try {
+      await pollDevSpaceAudits()
+    }
+    catch (error) {
+      await log('DevSpace audit wake poll failed', {
+        auditId: signal.auditId,
+        metadataId: signal.metadataId,
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => {})
+    }
+    finally {
       // finish 与 start 使用同一 auditId；finish 是原行 UPDATE，不会越过 started_at cursor，
       // 因此仍按 signal.metadataId / auditId 重读最终状态。
       refreshDevSpaceIdleCandidate(signal.metadataId)
       // recovery overlay 同样按 auditId 补最终 result/error/finished_at。
-      void refreshDevSpaceRecoveryAudit(signal.auditId).catch(error => {
-        void log('DevSpace recovery finish refresh failed', {
+      try {
+        await refreshDevSpaceRecoveryAudit(signal.auditId)
+      }
+      catch (error) {
+        await log('DevSpace recovery finish refresh failed', {
           auditId: signal.auditId,
           metadataId: signal.metadataId,
           error: error instanceof Error ? error.message : String(error),
-        })
-      })
-    })
+        }).catch(() => {})
+      }
+    }
   })
   await log('DevSpace audit wake listener ready', {
     listening: devSpaceWakeListening,

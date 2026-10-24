@@ -36,6 +36,8 @@ import {
   decodeCdpResponseBodyBytes,
   devSpaceIdleRepairMode,
   devSpaceFirstToolWatchdogState,
+  persistedWatchdogCompletionAt,
+  retryTransientSqliteBusy,
   shouldStartPostCompletionDevSpaceTurnFromTrace,
   planDevSpaceBindingProbes,
   extractDevSpaceCheckpoint,
@@ -101,6 +103,7 @@ import {
   syncSubrequestFetchOptions,
 } from '../scripts/chatgpt-archive-daemon.mjs'
 import { extractProjectCatalogPayload } from '../src/local/project-catalog.ts'
+import { ChatArchiveDb } from '../src/local/archive-db.ts'
 
 test('daemon fatal 记录 Error stack 与任意 rejection，并尊重 --log', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-daemon-fatal-'))
@@ -364,7 +367,8 @@ test('daemon state 暴露控制平面 event-loop lag，避免把本机 starvatio
   expect(daemon).toContain('await archiveMergeWorker.mergeMessages(normalized, {')
   expect(daemon).not.toContain('archive.mergeLiveMessagesPage(')
   expect(daemon).not.toContain('archive.mergeLiveMappingSnapshot(')
-  expect(daemon).toContain('await archiveMergeWorker.upsertRecoveryAudit({')
+  expect(daemon).toContain('await retryTransientSqliteBusy(')
+  expect(daemon).toContain('archiveMergeWorker.upsertRecoveryAudit(recoveryAuditInput)')
   expect(daemon).not.toContain('archive.upsertDevSpaceRecoveryAudit(')
   expect(daemon).toContain("runControlPlaneStage('devspace-audit:poll'")
   expect(daemon).toContain("runControlPlaneStage('devspace-audit:metadata-state'")
@@ -443,6 +447,8 @@ test('daemon startup 只从 Archive 已知候选恢复 metadata，不全表扫�
   expect(wakeBegin).toBeGreaterThan(startupBegin)
   const startup = daemon.slice(startupBegin, wakeBegin)
   expect(startup).toContain('pendingRecoveryAtStartup.metadataIds')
+  expect(startup).toContain('startup pending DevSpace recovery refresh failed; deferred to fallback')
+  expect(startup).toContain('startup DevSpace audit poll failed; deferred to fallback')
   expect(startup).toContain('archive.listDevSpaceMetadataBindings({')
   expect(startup).toContain("runControlPlaneStage('devspace-startup:metadata-state'")
   expect(startup).not.toContain('recentMetadataToolStates(')
@@ -469,8 +475,75 @@ test('startup 直接信任 durable active_watchdogs，不再逐条扫描 message
   expect(end).toBeGreaterThan(start)
   const restore = daemon.slice(start, end)
   expect(restore).toContain('startedAt: Number(persisted.startedAt)')
+  expect(restore).toContain('persistedWatchdogCompletionAt(persisted.lastWatchdogAt)')
+  expect(restore).not.toContain('Number.isFinite(Number(persisted.lastWatchdogAt))')
   expect(restore).not.toContain('SELECT MIN(create_time)')
   expect(restore).not.toContain('turn_exchange_id = ? OR request_id = ? OR message_id = ?')
+})
+
+test('startup restore preserves SQL NULL as active and keeps the original watchdog deadline', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-watchdog-restore-'))
+  const dbPath = path.join(root, 'archive.sqlite')
+  const db = new ChatArchiveDb(dbPath)
+  try {
+    const startedAt = 10_000
+    db.upsertActiveWatchdog({
+      conversationId: 'conversation-active',
+      startedAt,
+      lastEventAt: 20_000,
+      lastWatchdogAt: null,
+      watchdogPendingAt: null,
+      startType: 'devspace:first-tool',
+      lastDiagnosticTurnKey: 'turn-active',
+    })
+    const persisted = db.listActiveWatchdogs()[0]
+    if (!persisted) throw new Error('expected persisted active watchdog')
+    expect(persisted.lastWatchdogAt).toBeNull()
+    expect(persistedWatchdogCompletionAt(persisted.lastWatchdogAt)).toBeNull()
+    const restored = {
+      startedAt: Number(persisted.startedAt),
+      lastEventAt: persisted.lastEventAt,
+      lastWatchdogAt: persisted.lastWatchdogAt,
+      watchdogPendingAt: persisted.watchdogPendingAt,
+      startType: persisted.startType,
+      lastDiagnosticTurnKey: persisted.lastDiagnosticTurnKey,
+    }
+    expect(shouldQueueWatchdogDiagnostic(restored, startedAt + 45 * 60_000 - 1, 45 * 60_000)).toBe(false)
+    expect(shouldQueueWatchdogDiagnostic(restored, startedAt + 45 * 60_000, 45 * 60_000)).toBe(true)
+
+    db.upsertActiveWatchdog({
+      conversationId: 'conversation-timed-out',
+      startedAt: 30_000,
+      lastEventAt: 40_000,
+      lastWatchdogAt: 50_000,
+      watchdogPendingAt: 50_000,
+      startType: 'devspace:first-tool',
+      lastDiagnosticTurnKey: 'turn-timeout',
+    })
+    const timedOut = db.listActiveWatchdogs().find(row => row.conversationId === 'conversation-timed-out')
+    expect(persistedWatchdogCompletionAt(timedOut?.lastWatchdogAt)).toBe(50_000)
+  }
+  finally {
+    db.close()
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
+
+test('SQLite busy retry is bounded and does not swallow non-busy failures', async () => {
+  let calls = 0
+  await expect(retryTransientSqliteBusy(async () => {
+    calls += 1
+    if (calls < 3) throw new Error('database is locked')
+    return 'ok'
+  }, { attempts: 3, delayMs: 0 })).resolves.toBe('ok')
+  expect(calls).toBe(3)
+
+  let fatalCalls = 0
+  await expect(retryTransientSqliteBusy(async () => {
+    fatalCalls += 1
+    throw new Error('corrupt payload')
+  }, { attempts: 3, delayMs: 0 })).rejects.toThrow('corrupt payload')
+  expect(fatalCalls).toBe(1)
 })
 
 test('startup binding recovery 复用 cooperative worker，不同步 drain pending queue', async () => {

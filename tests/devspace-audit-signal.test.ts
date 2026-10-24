@@ -136,4 +136,60 @@ describe('DevSpace audit wake listener', () => {
       listener.close()
     }
   })
+
+  test('wake handler async rejection is contained and the listener remains alive', async () => {
+    const probe = createSocket('udp4')
+    await new Promise<void>((resolve, reject) => {
+      probe.once('error', reject)
+      probe.bind(0, '127.0.0.1', () => resolve())
+    })
+    const address = probe.address()
+    if (typeof address === 'string') throw new Error('expected udp4 address')
+    const port = address.port
+    probe.close()
+
+    const listener = new DevSpaceAuditWakeListener({ port })
+    let calls = 0
+    await listener.start(async () => {
+      calls += 1
+      if (calls === 1) throw new Error('database is locked')
+    })
+
+    const sender = createSocket('udp4')
+    const send = (auditId: string) => sender.send(
+      Buffer.from(JSON.stringify({
+        version: 1,
+        auditId,
+        metadataId: 'meta-async-safe',
+        startedAt: new Date().toISOString(),
+        tool: 'exec_command',
+        phase: 'finish',
+      })),
+      port,
+      '127.0.0.1',
+    )
+    try {
+      send('audit-async-fail')
+      for (let i = 0; i < 100 && listener.stats().handlerErrors < 1; i += 1) {
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+      expect(listener.stats()).toMatchObject({
+        listening: true,
+        received: 1,
+        handlerErrors: 1,
+        lastError: 'database is locked',
+      })
+
+      send('audit-async-survive')
+      for (let i = 0; i < 100 && calls < 2; i += 1) {
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+      expect(calls).toBe(2)
+      expect(listener.stats().listening).toBe(true)
+    }
+    finally {
+      sender.close()
+      listener.close()
+    }
+  })
 })

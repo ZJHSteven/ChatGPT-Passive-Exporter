@@ -54,7 +54,7 @@ export class DevSpaceAuditWakeListener {
     this.host = options.host ?? '127.0.0.1'
   }
 
-  async start(onWake: (signal: DevSpaceAuditWakeSignal) => void): Promise<boolean> {
+  async start(onWake: (signal: DevSpaceAuditWakeSignal) => void | Promise<void>): Promise<boolean> {
     if (this.socket) return true
     const socket = createSocket('udp4')
     this.socket = socket
@@ -72,7 +72,13 @@ export class DevSpaceAuditWakeListener {
       this.lastSignalStartedAt = startedAt
       this.lastLatencyMs = Math.max(0, receivedAt - startedAt)
       try {
-        onWake(signal)
+        const result = onWake(signal)
+        if (result && typeof result.then === 'function') {
+          void Promise.resolve(result).catch(error => {
+            this.handlerErrors += 1
+            this.lastError = error instanceof Error ? error.message : String(error)
+          })
+        }
       }
       catch (error) {
         // UDP 只是“门铃”，SQLite 才是 durable source of truth。
