@@ -1107,4 +1107,5 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 - [in_progress] Catalog Watchdog 改为 Body-first：新的 catalog active observation 先保留 candidate，Body 证明仍 active 且没有已有 metadata generation 时才启动；Body complete 则只收尾，避免 New Chat 双起。
 - [in_progress] 5m unbound diagnosis 必须等待本轮 Body sync 与 canonical matching worker 收口后才能宣告 unbound。
 - [planned] 新增 trace provisional turn identity：第一条 DevSpace audit 即按 trace-id 分 generation；canonical Body 到达后用 turn_exchange_id/request_id + exact tool+args 双向校验并固化，供 Watchdog/Recover/recovery overlay/LifeOps 等 turn-level 消费者使用。
-- [in_progress] canonical Merge 真正搬出主 Node event loop：已实现单独 worker_threads merge worker + 独立 SQLite 连接，并把 Body/mapping/passive/SSE canonical ingress 全部切到 Worker；待生产 canary 验证 event-loop lag 不再随慢 Merge 同步飙升。
+- [done] canonical Merge 已真正搬出主 Node event loop：单独 worker_threads merge worker + 独立 SQLite 连接承接 Body/mapping/passive/SSE canonical ingress。clean production canary 中 Worker 实际执行 3559ms merge，而同一 07:45:48.177–07:45:57.649Z 精确窗口主 event loop 仅出现约 185ms/169ms 抖动，没有 3.56s 等长冻结；Worker failed=0。第一次 database-is-locked canary 被仍运行的 sync-chatgpt full import 第二 writer 污染，不作为 Worker 内部锁冲突证据。
+- [in_progress] 剩余主线程 SQLite control-plane I/O：生产仍见 devspace-audit:observe-trace ~1.09s、recovery-upsert/binding 数百毫秒。该问题与 canonical Merge 隔离开处理；先做方法级 timing，再决定内存 fast-path + 异步 durable queue 或更广的 control-plane DB worker。
