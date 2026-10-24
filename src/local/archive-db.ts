@@ -597,7 +597,7 @@ function visibleForMarkdown(conversation: CanonicalConversation): boolean {
  * - FTS 只索引可读 User/Assistant 正文，不把巨大 tool result、connector JSON、raw CoT
  *   塞进全文索引；这些仍可从 message/resource 表按需审计。
  */
-const ARCHIVE_SCHEMA_VERSION = 5
+const ARCHIVE_SCHEMA_VERSION = 6
 
 export class ChatArchiveDb {
   readonly db: DatabaseSync
@@ -644,6 +644,11 @@ export class ChatArchiveDb {
       this.migrateV5()
       schemaVersion = 5
       this.db.exec('PRAGMA user_version=5')
+    }
+    if (schemaVersion < 6) {
+      this.migrateV6()
+      schemaVersion = 6
+      this.db.exec('PRAGMA user_version=6')
     }
   }
 
@@ -705,6 +710,9 @@ export class ChatArchiveDb {
 
       CREATE INDEX IF NOT EXISTS resources_conversation_kind
         ON resources(conversation_id, kind);
+
+      CREATE INDEX IF NOT EXISTS resources_conversation_message
+        ON resources(conversation_id, message_id);
 
       CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
         conversation_id UNINDEXED,
@@ -1374,6 +1382,16 @@ export class ChatArchiveDb {
         WHERE status='verified'
           AND conversation_id IS NOT NULL
           AND turn_exchange_id IS NOT NULL;
+    `)
+  }
+
+  /** v6：live touched-resource refresh 必须按 conversation+message 精确删除，不能扫整聊天。 */
+  private migrateV6(): void {
+    const resourceColumns = this.db.prepare('PRAGMA table_info(resources)').all() as Array<{ name?: string }>
+    if (resourceColumns.length === 0) return
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS resources_conversation_message
+        ON resources(conversation_id, message_id);
     `)
   }
 
@@ -2449,22 +2467,10 @@ export class ChatArchiveDb {
       // Cold Evidence event 已经永久记录“本次再次观察到同一 payload”，conversation.last_seen_at
       // 也会推进；因此 raw canonical 完全相同的 message 不应再改自身 version timestamp。
       // mapping/image 目前仍保留 seen-time 语义，先单独去掉最昂贵的 messages 肥-row rewrite。
-      for (let offset = 0; offset < observationOnlyMessageIds.length; offset += 300) {
-        const ids = observationOnlyMessageIds.slice(offset, offset + 300)
-        if (ids.length === 0) continue
-        const placeholders = ids.map(() => '?').join(',')
-        this.db.prepare(`
-          UPDATE mapping_nodes
-          SET last_seen_at=max(last_seen_at, ?),
-              source_observed_at=max(source_observed_at, ?)
-          WHERE conversation_id=? AND node_id IN (${placeholders})
-        `).run(observedAt, observedAt, conversationId, ...ids)
-        this.db.prepare(`
-          UPDATE image_assets
-          SET last_seen_at=max(last_seen_at, ?)
-          WHERE conversation_id=? AND message_id IN (${placeholders})
-        `).run(observedAt, conversationId, ...ids)
-      }
+      // Identical canonical messages already advance conversation.last_seen_at and Cold Evidence.
+      // Do not rewrite mapping/image rows merely to say “observed again”: that creates writer
+      // amplification with no canonical change. A 2026-10-24 production sample spent ~10s in
+      // this observation-only batch while just one of 699 messages had actually changed.
       messageWriteMs = performance.now() - messageWriteStartedAt
 
       const observationStartedAt = performance.now()

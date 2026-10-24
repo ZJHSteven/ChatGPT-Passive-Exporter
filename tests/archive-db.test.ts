@@ -66,7 +66,7 @@ function payload() {
 }
 
 describe('ChatArchiveDb', () => {
-  test('v4 database upgrades to v5 trace turn identity schema without genesis migration', () => {
+  test('v4 database upgrades through current schema without genesis migration', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatgpt-archive-v4-upgrade-'))
     tempDirs.push(dir)
     const filePath = path.join(dir, 'archive.sqlite')
@@ -76,7 +76,7 @@ describe('ChatArchiveDb', () => {
 
     const db = new ChatArchiveDb(filePath)
     try {
-      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(5)
+      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
       expect(db.db.prepare(`
         SELECT name FROM sqlite_master
         WHERE type='table' AND name='devspace_trace_turn_bindings'
@@ -84,6 +84,39 @@ describe('ChatArchiveDb', () => {
       expect(db.db.prepare(`
         SELECT name FROM sqlite_master
         WHERE type='index' AND name='devspace_trace_turn_verified_turn'
+      `).get()).toBeTruthy()
+    }
+    finally {
+      db.close()
+    }
+  })
+
+  test('v5 database adds touched-resource lookup index in v6', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatgpt-archive-v5-upgrade-'))
+    tempDirs.push(dir)
+    const filePath = path.join(dir, 'archive.sqlite')
+    const legacy = new DatabaseSync(filePath)
+    legacy.exec(`
+      CREATE TABLE resources (
+        row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        label TEXT NOT NULL,
+        data_json TEXT NOT NULL
+      );
+      CREATE INDEX resources_conversation_kind ON resources(conversation_id, kind);
+      PRAGMA user_version=5;
+    `)
+    legacy.close()
+
+    const db = new ChatArchiveDb(filePath)
+    try {
+      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
+      expect(db.db.prepare(`
+        SELECT name FROM sqlite_master
+        WHERE type='index' AND name='resources_conversation_message'
       `).get()).toBeTruthy()
     }
     finally {
@@ -237,6 +270,10 @@ describe('ChatArchiveDb', () => {
                source_observed_at AS sourceObservedAt, status
         FROM messages WHERE conversation_id='noop-merge' AND message_id='a1'
       `).get() as { rawJson: string, lastSeenAt: number, sourceObservedAt: number, status: string }
+      expect(db.db.prepare(`
+        SELECT last_seen_at AS lastSeenAt, source_observed_at AS sourceObservedAt
+        FROM mapping_nodes WHERE conversation_id='noop-merge' AND node_id='a1'
+      `).get()).toMatchObject({ lastSeenAt: 1000, sourceObservedAt: 1000 })
       expect(repeated).toMatchObject({
         rawJson: first.rawJson,
         lastSeenAt: 1000,
@@ -341,7 +378,7 @@ describe('ChatArchiveDb', () => {
     tempDirs.push(dir)
     const file = path.join(dir, 'archive.sqlite')
     const first = new ChatArchiveDb(file)
-    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
+    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
     first.close()
 
     const blocker = new DatabaseSync(file)
@@ -393,7 +430,7 @@ describe('ChatArchiveDb', () => {
 
     const upgraded = new ChatArchiveDb(file)
     try {
-      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
       const columns = upgraded.db.prepare("PRAGMA table_info('messages')").all() as Array<{ name: string }>
       expect(columns.map(column => column.name)).toContain('raw_hash')
       expect(upgraded.db.prepare(`
@@ -440,7 +477,7 @@ describe('ChatArchiveDb', () => {
 
     const upgraded = new ChatArchiveDb(file)
     try {
-      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
       expect(upgraded.db.prepare('SELECT count(*) AS n FROM message_raw_fingerprints').get())
         .toEqual({ n: 0 })
       expect(upgraded.db.prepare('SELECT count(*) AS n FROM catalog_watchdog_watermarks').get())
@@ -2881,4 +2918,3 @@ describe('ChatArchiveDb', () => {
   })
 
 })
-
