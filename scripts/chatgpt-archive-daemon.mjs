@@ -26,7 +26,6 @@ import {
   ChatArchiveDb,
   devSpaceVirtualConversationId,
 } from '../src/local/archive-db.ts'
-import { ArchiveMergeWorker } from '../src/local/archive-merge-worker-client.ts'
 import {
   ArchiveEvidenceStore,
   prepareArchiveEvidence,
@@ -2795,7 +2794,6 @@ async function main() {
     lastError: null,
   }, null, 2)).catch(() => {})
   const archive = new ChatArchiveDb(dbPath)
-  const archiveMergeWorker = new ArchiveMergeWorker(dbPath)
   const evidenceStore = new ArchiveEvidenceStore(archiveEvidenceDir)
   const requestEventLedger = new RequestEventLedger(requestEventLedgerPath)
   const devSpaceAuditBridge = new DevSpaceAuditBridge(devSpaceDbPath)
@@ -4424,7 +4422,6 @@ async function main() {
         lastStep: maintenanceLaneLastStep,
         lastError: maintenanceLaneLastError,
       },
-      mergeWorker: archiveMergeWorker.stats(),
     },
     bridge: {
       enabled: bridgeEnabled,
@@ -6112,7 +6109,7 @@ async function main() {
       })
       const asyncObservationPrepareMs = performance.now() - observationPrepareStartedAt
       const mergeStartedAt = performance.now()
-      const merged = await archiveMergeWorker.mergeMessages(normalized, {
+      const merged = runControlPlaneStage(`conversation-merge:${trigger}`, () => archive.mergeLiveMessagesPage(normalized, {
         observedAt: observationAt,
         endpoint: observationEndpoint,
         pageCursor: cursor,
@@ -6129,7 +6126,7 @@ async function main() {
         incidentKind: requestedIncidentKind,
         preparedObservation: evidence.preparedObservation,
         skipLegacyObservation: evidence.skipLegacyObservation,
-      })
+      }))
       if (Number(merged.timings?.totalMs || 0) >= 100) {
         await log('slow canonical merge profile', {
           conversationId,
@@ -6190,7 +6187,7 @@ async function main() {
                 observedAt: mappingObservedAt,
               })
               const mappingMergeStartedAt = performance.now()
-              const mappingResult = await archiveMergeWorker.mergeMapping(mappingPayload, {
+              const mappingResult = archive.mergeLiveMappingSnapshot(mappingPayload, {
                 observedAt: mappingObservedAt,
                 endpoint: singularPath,
                 observationKind: mappingObservationKind,
@@ -6814,7 +6811,7 @@ async function main() {
    * delta 全部可解码，并找到 finished_successfully + end_turn=true 的最终 assistant。
    * 任何条件不满足都只记录 fallback，现有 body sync 路径完全不变。
    */
-  const promoteCompleteLiveSse = async (accumulator, source = {}) => {
+  const promoteCompleteLiveSse = (accumulator, source = {}) => {
     accumulator.finish()
     const snapshot = accumulator.snapshot()
     if (!snapshot.complete || !snapshot.conversationId) {
@@ -6839,7 +6836,7 @@ async function main() {
       const payload = accumulator.canonicalPayload(fallbackTitle)
       if (!payload) throw new Error('complete SSE did not produce canonical payload')
       const observedAt = Date.now()
-      const merged = await archiveMergeWorker.mergeMessages(payload, {
+      const merged = runControlPlaneStage('conversation-merge:live-sse-complete', () => archive.mergeLiveMessagesPage(payload, {
         observedAt,
         endpoint: source.endpoint ?? null,
         observationKind: 'live-sse-complete',
@@ -6848,7 +6845,7 @@ async function main() {
         updateCurrentState: true,
         updateIncidents: false,
         allowIncompleteTailIncident: false,
-      })
+      }))
       if (Number(merged.timings?.totalMs || 0) >= 100) {
         void log('slow canonical merge profile', {
           conversationId: snapshot.conversationId,
@@ -6920,7 +6917,7 @@ async function main() {
    *
    * 因此它能保存“比当前 Body checkpoint 更往前”的 SSE 证据，但不能单独宣告 turn 完成。
    */
-  const mergePartialLiveSseEvidence = async (accumulator, source = {}, reason = 'incomplete-stream') => {
+  const mergePartialLiveSseEvidence = (accumulator, source = {}, reason = 'incomplete-stream') => {
     try {
       accumulator.finish()
       const snapshot = accumulator.snapshot()
@@ -6933,7 +6930,7 @@ async function main() {
       if (!payload || !snapshot.conversationId) return null
 
       const observedAt = Date.now()
-      const merged = await archiveMergeWorker.mergeMessages(payload, {
+      const merged = runControlPlaneStage('conversation-merge:live-sse-partial', () => archive.mergeLiveMessagesPage(payload, {
         observedAt,
         endpoint: source.endpoint ?? null,
         observationKind: 'live-sse-partial',
@@ -6942,7 +6939,7 @@ async function main() {
         updateCurrentState: false,
         updateIncidents: false,
         allowIncompleteTailIncident: false,
-      })
+      }))
       if (Number(merged.timings?.totalMs || 0) >= 100) {
         void log('slow canonical merge profile', {
           conversationId: snapshot.conversationId,
@@ -8142,7 +8139,7 @@ async function main() {
         endpoint,
         observedAt: capturedAt,
       })
-      await archiveMergeWorker.mergeMapping(payload, {
+      archive.mergeLiveMappingSnapshot(payload, {
         observedAt: capturedAt,
         endpoint,
         observationKind,
@@ -8184,7 +8181,7 @@ async function main() {
         observedAt: capturedAt,
       })
       const asyncObservationPrepareMs = performance.now() - observationPrepareStartedAt
-      const passiveMerged = await archiveMergeWorker.mergeMessages(normalized, {
+      const passiveMerged = runControlPlaneStage('conversation-merge:passive-native', () => archive.mergeLiveMessagesPage(normalized, {
         observedAt: capturedAt,
         endpoint,
         pageCursor: null,
@@ -8196,7 +8193,7 @@ async function main() {
         incidentKind: 'abnormal-terminal',
         preparedObservation: evidence.preparedObservation,
         skipLegacyObservation: evidence.skipLegacyObservation,
-      })
+      }))
       if (Number(passiveMerged.timings?.totalMs || 0) >= 100) {
         await log('slow canonical merge profile', {
           conversationId,
@@ -8499,7 +8496,7 @@ async function main() {
 
     const cleanupLiveSseJournals = async (reason = 'observer-detached') => {
       for (const requestId of [...liveCanonicalDecoders.keys()]) {
-        await settleLiveCanonicalDecoder(requestId, reason)
+        settleLiveCanonicalDecoder(requestId, reason)
       }
       const entries = [...liveSseJournals.entries()]
       await Promise.all(entries.map(([requestId]) => finalizeLiveSseJournal(requestId, {
@@ -8510,60 +8507,37 @@ async function main() {
     }
 
     const registerLiveCanonicalDecoder = (requestId, canonical, source) => {
-      const state = { canonical, source, promoted: false, partialMerged: false, mergePromise: null }
+      const state = { canonical, source, promoted: false, partialMerged: false }
       liveCanonicalDecoders.set(String(requestId), state)
       return state
     }
 
-    const tryPromoteLiveCanonicalDecoder = async (requestId) => {
+    const tryPromoteLiveCanonicalDecoder = (requestId) => {
       const key = String(requestId)
       const state = liveCanonicalDecoders.get(key)
       if (!state || state.promoted) return false
       // 先只读 snapshot 判断是否已经具备完整 SSE 自证；不完整时绝不调用 promotion helper，
       // 避免正常流中每个中间 chunk 都累计一条 fallback 遥测。
       if (!state.canonical.snapshot().complete) return false
-      if (state.mergePromise) return await state.mergePromise
-      const promise = (async () => {
-        const promoted = await promoteCompleteLiveSse(state.canonical, state.source)
-        if (!promoted) return false
-        state.promoted = true
-        return true
-      })()
-      state.mergePromise = promise
-      try {
-        return await promise
-      }
-      finally {
-        if (state.mergePromise === promise) state.mergePromise = null
-      }
+      const promoted = promoteCompleteLiveSse(state.canonical, state.source)
+      if (!promoted) return false
+      state.promoted = true
+      return true
     }
 
-    const mergePartialLiveCanonicalDecoder = async (requestId, reason = 'incomplete-stream') => {
+    const mergePartialLiveCanonicalDecoder = (requestId, reason = 'incomplete-stream') => {
       const key = String(requestId)
       const state = liveCanonicalDecoders.get(key)
       if (!state || state.promoted || state.partialMerged) return false
-      if (state.mergePromise) {
-        const completed = await state.mergePromise
-        if (completed || state.promoted || state.partialMerged) return false
-      }
-      const promise = (async () => {
-        const merged = await mergePartialLiveSseEvidence(state.canonical, state.source, reason)
-        if (!merged) return false
-        state.partialMerged = true
-        return true
-      })()
-      state.mergePromise = promise
-      try {
-        return await promise
-      }
-      finally {
-        if (state.mergePromise === promise) state.mergePromise = null
-      }
+      const merged = mergePartialLiveSseEvidence(state.canonical, state.source, reason)
+      if (!merged) return false
+      state.partialMerged = true
+      return true
     }
 
-    const settleLiveCanonicalDecoder = async (requestId, reason = 'stream-ended') => {
-      if (await tryPromoteLiveCanonicalDecoder(requestId)) return 'complete'
-      if (await mergePartialLiveCanonicalDecoder(requestId, reason)) return 'partial'
+    const settleLiveCanonicalDecoder = (requestId, reason = 'stream-ended') => {
+      if (tryPromoteLiveCanonicalDecoder(requestId)) return 'complete'
+      if (mergePartialLiveCanonicalDecoder(requestId, reason)) return 'partial'
       return 'none'
     }
 
@@ -8629,7 +8603,7 @@ async function main() {
         // 对同一 chunk 的 ingest 紧随其后。排一个 microtask，确保 `[DONE]` 已经先进入 accumulator，
         // 然后立刻 promotion；不再依赖 Chrome 最后到底发 loadingFinished 还是 ERR_ABORTED。
         const requestId = String(event.cdpRequestId)
-        queueMicrotask(() => { void tryPromoteLiveCanonicalDecoder(requestId) })
+        queueMicrotask(() => { tryPromoteLiveCanonicalDecoder(requestId) })
       }
       if (
         event?.event === 'stream-failed'
@@ -8723,23 +8697,17 @@ async function main() {
       entry.finished = true
       if (failedReason) entry.tracker.fail(failedReason, Date.now())
       else entry.tracker.finish(Date.now())
-      void settleLiveCanonicalDecoder(
+      settleLiveCanonicalDecoder(
         entry.cdpRequestId,
         failedReason ? `turn-wss:${failedReason}` : 'turn-wss-finished-incomplete',
-      ).catch(async (error) => {
-        await log('turn WSS canonical settlement failed', {
-          requestId: entry.cdpRequestId,
-          error: error instanceof Error ? error.message : String(error),
-        }).catch(() => {})
-      }).finally(() => {
-        void finalizeLiveSseJournal(entry.cdpRequestId, {
-          event: failedReason ? 'stream-failed' : 'stream-finished',
-          ...(failedReason ? { detail: { reason: String(failedReason).slice(0, 240) } } : {}),
-        })
-        liveCanonicalDecoders.delete(entry.cdpRequestId)
-        activeLiveTransports.delete(entry.liveKey)
-        turnWssTrackers.delete(`${entry.requestId}:${entry.topic}`)
+      )
+      void finalizeLiveSseJournal(entry.cdpRequestId, {
+        event: failedReason ? 'stream-failed' : 'stream-finished',
+        ...(failedReason ? { detail: { reason: String(failedReason).slice(0, 240) } } : {}),
       })
+      liveCanonicalDecoders.delete(entry.cdpRequestId)
+      activeLiveTransports.delete(entry.liveKey)
+      turnWssTrackers.delete(`${entry.requestId}:${entry.topic}`)
     }
 
     const observeTurnWssFrame = (requestId, direction, payloadData) => {
@@ -8827,31 +8795,21 @@ async function main() {
         ready: false,
         pending: [],
         enablePromise: null,
-        settling: false,
       }
       // 这个函数只存在于 daemon 内存；JSON.stringify 会自然忽略函数属性，因此不会污染 state。
       // idle scanner 通过它把旧 SSE 送回 tracker.fail()，从而复用标准 stream-failed -> resume 链。
       liveState.retireIdle = (reason, at = Date.now()) => {
-        if (!liveTransports.has(requestId) || live.settling) return false
-        live.settling = true
-        // Stop future transport events immediately, but keep the decoder until async Worker
-        // settlement finishes so an incomplete stream can still persist partial evidence.
+        if (!liveTransports.has(requestId)) return false
+        settleLiveCanonicalDecoder(String(requestId), `idle-retire:${reason}`)
+        tracker.fail(reason, at)
+        void finalizeLiveSseJournal(String(requestId), {
+          event: 'stream-failed',
+          at,
+          detail: { reason: String(reason).slice(0, 240) },
+        })
+        liveCanonicalDecoders.delete(String(requestId))
         liveTransports.delete(requestId)
         activeLiveTransports.delete(liveKey)
-        tracker.fail(reason, at)
-        void settleLiveCanonicalDecoder(String(requestId), `idle-retire:${reason}`).catch(async (error) => {
-          await log('idle-retire canonical settlement failed', {
-            requestId: String(requestId),
-            error: error instanceof Error ? error.message : String(error),
-          }).catch(() => {})
-        }).finally(() => {
-          void finalizeLiveSseJournal(String(requestId), {
-            event: 'stream-failed',
-            at,
-            detail: { reason: String(reason).slice(0, 240) },
-          })
-          liveCanonicalDecoders.delete(String(requestId))
-        })
         return true
       }
       activeLiveTransports.set(liveKey, liveState)
@@ -9027,22 +8985,17 @@ async function main() {
     client.on('Network.loadingFinished', ({ requestId }) => {
       const live = liveTransports.get(requestId)
       if (live) {
-        const finish = async () => {
-          if (!liveTransports.has(requestId) || live.settling) return
-          live.settling = true
+        const finish = () => {
+          if (!liveTransports.has(requestId)) return
           live.tracker.finish(Date.now())
-          try {
-            await settleLiveCanonicalDecoder(String(requestId), 'network-loading-finished-incomplete')
-          }
-          finally {
-            void finalizeLiveSseJournal(String(requestId), { event: 'stream-finished' })
-            liveCanonicalDecoders.delete(String(requestId))
-            liveTransports.delete(requestId)
-            activeLiveTransports.delete(live.liveKey)
-          }
+          settleLiveCanonicalDecoder(String(requestId), 'network-loading-finished-incomplete')
+          void finalizeLiveSseJournal(String(requestId), { event: 'stream-finished' })
+          liveCanonicalDecoders.delete(String(requestId))
+          liveTransports.delete(requestId)
+          activeLiveTransports.delete(live.liveKey)
         }
-        if (live.enablePromise) void live.enablePromise.then(() => void finish(), () => {})
-        else void finish()
+        if (live.enablePromise) void live.enablePromise.then(finish, () => {})
+        else finish()
       }
       const imageMeta = pendingImages.get(requestId)
       if (imageMeta) {
@@ -9135,28 +9088,22 @@ async function main() {
    client.on('Network.loadingFailed', ({ requestId, errorText, canceled, blockedReason }) => {
      const live = liveTransports.get(requestId)
      if (live) {
-       const fail = async () => {
-         if (!liveTransports.has(requestId) || live.settling) return
-         live.settling = true
+       const fail = () => {
+         if (!liveTransports.has(requestId)) return
          const reason = [errorText, blockedReason, canceled === true ? 'canceled' : null].filter(Boolean).join('; ')
            || 'Network.loadingFailed'
-         let settlement = 'none'
-         try {
-           settlement = await settleLiveCanonicalDecoder(String(requestId), `network-loading-failed:${reason}`)
-         }
-         finally {
-           live.tracker.fail(reason, Date.now())
-           void finalizeLiveSseJournal(String(requestId), {
-             event: settlement === 'complete' ? 'stream-finished-after-network-abort' : 'stream-failed',
-             detail: { reason: String(reason).slice(0, 240) },
-           })
-           liveCanonicalDecoders.delete(String(requestId))
-           liveTransports.delete(requestId)
-           activeLiveTransports.delete(live.liveKey)
-         }
+         const settlement = settleLiveCanonicalDecoder(String(requestId), `network-loading-failed:${reason}`)
+         live.tracker.fail(reason, Date.now())
+         void finalizeLiveSseJournal(String(requestId), {
+           event: settlement === 'complete' ? 'stream-finished-after-network-abort' : 'stream-failed',
+           detail: { reason: String(reason).slice(0, 240) },
+         })
+         liveCanonicalDecoders.delete(String(requestId))
+         liveTransports.delete(requestId)
+         activeLiveTransports.delete(live.liveKey)
        }
-       if (live.enablePromise) void live.enablePromise.then(() => void fail(), () => void fail())
-       else void fail()
+       if (live.enablePromise) void live.enablePromise.then(fail, fail)
+       else fail()
      }
      pendingBodies.delete(requestId)
      pendingImages.delete(requestId)
@@ -10934,11 +10881,6 @@ async function main() {
   await writeState()
   devSpaceAuditWakeListener.close()
   devSpaceAuditBridge.close()
-  await archiveMergeWorker.close().catch(async (error) => {
-    await log('Archive merge worker stop failed', {
-      error: error instanceof Error ? error.message : String(error),
-    }).catch(() => {})
-  })
   await new Promise((resolve) => {
     if (!daemonSingleton.listening) return resolve()
     daemonSingleton.close(() => resolve())

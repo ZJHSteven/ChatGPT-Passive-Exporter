@@ -1107,4 +1107,4 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 - [in_progress] Catalog Watchdog 改为 Body-first：新的 catalog active observation 先保留 candidate，Body 证明仍 active 且没有已有 metadata generation 时才启动；Body complete 则只收尾，避免 New Chat 双起。
 - [in_progress] 5m unbound diagnosis 必须等待本轮 Body sync 与 canonical matching worker 收口后才能宣告 unbound。
 - [planned] 新增 trace provisional turn identity：第一条 DevSpace audit 即按 trace-id 分 generation；canonical Body 到达后用 turn_exchange_id/request_id + exact tool+args 双向校验并固化，供 Watchdog/Recover/recovery overlay/LifeOps 等 turn-level 消费者使用。
-- [in_progress] canonical Merge 真正搬出主 Node event loop：已实现单独 worker_threads merge worker + 独立 SQLite 连接，并把 Body/mapping/passive/SSE canonical ingress 全部切到 Worker；待生产 canary 验证 event-loop lag 不再随慢 Merge 同步飙升。
+- [deferred] mergeLiveMessagesPage 真正搬出主 Node event loop：当前 Maintenance lane 仍与 Guardian/Bridge 同进程，长同步 SQLite/FTS merge 仍能造成 event-loop lag；此性能根因今晚只记录，不展开。
