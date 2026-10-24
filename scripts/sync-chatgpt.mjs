@@ -234,6 +234,7 @@ async function syncOne(id, flags) {
   const cdpHttp = String(flags.get('cdp') || 'http://127.0.0.1:9222').replace(/\/$/u, '')
   const numTurns = Number(flags.get('num-turns') || 100)
   if (!Number.isInteger(numTurns) || numTurns <= 0 || numTurns > 1000) throw new Error('--num-turns must be 1..1000')
+  const fetchOnly = flags.has('fetch-only')
   const dbPath = path.resolve(String(flags.get('db') || 'data/chatgpt-archive.sqlite'))
   const rawDir = path.resolve(String(flags.get('raw-dir') || 'data/raw'))
 
@@ -244,6 +245,15 @@ async function syncOne(id, flags) {
     const headers = await captureBackendHeaders(client)
     const fetched = await fetchConversation(client, id, headers, numTurns)
     const rawFile = await saveRawSnapshot(rawDir, id, fetched.transport, fetched.text)
+    if (fetchOnly) {
+      return {
+        conversationId: id,
+        transport: fetched.transport,
+        rawBytes: Buffer.byteLength(fetched.text, 'utf8'),
+        rawFile,
+        fetchOnly: true,
+      }
+    }
     const archive = new ChatArchiveDb(dbPath)
     try {
       const imported = archive.importRaw(fetched.payload, Date.now())
@@ -273,7 +283,7 @@ async function main() {
   const [command, ...rest] = process.argv.slice(2)
   const { positionals, flags } = parseArgs(rest)
   if (command !== 'one') {
-    console.error('Usage: node scripts/sync-chatgpt.mjs one <conversation-id> [--cdp http://127.0.0.1:9222] [--num-turns 100] [--db path] [--raw-dir path]')
+    console.error('Usage: node scripts/sync-chatgpt.mjs one <conversation-id> [--cdp http://127.0.0.1:9222] [--num-turns 100] [--db path] [--raw-dir path] [--fetch-only]')
     process.exitCode = 2
     return
   }
