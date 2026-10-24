@@ -23,6 +23,10 @@ export const FIRST_PARTY_REPLAY_HEADER_ALLOWLIST = [
   'x-oai-is-client-observation',
   'x-oai-mcp-form-version',
   'x-openai-codex-window-type',
+  // 2026-10-23 起第一方 ChatGPT Web 在多类 backend-api 请求上稳定携带。
+  // 这里仅允许“动态继承第一方当前值”，绝不在 Archive 内硬编码为 1；
+  // 如果上游以后改变取值/语义，Protocol Drift 仍能继续观察真实第一方行为。
+  'x-openai-rate-limit-join-workspace',
   'x-openai-web-frontend',
 ] as const
 

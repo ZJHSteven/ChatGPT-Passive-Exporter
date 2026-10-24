@@ -2374,6 +2374,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       'X-OAI-IS-Client-Observation': '1',
       'X-OAI-MCP-Form-Version': '2',
       'X-OpenAI-Codex-Window-Type': 'main',
+      'X-OpenAI-Rate-Limit-Join-Workspace': '1',
       'X-OpenAI-Web-Frontend': '1',
       'X-OAI-Turn-Trace-ID': 'must-not-copy-globally',
       Cookie: 'must-not-copy',
@@ -2388,6 +2389,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       'x-oai-is-client-observation': '1',
       'x-oai-mcp-form-version': '2',
       'x-openai-codex-window-type': 'main',
+      'x-openai-rate-limit-join-workspace': '1',
       'x-openai-web-frontend': '1',
     })
   })
