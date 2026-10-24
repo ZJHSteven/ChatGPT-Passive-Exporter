@@ -604,7 +604,7 @@ function visibleForMarkdown(conversation: CanonicalConversation): boolean {
  * - FTS 只索引可读 User/Assistant 正文，不把巨大 tool result、connector JSON、raw CoT
  *   塞进全文索引；这些仍可从 message/resource 表按需审计。
  */
-const ARCHIVE_SCHEMA_VERSION = 6
+const ARCHIVE_SCHEMA_VERSION = 7
 
 export class ChatArchiveDb {
   readonly db: DatabaseSync
@@ -656,6 +656,11 @@ export class ChatArchiveDb {
       this.migrateV6()
       schemaVersion = 6
       this.db.exec('PRAGMA user_version=6')
+    }
+    if (schemaVersion < 7) {
+      this.migrateV7()
+      schemaVersion = 7
+      this.db.exec('PRAGMA user_version=7')
     }
   }
 
@@ -1400,6 +1405,16 @@ export class ChatArchiveDb {
       CREATE INDEX IF NOT EXISTS resources_conversation_message
         ON resources(conversation_id, message_id);
     `)
+  }
+
+  /**
+   * v7 was briefly released with a large covering index for DevSpace binding evidence reads.
+   * Production may therefore already report user_version=7. The final implementation moved the
+   * evidence read into the Archive worker instead, so v7 is retained as a compatibility tombstone:
+   * new upgrades advance monotonically but do not create or require that optional index.
+   */
+  private migrateV7(): void {
+    // Intentionally empty. Never downgrade an already-issued SQLite user_version.
   }
 
   /** SQLite 没有通用的 `ADD COLUMN IF NOT EXISTS`，所以先用 PRAGMA 检查旧库。 */

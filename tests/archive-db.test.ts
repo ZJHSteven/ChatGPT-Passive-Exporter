@@ -76,7 +76,7 @@ describe('ChatArchiveDb', () => {
 
     const db = new ChatArchiveDb(filePath)
     try {
-      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
+      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(7)
       expect(db.db.prepare(`
         SELECT name FROM sqlite_master
         WHERE type='table' AND name='devspace_trace_turn_bindings'
@@ -113,7 +113,7 @@ describe('ChatArchiveDb', () => {
 
     const db = new ChatArchiveDb(filePath)
     try {
-      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
+      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(7)
       expect(db.db.prepare(`
         SELECT name FROM sqlite_master
         WHERE type='index' AND name='resources_conversation_message'
@@ -378,7 +378,7 @@ describe('ChatArchiveDb', () => {
     tempDirs.push(dir)
     const file = path.join(dir, 'archive.sqlite')
     const first = new ChatArchiveDb(file)
-    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
+    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
     first.close()
 
     const blocker = new DatabaseSync(file)
@@ -430,7 +430,7 @@ describe('ChatArchiveDb', () => {
 
     const upgraded = new ChatArchiveDb(file)
     try {
-      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
       const columns = upgraded.db.prepare("PRAGMA table_info('messages')").all() as Array<{ name: string }>
       expect(columns.map(column => column.name)).toContain('raw_hash')
       expect(upgraded.db.prepare(`
@@ -477,7 +477,7 @@ describe('ChatArchiveDb', () => {
 
     const upgraded = new ChatArchiveDb(file)
     try {
-      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
       expect(upgraded.db.prepare('SELECT count(*) AS n FROM message_raw_fingerprints').get())
         .toEqual({ n: 0 })
       expect(upgraded.db.prepare('SELECT count(*) AS n FROM catalog_watchdog_watermarks').get())
