@@ -1,5 +1,10 @@
 import { Worker } from 'node:worker_threads'
-import type { ChatArchiveDb, LiveMappingMergeResult, LiveMergeResult } from './archive-db.ts'
+import type {
+  ChatArchiveDb,
+  DevSpaceTurnToolCallRow,
+  LiveMappingMergeResult,
+  LiveMergeResult,
+} from './archive-db.ts'
 import type { PreparedArchiveEvidence } from './archive-evidence-store.ts'
 
 type MessageMergeOptions = NonNullable<Parameters<ChatArchiveDb['mergeLiveMessagesPage']>[1]>
@@ -86,6 +91,14 @@ export class ArchiveMergeWorker {
 
   upsertRecoveryAudit(input: RecoveryAuditInput): Promise<void> {
     return this.enqueueMessage<void>({ kind: 'recovery-audit', input })
+  }
+
+  readTurnToolCalls(conversationId: string, turnExchangeId: string): Promise<DevSpaceTurnToolCallRow[]> {
+    return this.enqueueMessage<DevSpaceTurnToolCallRow[]>({
+      kind: 'tool-turn-evidence',
+      conversationId,
+      turnExchangeId,
+    })
   }
 
   async close(): Promise<void> {

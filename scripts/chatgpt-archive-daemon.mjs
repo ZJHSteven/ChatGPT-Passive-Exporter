@@ -6487,7 +6487,7 @@ async function main() {
         syncInFlight = false
       }
 
-      publishDevSpaceBindingEvidenceFromBody(conversationId, result.diagnostic)
+      await publishDevSpaceBindingEvidenceFromBody(conversationId, result.diagnostic)
       recordDeferredCatalogBodyObservation(conversationId, result.diagnostic, Date.now())
       checkpointBodyRefreshes += 1
       next = recordCheckpointBody({
@@ -6589,7 +6589,7 @@ async function main() {
         syncedConversations += 1
         // body 一旦给出 turn_exchange_id，就可以把 earlier provisional metadata 做后验校验；
         // 该步骤只读局部时间窗，不扫描整库。
-        publishDevSpaceBindingEvidenceFromBody(conversationId, result.diagnostic)
+        await publishDevSpaceBindingEvidenceFromBody(conversationId, result.diagnostic)
         recordDeferredCatalogBodyObservation(conversationId, result.diagnostic, Date.now())
         const postCompletionCandidateBeforeBody = postCompletionDevSpaceCandidates.get(conversationId) ?? null
         // late binding 可能正是在上面的 canonical evidence publish 中才找到 metadata；因此
@@ -6930,7 +6930,7 @@ async function main() {
       // 完整 SSE 已经被提升为 canonical messages 后，它在 binding 语义上就等价于一次
       // canonical Body 落库。不能因为随后 WSS complete 会跳过主动 Body refresh，就让
       // DevSpace metadata 永远失去 exact tool+args reconcile 的机会。
-      publishDevSpaceBindingEvidenceFromBody(snapshot.conversationId, {
+      await publishDevSpaceBindingEvidenceFromBody(snapshot.conversationId, {
         turnExchangeId: snapshot.turnExchangeId,
         requestId: snapshot.requestId,
       })
@@ -7665,10 +7665,11 @@ async function main() {
    * 本来就保存了 DevSpace tool 名和完整 args；tool_audit 也保存同一份 args，因此用
    * canonical exact-match + 同 fingerprint 的局部时间一致性判断身份。
    */
-  const readDevSpaceTurnEvidenceFromStoredTurn = (conversationId, turnExchangeId) => {
-    const rows = archive.db.prepare(
-      "SELECT create_time AS createTime, request_id AS requestId, text FROM messages INDEXED BY messages_tool_turn_evidence WHERE conversation_id=? AND turn_exchange_id=? AND recipient='api_tool.call_tool' AND create_time IS NOT NULL AND text<>'' ORDER BY create_time ASC",
-    ).all(conversationId, turnExchangeId)
+  const readDevSpaceTurnEvidenceFromStoredTurn = async (conversationId, turnExchangeId) => {
+    const workerStartedAt = performance.now()
+    const rows = await archiveMergeWorker.readTurnToolCalls(conversationId, turnExchangeId)
+    const workerMs = performance.now() - workerStartedAt
+    const buildStartedAt = performance.now()
     const bodyCalls = rows
       .map(row => parseDevSpaceBodyToolCall(String(row.text || ''), Number(row.createTime) * 1000))
       .filter(Boolean)
@@ -7683,11 +7684,19 @@ async function main() {
         + String(devSpaceToolArgsFingerprint(call.tool, call.argsJson) ?? ''),
       ).join('\\n--\\n'))
       .digest('hex')
-    return { bodyCalls, startAt, endAt, requestId, revision }
+    return {
+      bodyCalls,
+      startAt,
+      endAt,
+      requestId,
+      revision,
+      workerMs,
+      buildMs: performance.now() - buildStartedAt,
+    }
   }
 
-  const matchDevSpaceBindingFromStoredTurn = (conversationId, turnExchangeId, storedEvidence = null) => {
-    const evidence = storedEvidence ?? readDevSpaceTurnEvidenceFromStoredTurn(conversationId, turnExchangeId)
+  const matchDevSpaceBindingFromStoredTurn = (conversationId, turnExchangeId, storedEvidence) => {
+    const evidence = storedEvidence
     if (!evidence) return null
     const { bodyCalls, startAt, endAt } = evidence
     const activities = devSpaceAuditBridge.activityBetween(startAt - 120_000, endAt + 120_000, 5000)
@@ -7817,7 +7826,8 @@ async function main() {
     if (!queueRow || queueRow.status !== 'pending') return false
     const profileStartedAt = performance.now()
     const profile = {
-      evidenceReadMs: 0,
+      evidenceWorkerMs: 0,
+      evidenceBuildMs: 0,
       metadataRevisionMs: 0,
       matchMs: 0,
       bindingReadMs: 0,
@@ -7828,23 +7838,36 @@ async function main() {
     const logProfile = (outcome) => {
       const totalMs = performance.now() - profileStartedAt
       if (totalMs < 50) return
-      void log('slow Archive control-plane DB profile', {
+      const syncProfileMs = profile.evidenceBuildMs
+        + profile.metadataRevisionMs
+        + profile.matchMs
+        + profile.bindingReadMs
+        + profile.durableMarkMs
+        + profile.traceVerifyMs
+      void log(
+        syncProfileMs >= 50
+          ? 'slow Archive control-plane DB profile'
+          : 'slow Archive binding worker item',
+        {
         operation: 'devspace-binding-item',
         outcome,
         totalMs,
+        syncProfileMs,
         ...profile,
         source,
         conversationId: queueRow.conversationId,
         turnExchangeId: queueRow.turnExchangeId,
-      })
+        },
+      )
     }
 
     let phaseStartedAt = performance.now()
-    const storedEvidence = readDevSpaceTurnEvidenceFromStoredTurn(
+    const storedEvidence = await readDevSpaceTurnEvidenceFromStoredTurn(
       queueRow.conversationId,
       queueRow.turnExchangeId,
     )
-    profile.evidenceReadMs = performance.now() - phaseStartedAt
+    profile.evidenceWorkerMs = Number(storedEvidence?.workerMs || 0)
+    profile.evidenceBuildMs = Number(storedEvidence?.buildMs || 0)
     if (!storedEvidence) {
       logProfile('no-stored-evidence')
       return false
@@ -7975,7 +7998,7 @@ async function main() {
     return true
   }
 
-  const enqueueStoredDevSpaceTurnEvidence = (
+  const enqueueStoredDevSpaceTurnEvidence = async (
     conversationId,
     turnExchangeId,
     {
@@ -7984,7 +8007,7 @@ async function main() {
       source = 'canonical-ingress',
     } = {},
   ) => {
-    const storedEvidence = readDevSpaceTurnEvidenceFromStoredTurn(conversationId, turnExchangeId)
+    const storedEvidence = await readDevSpaceTurnEvidenceFromStoredTurn(conversationId, turnExchangeId)
     if (!storedEvidence) return { queued: false, matched: false }
 
     const metadataRevision = metadataRevisionForEvidence({
@@ -8018,7 +8041,7 @@ async function main() {
     return { queued: true, matched: false }
   }
 
-  const publishCanonicalDevSpaceBindingEvidence = (
+  const publishCanonicalDevSpaceBindingEvidence = async (
     conversationId,
     {
       turnExchangeId = null,
@@ -8032,11 +8055,11 @@ async function main() {
     let matched = 0
     const handled = new Set()
 
-    const publishTurn = (candidateTurnExchangeId, force = false) => {
+    const publishTurn = async (candidateTurnExchangeId, force = false) => {
       const id = String(candidateTurnExchangeId || '')
       if (!id || handled.has(id) || id === excludeTurnExchangeId) return
       handled.add(id)
-      const result = enqueueStoredDevSpaceTurnEvidence(conversationId, id, {
+      const result = await enqueueStoredDevSpaceTurnEvidence(conversationId, id, {
         observedAt,
         force,
         source,
@@ -8045,7 +8068,7 @@ async function main() {
       if (result.matched) matched += 1
     }
 
-    if (turnExchangeId) publishTurn(turnExchangeId, true)
+    if (turnExchangeId) await publishTurn(turnExchangeId, true)
 
     const turns = archive.db.prepare(
       "SELECT turn_exchange_id AS turnExchangeId, MAX(ordinal) AS lastOrdinal "
@@ -8054,7 +8077,7 @@ async function main() {
       + "AND recipient='api_tool.call_tool' AND text<>'' "
       + "GROUP BY turn_exchange_id ORDER BY lastOrdinal DESC LIMIT ?",
     ).all(conversationId, Math.max(1, Math.min(256, Number(maxTurns) || 64)))
-    for (const row of turns) publishTurn(row.turnExchangeId, false)
+    for (const row of turns) await publishTurn(row.turnExchangeId, false)
 
     return { queued, matched }
   }
@@ -8142,21 +8165,21 @@ async function main() {
   }
 
 
-  const publishHistoricalDevSpaceBindingEvidenceFromConversation = (
+  const publishHistoricalDevSpaceBindingEvidenceFromConversation = async (
     conversationId,
     { excludeTurnExchangeId = null, maxTurns = 64 } = {},
   ) => {
-    return publishCanonicalDevSpaceBindingEvidence(conversationId, {
+    return (await publishCanonicalDevSpaceBindingEvidence(conversationId, {
       excludeTurnExchangeId,
       observedAt: Date.now(),
       maxTurns,
       source: 'conversation-history',
-    }).queued
+    })).queued
   }
 
-  const publishDevSpaceBindingEvidenceFromBody = (conversationId, diagnostic) => runControlPlaneStage(
+  const publishDevSpaceBindingEvidenceFromBody = async (conversationId, diagnostic) => runControlPlaneStage(
     'devspace-binding-publish-body',
-    () => {
+    async () => {
     const now = Date.now()
     const turnExchangeId = typeof diagnostic?.turnExchangeId === 'string' ? diagnostic.turnExchangeId : null
     const requestId = typeof diagnostic?.requestId === 'string' ? diagnostic.requestId : null
@@ -8172,7 +8195,7 @@ async function main() {
       for (const row of archive.getDevSpaceMetadataBindingsForConversation(conversationId)) mirrorDevSpaceBinding(row)
     }
 
-    const result = publishCanonicalDevSpaceBindingEvidence(conversationId, {
+    const result = await publishCanonicalDevSpaceBindingEvidence(conversationId, {
       turnExchangeId,
       observedAt: now,
       maxTurns: 64,
@@ -8299,7 +8322,7 @@ async function main() {
       // 发出的 conversation 请求；如果这里只 merge 不 reconcile，已经落库的 tool calls 仍会
       // 永久保持 unbound。mapping 没有稳定的 latest-turn diagnostic，因此对该 CID 做 bounded
       // historical exact retry。
-      publishHistoricalDevSpaceBindingEvidenceFromConversation(conversationId, { maxTurns: 64 })
+      await publishHistoricalDevSpaceBindingEvidenceFromConversation(conversationId, { maxTurns: 64 })
       passiveBodyResponses += 1
       return
     }
@@ -8356,7 +8379,7 @@ async function main() {
       // 第一方页面自然拿到的 latest Body 也是 canonical ingress。过去这里只 merge SQLite，
       // 没有触发 binding reconcile，导致“Body 已在库里但 metadata 仍 unbound”。
       const passiveDiagnostic = diagnoseLatestRun(normalized)
-      publishDevSpaceBindingEvidenceFromBody(conversationId, passiveDiagnostic)
+      await publishDevSpaceBindingEvidenceFromBody(conversationId, passiveDiagnostic)
       // post-completion candidate 若正等 Body 身份确认，优先复用页面自然产生的 Body，零额外请求。
       // publish 可能刚在这一份 Body 上完成 late binding 并补出 candidate，因此必须排在 publish 后。
       completePostCompletionDevSpaceCandidate(conversationId, {

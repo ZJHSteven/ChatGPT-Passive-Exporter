@@ -22,6 +22,12 @@ parentPort.on('message', (message) => {
       archive.upsertDevSpaceRecoveryAudit({ ...(message.input || {}) })
       result = null
     }
+    else if (message.kind === 'tool-turn-evidence') {
+      result = archive.readDevSpaceTurnToolCallRows(
+        String(message.conversationId || ''),
+        String(message.turnExchangeId || ''),
+      )
+    }
     else {
       const payload = JSON.parse(String(message.rawPayload || 'null'))
       const options = { ...(message.options || {}) }

@@ -370,6 +370,8 @@ test('daemon state 暴露控制平面 event-loop lag，避免把本机 starvatio
   expect(daemon).toContain('await retryTransientSqliteBusy(')
   expect(daemon).toContain('archiveMergeWorker.upsertRecoveryAudit(recoveryAuditInput)')
   expect(daemon).not.toContain('archive.upsertDevSpaceRecoveryAudit(')
+  expect(daemon).toContain('await archiveMergeWorker.readTurnToolCalls(conversationId, turnExchangeId)')
+  expect(daemon).not.toContain('FROM messages INDEXED BY messages_tool_turn_time WHERE conversation_id=? AND turn_exchange_id=?')
   expect(daemon).toContain("runControlPlaneStage('devspace-audit:poll'")
   expect(daemon).toContain("runControlPlaneStage('devspace-audit:metadata-state'")
   expect(daemon).toContain("runControlPlaneStage('devspace-audit:advance-cursor'")

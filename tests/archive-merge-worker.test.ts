@@ -115,6 +115,50 @@ describe('ArchiveMergeWorker', () => {
     }
   })
 
+  test('reads DevSpace canonical tool-call evidence through the Archive worker', async () => {
+    const filePath = createDbPath()
+    const worker = new ArchiveMergeWorker(filePath)
+    workers.push(worker)
+
+    const db = new ChatArchiveDb(filePath)
+    try {
+      db.db.prepare(`
+        INSERT INTO conversations (
+          id, title, source_format, captured_at, imported_at, message_count, resource_count, markdown
+        ) VALUES (?, ?, ?, ?, ?, 0, 0, '')
+      `).run('conversation-tool-evidence', 'tool evidence', 'test', 1_000, 1_000)
+      db.db.prepare(`
+        INSERT INTO messages (
+          conversation_id, message_id, ordinal, role, recipient,
+          content_type, text, hidden, metadata_json,
+          turn_exchange_id, create_time, request_id
+        ) VALUES (?, ?, ?, ?, ?, 'text', ?, 0, '{}', ?, ?, ?)
+      `).run(
+        'conversation-tool-evidence',
+        'message-tool-1',
+        1,
+        'assistant',
+        'api_tool.call_tool',
+        '{"path":"/devspace/link/read","args":{"path":"D:/note.txt"}}',
+        'turn-tool-evidence',
+        123.456,
+        'request-tool-evidence',
+      )
+    }
+    finally {
+      db.close()
+    }
+
+    await expect(worker.readTurnToolCalls(
+      'conversation-tool-evidence',
+      'turn-tool-evidence',
+    )).resolves.toEqual([{
+      createTime: 123.456,
+      requestId: 'request-tool-evidence',
+      text: '{"path":"/devspace/link/read","args":{"path":"D:/note.txt"}}',
+    }])
+  })
+
   test('SQLite writer stall in recovery audit worker does not block the main event loop', async () => {
     const filePath = createDbPath()
     const worker = new ArchiveMergeWorker(filePath)
