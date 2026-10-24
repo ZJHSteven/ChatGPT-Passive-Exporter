@@ -42,7 +42,6 @@ export interface ArchiveMergeWorkerStats {
  * sync error and the daemon's existing retry path can retry later without freezing control plane.
  */
 export class ArchiveMergeWorker {
-  private readonly dbPath: string
   private worker: Worker | null = null
   private nextId = 1
   private readonly pending = new Map<number, PendingJob<unknown>>()
@@ -56,9 +55,7 @@ export class ArchiveMergeWorker {
   private maxWorkerMs = 0
   private lastError: string | null = null
 
-  constructor(dbPath: string) {
-    this.dbPath = dbPath
-  }
+  constructor(private readonly dbPath: string) {}
 
   stats(): ArchiveMergeWorkerStats {
     return {

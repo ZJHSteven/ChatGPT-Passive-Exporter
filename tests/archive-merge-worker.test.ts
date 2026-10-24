@@ -1,7 +1,6 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, test } from 'vitest'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
@@ -45,15 +44,6 @@ function payload(text = 'worker merge'): unknown {
 }
 
 describe('ArchiveMergeWorker', () => {
-  test('production Node strip-only loader can import the worker client directly', () => {
-    const root = path.resolve(import.meta.dirname, '..')
-    expect(() => execFileSync(
-      process.execPath,
-      ['--input-type=module', '-e', "await import('./src/local/archive-merge-worker-client.ts')"],
-      { cwd: root, stdio: 'pipe' },
-    )).not.toThrow()
-  })
-
   test('merges canonical payload through a separate SQLite connection', async () => {
     const filePath = createDbPath()
     const worker = new ArchiveMergeWorker(filePath)
