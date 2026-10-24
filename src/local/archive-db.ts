@@ -5341,21 +5341,7 @@ export class ChatArchiveDb {
     const metadataId = input.metadataId.trim()
     const auditId = input.auditId.trim()
     const observedAt = Math.max(0, Math.trunc(input.observedAt))
-    const existing = this.getDevSpaceTraceTurnByTrace(traceId)
-    if (existing && existing.metadataId !== metadataId) {
-      const reason = `metadata-mismatch:${existing.metadataId}:${metadataId}`
-      this.db.prepare(`
-        UPDATE devspace_trace_turn_bindings
-        SET last_seen_at=max(last_seen_at, ?),
-            last_audit_id=?,
-            status='conflict',
-            conflict_reason=?
-        WHERE trace_id=?
-      `).run(observedAt, auditId, reason, traceId)
-      return this.getDevSpaceTraceTurnByTrace(traceId)!
-    }
-
-    this.db.prepare(`
+    const row = this.db.prepare(`
       INSERT INTO devspace_trace_turn_bindings (
         trace_id, metadata_id,
         first_seen_at, last_seen_at,
@@ -5364,9 +5350,28 @@ export class ChatArchiveDb {
       ) VALUES (?, ?, ?, ?, ?, ?, 'provisional')
       ON CONFLICT(trace_id) DO UPDATE SET
         last_seen_at=max(devspace_trace_turn_bindings.last_seen_at, excluded.last_seen_at),
-        last_audit_id=excluded.last_audit_id
-    `).run(traceId, metadataId, observedAt, observedAt, auditId, auditId)
-    return this.getDevSpaceTraceTurnByTrace(traceId)!
+        last_audit_id=excluded.last_audit_id,
+        status=CASE
+          WHEN devspace_trace_turn_bindings.metadata_id <> excluded.metadata_id THEN 'conflict'
+          ELSE devspace_trace_turn_bindings.status
+        END,
+        conflict_reason=CASE
+          WHEN devspace_trace_turn_bindings.metadata_id <> excluded.metadata_id
+          THEN 'metadata-mismatch:' || devspace_trace_turn_bindings.metadata_id || ':' || excluded.metadata_id
+          ELSE devspace_trace_turn_bindings.conflict_reason
+        END
+      RETURNING trace_id AS traceId, metadata_id AS metadataId,
+                first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
+                first_audit_id AS firstAuditId, last_audit_id AS lastAuditId,
+                conversation_id AS conversationId,
+                turn_exchange_id AS turnExchangeId,
+                request_id AS requestId,
+                status,
+                verified_at AS verifiedAt,
+                conflict_reason AS conflictReason
+    `).get(traceId, metadataId, observedAt, observedAt, auditId, auditId) as DevSpaceTraceTurnBindingRow | undefined
+    if (!row) throw new Error(`DevSpace trace observation failed: ${traceId}`)
+    return row
   }
 
   verifyDevSpaceTraceTurn(input: {

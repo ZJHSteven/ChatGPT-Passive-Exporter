@@ -4001,12 +4001,18 @@ async function main() {
    */
   const persistDevSpaceRecoveryAudit = (event, bindingOverride = null) => {
     if (!event?.id || !event?.metadataId || !event?.tool) return false
+    const profileStartedAt = performance.now()
+    let phaseStartedAt = profileStartedAt
     const binding = bindingOverride ?? archive.getDevSpaceMetadataBinding(event.metadataId)
+    const bindingReadMs = performance.now() - phaseStartedAt
+    phaseStartedAt = performance.now()
     const toolFingerprint = devSpaceToolArgsFingerprint(event.tool, event.argsJson)
     if (!toolFingerprint) return false
+    const fingerprintMs = performance.now() - phaseStartedAt
     const finishedAt = event.finishedAt ? Date.parse(event.finishedAt) : null
     const conversationId = binding?.conversationId
       || devSpaceVirtualConversationId(event.metadataId)
+    phaseStartedAt = performance.now()
     archive.upsertDevSpaceRecoveryAudit({
       auditId: event.id,
       conversationId,
@@ -4021,6 +4027,20 @@ async function main() {
       finishedAt: Number.isFinite(finishedAt) ? finishedAt : null,
       observedAt: Date.now(),
     })
+    const upsertMs = performance.now() - phaseStartedAt
+    const totalMs = performance.now() - profileStartedAt
+    if (totalMs >= 50) {
+      void log('slow Archive control-plane DB profile', {
+        operation: 'devspace-recovery-upsert',
+        totalMs,
+        bindingReadMs,
+        fingerprintMs,
+        upsertMs,
+        metadataId: event.metadataId,
+        auditId: event.id,
+        bound: Boolean(binding?.conversationId),
+      })
+    }
     return true
   }
 
@@ -7395,12 +7415,24 @@ async function main() {
     devSpaceLastAuditAt = Math.max(Number(devSpaceLastAuditAt || 0), event.startedAtMs)
     const traceId = devSpaceTraceIdFromRequestMetaJson(event.requestMetaJson)
     if (traceId) {
-      runControlPlaneStage('devspace-audit:observe-trace', () => archive.observeDevSpaceTraceTurn({
+      const traceObserveStartedAt = performance.now()
+      const traceRow = runControlPlaneStage('devspace-audit:observe-trace', () => archive.observeDevSpaceTraceTurn({
         traceId,
         metadataId: event.metadataId,
         auditId: event.id,
         observedAt: event.startedAtMs,
       }))
+      const traceObserveMs = performance.now() - traceObserveStartedAt
+      if (traceObserveMs >= 50) {
+        void log('slow Archive control-plane DB profile', {
+          operation: 'devspace-trace-observe',
+          totalMs: traceObserveMs,
+          traceId,
+          metadataId: event.metadataId,
+          auditId: event.id,
+          status: traceRow?.status ?? null,
+        })
+      }
     }
     const metadataState = runControlPlaneStage('devspace-audit:metadata-state', () =>
       devSpaceAuditBridge.metadataToolState(event.metadataId))
@@ -7730,29 +7762,63 @@ async function main() {
 
   const attemptDevSpaceBindingQueueEvidence = (queueRow, { source = 'queue' } = {}) => {
     if (!queueRow || queueRow.status !== 'pending') return false
+    const profileStartedAt = performance.now()
+    const profile = {
+      evidenceReadMs: 0,
+      metadataRevisionMs: 0,
+      matchMs: 0,
+      bindingReadMs: 0,
+      durableMarkMs: 0,
+      traceVerifyMs: 0,
+      bindMs: 0,
+    }
+    const logProfile = (outcome) => {
+      const totalMs = performance.now() - profileStartedAt
+      if (totalMs < 50) return
+      void log('slow Archive control-plane DB profile', {
+        operation: 'devspace-binding-item',
+        outcome,
+        totalMs,
+        ...profile,
+        source,
+        conversationId: queueRow.conversationId,
+        turnExchangeId: queueRow.turnExchangeId,
+      })
+    }
 
+    let phaseStartedAt = performance.now()
     const storedEvidence = readDevSpaceTurnEvidenceFromStoredTurn(
       queueRow.conversationId,
       queueRow.turnExchangeId,
     )
-    if (!storedEvidence) return false
+    profile.evidenceReadMs = performance.now() - phaseStartedAt
+    if (!storedEvidence) {
+      logProfile('no-stored-evidence')
+      return false
+    }
 
+    phaseStartedAt = performance.now()
     const metadataRevision = metadataRevisionForEvidence({
       firstToolAt: storedEvidence.startAt,
       lastToolAt: storedEvidence.endAt,
     })
+    profile.metadataRevisionMs = performance.now() - phaseStartedAt
     if (queueRow.lastAttemptEvidenceRevision === storedEvidence.revision
       && queueRow.lastAttemptMetadataRevision === metadataRevision) {
+      logProfile('unchanged-revision')
       return false
     }
 
     devSpaceBindingQueueAttempts += 1
+    phaseStartedAt = performance.now()
     const candidate = matchDevSpaceBindingFromStoredTurn(
       queueRow.conversationId,
       queueRow.turnExchangeId,
       storedEvidence,
     )
+    profile.matchMs = performance.now() - phaseStartedAt
     if (!candidate) {
+      phaseStartedAt = performance.now()
       archive.markDevSpaceBindingTurnEvidenceAttempt(
         queueRow.conversationId,
         queueRow.turnExchangeId,
@@ -7760,13 +7826,18 @@ async function main() {
         storedEvidence.revision,
         metadataRevision,
       )
+      profile.durableMarkMs = performance.now() - phaseStartedAt
+      logProfile('no-candidate')
       return false
     }
 
+    phaseStartedAt = performance.now()
     const existingBinding = archive.getDevSpaceMetadataBinding(candidate.metadataId)
+    profile.bindingReadMs = performance.now() - phaseStartedAt
     const observedAt = Date.now()
     if (existingBinding?.conversationId) {
       if (existingBinding.conversationId !== queueRow.conversationId) {
+        phaseStartedAt = performance.now()
         archive.markDevSpaceBindingTurnEvidenceAttempt(
           queueRow.conversationId,
           queueRow.turnExchangeId,
@@ -7774,6 +7845,7 @@ async function main() {
           storedEvidence.revision,
           metadataRevision,
         )
+        profile.durableMarkMs = performance.now() - phaseStartedAt
         void log('DevSpace matching queue rejected cross-conversation bound candidate', {
           source,
           metadataId: candidate.metadataId,
@@ -7781,9 +7853,11 @@ async function main() {
           evidenceConversationId: queueRow.conversationId,
           turnExchangeId: queueRow.turnExchangeId,
         })
+        logProfile('cross-conversation-bound-candidate')
         return false
       }
 
+      phaseStartedAt = performance.now()
       archive.markDevSpaceBindingTurnEvidenceMatched({
         conversationId: queueRow.conversationId,
         turnExchangeId: queueRow.turnExchangeId,
@@ -7792,6 +7866,8 @@ async function main() {
         evidenceRevision: storedEvidence.revision,
         metadataRevision,
       })
+      profile.durableMarkMs = performance.now() - phaseStartedAt
+      phaseStartedAt = performance.now()
       verifyMatchedDevSpaceTraceTurn({
         candidate,
         storedEvidence,
@@ -7799,10 +7875,13 @@ async function main() {
         turnExchangeId: queueRow.turnExchangeId,
         observedAt,
       })
+      profile.traceVerifyMs = performance.now() - phaseStartedAt
       devSpaceBindingQueueMatches += 1
+      logProfile('matched-existing-binding')
       return true
     }
 
+    phaseStartedAt = performance.now()
     bindDevSpaceCandidateFromStoredTurn({
       conversationId: queueRow.conversationId,
       turnExchangeId: queueRow.turnExchangeId,
@@ -7810,6 +7889,8 @@ async function main() {
       evidence: 'body:exact-tool-args-matching-queue',
       observedAt,
     })
+    profile.bindMs = performance.now() - phaseStartedAt
+    phaseStartedAt = performance.now()
     archive.markDevSpaceBindingTurnEvidenceMatched({
       conversationId: queueRow.conversationId,
       turnExchangeId: queueRow.turnExchangeId,
@@ -7818,6 +7899,8 @@ async function main() {
       evidenceRevision: storedEvidence.revision,
       metadataRevision,
     })
+    profile.durableMarkMs = performance.now() - phaseStartedAt
+    phaseStartedAt = performance.now()
     verifyMatchedDevSpaceTraceTurn({
       candidate,
       storedEvidence,
@@ -7825,6 +7908,7 @@ async function main() {
       turnExchangeId: queueRow.turnExchangeId,
       observedAt,
     })
+    profile.traceVerifyMs = performance.now() - phaseStartedAt
     devSpaceBindingQueueMatches += 1
     void log('DevSpace matching queue consumed canonical turn evidence', {
       source,
@@ -7834,6 +7918,7 @@ async function main() {
       exactMatches: candidate.exactMatches,
       uniqueMatches: candidate.uniqueMatches,
     })
+    logProfile('matched-new-binding')
     return true
   }
 
