@@ -1563,6 +1563,54 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     })
   })
 
+  test('first diagnostic 若 Body user 起点晚于 first-tool generation，说明离线期间已经跨 turn', () => {
+    const active = {
+      ...devSpaceFirstToolWatchdogState(10_000),
+      lastEventAt: 80_000,
+      lastWatchdogAt: 90_000,
+      watchdogPendingAt: 90_000,
+    }
+    const recovered = reconcileWatchdogDiagnosticTurn(
+      active,
+      { turnExchangeId: 'turn-after-gap' },
+      100_000,
+      60_000,
+    )
+    expect(recovered).toMatchObject({
+      changed: true,
+      turnKey: 'turn-after-gap',
+      turnStartedAt: 60_000,
+      turnStartSource: 'body-user-create-time',
+    })
+    expect(recovered.nextActive).toMatchObject({
+      startedAt: 60_000,
+      lastEventAt: 80_000,
+      lastWatchdogAt: null,
+      watchdogPendingAt: null,
+      lastDiagnosticTurnKey: 'turn-after-gap',
+    })
+  })
+
+  test('watchdog timeout 成功 Body 诊断发现更新 turn 后会重新建立 generation', async () => {
+    const daemon = await fs.readFile(
+      new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url),
+      'utf8',
+    )
+    const start = daemon.indexOf("if (String(trigger || '').startsWith('watchdog:') && watchdogPending)")
+    const end = daemon.indexOf('// 一次 overlap 同步成功以后', start)
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    const recovery = daemon.slice(start, end)
+    expect(recovery).toContain('result.watchdogTurnChanged')
+    expect(recovery).toContain('activeTurns.set(conversationId, nextActive)')
+    expect(recovery).toContain('persistActiveTurn(conversationId, nextActive)')
+    expect(recovery).toContain('postCompletionDevSpaceCandidates.delete(conversationId)')
+    expect(recovery).toContain('watchdogReanchoredTurnStartedAt - 1')
+    expect(recovery).toContain('dispatchWatchdogStartNotification(')
+    expect(recovery).toContain("lifecycleState: 'active'")
+    expect(recovery).toContain('archive.deleteActiveWatchdogIfStartedAt(conversationId, watchdogPending.startedAt)')
+  })
+
   test('verified previous trace can start the next post-completion generation without waiting for Body', () => {
     expect(shouldStartPostCompletionDevSpaceTurnFromTrace({
       traceId: 'trace-b',

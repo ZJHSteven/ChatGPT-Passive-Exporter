@@ -850,8 +850,18 @@ export function reconcileWatchdogDiagnosticTurn(active, diagnostic, now = Date.n
   const previous = typeof active.lastDiagnosticTurnKey === 'string' && active.lastDiagnosticTurnKey
     ? active.lastDiagnosticTurnKey
     : null
-  if (previous && previous !== turnKey) {
-    const observedStart = Number(observedTurnStartedAt)
+  const observedStart = Number(observedTurnStartedAt)
+  const activeStartedAt = Number(active.startedAt)
+  // first-tool generation 在第一次诊断前通常没有 turn key。正常同一 turn 中，user create_time
+  // 必然早于（或等于）第一个 DevSpace tool audit；若 Body 当前 user turn 反而严格晚于
+  // generation.startedAt，就足以证明 daemon 离线/Body 缺口期间已经跨过了至少一个 turn。
+  // 不能因为 previous=null 就把旧 generation 的 45m 计时硬套到这个更新 turn。
+  const observedStartProvesNewerTurn = !previous
+    && Number.isFinite(observedStart)
+    && observedStart > 0
+    && Number.isFinite(activeStartedAt)
+    && observedStart > activeStartedAt
+  if ((previous && previous !== turnKey) || observedStartProvesNewerTurn) {
     const current = Number(now)
     const resetStartedAt = Number.isFinite(observedStart) && observedStart > 0 && observedStart <= current
       ? observedStart
@@ -6609,8 +6619,63 @@ async function main() {
         // 5 分钟静默 probe 的结果必须在这次成功 body sync 后显式收口。即使真正拉 body 的
         // trigger 是 WSS complete / Watchdog，也复用同一个结果，不再额外请求。
         const idleDiagnoses = completePendingDevSpaceIdleDiagnoses(conversationId, result)
+        let watchdogReanchoredTurnStartedAt = null
         if (String(trigger || '').startsWith('watchdog:') && watchdogPending) {
           pendingWatchdogDiagnoses.delete(conversationId)
+          if (
+            result.watchdogTurnChanged
+            && Number.isFinite(Number(result.watchdogTurnStartedAt))
+            && Number(result.watchdogTurnStartedAt) > 0
+          ) {
+            // 典型恢复场景：daemon 离线跨过多个 ChatGPT turn，durable active_watchdogs 仍保存
+            // 更早一轮 first-tool generation。恢复后它会先因旧 startedAt 触发 timeout；Body 诊断
+            // 若已明确当前 user turn 的 create_time 晚于旧 generation 起点，就不能把“timeout
+            // 处理时刻”当成 completion boundary 把当前仍在运行的 turn 永久挡在外面。
+            //
+            // 在成功 canonical sync 之后，把当前 turn 重新锚定为一个独立 generation。起点使用
+            // Body user create_time（不是恢复时刻），lastEventAt 继承已经 catch-up 的 DevSpace
+            // 活动；旧 row 用 startedAt 条件删除，因此不会误删这条新 generation。
+            watchdogReanchoredTurnStartedAt = Number(result.watchdogTurnStartedAt)
+            const nextActive = {
+              ...watchdogPending,
+              startedAt: watchdogReanchoredTurnStartedAt,
+              lastEventAt: Math.max(
+                watchdogReanchoredTurnStartedAt,
+                Number(watchdogPending.lastEventAt || watchdogReanchoredTurnStartedAt),
+              ),
+              lastWatchdogAt: null,
+              watchdogPendingAt: null,
+              lastDiagnosticTurnKey: watchdogDiagnosticTurnKey(result.diagnostic),
+            }
+            activeTurns.set(conversationId, nextActive)
+            persistActiveTurn(conversationId, nextActive)
+            postCompletionDevSpaceCandidates.delete(conversationId)
+            recentConversationComplete.set(
+              conversationId,
+              Math.max(1, watchdogReanchoredTurnStartedAt - 1),
+            )
+            dispatchWatchdogStartNotification(
+              conversationId,
+              nextActive,
+              conversationTitle(conversationId),
+            )
+            armCheckpointWatch(conversationId, 'watchdog:newer-body-turn', watchdogReanchoredTurnStartedAt)
+            archive.updateDevSpaceBindingTurn({
+              conversationId,
+              turnExchangeId: result.diagnostic.turnExchangeId ?? null,
+              requestId: result.diagnostic.requestId ?? null,
+              observedAt: Date.now(),
+              lifecycleState: 'active',
+            })
+            await log('watchdog timeout diagnosis re-anchored newer active turn', {
+              conversationId,
+              oldGenerationStartedAt: watchdogPending.startedAt,
+              oldGenerationCompletedAt: watchdogPending.completedAt ?? watchdogPending.lastWatchdogAt ?? null,
+              turnKey: nextActive.lastDiagnosticTurnKey,
+              startedAt: nextActive.startedAt,
+              lastEventAt: nextActive.lastEventAt,
+            })
+          }
           archive.deleteActiveWatchdogIfStartedAt(conversationId, watchdogPending.startedAt)
           if (!activeTurns.has(conversationId)) {
             archive.updateDevSpaceBindingTurn({
@@ -6635,11 +6700,13 @@ async function main() {
         readySince.delete(conversationId)
         readyNotBefore.delete(conversationId)
         const activeAfterBody = activeTurns.get(conversationId) ?? null
-        const completionBoundary = Number(
-          postCompletionCandidateBeforeBody?.completedAt
-          ?? recentConversationComplete.get(conversationId)
-          ?? 0,
-        )
+        const completionBoundary = watchdogReanchoredTurnStartedAt !== null
+          ? Math.max(1, watchdogReanchoredTurnStartedAt - 1)
+          : Number(
+              postCompletionCandidateBeforeBody?.completedAt
+              ?? recentConversationComplete.get(conversationId)
+              ?? 0,
+            )
         const bodyCompletionOwnsCurrentGeneration = bodyCompletionBelongsToCurrentGeneration({
           completedAt: completionBoundary,
           bodyTurnStartedAt: result.bodyTurnStartedAt,
