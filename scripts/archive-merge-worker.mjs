@@ -17,21 +17,28 @@ parentPort.on('message', (message) => {
   const id = Number(message?.id || 0)
   const startedAt = performance.now()
   try {
-    const payload = JSON.parse(String(message.rawPayload || 'null'))
-    const options = { ...(message.options || {}) }
-    if (message.preparedObservation) {
-      options.preparedObservation = {
-        rawText: String(message.preparedObservation.rawText || ''),
-        sha256: String(message.preparedObservation.sha256 || ''),
-        rawBytes: Number(message.preparedObservation.rawBytes || 0),
-        compressed: Buffer.from(message.preparedObservation.compressed || []),
-      }
+    let result
+    if (message.kind === 'recovery-audit') {
+      archive.upsertDevSpaceRecoveryAudit({ ...(message.input || {}) })
+      result = null
     }
-    const result = message.kind === 'messages'
-      ? archive.mergeLiveMessagesPage(payload, options)
-      : message.kind === 'mapping'
-        ? archive.mergeLiveMappingSnapshot(payload, options)
-        : (() => { throw new Error(`unknown archive merge worker kind: ${String(message.kind)}`) })()
+    else {
+      const payload = JSON.parse(String(message.rawPayload || 'null'))
+      const options = { ...(message.options || {}) }
+      if (message.preparedObservation) {
+        options.preparedObservation = {
+          rawText: String(message.preparedObservation.rawText || ''),
+          sha256: String(message.preparedObservation.sha256 || ''),
+          rawBytes: Number(message.preparedObservation.rawBytes || 0),
+          compressed: Buffer.from(message.preparedObservation.compressed || []),
+        }
+      }
+      result = message.kind === 'messages'
+        ? archive.mergeLiveMessagesPage(payload, options)
+        : message.kind === 'mapping'
+          ? archive.mergeLiveMappingSnapshot(payload, options)
+          : (() => { throw new Error(`unknown archive merge worker kind: ${String(message.kind)}`) })()
+    }
     parentPort.postMessage({
       id,
       ok: true,

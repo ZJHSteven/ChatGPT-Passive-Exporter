@@ -4,6 +4,7 @@ import type { PreparedArchiveEvidence } from './archive-evidence-store.ts'
 
 type MessageMergeOptions = NonNullable<Parameters<ChatArchiveDb['mergeLiveMessagesPage']>[1]>
 type MappingMergeOptions = NonNullable<Parameters<ChatArchiveDb['mergeLiveMappingSnapshot']>[1]>
+type RecoveryAuditInput = Parameters<ChatArchiveDb['upsertDevSpaceRecoveryAudit']>[0]
 type MergeKind = 'messages' | 'mapping'
 
 interface PendingJob<T> {
@@ -83,6 +84,10 @@ export class ArchiveMergeWorker {
     return this.enqueue<LiveMappingMergeResult>('mapping', payload, options)
   }
 
+  upsertRecoveryAudit(input: RecoveryAuditInput): Promise<void> {
+    return this.enqueueMessage<void>({ kind: 'recovery-audit', input })
+  }
+
   async close(): Promise<void> {
     this.closed = true
     const worker = this.worker
@@ -155,8 +160,6 @@ export class ArchiveMergeWorker {
     payload: unknown,
     options: MessageMergeOptions | MappingMergeOptions,
   ): Promise<T> {
-    const worker = this.ensureWorker()
-    const id = this.nextId++
     const prepared = options.preparedObservation as PreparedArchiveEvidence | undefined
     const rawPayload = prepared?.rawText ?? JSON.stringify(payload)
     const wireOptions = { ...options, preparedObservation: undefined }
@@ -169,6 +172,18 @@ export class ArchiveMergeWorker {
         }
       : null
 
+    return this.enqueueMessage<T>({
+      kind,
+      rawPayload,
+      options: wireOptions,
+      preparedObservation,
+    })
+  }
+
+  private enqueueMessage<T>(message: Record<string, unknown>): Promise<T> {
+    const worker = this.ensureWorker()
+    const id = this.nextId++
+
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, {
         resolve: resolve as (value: unknown) => void,
@@ -176,7 +191,7 @@ export class ArchiveMergeWorker {
         startedAt: performance.now(),
       })
       try {
-        worker.postMessage({ id, kind, rawPayload, options: wireOptions, preparedObservation })
+        worker.postMessage({ id, ...message })
       }
       catch (error) {
         this.pending.delete(id)

@@ -3170,8 +3170,10 @@ async function main() {
   const devSpaceBindingAuditWork = new Map()
   const devSpaceBindingEvidenceWork = new Map()
   let devSpaceBindingWorkerScheduled = false
+  let devSpaceBindingWorkerInFlight = false
   const hasPendingDevSpaceBindingWork = () => (
     devSpaceBindingWorkerScheduled
+    || devSpaceBindingWorkerInFlight
     || devSpaceBindingEvidenceWork.size > 0
     || devSpaceBindingAuditWork.size > 0
   )
@@ -3999,7 +4001,7 @@ async function main() {
    * 已绑定 metadata 直接写 canonical CID；未绑定 metadata 立即写稳定 synthetic conversation，
    * 这样 DevSpace 的先发事实不需要等 Body/WSS/Watchdog。后续可靠 binding 到达时会原位迁移。
    */
-  const persistDevSpaceRecoveryAudit = (event, bindingOverride = null) => {
+  const persistDevSpaceRecoveryAudit = async (event, bindingOverride = null) => {
     if (!event?.id || !event?.metadataId || !event?.tool) return false
     const profileStartedAt = performance.now()
     let phaseStartedAt = profileStartedAt
@@ -4012,8 +4014,9 @@ async function main() {
     const finishedAt = event.finishedAt ? Date.parse(event.finishedAt) : null
     const conversationId = binding?.conversationId
       || devSpaceVirtualConversationId(event.metadataId)
+    const mainThreadPrepareMs = performance.now() - profileStartedAt
     phaseStartedAt = performance.now()
-    archive.upsertDevSpaceRecoveryAudit({
+    await archiveMergeWorker.upsertRecoveryAudit({
       auditId: event.id,
       conversationId,
       metadataId: event.metadataId,
@@ -4027,15 +4030,27 @@ async function main() {
       finishedAt: Number.isFinite(finishedAt) ? finishedAt : null,
       observedAt: Date.now(),
     })
-    const upsertMs = performance.now() - phaseStartedAt
+    const workerRoundTripMs = performance.now() - phaseStartedAt
     const totalMs = performance.now() - profileStartedAt
-    if (totalMs >= 50) {
+    if (mainThreadPrepareMs >= 50) {
       void log('slow Archive control-plane DB profile', {
-        operation: 'devspace-recovery-upsert',
-        totalMs,
+        operation: 'devspace-recovery-upsert-prepare',
+        totalMs: mainThreadPrepareMs,
         bindingReadMs,
         fingerprintMs,
-        upsertMs,
+        metadataId: event.metadataId,
+        auditId: event.id,
+        bound: Boolean(binding?.conversationId),
+      })
+    }
+    if (workerRoundTripMs >= 50) {
+      void log('slow Archive writer worker job', {
+        operation: 'devspace-recovery-upsert',
+        totalMs,
+        mainThreadPrepareMs,
+        workerRoundTripMs,
+        bindingReadMs,
+        fingerprintMs,
         metadataId: event.metadataId,
         auditId: event.id,
         bound: Boolean(binding?.conversationId),
@@ -4045,13 +4060,13 @@ async function main() {
   }
 
   /** finish 门铃到达时按 audit id 重读最终行，覆盖 start 阶段只有 args/started_at 的 provisional。 */
-  const refreshDevSpaceRecoveryAudit = (auditId) => {
+  const refreshDevSpaceRecoveryAudit = async (auditId) => {
     const event = devSpaceAuditBridge.auditById(auditId)
-    return event ? persistDevSpaceRecoveryAudit(event) : false
+    return event ? await persistDevSpaceRecoveryAudit(event) : false
   }
 
   /** binding 晚到时只补 exact-match 附近的局部 audit 窗口，避免历史全库重扫。 */
-  const backfillDevSpaceRecoveryForBinding = (binding, startAt, observedAt) => {
+  const backfillDevSpaceRecoveryForBinding = async (binding, startAt, observedAt) => {
     if (!binding?.conversationId || !binding?.metadataId) return 0
     const windowStart = Math.max(0, Number(startAt || observedAt || Date.now()) - 2 * 60_000)
     const windowEnd = Math.max(windowStart, Number(observedAt || Date.now()) + 2 * 60_000)
@@ -4063,7 +4078,7 @@ async function main() {
     )
     let mirrored = 0
     for (const event of audits) {
-      if (persistDevSpaceRecoveryAudit(event, binding)) mirrored += 1
+      if (await persistDevSpaceRecoveryAudit(event, binding)) mirrored += 1
     }
     return mirrored
   }
@@ -4588,6 +4603,7 @@ async function main() {
       bindingProbeMergesSkipped: devSpaceBindingProbeMergesSkipped,
       bindingWorker: {
         scheduled: devSpaceBindingWorkerScheduled,
+        inFlight: devSpaceBindingWorkerInFlight,
         pendingAuditEvents: devSpaceBindingAuditWork.size,
         pendingEvidence: devSpaceBindingEvidenceWork.size,
         runs: devSpaceBindingWorkerRuns,
@@ -7181,7 +7197,7 @@ async function main() {
     })
   }
 
-  const bindDevSpaceMetadataToConversation = (input) => {
+  const bindDevSpaceMetadataToConversation = async (input) => {
     const existing = archive.getDevSpaceMetadataBinding(input.metadataId)
     const provisional = unboundDevSpaceTurns.get(input.metadataId)
     const pendingUnboundTimeout = pendingUnboundWatchdogDiagnoses.get(input.metadataId) ?? null
@@ -7247,7 +7263,7 @@ async function main() {
       input.metadataId,
       input.conversationId,
     )
-    const recoveryMirrored = backfillDevSpaceRecoveryForBinding(
+    const recoveryMirrored = await backfillDevSpaceRecoveryForBinding(
       binding,
       input.startAt,
       input.observedAt,
@@ -7453,7 +7469,7 @@ async function main() {
       dispatchDevSpaceProgressNotification(event))
     await yieldControlPlane()
     // binding 尚未建立时也立即写 synthetic provisional conversation；一旦绑定再原位迁移。
-    runControlPlaneStage('devspace-audit:recovery-upsert', () =>
+    await runControlPlaneStage('devspace-audit:recovery-upsert', () =>
       persistDevSpaceRecoveryAudit(event, binding))
     await yieldControlPlane()
     if (binding.conversationId) {
@@ -7588,7 +7604,7 @@ async function main() {
    * cursor 只追踪 INSERT 时的 started_at；同一 audit 的 finish 是 UPDATE，不会再次越过 cursor。
    * 因此 daemon 重启/低频兜底要按 recovery 中尚未 finished 的 audit id 重读最终行。
    */
-  const refreshPendingDevSpaceRecoveryAudits = ({ collectMetadataIds = false } = {}) => {
+  const refreshPendingDevSpaceRecoveryAudits = async ({ collectMetadataIds = false } = {}) => {
     let refreshed = 0
     const metadataIds = new Set()
     for (const auditId of archive.listPendingDevSpaceRecoveryAuditIds(1000)) {
@@ -7598,7 +7614,7 @@ async function main() {
       const event = devSpaceAuditBridge.auditById(auditId)
       if (!event) continue
       if (event.metadataId) metadataIds.add(event.metadataId)
-      if (persistDevSpaceRecoveryAudit(event)) refreshed += 1
+      if (await persistDevSpaceRecoveryAudit(event)) refreshed += 1
     }
     return collectMetadataIds
       ? { refreshed, metadataIds: [...metadataIds] }
@@ -7709,7 +7725,7 @@ async function main() {
    * 导致启动 CPU 飙高的问题。只有同一 metadata 的所有可信命中都落在同一个 conversation，
    * 才持久化 binding。
    */
-  const bindDevSpaceCandidateFromStoredTurn = ({
+  const bindDevSpaceCandidateFromStoredTurn = async ({
     conversationId,
     turnExchangeId,
     requestId = null,
@@ -7717,7 +7733,7 @@ async function main() {
     evidence,
     observedAt = Date.now(),
   }) => {
-    bindDevSpaceMetadataToConversation({
+    await bindDevSpaceMetadataToConversation({
       metadataId: candidate.metadataId,
       conversationId,
       startAt: candidate.startAt,
@@ -7760,7 +7776,7 @@ async function main() {
       .digest('hex')
   }
 
-  const attemptDevSpaceBindingQueueEvidence = (queueRow, { source = 'queue' } = {}) => {
+  const attemptDevSpaceBindingQueueEvidence = async (queueRow, { source = 'queue' } = {}) => {
     if (!queueRow || queueRow.status !== 'pending') return false
     const profileStartedAt = performance.now()
     const profile = {
@@ -7882,7 +7898,7 @@ async function main() {
     }
 
     phaseStartedAt = performance.now()
-    bindDevSpaceCandidateFromStoredTurn({
+    await bindDevSpaceCandidateFromStoredTurn({
       conversationId: queueRow.conversationId,
       turnExchangeId: queueRow.turnExchangeId,
       candidate,
@@ -8007,11 +8023,15 @@ async function main() {
   }
 
   const scheduleDevSpaceBindingWorker = () => {
-    if (devSpaceBindingWorkerScheduled || stopping) return
+    if (devSpaceBindingWorkerScheduled || devSpaceBindingWorkerInFlight || stopping) return
     devSpaceBindingWorkerScheduled = true
     setImmediate(() => {
       devSpaceBindingWorkerScheduled = false
-      runDevSpaceBindingWorker()
+      void runDevSpaceBindingWorker().catch(error => {
+        void log('DevSpace binding worker failed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
     })
   }
 
@@ -8025,48 +8045,52 @@ async function main() {
     return true
   }
 
-  const runDevSpaceBindingWorker = () => {
-    if (stopping) return
+  const runDevSpaceBindingWorker = async () => {
+    if (stopping || devSpaceBindingWorkerInFlight) return
+    devSpaceBindingWorkerInFlight = true
     const itemStartedAt = performance.now()
-
-    // exact-match/rebind 是这条路径里最重的同步工作。每个 event-loop tick 最多处理一条，
-    // 让 Bark fetch/AbortSignal、CDP、WSS 与 watchdog timer 在条目之间获得调度机会。
-    const evidenceEntry = devSpaceBindingEvidenceWork.entries().next()
-    if (!evidenceEntry.done) {
-      const [key, row] = evidenceEntry.value
-      devSpaceBindingEvidenceWork.delete(key)
-      runControlPlaneStage('devspace-binding-item', () => {
-        attemptDevSpaceBindingQueueEvidence(row, { source: 'devspace-audit-worker' })
-      })
-    }
-    else {
-      const auditEntry = devSpaceBindingAuditWork.entries().next()
-      if (!auditEntry.done) {
-        const [auditId, event] = auditEntry.value
-        devSpaceBindingAuditWork.delete(auditId)
-        const rows = runControlPlaneStage('devspace-binding-audit-scan', () => archive.listPendingDevSpaceBindingTurnEvidence({
-          overlapStartAt: Math.max(0, Number(event.startedAtMs) - 120_000),
-          overlapEndAt: Number(event.startedAtMs) + 120_000,
-          limit: 256,
-        }))
-        for (const row of rows) {
-          const key = `${row.conversationId}:${row.turnExchangeId}`
-          devSpaceBindingEvidenceWork.set(key, row)
+    try {
+      // Exact matching still handles at most one item per cooperative run. If a new binding needs
+      // recovery backfill, that work awaits the shared Archive writer worker instead of blocking
+      // the daemon event loop.
+      const evidenceEntry = devSpaceBindingEvidenceWork.entries().next()
+      if (!evidenceEntry.done) {
+        const [key, row] = evidenceEntry.value
+        devSpaceBindingEvidenceWork.delete(key)
+        await runControlPlaneStage('devspace-binding-item', () =>
+          attemptDevSpaceBindingQueueEvidence(row, { source: 'devspace-audit-worker' }))
+      }
+      else {
+        const auditEntry = devSpaceBindingAuditWork.entries().next()
+        if (!auditEntry.done) {
+          const [auditId, event] = auditEntry.value
+          devSpaceBindingAuditWork.delete(auditId)
+          const rows = runControlPlaneStage('devspace-binding-audit-scan', () => archive.listPendingDevSpaceBindingTurnEvidence({
+            overlapStartAt: Math.max(0, Number(event.startedAtMs) - 120_000),
+            overlapEndAt: Number(event.startedAtMs) + 120_000,
+            limit: 256,
+          }))
+          for (const row of rows) {
+            const key = `${row.conversationId}:${row.turnExchangeId}`
+            devSpaceBindingEvidenceWork.set(key, row)
+          }
         }
       }
     }
-
-    devSpaceBindingWorkerRuns += 1
-    devSpaceBindingWorkerLastItemMs = performance.now() - itemStartedAt
-    devSpaceBindingWorkerMaxItemMs = Math.max(
-      devSpaceBindingWorkerMaxItemMs,
-      devSpaceBindingWorkerLastItemMs,
-    )
-    if (devSpaceBindingEvidenceWork.size > 0 || devSpaceBindingAuditWork.size > 0) {
-      scheduleDevSpaceBindingWorker()
-    }
-    else {
-      flushDeferredCatalogWatchdogCandidates('canonical-matching-queue-drained')
+    finally {
+      devSpaceBindingWorkerInFlight = false
+      devSpaceBindingWorkerRuns += 1
+      devSpaceBindingWorkerLastItemMs = performance.now() - itemStartedAt
+      devSpaceBindingWorkerMaxItemMs = Math.max(
+        devSpaceBindingWorkerMaxItemMs,
+        devSpaceBindingWorkerLastItemMs,
+      )
+      if (devSpaceBindingEvidenceWork.size > 0 || devSpaceBindingAuditWork.size > 0) {
+        scheduleDevSpaceBindingWorker()
+      }
+      else {
+        flushDeferredCatalogWatchdogCandidates('canonical-matching-queue-drained')
+      }
     }
   }
 
@@ -10607,7 +10631,7 @@ async function main() {
       auditId: devSpaceAuditCursor.auditId,
     })
   }
-  const pendingRecoveryAtStartup = refreshPendingDevSpaceRecoveryAudits({ collectMetadataIds: true })
+  const pendingRecoveryAtStartup = await refreshPendingDevSpaceRecoveryAudits({ collectMetadataIds: true })
   if (pendingRecoveryAtStartup.refreshed > 0) {
     await log('pending DevSpace recovery audits refreshed after startup', {
       refreshed: pendingRecoveryAtStartup.refreshed,
@@ -10657,7 +10681,13 @@ async function main() {
       // 因此仍按 signal.metadataId / auditId 重读最终状态。
       refreshDevSpaceIdleCandidate(signal.metadataId)
       // recovery overlay 同样按 auditId 补最终 result/error/finished_at。
-      refreshDevSpaceRecoveryAudit(signal.auditId)
+      void refreshDevSpaceRecoveryAudit(signal.auditId).catch(error => {
+        void log('DevSpace recovery finish refresh failed', {
+          auditId: signal.auditId,
+          metadataId: signal.metadataId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
     })
   })
   await log('DevSpace audit wake listener ready', {
@@ -10716,7 +10746,7 @@ async function main() {
       await runMaintenanceStep('devspace-fallback', async () => {
         if (Date.now() - devSpaceLastFallbackPollAt < DEVSPACE_FALLBACK_POLL_MS) return
         await pollDevSpaceAudits()
-        refreshPendingDevSpaceRecoveryAudits()
+        await refreshPendingDevSpaceRecoveryAudits()
         // finish 门铃丢失时，低频按当前已追踪 metadata 重读 idle 状态。
         refreshTrackedDevSpaceIdleCandidates()
         devSpaceLastFallbackPollAt = Date.now()

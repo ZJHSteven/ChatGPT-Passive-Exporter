@@ -80,6 +80,86 @@ describe('ArchiveMergeWorker', () => {
     }
   })
 
+  test('persists DevSpace recovery audit through the same Archive writer worker', async () => {
+    const filePath = createDbPath()
+    const worker = new ArchiveMergeWorker(filePath)
+    workers.push(worker)
+
+    await worker.upsertRecoveryAudit({
+      auditId: 'audit-worker-1',
+      conversationId: 'conversation-worker',
+      metadataId: 'metadata-worker',
+      tool: 'exec_command',
+      toolFingerprint: 'fingerprint-worker',
+      argsJson: '{"cmd":"echo worker"}',
+      resultJson: null,
+      error: null,
+      conclusion: null,
+      startedAt: 1_000,
+      finishedAt: null,
+      observedAt: 1_100,
+    })
+
+    const verify = new ChatArchiveDb(filePath)
+    try {
+      expect(verify.listDevSpaceRecoveryAudits('conversation-worker', true)).toMatchObject([{
+        auditId: 'audit-worker-1',
+        metadataId: 'metadata-worker',
+        tool: 'exec_command',
+        startedAt: 1_000,
+        finishedAt: null,
+      }])
+    }
+    finally {
+      verify.close()
+    }
+  })
+
+  test('SQLite writer stall in recovery audit worker does not block the main event loop', async () => {
+    const filePath = createDbPath()
+    const worker = new ArchiveMergeWorker(filePath)
+    workers.push(worker)
+
+    await worker.upsertRecoveryAudit({
+      auditId: 'warm-audit',
+      conversationId: 'conversation-worker',
+      metadataId: 'metadata-worker',
+      tool: 'read',
+      toolFingerprint: 'warm-fingerprint',
+      argsJson: '{}',
+      startedAt: 1_000,
+      observedAt: 1_000,
+    })
+
+    const lock = new DatabaseSync(filePath)
+    lock.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; BEGIN IMMEDIATE;')
+    let timerFired = false
+    const startedAt = performance.now()
+    const writePromise = worker.upsertRecoveryAudit({
+      auditId: 'blocked-audit',
+      conversationId: 'conversation-worker',
+      metadataId: 'metadata-worker',
+      tool: 'exec_command',
+      toolFingerprint: 'blocked-fingerprint',
+      argsJson: '{"cmd":"blocked"}',
+      startedAt: 2_000,
+      observedAt: 2_000,
+    })
+    const release = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        timerFired = true
+        lock.exec('COMMIT')
+        lock.close()
+        resolve()
+      }, 80)
+    })
+
+    await Promise.all([writePromise, release])
+    expect(timerFired).toBe(true)
+    expect(performance.now() - startedAt).toBeGreaterThanOrEqual(70)
+    expect(worker.stats().lastWorkerMs).toBeGreaterThanOrEqual(60)
+  })
+
   test('SQLite writer stall in merge worker does not block the main event loop', async () => {
     const filePath = createDbPath()
     const worker = new ArchiveMergeWorker(filePath)

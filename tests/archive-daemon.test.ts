@@ -364,6 +364,8 @@ test('daemon state 暴露控制平面 event-loop lag，避免把本机 starvatio
   expect(daemon).toContain('await archiveMergeWorker.mergeMessages(normalized, {')
   expect(daemon).not.toContain('archive.mergeLiveMessagesPage(')
   expect(daemon).not.toContain('archive.mergeLiveMappingSnapshot(')
+  expect(daemon).toContain('await archiveMergeWorker.upsertRecoveryAudit({')
+  expect(daemon).not.toContain('archive.upsertDevSpaceRecoveryAudit(')
   expect(daemon).toContain("runControlPlaneStage('devspace-audit:poll'")
   expect(daemon).toContain("runControlPlaneStage('devspace-audit:metadata-state'")
   expect(daemon).toContain("runControlPlaneStage('devspace-audit:advance-cursor'")
