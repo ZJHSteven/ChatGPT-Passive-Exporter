@@ -76,7 +76,7 @@ describe('ChatArchiveDb', () => {
 
     const db = new ChatArchiveDb(filePath)
     try {
-      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
+      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(7)
       expect(db.db.prepare(`
         SELECT name FROM sqlite_master
         WHERE type='table' AND name='devspace_trace_turn_bindings'
@@ -113,11 +113,85 @@ describe('ChatArchiveDb', () => {
 
     const db = new ChatArchiveDb(filePath)
     try {
-      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
+      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(7)
       expect(db.db.prepare(`
         SELECT name FROM sqlite_master
         WHERE type='index' AND name='resources_conversation_message'
       `).get()).toBeTruthy()
+    }
+    finally {
+      db.close()
+    }
+  })
+
+  test('v6 database adds covering DevSpace tool evidence index in v7', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatgpt-archive-v6-upgrade-'))
+    tempDirs.push(dir)
+    const filePath = path.join(dir, 'archive.sqlite')
+    const legacy = new DatabaseSync(filePath)
+    legacy.exec(`
+      CREATE TABLE messages (
+        row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL,
+        turn_exchange_id TEXT,
+        create_time REAL,
+        request_id TEXT,
+        text TEXT NOT NULL DEFAULT '',
+        recipient TEXT
+      );
+      PRAGMA user_version=6;
+    `)
+    legacy.close()
+
+    const db = new ChatArchiveDb(filePath)
+    try {
+      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(7)
+      expect(db.db.prepare(`
+        SELECT name FROM sqlite_master
+        WHERE type='index' AND name='messages_tool_turn_evidence'
+      `).get()).toBeTruthy()
+      const plan = db.db.prepare(`
+        EXPLAIN QUERY PLAN
+        SELECT create_time AS createTime, request_id AS requestId, text
+        FROM messages INDEXED BY messages_tool_turn_evidence
+        WHERE conversation_id=? AND turn_exchange_id=?
+          AND recipient='api_tool.call_tool'
+          AND create_time IS NOT NULL
+          AND text<>''
+        ORDER BY create_time ASC
+      `).all('conversation-a', 'turn-a') as Array<{ detail?: string }>
+      expect(plan.map(row => String(row.detail || '')).join('\n'))
+        .toContain('USING INDEX messages_tool_turn_evidence')
+
+      // SQLite does not always print the word "COVERING" for a partial covering index in
+      // EXPLAIN QUERY PLAN. Inspect the VDBE instead: opening the table cursor and emitting a
+      // DeferredSeek is harmless as long as every output Column comes from the index cursor and
+      // the fat messages table cursor is never actually read.
+      const roots = db.db.prepare(`
+        SELECT name, rootpage FROM sqlite_master
+        WHERE name IN ('messages', 'messages_tool_turn_evidence')
+      `).all() as Array<{ name: string, rootpage: number }>
+      const tableRoot = roots.find(row => row.name === 'messages')?.rootpage
+      const indexRoot = roots.find(row => row.name === 'messages_tool_turn_evidence')?.rootpage
+      const bytecode = db.db.prepare(`
+        EXPLAIN
+        SELECT create_time AS createTime, request_id AS requestId, text
+        FROM messages INDEXED BY messages_tool_turn_evidence
+        WHERE conversation_id=? AND turn_exchange_id=?
+          AND recipient='api_tool.call_tool'
+          AND create_time IS NOT NULL
+          AND text<>''
+        ORDER BY create_time ASC
+      `).all('conversation-a', 'turn-a') as Array<{
+        opcode?: string, p1?: number, p2?: number
+      }>
+      const tableCursor = bytecode.find(row => row.opcode === 'OpenRead' && row.p2 === tableRoot)?.p1
+      const indexCursor = bytecode.find(row => row.opcode === 'OpenRead' && row.p2 === indexRoot)?.p1
+      expect(tableCursor).toBeTypeOf('number')
+      expect(indexCursor).toBeTypeOf('number')
+      expect(bytecode.some(row => row.opcode === 'Column' && row.p1 === tableCursor)).toBe(false)
+      expect(bytecode.filter(row => row.opcode === 'Column' && row.p1 === indexCursor).length)
+        .toBeGreaterThanOrEqual(3)
     }
     finally {
       db.close()
@@ -378,7 +452,7 @@ describe('ChatArchiveDb', () => {
     tempDirs.push(dir)
     const file = path.join(dir, 'archive.sqlite')
     const first = new ChatArchiveDb(file)
-    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
+    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
     first.close()
 
     const blocker = new DatabaseSync(file)
@@ -430,7 +504,7 @@ describe('ChatArchiveDb', () => {
 
     const upgraded = new ChatArchiveDb(file)
     try {
-      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
       const columns = upgraded.db.prepare("PRAGMA table_info('messages')").all() as Array<{ name: string }>
       expect(columns.map(column => column.name)).toContain('raw_hash')
       expect(upgraded.db.prepare(`
@@ -477,7 +551,7 @@ describe('ChatArchiveDb', () => {
 
     const upgraded = new ChatArchiveDb(file)
     try {
-      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
       expect(upgraded.db.prepare('SELECT count(*) AS n FROM message_raw_fingerprints').get())
         .toEqual({ n: 0 })
       expect(upgraded.db.prepare('SELECT count(*) AS n FROM catalog_watchdog_watermarks').get())

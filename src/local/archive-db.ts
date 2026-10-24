@@ -597,7 +597,7 @@ function visibleForMarkdown(conversation: CanonicalConversation): boolean {
  * - FTS 只索引可读 User/Assistant 正文，不把巨大 tool result、connector JSON、raw CoT
  *   塞进全文索引；这些仍可从 message/resource 表按需审计。
  */
-const ARCHIVE_SCHEMA_VERSION = 6
+const ARCHIVE_SCHEMA_VERSION = 7
 
 export class ChatArchiveDb {
   readonly db: DatabaseSync
@@ -649,6 +649,11 @@ export class ChatArchiveDb {
       this.migrateV6()
       schemaVersion = 6
       this.db.exec('PRAGMA user_version=6')
+    }
+    if (schemaVersion < 7) {
+      this.migrateV7()
+      schemaVersion = 7
+      this.db.exec('PRAGMA user_version=7')
     }
   }
 
@@ -1392,6 +1397,27 @@ export class ChatArchiveDb {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS resources_conversation_message
         ON resources(conversation_id, message_id);
+    `)
+  }
+
+  /**
+   * v7：DevSpace canonical exact-match 读取 request_id/text 时不再回表触碰肥 messages row。
+   * 仅覆盖 api_tool.call_tool 的窄子集；生产约 9.9 万行，避免给全部 messages 复制大文本。
+   */
+  private migrateV7(): void {
+    const messageColumns = new Set(
+      (this.db.prepare('PRAGMA table_info(messages)').all() as Array<{ name?: string }>)
+        .map(column => String(column.name || '')),
+    )
+    if (!['conversation_id', 'turn_exchange_id', 'create_time', 'request_id', 'text', 'recipient']
+      .every(column => messageColumns.has(column))) return
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS messages_tool_turn_evidence
+        ON messages(conversation_id, turn_exchange_id, create_time, request_id, text)
+        WHERE recipient='api_tool.call_tool'
+          AND turn_exchange_id IS NOT NULL
+          AND create_time IS NOT NULL
+          AND text<>'';
     `)
   }
 
