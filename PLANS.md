@@ -1,3 +1,9 @@
+# 2026-10-24 workspace rate-limit header 对齐
+
+- [in_progress] 第一方 ChatGPT Web 已在多类 /backend-api 请求上稳定携带 x-openai-rate-limit-join-workspace: 1。Archive 不硬编码其值，只把该 header 加入 FIRST_PARTY_REPLAY_HEADER_ALLOWLIST，随最近一次真实第一方请求动态继承。
+- [in_progress] ChatGPT 私有 /backend-api 是否返回 x-ratelimit-limit-* / remaining-* / reset-* 尚无生产证据；公开 OpenAI API 的响应头不能直接当作 ChatGPT Web 私有协议事实。现有 429 family 状态机与 Retry-After 逻辑继续保留。
+- [pending] 后续仅被动采集真实私有 backend response 的 rate-limit 相关响应头；若稳定存在 remaining/reset，再评估把当前“撞 429 后退避”升级为“余量接近阈值时主动减速”，在证据出现前不删除现有退避。
+
 # 2026-10-24 catalog/unbound Watchdog 去重与标题稳定性
 
 - [in_progress] 修复 2026-10-23 现场：FPGA 与华北五省两个并发 conversation 均先由 DevSpace metadata 正常启动 unbound Watchdog，5m unbound gap-repair 后 catalog 又各自创建一次 `catalog:async-active:gap-repair` Start，形成每个 conversation 一次重复 New Chat。
