@@ -5392,7 +5392,10 @@ export class ChatArchiveDb {
     overlapEndAt?: number
     limit?: number
   } = {}): DevSpaceBindingTurnEvidenceRow[] {
-    const clauses = [`status='pending'`]
+    // `matched` 只表示“这个 canonical turn 已经至少找到过一个成员”，不是终态。
+    // 同一 trace 后续可能 rotation 出新 metadata，同一 TID 也可能 steering 出新 request/trace，
+    // 因此新 audit 到达时必须允许已 matched turn 重新参加增量匹配。
+    const clauses = [`status IN ('pending', 'matched')`]
     const params: Array<string | number> = []
     if (input.overlapStartAt !== undefined && input.overlapEndAt !== undefined) {
       const startAt = Math.max(0, Math.trunc(input.overlapStartAt))
@@ -5438,7 +5441,7 @@ export class ChatArchiveDb {
           attempt_count=attempt_count+1,
           last_attempt_evidence_revision=?,
           last_attempt_metadata_revision=?
-      WHERE conversation_id=? AND turn_exchange_id=? AND status='pending'
+      WHERE conversation_id=? AND turn_exchange_id=?
     `).run(
       Math.max(0, Math.trunc(attemptedAt)),
       evidenceRevision,

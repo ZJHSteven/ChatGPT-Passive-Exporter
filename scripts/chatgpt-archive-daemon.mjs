@@ -7640,9 +7640,10 @@ async function main() {
     devSpaceAuditsObserved += 1
     devSpaceLastAuditAt = Math.max(Number(devSpaceLastAuditAt || 0), event.startedAtMs)
     const traceId = devSpaceTraceIdFromRequestMetaJson(event.requestMetaJson)
+    let traceRow = null
     if (traceId) {
       const traceObserveStartedAt = performance.now()
-      const traceRow = runControlPlaneStage('devspace-audit:observe-trace', () => archive.observeDevSpaceTraceTurn({
+      traceRow = runControlPlaneStage('devspace-audit:observe-trace', () => archive.observeDevSpaceTraceTurn({
         traceId,
         metadataId: event.metadataId,
         auditId: event.id,
@@ -7663,13 +7664,42 @@ async function main() {
     const metadataState = runControlPlaneStage('devspace-audit:metadata-state', () =>
       devSpaceAuditBridge.metadataToolState(event.metadataId))
     await yieldControlPlane()
-    const binding = runControlPlaneStage('devspace-audit:observe-metadata', () => archive.observeDevSpaceMetadata({
+    let binding = runControlPlaneStage('devspace-audit:observe-metadata', () => archive.observeDevSpaceMetadata({
       metadataId: event.metadataId,
       auditId: event.id,
       auditAt: event.startedAtMs,
       displayTitle: metadataState?.title ?? null,
     }))
     await yieldControlPlane()
+
+    // trace 已经被 canonical 锚定时，新出现的 metadata 只是该 execution lineage 的新成员。
+    // 不再让它先进入 metadata-unbound Watchdog；直接继承 CID/TID/RID 并迁移 recovery overlay。
+    if (!binding.conversationId
+      && traceRow?.status === 'verified'
+      && traceRow.conversationId
+      && traceRow.turnExchangeId) {
+      const existing = archive.getDevSpaceMetadataBinding(event.metadataId)
+      if (!existing?.conversationId || existing.conversationId === traceRow.conversationId) {
+        binding = await bindDevSpaceMetadataToConversation({
+          metadataId: event.metadataId,
+          conversationId: traceRow.conversationId,
+          startAt: Number(binding.firstSeenAt || traceRow.firstSeenAt || event.startedAtMs),
+          observedAt: event.startedAtMs,
+          turnExchangeId: traceRow.turnExchangeId,
+          requestId: traceRow.requestId ?? null,
+          evidence: 'trace:verified-lineage-live',
+          confidence: 'high',
+          lifecycleState: activeTurns.has(traceRow.conversationId) ? 'active' : 'closed',
+        })
+        void log('DevSpace metadata inherited canonical binding from verified trace', {
+          traceId,
+          metadataId: event.metadataId,
+          conversationId: traceRow.conversationId,
+          turnExchangeId: traceRow.turnExchangeId,
+          requestId: traceRow.requestId ?? null,
+        })
+      }
+    }
     // begin 事件会看到 runningTools>0 并立即取消旧 idle generation。
     // finish 事件即使 auditId 已经见过，也会由 wake callback 额外按 metadata 重读。
     runControlPlaneStage('devspace-audit:idle-refresh', () =>
@@ -7962,6 +7992,49 @@ async function main() {
   }
 
   /**
+   * 一个 trace 一旦被 canonical Body 锚定，trace 下所有 metadata 成员都属于同一
+   * request/generation execution lineage。成员自己不需要再等一份 Body exact tool node；
+   * 这正是 Body Behind + metadata rotation 时仍能维持统一身份的关键。
+   */
+  const bindVerifiedDevSpaceTraceMembers = async ({
+    traceRow,
+    observedAt = Date.now(),
+    evidence = 'trace:verified-lineage',
+  }) => {
+    if (!traceRow
+      || traceRow.status !== 'verified'
+      || !traceRow.conversationId
+      || !traceRow.turnExchangeId) return 0
+    let rebound = 0
+    for (const member of archive.listDevSpaceTraceMetadataMembers(traceRow.traceId)) {
+      const existing = archive.getDevSpaceMetadataBinding(member.metadataId)
+      if (existing?.conversationId && existing.conversationId !== traceRow.conversationId) {
+        void log('DevSpace trace member rejected cross-conversation metadata binding', {
+          traceId: traceRow.traceId,
+          metadataId: member.metadataId,
+          boundConversationId: existing.conversationId,
+          traceConversationId: traceRow.conversationId,
+          turnExchangeId: traceRow.turnExchangeId,
+        })
+        continue
+      }
+      await bindDevSpaceMetadataToConversation({
+        metadataId: member.metadataId,
+        conversationId: traceRow.conversationId,
+        startAt: member.firstSeenAt,
+        observedAt: Math.max(Number(member.lastSeenAt || 0), Number(observedAt || 0)),
+        turnExchangeId: traceRow.turnExchangeId,
+        requestId: traceRow.requestId ?? null,
+        evidence,
+        confidence: 'high',
+        lifecycleState: activeTurns.has(traceRow.conversationId) ? 'active' : 'closed',
+      })
+      rebound += 1
+    }
+    return rebound
+  }
+
+  /**
    * 旧版本因为“并发时必须只有一个 metadata”过于保守，留下了一批本可确定的 unbound。
    * 启动时做一次批量本地回填：
    * - DevSpace SQLite 只读一次时间段；
@@ -8024,7 +8097,7 @@ async function main() {
   }
 
   const attemptDevSpaceBindingQueueEvidence = async (queueRow, { source = 'queue' } = {}) => {
-    if (!queueRow || queueRow.status !== 'pending') return false
+    if (!queueRow || !['pending', 'matched'].includes(queueRow.status)) return false
     const profileStartedAt = performance.now()
     const profile = {
       evidenceWorkerMs: 0,
@@ -8145,13 +8218,16 @@ async function main() {
       })
       profile.durableMarkMs = performance.now() - phaseStartedAt
       phaseStartedAt = performance.now()
-      verifyMatchedDevSpaceTraceTurn({
+      const traceRow = verifyMatchedDevSpaceTraceTurn({
         candidate,
         storedEvidence,
         conversationId: queueRow.conversationId,
         turnExchangeId: queueRow.turnExchangeId,
         observedAt,
       })
+      if (traceRow?.status === 'verified') {
+        await bindVerifiedDevSpaceTraceMembers({ traceRow, observedAt })
+      }
       profile.traceVerifyMs = performance.now() - phaseStartedAt
       devSpaceBindingQueueMatches += 1
       logProfile('matched-existing-binding')
@@ -8178,13 +8254,16 @@ async function main() {
     })
     profile.durableMarkMs = performance.now() - phaseStartedAt
     phaseStartedAt = performance.now()
-    verifyMatchedDevSpaceTraceTurn({
+    const traceRow = verifyMatchedDevSpaceTraceTurn({
       candidate,
       storedEvidence,
       conversationId: queueRow.conversationId,
       turnExchangeId: queueRow.turnExchangeId,
       observedAt,
     })
+    if (traceRow?.status === 'verified') {
+      await bindVerifiedDevSpaceTraceMembers({ traceRow, observedAt })
+    }
     profile.traceVerifyMs = performance.now() - phaseStartedAt
     devSpaceBindingQueueMatches += 1
     void log('DevSpace matching queue consumed canonical turn evidence', {
@@ -8230,8 +8309,6 @@ async function main() {
       observedAt,
     })
     if (queued.created) devSpaceBindingQueueEnqueued += 1
-    if (queued.row.status !== 'pending') return { queued: true, matched: true }
-
     // Canonical ingress 只负责发布 durable evidence；绝不能在 Body/SSE/passive callback 里
     // 现场跑 exact matcher。旧实现虽然已有 Matching Queue 表，却在 enqueue 后立刻同步
     // attempt，一次 Body 最多枚举 64 个 turn，仍会把主事件循环堵到秒级。
@@ -8239,7 +8316,7 @@ async function main() {
     const key = `${queued.row.conversationId}:${queued.row.turnExchangeId}`
     devSpaceBindingEvidenceWork.set(key, queued.row)
     scheduleDevSpaceBindingWorker()
-    return { queued: true, matched: false }
+    return { queued: true, matched: queued.row.status === 'matched' }
   }
 
   const publishCanonicalDevSpaceBindingEvidence = async (
