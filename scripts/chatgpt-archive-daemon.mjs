@@ -66,6 +66,7 @@ import {
   devSpaceToolArgsFingerprint,
   devSpaceTraceIdFromRequestMetaJson,
   matchDevSpaceCandidateForTurn,
+  matchingDevSpaceTraceRequestPairsForTurn,
   matchingDevSpaceTraceIdsForTurn,
   parseDevSpaceBodyToolCall,
 } from '../src/local/devspace-audit-bridge.ts'
@@ -4315,7 +4316,7 @@ async function main() {
       if (message.recipient !== 'api_tool.call_tool') continue
       if (!Number.isFinite(message.createTime) || !message.text) continue
       const startedAt = Number(message.createTime) * 1000
-      const call = parseDevSpaceBodyToolCall(message.text, startedAt)
+      const call = parseDevSpaceBodyToolCall(message.text, startedAt, message.requestId ?? null)
       if (!call) continue
       // checkpoint 的 provisional assistant 语义不能仅因为 canonical tool-call 到达就消失；
       // 它要等真正 assistant commentary 明确复述 summary 才覆盖。

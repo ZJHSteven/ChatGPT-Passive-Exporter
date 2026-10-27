@@ -966,3 +966,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 历史 reverify 启动税收口：新版 matcher 把 attempt metadata revision 写成 `trace-v8:<revision>`。历史启动修复只挑尚未被 trace-v8 尝试过的 provisional 候选；证据不足的孤例最多补跑一次，后续重启不再重复。未来 live audit/member 若变化，正常 overlap scan 仍会因新 revision 重新尝试。
 
 - 2026-10-27 Steering identity 收口第1步：DevSpaceBodyToolCall 现在保留 canonical tool-call 自身 request_id；新增 matchingDevSpaceTraceRequestPairsForTurn()，仅在 exact tool+args + ±120s 证据下接受 trace→唯一 RID 且 RID→唯一 trace 的双向单值 pair。多 RID/多 trace 歧义继续 fail-closed，不用时间最近值猜测。
+
+- 2026-10-27 Steering identity 收口第2步：daemon 已接入 trace/request pair matcher；canonical message→DevSpace recovery supersede 路径也把 message.requestId 传入 Body tool-call 解析，确保后续证据链不再丢 RID。
