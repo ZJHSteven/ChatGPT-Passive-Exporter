@@ -343,11 +343,15 @@ export interface DevSpaceTurnToolCallRow {
 }
 
 /**
- * DevSpace W3C trace-id 的低延迟 turn 身份层。
+ * DevSpace W3C trace-id 的低延迟 request/generation 身份层。
  *
- * `provisional` 只表示 DevSpace 侧已经观察到该 trace；`verified` 必须等 canonical
- * Body/turn exact-match 后才能写入 conversation/turn/request。任何双向 1:1 冲突都进入
- * `conflict`，消费者必须降级到 canonical turn_exchange_id/request_id。
+ * 实测层级是 Conversation → Turn Exchange → Request/Generation → Trace → Metadata members：
+ * - 同一 Turn Exchange 在 steering 时可以有多个 request/trace；
+ * - 同一 trace 可以因为 MCP reconnect 等原因先后出现多个 metadata；
+ * - metadata 自身还可能跨 turn/trace 再次出现。
+ *
+ * 因此本行只保存 trace 的 canonical 上级；`metadataId` 是兼容旧库的“首个成员”字段，
+ * 真正的成员关系由 `devspace_trace_metadata_members` 一对多保存。
  */
 export interface DevSpaceTraceTurnBindingRow {
   traceId: string
@@ -362,6 +366,16 @@ export interface DevSpaceTraceTurnBindingRow {
   status: 'provisional' | 'verified' | 'conflict'
   verifiedAt: number | null
   conflictReason: string | null
+}
+
+/** 一个 trace 下观察到的 metadata 成员；metadata 可跨多个 trace 再次出现。 */
+export interface DevSpaceTraceMetadataMemberRow {
+  traceId: string
+  metadataId: string
+  firstSeenAt: number
+  lastSeenAt: number
+  firstAuditId: string
+  lastAuditId: string
 }
 
 /**
@@ -1437,6 +1451,60 @@ export class ChatArchiveDb {
    */
   private migrateV7(): void {
     // Intentionally empty. Never downgrade an already-issued SQLite user_version.
+  }
+
+  /**
+   * v8：把 trace 从“伪 Turn 1:1”修正为 request/generation identity graph。
+   *
+   * 旧 v5 schema 同时做了两个过强假设：
+   * 1. 一个 trace 只能有一个 metadata；
+   * 2. 一个 canonical Turn Exchange 只能有一个 verified trace。
+   *
+   * 真实样本已经同时推翻两点。这里不重写 raw facts，而是新增 trace→metadata 成员表、
+   * 放开 Turn→trace 多成员，并把旧实现制造的 metadata-mismatch / turn-remap 假冲突修复。
+   * `trace-remap`（同一 trace 被映射到不同 canonical turn）仍然保留为真正冲突。
+   */
+  private migrateV8(): void {
+    this.db.exec(`
+      DROP INDEX IF EXISTS devspace_trace_turn_verified_turn;
+
+      CREATE INDEX IF NOT EXISTS devspace_trace_turn_verified_turn
+        ON devspace_trace_turn_bindings(conversation_id, turn_exchange_id, last_seen_at DESC)
+        WHERE conversation_id IS NOT NULL
+          AND turn_exchange_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS devspace_trace_metadata_members (
+        trace_id TEXT NOT NULL,
+        metadata_id TEXT NOT NULL,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        first_audit_id TEXT NOT NULL,
+        last_audit_id TEXT NOT NULL,
+        PRIMARY KEY (trace_id, metadata_id)
+      ) WITHOUT ROWID;
+
+      CREATE INDEX IF NOT EXISTS devspace_trace_metadata_members_metadata_time
+        ON devspace_trace_metadata_members(metadata_id, last_seen_at DESC);
+
+      INSERT OR IGNORE INTO devspace_trace_metadata_members (
+        trace_id, metadata_id, first_seen_at, last_seen_at, first_audit_id, last_audit_id
+      )
+      SELECT trace_id, metadata_id, first_seen_at, last_seen_at, first_audit_id, last_audit_id
+      FROM devspace_trace_turn_bindings
+      WHERE metadata_id <> '';
+
+      UPDATE devspace_trace_turn_bindings
+      SET status=CASE
+            WHEN conversation_id IS NOT NULL AND turn_exchange_id IS NOT NULL THEN 'verified'
+            ELSE 'provisional'
+          END,
+          conflict_reason=NULL
+      WHERE status='conflict'
+        AND (
+          conflict_reason LIKE 'metadata-mismatch:%'
+          OR conflict_reason LIKE 'turn-remap:%'
+        );
+    `)
   }
 
   /** SQLite 没有通用的 `ADD COLUMN IF NOT EXISTS`，所以先用 PRAGMA 检查旧库。 */
@@ -5409,15 +5477,10 @@ export class ChatArchiveDb {
       ) VALUES (?, ?, ?, ?, ?, ?, 'provisional')
       ON CONFLICT(trace_id) DO UPDATE SET
         last_seen_at=max(devspace_trace_turn_bindings.last_seen_at, excluded.last_seen_at),
-        last_audit_id=excluded.last_audit_id,
-        status=CASE
-          WHEN devspace_trace_turn_bindings.metadata_id <> excluded.metadata_id THEN 'conflict'
-          ELSE devspace_trace_turn_bindings.status
-        END,
-        conflict_reason=CASE
-          WHEN devspace_trace_turn_bindings.metadata_id <> excluded.metadata_id
-          THEN 'metadata-mismatch:' || devspace_trace_turn_bindings.metadata_id || ':' || excluded.metadata_id
-          ELSE devspace_trace_turn_bindings.conflict_reason
+        last_audit_id=CASE
+          WHEN excluded.last_seen_at >= devspace_trace_turn_bindings.last_seen_at
+          THEN excluded.last_audit_id
+          ELSE devspace_trace_turn_bindings.last_audit_id
         END
       RETURNING trace_id AS traceId, metadata_id AS metadataId,
                 first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
@@ -5430,6 +5493,23 @@ export class ChatArchiveDb {
                 conflict_reason AS conflictReason
     `).get(traceId, metadataId, observedAt, observedAt, auditId, auditId) as DevSpaceTraceTurnBindingRow | undefined
     if (!row) throw new Error(`DevSpace trace observation failed: ${traceId}`)
+
+    // metadata 是 trace 的成员，而不是 trace identity。本表允许同一个 metadata 后续出现在
+    // 另一个 trace；主键只约束同一 trace 内同一 metadata 不重复。
+    this.db.prepare(`
+      INSERT INTO devspace_trace_metadata_members (
+        trace_id, metadata_id,
+        first_seen_at, last_seen_at,
+        first_audit_id, last_audit_id
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(trace_id, metadata_id) DO UPDATE SET
+        last_seen_at=max(devspace_trace_metadata_members.last_seen_at, excluded.last_seen_at),
+        last_audit_id=CASE
+          WHEN excluded.last_seen_at >= devspace_trace_metadata_members.last_seen_at
+          THEN excluded.last_audit_id
+          ELSE devspace_trace_metadata_members.last_audit_id
+        END
+    `).run(traceId, metadataId, observedAt, observedAt, auditId, auditId)
     return row
   }
 
@@ -5450,14 +5530,10 @@ export class ChatArchiveDb {
     const existing = this.getDevSpaceTraceTurnByTrace(traceId)
     if (!existing) return null
 
-    if (existing.metadataId !== metadataId) {
-      this.db.prepare(`
-        UPDATE devspace_trace_turn_bindings
-        SET status='conflict', conflict_reason=?
-        WHERE trace_id=?
-      `).run(`metadata-mismatch:${existing.metadataId}:${metadataId}`, traceId)
-      return this.getDevSpaceTraceTurnByTrace(traceId)
-    }
+    // verify 可能由 trace 的第二个 metadata 成员触发。metadata 不同本身绝不是冲突；
+    // observe 阶段已经把每个 raw metadata 原样登记到成员表中。
+    void metadataId
+    if (existing.status === 'conflict') return existing
     if (existing.status === 'verified'
       && (existing.conversationId !== conversationId || existing.turnExchangeId !== turnExchangeId)) {
       this.db.prepare(`
@@ -5471,19 +5547,36 @@ export class ChatArchiveDb {
       return this.getDevSpaceTraceTurnByTrace(traceId)
     }
 
-    const other = this.db.prepare(`
-      SELECT trace_id AS traceId
-      FROM devspace_trace_turn_bindings
-      WHERE conversation_id=? AND turn_exchange_id=? AND status='verified' AND trace_id<>?
-      LIMIT 1
-    `).get(conversationId, turnExchangeId, traceId) as { traceId?: string } | undefined
-    if (other?.traceId) {
-      const reason = `turn-remap:${conversationId}:${turnExchangeId}:${other.traceId}:${traceId}`
+    if (existing.status === 'verified'
+      && existing.requestId
+      && requestId
+      && existing.requestId !== requestId) {
+      this.db.prepare(`
+        UPDATE devspace_trace_turn_bindings
+        SET status='conflict', conflict_reason=?
+        WHERE trace_id=?
+      `).run(`request-remap:${existing.requestId}:${requestId}`, traceId)
+      return this.getDevSpaceTraceTurnByTrace(traceId)
+    }
+
+    // 当前 190/190 可验证样本中 request_id↔trace_id 双向一一。把它作为强 observational
+    // invariant 做冲突检测，但不再错误要求 Turn Exchange↔trace 一一；steering 正常允许
+    // 同一 turn_exchange_id 下出现多个 request/trace。
+    const otherRequestTrace = requestId
+      ? this.db.prepare(`
+          SELECT trace_id AS traceId
+          FROM devspace_trace_turn_bindings
+          WHERE request_id=? AND status='verified' AND trace_id<>?
+          LIMIT 1
+        `).get(requestId, traceId) as { traceId?: string } | undefined
+      : undefined
+    if (otherRequestTrace?.traceId) {
+      const reason = `request-trace-remap:${requestId}:${otherRequestTrace.traceId}:${traceId}`
       this.db.prepare(`
         UPDATE devspace_trace_turn_bindings
         SET status='conflict', conflict_reason=?
         WHERE trace_id IN (?, ?)
-      `).run(reason, other.traceId, traceId)
+      `).run(reason, otherRequestTrace.traceId, traceId)
       return this.getDevSpaceTraceTurnByTrace(traceId)
     }
 
@@ -5538,6 +5631,42 @@ export class ChatArchiveDb {
       LIMIT 1
     `).get(conversationId, turnExchangeId) as DevSpaceTraceTurnBindingRow | undefined
     return row ?? null
+  }
+
+  /** 同一 Turn Exchange 在 steering 时可以有多个 request/trace，因此提供完整列表。 */
+  listDevSpaceTraceTurnsByTurn(
+    conversationId: string,
+    turnExchangeId: string,
+  ): DevSpaceTraceTurnBindingRow[] {
+    return this.db.prepare(`
+      SELECT trace_id AS traceId, metadata_id AS metadataId,
+             first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
+             first_audit_id AS firstAuditId, last_audit_id AS lastAuditId,
+             conversation_id AS conversationId,
+             turn_exchange_id AS turnExchangeId,
+             request_id AS requestId,
+             status,
+             verified_at AS verifiedAt,
+             conflict_reason AS conflictReason
+      FROM devspace_trace_turn_bindings
+      WHERE conversation_id=? AND turn_exchange_id=?
+      ORDER BY first_seen_at ASC, trace_id ASC
+    `).all(conversationId, turnExchangeId) as unknown as DevSpaceTraceTurnBindingRow[]
+  }
+
+  /** 返回一个 trace 下所有 metadata 成员；同一 metadata 允许出现在多个 trace 中。 */
+  listDevSpaceTraceMetadataMembers(traceId: string): DevSpaceTraceMetadataMemberRow[] {
+    return this.db.prepare(`
+      SELECT trace_id AS traceId,
+             metadata_id AS metadataId,
+             first_seen_at AS firstSeenAt,
+             last_seen_at AS lastSeenAt,
+             first_audit_id AS firstAuditId,
+             last_audit_id AS lastAuditId
+      FROM devspace_trace_metadata_members
+      WHERE trace_id=?
+      ORDER BY first_seen_at ASC, metadata_id ASC
+    `).all(traceId.trim().toLowerCase()) as unknown as DevSpaceTraceMetadataMemberRow[]
   }
 
 

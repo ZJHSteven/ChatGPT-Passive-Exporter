@@ -76,7 +76,7 @@ describe('ChatArchiveDb', () => {
 
     const db = new ChatArchiveDb(filePath)
     try {
-      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(7)
+      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(8)
       expect(db.db.prepare(`
         SELECT name FROM sqlite_master
         WHERE type='table' AND name='devspace_trace_turn_bindings'
@@ -84,6 +84,10 @@ describe('ChatArchiveDb', () => {
       expect(db.db.prepare(`
         SELECT name FROM sqlite_master
         WHERE type='index' AND name='devspace_trace_turn_verified_turn'
+      `).get()).toBeTruthy()
+      expect(db.db.prepare(`
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='devspace_trace_metadata_members'
       `).get()).toBeTruthy()
     }
     finally {
@@ -113,7 +117,7 @@ describe('ChatArchiveDb', () => {
 
     const db = new ChatArchiveDb(filePath)
     try {
-      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(7)
+      expect((db.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(8)
       expect(db.db.prepare(`
         SELECT name FROM sqlite_master
         WHERE type='index' AND name='resources_conversation_message'
@@ -124,7 +128,7 @@ describe('ChatArchiveDb', () => {
     }
   })
 
-  test('DevSpace trace turn identity stays provisional until canonical verification and fails closed on conflicts', () => {
+  test('DevSpace trace identity allows metadata rotation and steering while failing closed on real remaps', () => {
     const db = tempDb()
     try {
       const traceA = '6adb960d0000000089326916dcbaf36c'
@@ -143,7 +147,7 @@ describe('ChatArchiveDb', () => {
       })
       expect(db.observeDevSpaceTraceTurn({
         traceId: traceA,
-        metadataId: 'meta-a',
+        metadataId: 'meta-b',
         auditId: 'audit-2',
         observedAt: 2_000,
       })).toMatchObject({
@@ -152,10 +156,12 @@ describe('ChatArchiveDb', () => {
         firstAuditId: 'audit-1',
         lastAuditId: 'audit-2',
       })
+      expect(db.listDevSpaceTraceMetadataMembers(traceA).map(row => row.metadataId))
+        .toEqual(['meta-a', 'meta-b'])
 
       expect(db.verifyDevSpaceTraceTurn({
         traceId: traceA,
-        metadataId: 'meta-a',
+        metadataId: 'meta-b',
         conversationId: 'conversation-a',
         turnExchangeId: 'turn-a',
         requestId: 'request-a',
@@ -180,11 +186,29 @@ describe('ChatArchiveDb', () => {
         metadataId: 'meta-a',
         conversationId: 'conversation-a',
         turnExchangeId: 'turn-a',
-        requestId: 'request-a',
+        requestId: 'request-b',
         verifiedAt: 5_000,
+      })).toMatchObject({ status: 'verified', requestId: 'request-b' })
+      expect(db.listDevSpaceTraceTurnsByTurn('conversation-a', 'turn-a').map(row => row.traceId))
+        .toEqual([traceA, traceB])
+
+      const traceC = '6adb99ff00000000fc77a88c525c8333'
+      db.observeDevSpaceTraceTurn({
+        traceId: traceC,
+        metadataId: 'meta-c',
+        auditId: 'audit-4',
+        observedAt: 6_000,
+      })
+      expect(db.verifyDevSpaceTraceTurn({
+        traceId: traceC,
+        metadataId: 'meta-c',
+        conversationId: 'conversation-a',
+        turnExchangeId: 'turn-a',
+        requestId: 'request-a',
+        verifiedAt: 7_000,
       })?.status).toBe('conflict')
       expect(db.getDevSpaceTraceTurnByTrace(traceA)).toMatchObject({ status: 'conflict' })
-      expect(db.getDevSpaceTraceTurnByTrace(traceB)).toMatchObject({ status: 'conflict' })
+      expect(db.getDevSpaceTraceTurnByTrace(traceC)).toMatchObject({ status: 'conflict' })
     }
     finally {
       db.close()
