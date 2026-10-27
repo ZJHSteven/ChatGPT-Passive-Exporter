@@ -931,3 +931,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 Identity Graph 第3步：binding queue 的 matched 改为“至少已有成员”而非终态，允许新 audit/metadata 触发增量重匹配；canonical exact-match 验证 trace 后会把该 trace 全部 metadata members 一次性继承 CID/TID/RID。audit 热路径若看到已 verified trace 的新 metadata，也直接做 trace-lineage inheritance，不再先创建第二套 unbound Watchdog。
 
 - 2026-10-27 queue API 兼容收紧：listPendingDevSpaceBindingTurnEvidence 默认仍只返回 pending；只有新 audit overlap scan 显式 includeMatched=true，使已匹配 Turn 在出现 rotation/steering 新成员时增量重匹配，而不会在启动时全量重扫历史 matched rows。
+
+- 2026-10-27 为 daemon 重启后的 trace-first provisional ownership 增加 getLatestDevSpaceTraceTurnForMetadata：metadata 可跨 trace 复用，因此只按成员 last_seen_at 返回最近 trace，不把 metadata 固化成永久 trace key。

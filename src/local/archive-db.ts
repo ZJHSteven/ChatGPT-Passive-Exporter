@@ -5689,6 +5689,35 @@ export class ChatArchiveDb {
     `).all(traceId.trim().toLowerCase()) as unknown as DevSpaceTraceMetadataMemberRow[]
   }
 
+  /**
+   * 找到某个 metadata 最近所属的 trace。
+   *
+   * metadata 可以跨 turn/trace 复用，因此这里明确按成员的 last_seen_at 取“最近一次”，
+   * 绝不能把 metadata 当成永久 trace key。主要用于 daemon 重启后恢复 provisional identity。
+   */
+  getLatestDevSpaceTraceTurnForMetadata(metadataId: string): DevSpaceTraceTurnBindingRow | null {
+    const row = this.db.prepare(`
+      SELECT t.trace_id AS traceId,
+             t.metadata_id AS metadataId,
+             t.first_seen_at AS firstSeenAt,
+             t.last_seen_at AS lastSeenAt,
+             t.first_audit_id AS firstAuditId,
+             t.last_audit_id AS lastAuditId,
+             t.conversation_id AS conversationId,
+             t.turn_exchange_id AS turnExchangeId,
+             t.request_id AS requestId,
+             t.status,
+             t.verified_at AS verifiedAt,
+             t.conflict_reason AS conflictReason
+      FROM devspace_trace_metadata_members m
+      JOIN devspace_trace_turn_bindings t ON t.trace_id=m.trace_id
+      WHERE m.metadata_id=?
+      ORDER BY m.last_seen_at DESC, t.last_seen_at DESC, t.trace_id ASC
+      LIMIT 1
+    `).get(metadataId.trim()) as DevSpaceTraceTurnBindingRow | undefined
+    return row ?? null
+  }
+
 
   bindDevSpaceMetadata(input: {
     metadataId: string
