@@ -1466,6 +1466,23 @@ export class ChatArchiveDb {
    */
   private migrateV8(): void {
     this.db.exec(`
+      -- 正常 v5+ 生产库一定已有本表；但升级逻辑仍保持自包含，允许测试夹具/部分恢复库
+      -- 只声明 user_version 而缺少旧表时继续安全前进。
+      CREATE TABLE IF NOT EXISTS devspace_trace_turn_bindings (
+        trace_id TEXT PRIMARY KEY,
+        metadata_id TEXT NOT NULL,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        first_audit_id TEXT NOT NULL,
+        last_audit_id TEXT NOT NULL,
+        conversation_id TEXT,
+        turn_exchange_id TEXT,
+        request_id TEXT,
+        status TEXT NOT NULL DEFAULT 'provisional',
+        verified_at INTEGER,
+        conflict_reason TEXT
+      );
+
       DROP INDEX IF EXISTS devspace_trace_turn_verified_turn;
 
       CREATE INDEX IF NOT EXISTS devspace_trace_turn_verified_turn

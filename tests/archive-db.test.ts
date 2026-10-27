@@ -402,7 +402,7 @@ describe('ChatArchiveDb', () => {
     tempDirs.push(dir)
     const file = path.join(dir, 'archive.sqlite')
     const first = new ChatArchiveDb(file)
-    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
+    expect(first.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 8 })
     first.close()
 
     const blocker = new DatabaseSync(file)
@@ -454,7 +454,7 @@ describe('ChatArchiveDb', () => {
 
     const upgraded = new ChatArchiveDb(file)
     try {
-      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 8 })
       const columns = upgraded.db.prepare("PRAGMA table_info('messages')").all() as Array<{ name: string }>
       expect(columns.map(column => column.name)).toContain('raw_hash')
       expect(upgraded.db.prepare(`
@@ -501,7 +501,7 @@ describe('ChatArchiveDb', () => {
 
     const upgraded = new ChatArchiveDb(file)
     try {
-      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
+      expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 8 })
       expect(upgraded.db.prepare('SELECT count(*) AS n FROM message_raw_fingerprints').get())
         .toEqual({ n: 0 })
       expect(upgraded.db.prepare('SELECT count(*) AS n FROM catalog_watchdog_watermarks').get())
