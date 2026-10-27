@@ -8269,8 +8269,12 @@ async function main() {
       lastToolAt: storedEvidence.endAt,
     })
     profile.metadataRevisionMs = performance.now() - phaseStartedAt
+    const hasVerifiedTraceForTurn = archive
+      .listDevSpaceTraceTurnsByTurn(queueRow.conversationId, queueRow.turnExchangeId)
+      .some(row => row.status === 'verified')
     if (queueRow.lastAttemptEvidenceRevision === storedEvidence.revision
-      && queueRow.lastAttemptMetadataRevision === metadataRevision) {
+      && queueRow.lastAttemptMetadataRevision === metadataRevision
+      && hasVerifiedTraceForTurn) {
       logProfile('unchanged-revision')
       return false
     }
@@ -11082,6 +11086,25 @@ async function main() {
     })
   }
 
+  // Archive v8 以前的 trace 主表只能保存一个 metadata；DevSpace v12 则已经从 raw tool_audit
+  // 无损回填了完整 trace↔metadata members。启动时同步这张百级窄表，补齐部署前的 rotation。
+  // 这是纯本地 SQLite 控制面同步，不扫描 args/result/requestMeta 大字段，也不发任何网络请求。
+  const devSpaceHistoricalTraceMembers = devSpaceAuditBridge.traceMetadataMembers(10_000)
+  let devSpaceTraceMembersCreated = 0
+  let devSpaceTraceMembersChanged = 0
+  for (const member of devSpaceHistoricalTraceMembers) {
+    const backfilled = archive.backfillDevSpaceTraceMetadataMember(member)
+    if (backfilled.created) devSpaceTraceMembersCreated += 1
+    if (backfilled.changed) devSpaceTraceMembersChanged += 1
+  }
+  if (devSpaceHistoricalTraceMembers.length > 0) {
+    await log('DevSpace trace metadata member startup backfill complete', {
+      discovered: devSpaceHistoricalTraceMembers.length,
+      created: devSpaceTraceMembersCreated,
+      changed: devSpaceTraceMembersChanged,
+    })
+  }
+
   // v12 identity graph 上线后，把 Archive 已经 verify 的 trace→CID/TID/RID 一次性镜像回
   // DevSpace。本表目前只有百级 rows，启动扫描成本极低；DevSpace 尚未完成 v12 migration 时
   // mirrorTraceBinding() 会安全返回 false，下次 Archive 重启/新 exact verify 再补即可。
@@ -11162,6 +11185,21 @@ async function main() {
   if (bindingQueueQueuedAtStartup > 0) {
     await log('DevSpace matching queue recovery scheduled after startup', {
       queued: bindingQueueQueuedAtStartup,
+    })
+  }
+  // 历史 matched turn 曾因 activityBetween() 裁掉 trace 字段而无法 canonicalize trace。
+  // 只把“matched metadata 与 provisional trace 时间重叠”的小集合交给同一个 cooperative worker；
+  // exact proof、cross-conversation 防护和 request/trace conflict detection 全部复用正式路径。
+  const historicalTraceVerificationRows = archive.listDevSpaceMatchedEvidenceForProvisionalTraces(1000)
+  for (const row of historicalTraceVerificationRows) {
+    const key = `${row.conversationId}:${row.turnExchangeId}`
+    devSpaceBindingEvidenceWork.set(key, row)
+  }
+  if (historicalTraceVerificationRows.length > 0) {
+    scheduleDevSpaceBindingWorker()
+    await log('DevSpace historical canonical trace verification scheduled after startup', {
+      queued: historicalTraceVerificationRows.length,
+      traceMembersBackfilled: devSpaceTraceMembersChanged,
     })
   }
   if (pendingUnboundWatchdogDiagnoses.size > 0) {
