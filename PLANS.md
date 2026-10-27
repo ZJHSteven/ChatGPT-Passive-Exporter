@@ -1122,3 +1122,22 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 - [planned] 新增 trace provisional turn identity：第一条 DevSpace audit 即按 trace-id 分 generation；canonical Body 到达后用 turn_exchange_id/request_id + exact tool+args 双向校验并固化，供 Watchdog/Recover/recovery overlay/LifeOps 等 turn-level 消费者使用。
 - [done] canonical Merge 已真正搬出主 Node event loop：单独 worker_threads merge worker + 独立 SQLite 连接承接 Body/mapping/passive/SSE canonical ingress。clean production canary 中 Worker 实际执行 3559ms merge，而同一 07:45:48.177–07:45:57.649Z 精确窗口主 event loop 仅出现约 185ms/169ms 抖动，没有 3.56s 等长冻结；Worker failed=0。第一次 database-is-locked canary 被仍运行的 sync-chatgpt full import 第二 writer 污染，不作为 Worker 内部锁冲突证据。
 - [in_progress] 剩余主线程 SQLite control-plane I/O：生产仍见 devspace-audit:observe-trace ~1.09s、recovery-upsert/binding 数百毫秒。该问题与 canonical Merge 隔离开处理；先做方法级 timing，再决定内存 fast-path + 异步 durable queue 或更广的 control-plane DB worker。
+
+## 2026-10-27 Identity Graph：Conversation → Turn Exchange → Request → Trace → Metadata
+
+### 研究结论
+- canonical 层级固定为：Conversation(CID) → Turn Exchange(turn_exchange_id) → Request/Generation(request_id) → W3C trace-id → metadata(openai/session) 成员。
+- 全量实测：232 个 trace；196 个可由 exact tool+args+±120s 零歧义证据对到 canonical turn，196/196 trace 均只属于一个 (CID, turn_exchange_id)，没有 trace 跨 turn。
+- 唯一一个 turn 对两个 trace 的样本来自 steering：同一 turn_exchange_id 内先后出现两个 request_id；对应两个 trace。因此 Turn Exchange → Request 允许 1:N。
+- 同时可见 request_id 的 190 个样本中，trace↔request_id 为 190/190 双向一一对应；这是强 observational invariant，不作为 OpenAI 协议永久保证。
+- 已有多个 trace 内出现 metadata rotation；同一 metadata 也可以跨 turn/trace 再出现，因此 metadata 不是 Turn 主键，只是 trace 下成员/无 trace 时 fallback hint。
+
+### ExecPlan
+1. Archive schema 引入 trace↔metadata 多成员关系；trace 本身绑定 canonical CID/TID/RID，metadata rotation 不再产生 metadata-mismatch conflict。
+2. Turn binding evidence 从“每 turn 单 matched_metadata_id”升级为允许同一 canonical turn 吸收多个 metadata/trace 成员；已 matched turn 仍可增量归并新 exact evidence。
+3. Binder 优先建立 operational trace group；任一成员 exact-match Body 后，整个 trace group 获得 CID/TID/RID canonical binding。
+4. Watchdog 未绑定阶段以 trace 为 primary key；canonical 后归并到 (CID,TID)。同一 TID 因 steering 产生第二 request/trace时，用户级 Watchdog 仍只有一个生命周期。
+5. DevSpace Recovery 直接以 trace 为恢复集合，读取该 trace 下全部 metadata audit；metadata 不再作为 trace 成员白名单。
+6. DevSpace 本地镜像 canonical trace binding，使 Archive 暂不可用时 Recovery 仍可凭 trace 保持完整执行链。
+7. 保留 metadata-only fallback：仅当调用缺失 traceparent 时，继续使用 metadata + exact fingerprint 的旧路径。
+8. 回归必须覆盖：同 trace A→B metadata rotation、metadata 跨 turn复用、Body Behind、同 TID steering→双 request/trace、Watchdog 不重复、Recovery 包含同 trace 全部 metadata 副作用。
