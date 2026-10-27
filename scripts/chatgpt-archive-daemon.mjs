@@ -8017,10 +8017,14 @@ async function main() {
 
     const startAt = Math.min(...bodyCalls.map(call => call.startedAtMs))
     const endAt = Math.max(...bodyCalls.map(call => call.startedAtMs))
-    const requestId = rows.find(row => typeof row.requestId === 'string' && row.requestId)?.requestId ?? null
+    const requestIds = [...new Set(bodyCalls
+      .map(call => typeof call.requestId === 'string' ? call.requestId.trim() : '')
+      .filter(Boolean))]
+    const requestId = requestIds.length === 1 ? requestIds[0] : null
     const revision = createHash('sha256')
       .update(bodyCalls.map(call =>
         String(call.startedAtMs) + '\\n'
+        + String(call.requestId ?? '') + '\\n'
         + String(devSpaceToolArgsFingerprint(call.tool, call.argsJson) ?? ''),
       ).join('\\n--\\n'))
       .digest('hex')
