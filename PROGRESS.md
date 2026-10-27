@@ -943,3 +943,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 双端 identity graph 镜像第2步：canonical exact matcher 每次把 trace verify 到 CID/TID/RID 后立即调用 `mirrorTraceBinding()`；镜像仍是旁路副作用，失败不会影响 Archive authoritative binding。
 
 - 2026-10-27 双端 identity graph 镜像第3步：Archive DB 新增 `listVerifiedDevSpaceTraceTurns()`，用于 daemon 启动后把部署前已 canonical verify 的 trace 小规模回填到 DevSpace v12 mirror，避免镜像只覆盖未来新 trace。
+
+- 2026-10-27 双端 identity graph 镜像第4步：daemon startup 在历史 metadata seed 后遍历现有 verified trace rows，旁路写入 DevSpace `chatgpt_trace_bindings`；旧 DevSpace 无 v12 表时自然 no-op。至此 future verify 与 historical verified trace 都有本地 mirror 路径。

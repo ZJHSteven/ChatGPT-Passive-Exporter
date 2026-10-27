@@ -11082,6 +11082,31 @@ async function main() {
     })
   }
 
+  // v12 identity graph 上线后，把 Archive 已经 verify 的 trace→CID/TID/RID 一次性镜像回
+  // DevSpace。本表目前只有百级 rows，启动扫描成本极低；DevSpace 尚未完成 v12 migration 时
+  // mirrorTraceBinding() 会安全返回 false，下次 Archive 重启/新 exact verify 再补即可。
+  let devSpaceTraceMirrorsSeeded = 0
+  for (const traceRow of archive.listVerifiedDevSpaceTraceTurns(10_000)) {
+    const mirrored = devSpaceAuditBridge.mirrorTraceBinding({
+      traceId: traceRow.traceId,
+      conversationId: traceRow.conversationId,
+      turnExchangeId: traceRow.turnExchangeId,
+      requestId: traceRow.requestId ?? null,
+      evidence: 'archive:startup-verified-trace-backfill',
+      confidence: 'high',
+      observedAt: Number(traceRow.verifiedAt || traceRow.lastSeenAt || Date.now()),
+    })
+    if (mirrored) {
+      devSpaceTraceMirrorsSeeded += 1
+      devSpaceBindingMirrors += 1
+    }
+  }
+  if (devSpaceTraceMirrorsSeeded > 0) {
+    await log('DevSpace verified trace mirror startup backfill complete', {
+      mirrored: devSpaceTraceMirrorsSeeded,
+    })
+  }
+
   // 再修复旧版留下的“明明能 exact-match 但因为并发而 unbound”的历史行；
   // 随后做一次 durable catch-up。这样当前新 audit 一进来时即可直接命中已知 CID。
   // 历史全量 backfill 是迁移任务，不是 daemon 每次重启都要做的稳态工作。
