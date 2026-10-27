@@ -5674,6 +5674,27 @@ export class ChatArchiveDb {
     `).all(conversationId, turnExchangeId) as unknown as DevSpaceTraceTurnBindingRow[]
   }
 
+  /** 启动时用于把既有 canonical trace identity 小规模镜像回 DevSpace。 */
+  listVerifiedDevSpaceTraceTurns(limit = 10_000): DevSpaceTraceTurnBindingRow[] {
+    return this.db.prepare(`
+      SELECT trace_id AS traceId, metadata_id AS metadataId,
+             first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
+             first_audit_id AS firstAuditId, last_audit_id AS lastAuditId,
+             conversation_id AS conversationId,
+             turn_exchange_id AS turnExchangeId,
+             request_id AS requestId,
+             status,
+             verified_at AS verifiedAt,
+             conflict_reason AS conflictReason
+      FROM devspace_trace_turn_bindings
+      WHERE status='verified'
+        AND conversation_id IS NOT NULL
+        AND turn_exchange_id IS NOT NULL
+      ORDER BY verified_at ASC, trace_id ASC
+      LIMIT ?
+    `).all(Math.max(1, Math.min(100_000, Math.trunc(limit)))) as unknown as DevSpaceTraceTurnBindingRow[]
+  }
+
   /** 返回一个 trace 下所有 metadata 成员；同一 metadata 允许出现在多个 trace 中。 */
   listDevSpaceTraceMetadataMembers(traceId: string): DevSpaceTraceMetadataMemberRow[] {
     return this.db.prepare(`
