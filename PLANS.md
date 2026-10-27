@@ -1109,6 +1109,13 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 
 ## 2026-10-24 Gap Repair Body-first + Trace provisional turn identity
 
+## 2026-10-27 Catalog late-start / DevSpace duplicate Watchdog 修复
+
+- [in_progress] Catalog deferred Watchdog 在 canonical Body 到达后，若能从当前 turn user message 取得真实 create_time，则把 generation.startedAt 从“首次 catalog active 观察时刻”向前重锚到真实 user turn 起点；只允许向前修正，不因后续 catalog progress 延长 45 分钟窗口。
+- [in_progress] 真实事故 CID `6ae04c39-50b8-83ea-86f2-a4fb4df23b62` 已证明同一 turn 会先由 catalog gap-repair 发 `watchdog-start`，随后 DevSpace metadata 未绑定时再发第二条 `watchdog-start-unbound`，且 Bark group 分别是 `Chat/<cid>` 与 `Chat/meta/<alias>`，形成跨组重复启动通知。
+- [planned] 对 Catalog→DevSpace ownership overlap 增加去重：若 unbound DevSpace first-tool 发生时存在尚未归属解析的 catalog generation 候选，不立即发送第二条 start；待 binding 解析后，若落到已有 catalog generation 则只复用该 generation，若落到其他 conversation 再补发正确 CID/group 的 start。保持 Watchdog 状态本身立即建立，不把通知去重等同于停止计时。
+- [planned] 补回归覆盖真实起点重锚、catalog→unbound DevSpace 同 turn 不重复 start、不同 conversation 绑定后仍能补发 start，以及 title 从 `New chat` 晚到正式名称时不误认为 Archive 漏 title。
+
 - [in_progress] 恢复 Gap Repair 完整语义：Catalog 发现新/更新 conversation observation 后进入正常 Body sync；Body merge 后自然进入 canonical match / binding / diagnosis，不再把 active Body 读取当作另一个“binding probe”概念。
 - [in_progress] Catalog Watchdog 改为 Body-first：新的 catalog active observation 先保留 candidate，Body 证明仍 active 且没有已有 metadata generation 时才启动；Body complete 则只收尾，避免 New Chat 双起。
 - [in_progress] 5m unbound diagnosis 必须等待本轮 Body sync 与 canonical matching worker 收口后才能宣告 unbound。
