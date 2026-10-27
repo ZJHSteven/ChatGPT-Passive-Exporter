@@ -6577,7 +6577,12 @@ async function main() {
       }
 
       await publishDevSpaceBindingEvidenceFromBody(conversationId, result.diagnostic)
-      recordDeferredCatalogBodyObservation(conversationId, result.diagnostic, Date.now())
+      recordDeferredCatalogBodyObservation(
+        conversationId,
+        result.diagnostic,
+        result.bodyTurnStartedAt,
+        Date.now(),
+      )
       checkpointBodyRefreshes += 1
       next = recordCheckpointBody({
         state: next,
@@ -6679,7 +6684,12 @@ async function main() {
         // body 一旦给出 turn_exchange_id，就可以把 earlier provisional metadata 做后验校验；
         // 该步骤只读局部时间窗，不扫描整库。
         await publishDevSpaceBindingEvidenceFromBody(conversationId, result.diagnostic)
-        recordDeferredCatalogBodyObservation(conversationId, result.diagnostic, Date.now())
+        recordDeferredCatalogBodyObservation(
+          conversationId,
+          result.diagnostic,
+          result.bodyTurnStartedAt,
+          Date.now(),
+        )
         const postCompletionCandidateBeforeBody = postCompletionDevSpaceCandidates.get(conversationId) ?? null
         // late binding 可能正是在上面的 canonical evidence publish 中才找到 metadata；因此
         // post-completion candidate 必须在 publish 之后消费，才能复用这一次 Body 直接确认新 turn。
