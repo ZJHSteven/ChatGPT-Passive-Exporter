@@ -7676,20 +7676,44 @@ async function main() {
     const current = unboundDevSpaceTurns.get(event.metadataId)
     const persistedStartAt = Number(binding.firstSeenAt || event.startedAtMs)
     const generationRestarted = Boolean(current && persistedStartAt > Number(current.startedAt || 0))
+    const shouldDeferStartNotification = (!current || generationRestarted)
+      && shouldDeferUnboundWatchdogStartForCatalog(
+        activeTurns.values(),
+        event.startedAtMs,
+        DEVSPACE_UNBOUND_START_OWNERSHIP_GRACE_MS,
+      )
     const nextCandidate = {
       startedAt: generationRestarted ? persistedStartAt : (current?.startedAt ?? persistedStartAt),
       lastEventAt: Math.max(Number(current?.lastEventAt || 0), event.startedAtMs),
       lastAuditId: event.id,
       repairQueuedAt: generationRestarted ? null : (current?.repairQueuedAt ?? null),
+      startNotificationDeferredAt: generationRestarted
+        ? (shouldDeferStartNotification ? event.startedAtMs : null)
+        : (current?.startNotificationDeferredAt ?? (shouldDeferStartNotification ? event.startedAtMs : null)),
+      startNotificationDeferredUntil: generationRestarted
+        ? (shouldDeferStartNotification ? event.startedAtMs + DEVSPACE_UNBOUND_START_OWNERSHIP_GRACE_MS : null)
+        : (current?.startNotificationDeferredUntil
+          ?? (shouldDeferStartNotification ? event.startedAtMs + DEVSPACE_UNBOUND_START_OWNERSHIP_GRACE_MS : null)),
     }
     unboundDevSpaceTurns.set(event.metadataId, nextCandidate)
     if (!current || generationRestarted) {
       const title = binding.displayTitle ?? metadataState?.title ?? null
-      dispatchUnboundWatchdogStartNotification(event.metadataId, nextCandidate, title)
+      if (shouldDeferStartNotification) {
+        void log('unbound watchdog start notification deferred for catalog ownership resolution', {
+          metadataId: event.metadataId,
+          startedAt: nextCandidate.startedAt,
+          deferredUntil: nextCandidate.startNotificationDeferredUntil,
+          titlePresent: Boolean(String(title || '').trim()),
+        })
+      }
+      else {
+        dispatchUnboundWatchdogStartNotification(event.metadataId, nextCandidate, title)
+      }
       void log('DevSpace first tool started unbound watchdog', {
         metadataId: event.metadataId,
         startedAt: nextCandidate.startedAt,
         titlePresent: Boolean(String(title || '').trim()),
+        startNotificationDeferred: shouldDeferStartNotification,
       })
     }
   }
