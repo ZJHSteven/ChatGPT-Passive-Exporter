@@ -604,7 +604,7 @@ function visibleForMarkdown(conversation: CanonicalConversation): boolean {
  * - FTS 只索引可读 User/Assistant 正文，不把巨大 tool result、connector JSON、raw CoT
  *   塞进全文索引；这些仍可从 message/resource 表按需审计。
  */
-const ARCHIVE_SCHEMA_VERSION = 7
+const ARCHIVE_SCHEMA_VERSION = 8
 
 export class ChatArchiveDb {
   readonly db: DatabaseSync
@@ -661,6 +661,11 @@ export class ChatArchiveDb {
       this.migrateV7()
       schemaVersion = 7
       this.db.exec('PRAGMA user_version=7')
+    }
+    if (schemaVersion < 8) {
+      this.migrateV8()
+      schemaVersion = 8
+      this.db.exec('PRAGMA user_version=8')
     }
   }
 
@@ -1028,6 +1033,8 @@ export class ChatArchiveDb {
 
       CREATE TABLE IF NOT EXISTS devspace_trace_turn_bindings (
         trace_id TEXT PRIMARY KEY,
+        -- 兼容字段：保留首次观察到的 metadata。真正的 trace→metadata 关系在
+        -- devspace_trace_metadata_members 中是一对多，绝不能再把本列当唯一成员。
         metadata_id TEXT NOT NULL,
         first_seen_at INTEGER NOT NULL,
         last_seen_at INTEGER NOT NULL,
@@ -1044,11 +1051,26 @@ export class ChatArchiveDb {
       CREATE INDEX IF NOT EXISTS devspace_trace_turn_bindings_metadata_time
         ON devspace_trace_turn_bindings(metadata_id, last_seen_at DESC);
 
-      CREATE UNIQUE INDEX IF NOT EXISTS devspace_trace_turn_verified_turn
-        ON devspace_trace_turn_bindings(conversation_id, turn_exchange_id)
-        WHERE status='verified'
-          AND conversation_id IS NOT NULL
+      CREATE INDEX IF NOT EXISTS devspace_trace_turn_verified_turn
+        ON devspace_trace_turn_bindings(conversation_id, turn_exchange_id, last_seen_at DESC)
+        WHERE conversation_id IS NOT NULL
           AND turn_exchange_id IS NOT NULL;
+
+      -- 一个 request/generation 的 trace 可以因为 MCP reconnect 等原因先后出现多个
+      -- openai/session metadata；metadata 自身也可能在后续 turn/trace 再次出现。
+      -- 因此成员关系必须独立保存，不能把 metadata_id 塞在 trace 主表里做 1:1。
+      CREATE TABLE IF NOT EXISTS devspace_trace_metadata_members (
+        trace_id TEXT NOT NULL,
+        metadata_id TEXT NOT NULL,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        first_audit_id TEXT NOT NULL,
+        last_audit_id TEXT NOT NULL,
+        PRIMARY KEY (trace_id, metadata_id)
+      ) WITHOUT ROWID;
+
+      CREATE INDEX IF NOT EXISTS devspace_trace_metadata_members_metadata_time
+        ON devspace_trace_metadata_members(metadata_id, last_seen_at DESC);
 
       -- DevSpace Recover overlay：只保存本地审计事实，不冒充 first-party messages。
       -- canonical body 后续出现相同 tool+args 时只打 superseded 标记，保留原始取证链。

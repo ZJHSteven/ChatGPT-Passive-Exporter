@@ -921,3 +921,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 有 request_id 的 190 个样本中 trace↔request_id 190/190 双向一一对应；按强观测 invariant 使用，但保留 conflict detection，不宣称协议保证。
 - metadata 已确认会在同 trace 内 rotation，也可跨 turn/trace 复用；从 primary identity 降级为 trace member / 无 trace fallback。
 - 正在实施：Archive binding graph、Watchdog provisional identity、DevSpace local mirror 与 Recovery trace aggregation 统一迁移。
+
+- 2026-10-27 Identity Graph 第1步：schema version 提升到 v8；fresh schema 新增 devspace_trace_metadata_members(trace_id, metadata_id) 一对多成员表，devspace_trace_turn_verified_turn 从 UNIQUE 改为普通索引，为 steering/同 TID 多 trace 放开结构约束。下一提交补 v8 迁移、运行时 observe/verify 语义与回归。
