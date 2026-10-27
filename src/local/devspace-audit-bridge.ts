@@ -177,7 +177,7 @@ export function parseDevSpaceBodyToolCall(
       tool,
       argsJson: JSON.stringify(payload.args ?? {}),
       startedAtMs,
-      requestId,
+      ...(requestId ? { requestId } : {}),
     }
   }
   catch {
