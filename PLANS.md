@@ -1111,10 +1111,10 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 
 ## 2026-10-27 Catalog late-start / DevSpace duplicate Watchdog 修复
 
-- [in_progress] Catalog deferred Watchdog 在 canonical Body 到达后，若能从当前 turn user message 取得真实 create_time，则把 generation.startedAt 从“首次 catalog active 观察时刻”向前重锚到真实 user turn 起点；只允许向前修正，不因后续 catalog progress 延长 45 分钟窗口。
-- [in_progress] 真实事故 CID `6ae04c39-50b8-83ea-86f2-a4fb4df23b62` 已证明同一 turn 会先由 catalog gap-repair 发 `watchdog-start`，随后 DevSpace metadata 未绑定时再发第二条 `watchdog-start-unbound`，且 Bark group 分别是 `Chat/<cid>` 与 `Chat/meta/<alias>`，形成跨组重复启动通知。
-- [planned] 对 Catalog→DevSpace ownership overlap 增加去重：若 unbound DevSpace first-tool 发生时存在尚未归属解析的 catalog generation 候选，不立即发送第二条 start；待 binding 解析后，若落到已有 catalog generation 则只复用该 generation，若落到其他 conversation 再补发正确 CID/group 的 start。保持 Watchdog 状态本身立即建立，不把通知去重等同于停止计时。
-- [planned] 补回归覆盖真实起点重锚、catalog→unbound DevSpace 同 turn 不重复 start、不同 conversation 绑定后仍能补发 start，以及 title 从 `New chat` 晚到正式名称时不误认为 Archive 漏 title。
+- [done] Catalog deferred Watchdog 在 canonical Body 到达后，若能从当前 turn user message 取得真实 create_time，则把 generation.startedAt 从“首次 catalog active 观察时刻”向前重锚到真实 user turn 起点；只允许向前修正，不因后续 catalog progress 延长 45 分钟窗口。
+- [done] 真实事故 CID `6ae04c39-50b8-83ea-86f2-a4fb4df23b62` 已证明同一 turn 会先由 catalog gap-repair 发 `watchdog-start`，随后 DevSpace metadata 未绑定时再发第二条 `watchdog-start-unbound`，且 Bark group 分别是 `Chat/<cid>` 与 `Chat/meta/<alias>`，形成跨组重复启动通知。
+- [done] Catalog→DevSpace ownership overlap 已增加去重：近期 catalog generation 存在时，unbound DevSpace first-tool 只立即建立内部 Watchdog 状态，第二条 start 最多延迟 5 分钟等待 exact binding；若绑定到已有 catalog generation 则复用且不重发，若绑定到其他 conversation 则由正确 CID/group 补发；Catalog Bark 若失败，绑定后会用 canonical CID 重试。
+- [done] `New chat` 瞬态标题下，Catalog start 会用本轮 user message 的 28 字符摘要做临时 subtitle，不修改服务端标题；正式 title 到达后后续通知自然使用正式标题。回归覆盖真实起点向前重锚、不得向后续命、近期 catalog overlap 延迟 unbound start。全量 `npm run check`：33 files / 335 tests、TypeScript、Chrome/Edge/Firefox/Userscript build 全绿；生产 daemon PID 66992 已加载，Bridge/WSS/Guardian/DevSpace wake/LifeOps/Bark 健康。
 
 - [in_progress] 恢复 Gap Repair 完整语义：Catalog 发现新/更新 conversation observation 后进入正常 Body sync；Body merge 后自然进入 canonical match / binding / diagnosis，不再把 active Body 读取当作另一个“binding probe”概念。
 - [in_progress] Catalog Watchdog 改为 Body-first：新的 catalog active observation 先保留 candidate，Body 证明仍 active 且没有已有 metadata generation 时才启动；Body complete 则只收尾，避免 New Chat 双起。
