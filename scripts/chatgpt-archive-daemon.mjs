@@ -1461,10 +1461,11 @@ export function watchdogStartNotificationKey(conversationId, startedAt) {
 }
 
 /** metadata 尚未绑定 canonical CID 时的稳定起点收据 key。 */
-export function unboundWatchdogStartNotificationKey(metadataId, startedAt) {
+export function unboundWatchdogStartNotificationKey(metadataId, startedAt, identityKey = null) {
   const metadata = String(metadataId || '').trim()
+  const identity = String(identityKey || metadata).trim()
   const start = Math.max(0, Math.trunc(Number(startedAt) || 0))
-  return metadata && start > 0 ? `watchdog-start-unbound:${metadata}:${start}` : null
+  return metadata && identity && start > 0 ? `watchdog-start-unbound:${identity}:${start}` : null
 }
 
 /**
@@ -1515,8 +1516,9 @@ export function buildUnboundWatchdogNotificationPayload({ metadataId, title = nu
   }
 }
 
-export function unboundWatchdogDiagnosisNotificationKey(metadataId, startedAt) {
-  return `watchdog-diagnosis-unbound:${String(metadataId || 'unknown')}:${Math.max(0, Math.trunc(Number(startedAt || 0)))}`
+export function unboundWatchdogDiagnosisNotificationKey(metadataId, startedAt, identityKey = null) {
+  const identity = String(identityKey || metadataId || 'unknown')
+  return `watchdog-diagnosis-unbound:${identity}:${Math.max(0, Math.trunc(Number(startedAt || 0)))}`
 }
 
 export function buildUnboundWatchdogDiagnosisNotificationPayload({
@@ -3257,7 +3259,34 @@ async function main() {
   }
   // metadata 尚未解出 canonical conversation 时，也先保存 first-tool 的真实时间。
   // binding 晚到以后仍以这个时间作为 watchdog.startedAt，不让发现延迟污染超时起点。
+  // 未 canonical 的 DevSpace generation 以 trace 为主身份；metadata 仅在 traceparent 缺失时 fallback。
+  // 同一 trace 内 metadata rotation 必须落到同一个 candidate，不能重新启动 Watchdog。
   const unboundDevSpaceTurns = new Map()
+  const unboundDevSpaceIdentityByMetadata = new Map()
+  const provisionalDevSpaceIdentityKey = (metadataId, explicitTraceId = null) => {
+    const traceId = String(explicitTraceId || '').trim().toLowerCase()
+    if (traceId) return `trace:${traceId}`
+    const latestTrace = archive.getLatestDevSpaceTraceTurnForMetadata(metadataId)
+    if (latestTrace?.traceId && latestTrace.status !== 'conflict') return `trace:${latestTrace.traceId}`
+    return `meta:${String(metadataId || '').trim()}`
+  }
+  const rememberUnboundIdentityMembers = (identityKey, metadataIds) => {
+    for (const metadataId of metadataIds || []) {
+      if (metadataId) unboundDevSpaceIdentityByMetadata.set(metadataId, identityKey)
+    }
+  }
+  const unboundIdentityKeyForMetadata = (metadataId) =>
+    unboundDevSpaceIdentityByMetadata.get(metadataId) ?? provisionalDevSpaceIdentityKey(metadataId)
+  const unboundCandidateForMetadata = (metadataId) => {
+    const identityKey = unboundIdentityKeyForMetadata(metadataId)
+    return { identityKey, candidate: unboundDevSpaceTurns.get(identityKey) ?? null }
+  }
+  const forgetUnboundIdentityIfUnused = (identityKey) => {
+    if (unboundDevSpaceTurns.has(identityKey) || pendingUnboundWatchdogDiagnoses.has(identityKey)) return
+    for (const [metadataId, key] of [...unboundDevSpaceIdentityByMetadata.entries()]) {
+      if (key === identityKey) unboundDevSpaceIdentityByMetadata.delete(metadataId)
+    }
+  }
   let devSpaceBindingProbeGeneration = ''
   let devSpaceBindingProbedConversationIds = []
   // DevSpace audit 从 durable (started_at, audit_id) 高水位续读。首次升级时会在 daemon
@@ -3317,27 +3346,48 @@ async function main() {
     sinceAt: Date.now() - Math.max(watchdogMs * 2, 2 * 60_000),
     limit: 1000,
   })) {
-    const startedAt = Number(binding.firstSeenAt || binding.lastSeenAt || Date.now())
+    const latestTrace = archive.getLatestDevSpaceTraceTurnForMetadata(binding.metadataId)
+    const trustedTrace = latestTrace?.status === 'conflict' ? null : latestTrace
+    const identityKey = provisionalDevSpaceIdentityKey(binding.metadataId, trustedTrace?.traceId ?? null)
+    const startedAt = Number(trustedTrace?.firstSeenAt || binding.firstSeenAt || binding.lastSeenAt || Date.now())
     const timedOutAt = Number(binding.unboundWatchdogAt || 0)
     // unbound_watchdog_at 存在时，旧 provisional generation 已经在 45m 硬边界结束；
     // 重启后只能恢复 pending diagnosis，不能把它重新塞回 active provisional 集合。
     if (timedOutAt <= 0) {
-      unboundDevSpaceTurns.set(binding.metadataId, {
-        startedAt,
-        lastEventAt: binding.lastSeenAt,
-        lastAuditId: binding.lastAuditId,
-        repairQueuedAt: null,
+      const current = unboundDevSpaceTurns.get(identityKey)
+      const metadataIds = [...new Set([...(current?.metadataIds ?? []), binding.metadataId])]
+      unboundDevSpaceTurns.set(identityKey, {
+        identityKey,
+        traceId: trustedTrace?.traceId ?? null,
+        metadataId: current?.metadataId ?? binding.metadataId,
+        metadataIds,
+        startedAt: Math.min(Number(current?.startedAt ?? startedAt), startedAt),
+        lastEventAt: Math.max(Number(current?.lastEventAt ?? 0), Number(trustedTrace?.lastSeenAt || binding.lastSeenAt || 0)),
+        lastAuditId: Number(current?.lastEventAt ?? 0) >= Number(trustedTrace?.lastSeenAt || binding.lastSeenAt || 0)
+          ? current?.lastAuditId
+          : (trustedTrace?.lastAuditId ?? binding.lastAuditId),
+        repairQueuedAt: current?.repairQueuedAt ?? null,
       })
+      rememberUnboundIdentityMembers(identityKey, metadataIds)
     }
-    const diagnosisKey = unboundWatchdogDiagnosisNotificationKey(binding.metadataId, startedAt)
-    if (timedOutAt > 0 && !archive.hasTurnNotification(diagnosisKey)) {
-      pendingUnboundWatchdogDiagnoses.set(binding.metadataId, {
-        metadataId: binding.metadataId,
-        startedAt,
-        watchdogAt: timedOutAt,
-        title: binding.displayTitle ?? null,
-        catalogRepairCompletedAt: null,
+    const diagnosisKey = unboundWatchdogDiagnosisNotificationKey(binding.metadataId, startedAt, identityKey)
+    const legacyDiagnosisKey = unboundWatchdogDiagnosisNotificationKey(binding.metadataId, startedAt)
+    if (timedOutAt > 0
+      && !archive.hasTurnNotification(diagnosisKey)
+      && !archive.hasTurnNotification(legacyDiagnosisKey)) {
+      const current = pendingUnboundWatchdogDiagnoses.get(identityKey)
+      const metadataIds = [...new Set([...(current?.metadataIds ?? []), binding.metadataId])]
+      pendingUnboundWatchdogDiagnoses.set(identityKey, {
+        identityKey,
+        traceId: trustedTrace?.traceId ?? null,
+        metadataId: current?.metadataId ?? binding.metadataId,
+        metadataIds,
+        startedAt: Math.min(Number(current?.startedAt ?? startedAt), startedAt),
+        watchdogAt: Math.min(Number(current?.watchdogAt ?? timedOutAt), timedOutAt),
+        title: current?.title ?? binding.displayTitle ?? null,
+        catalogRepairCompletedAt: current?.catalogRepairCompletedAt ?? null,
       })
+      rememberUnboundIdentityMembers(identityKey, metadataIds)
     }
   }
   // 已经跨过 45m 硬边界的 unresolved diagnosis 不能受“近期活动窗口”限制。
@@ -3345,18 +3395,26 @@ async function main() {
   for (const binding of archive.listDevSpaceMetadataBindings({ onlyUnbound: true, limit: 1000 })) {
     const timedOutAt = Number(binding.unboundWatchdogAt || 0)
     if (timedOutAt <= 0) continue
-    const startedAt = Number(binding.firstSeenAt || binding.lastSeenAt || timedOutAt)
-    const diagnosisKey = unboundWatchdogDiagnosisNotificationKey(binding.metadataId, startedAt)
-    if (archive.hasTurnNotification(diagnosisKey)) continue
-    if (!pendingUnboundWatchdogDiagnoses.has(binding.metadataId)) {
-      pendingUnboundWatchdogDiagnoses.set(binding.metadataId, {
-        metadataId: binding.metadataId,
-        startedAt,
-        watchdogAt: timedOutAt,
-        title: binding.displayTitle ?? null,
-        catalogRepairCompletedAt: null,
-      })
-    }
+    const latestTrace = archive.getLatestDevSpaceTraceTurnForMetadata(binding.metadataId)
+    const trustedTrace = latestTrace?.status === 'conflict' ? null : latestTrace
+    const identityKey = provisionalDevSpaceIdentityKey(binding.metadataId, trustedTrace?.traceId ?? null)
+    const startedAt = Number(trustedTrace?.firstSeenAt || binding.firstSeenAt || binding.lastSeenAt || timedOutAt)
+    const diagnosisKey = unboundWatchdogDiagnosisNotificationKey(binding.metadataId, startedAt, identityKey)
+    const legacyDiagnosisKey = unboundWatchdogDiagnosisNotificationKey(binding.metadataId, startedAt)
+    if (archive.hasTurnNotification(diagnosisKey) || archive.hasTurnNotification(legacyDiagnosisKey)) continue
+    const current = pendingUnboundWatchdogDiagnoses.get(identityKey)
+    const metadataIds = [...new Set([...(current?.metadataIds ?? []), binding.metadataId])]
+    pendingUnboundWatchdogDiagnoses.set(identityKey, {
+      identityKey,
+      traceId: trustedTrace?.traceId ?? null,
+      metadataId: current?.metadataId ?? binding.metadataId,
+      metadataIds,
+      startedAt: Math.min(Number(current?.startedAt ?? startedAt), startedAt),
+      watchdogAt: Math.min(Number(current?.watchdogAt ?? timedOutAt), timedOutAt),
+      title: current?.title ?? binding.displayTitle ?? null,
+      catalogRepairCompletedAt: current?.catalogRepairCompletedAt ?? null,
+    })
+    rememberUnboundIdentityMembers(identityKey, metadataIds)
   }
   // activeTurns 只承载“当前 generation 仍在运行”的计时器。已经跨过 45m 的 generation
   // 不再留在这里；pending diagnosis 与 catalog anti-resurrection 都有独立状态。
