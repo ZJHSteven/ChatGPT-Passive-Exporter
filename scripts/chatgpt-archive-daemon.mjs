@@ -3893,6 +3893,18 @@ async function main() {
     }
   }
 
+  /** 同一 trace 发生 metadata rotation 时，诊断计数必须覆盖全部成员，而不是只看首个 metadata。 */
+  const devSpaceRecoveryCountsForMetadataIds = (metadataIds) => {
+    const total = { recoveryAuditCount: 0, checkpointCount: 0, recoveryToolCount: 0 }
+    for (const metadataId of [...new Set(metadataIds || [])]) {
+      const counts = devSpaceRecoveryCountsForMetadata(metadataId)
+      total.recoveryAuditCount += counts.recoveryAuditCount
+      total.checkpointCount += counts.checkpointCount
+      total.recoveryToolCount += counts.recoveryToolCount
+    }
+    return total
+  }
+
   /**
    * 一个 canonical body sync 成功后，消费所有已经绑定到该 conversation 的 5 分钟诊断。
    * 这里故意不要求 trigger 必须是 devspace-idle：如果 WSS complete / Watchdog 已经排了更强 sync，
@@ -4032,12 +4044,17 @@ async function main() {
 
   const completeUnboundWatchdogDiagnoses = () => {
     if (syncInFlight || reconcileInFlight || ready.size > 0 || hasPendingDevSpaceBindingWork()) return
-    for (const [metadataId, pending] of [...pendingUnboundWatchdogDiagnoses.entries()]) {
+    for (const [identityKey, pending] of [...pendingUnboundWatchdogDiagnoses.entries()]) {
       if (!pending.catalogRepairCompletedAt) continue
 
-      const binding = archive.getDevSpaceMetadataBinding(metadataId)
+      const metadataId = pending.metadataId
+      const metadataIds = pending.metadataIds?.length ? pending.metadataIds : [metadataId]
+      const binding = metadataIds
+        .map(id => archive.getDevSpaceMetadataBinding(id))
+        .find(row => row?.conversationId) ?? archive.getDevSpaceMetadataBinding(metadataId)
       if (binding?.conversationId) {
-        pendingUnboundWatchdogDiagnoses.delete(metadataId)
+        pendingUnboundWatchdogDiagnoses.delete(identityKey)
+        forgetUnboundIdentityIfUnused(identityKey)
         flushDeferredCatalogWatchdogCandidates('unbound-watchdog-binding-resolved')
         if (!ready.has(binding.conversationId)) {
           markSyncReady(binding.conversationId, 'watchdog:devspace-timeout', 0)
@@ -4049,12 +4066,12 @@ async function main() {
         continue
       }
 
-      const counts = devSpaceRecoveryCountsForMetadata(metadataId)
+      const counts = devSpaceRecoveryCountsForMetadataIds(metadataIds)
       const title = pending.title
         ?? devSpaceAuditBridge.metadataToolState(metadataId)?.title
         ?? binding?.displayTitle
         ?? null
-      const notificationKey = unboundWatchdogDiagnosisNotificationKey(metadataId, pending.startedAt)
+      const notificationKey = unboundWatchdogDiagnosisNotificationKey(metadataId, pending.startedAt, identityKey)
       const alreadySent = archive.hasTurnNotification(notificationKey)
       const queued = alreadySent ? false : dispatchPersistentNotification({
         notificationKey,
@@ -4097,7 +4114,8 @@ async function main() {
       // 成功发送后的 notification ledger 是跨重启 completion marker。
       // 失败时不清 pending，下一轮可以继续重试；LifeOps 则已经有明确终态分类。
       if (alreadySent) {
-        pendingUnboundWatchdogDiagnoses.delete(metadataId)
+        pendingUnboundWatchdogDiagnoses.delete(identityKey)
+        forgetUnboundIdentityIfUnused(identityKey)
         flushDeferredCatalogWatchdogCandidates('unbound-watchdog-diagnosis-resolved')
         void log('unbound watchdog diagnosis completed without canonical binding', {
           metadataId,
@@ -7446,8 +7464,11 @@ async function main() {
 
   const bindDevSpaceMetadataToConversation = async (input) => {
     const existing = archive.getDevSpaceMetadataBinding(input.metadataId)
-    const provisional = unboundDevSpaceTurns.get(input.metadataId)
-    const pendingUnboundTimeout = pendingUnboundWatchdogDiagnoses.get(input.metadataId) ?? null
+    const { identityKey, candidate: provisional } = unboundCandidateForMetadata(input.metadataId)
+    const pendingUnboundTimeout = pendingUnboundWatchdogDiagnoses.get(identityKey) ?? null
+    const provisionalMetadataId = pendingUnboundTimeout?.metadataId
+      ?? provisional?.metadataId
+      ?? input.metadataId
     const timedOutBeforeBinding = Boolean(
       pendingUnboundTimeout
       || existing?.unboundWatchdogAt
@@ -7502,7 +7523,7 @@ async function main() {
       requestId: input.requestId ?? null,
       lifecycleState,
     })
-    unboundDevSpaceTurns.delete(input.metadataId)
+    unboundDevSpaceTurns.delete(identityKey)
     dropDeferredCatalogWatchdogCandidate(input.conversationId, 'exact-devspace-binding')
     if (!existing?.conversationId) devSpaceBindingsCreated += 1
     mirrorDevSpaceBinding(binding)
@@ -7599,10 +7620,10 @@ async function main() {
       )
       const watchdogAt = pendingUnboundWatchdogAt
       const newGenerationStartedAt = bindingGenerationStartedAt
-      const sourceEventId = unboundWatchdogLifeOpsEventId(input.metadataId, provisionalStartedAt)
+      const sourceEventId = unboundWatchdogLifeOpsEventId(provisionalMetadataId, provisionalStartedAt)
       enqueueLifeOpsEvent({
         sourceEventId,
-        metadataId: input.metadataId,
+        metadataId: provisionalMetadataId,
         conversationId: input.conversationId,
         turnExchangeId: input.turnExchangeId ?? null,
         title: conversationTitle(input.conversationId),
@@ -7626,33 +7647,37 @@ async function main() {
       })
       lifeOpsEventOverrideByConversation.set(input.conversationId, {
         sourceEventId,
-        metadataId: input.metadataId,
+        metadataId: provisionalMetadataId,
         startedAt: provisionalStartedAt,
       })
       if (bindingResolvedNewerGeneration) {
-        pendingUnboundWatchdogDiagnoses.delete(input.metadataId)
+        pendingUnboundWatchdogDiagnoses.delete(identityKey)
         dispatchPersistentNotification({
-          notificationKey: unboundWatchdogDiagnosisNotificationKey(input.metadataId, provisionalStartedAt),
+          notificationKey: unboundWatchdogDiagnosisNotificationKey(
+            provisionalMetadataId,
+            provisionalStartedAt,
+            identityKey,
+          ),
           kind: 'watchdog-diagnosis:bound-superseded',
           conversationId: input.conversationId,
           turnKey: input.turnExchangeId ?? input.metadataId,
           payload: buildSupersededUnboundWatchdogDiagnosisNotificationPayload({
             conversationId: input.conversationId,
-            metadataId: input.metadataId,
+            metadataId: provisionalMetadataId,
             title: conversationTitle(input.conversationId),
             newGenerationStartedAt,
           }),
           successLog: 'superseded unbound watchdog diagnosis notification sent',
           failureLog: 'superseded unbound watchdog diagnosis notification failed',
           logFields: {
-            metadataId: input.metadataId,
+            metadataId: provisionalMetadataId,
             oldStartedAt: provisionalStartedAt,
             watchdogAt,
             newGenerationStartedAt,
           },
         })
         void log('timed-out unbound generation bound after newer generation start; skipped stale latest-Body diagnosis', {
-          metadataId: input.metadataId,
+          metadataId: provisionalMetadataId,
           conversationId: input.conversationId,
           oldStartedAt: provisionalStartedAt,
           watchdogAt,
@@ -7671,7 +7696,7 @@ async function main() {
           lastDiagnosticTurnKey: input.turnExchangeId ?? null,
           completedAt: completedAtForGeneration,
         }
-        pendingUnboundWatchdogDiagnoses.delete(input.metadataId)
+        pendingUnboundWatchdogDiagnoses.delete(identityKey)
         pendingWatchdogDiagnoses.set(input.conversationId, boundPending)
         persistActiveTurn(input.conversationId, boundPending)
         recentConversationComplete.set(input.conversationId, boundPending.completedAt)
@@ -7690,6 +7715,7 @@ async function main() {
         })
       }
     }
+    forgetUnboundIdentityIfUnused(identityKey)
     flushDeferredCatalogWatchdogCandidates('unbound-devspace-ownership-resolved')
     return binding
   }
@@ -7782,16 +7808,34 @@ async function main() {
     queueDevSpaceBindingWorkForAudit(event)
     await yieldControlPlane()
 
-    const current = unboundDevSpaceTurns.get(event.metadataId)
-    const persistedStartAt = Number(binding.firstSeenAt || event.startedAtMs)
-    const generationRestarted = Boolean(current && persistedStartAt > Number(current.startedAt || 0))
+    const trustedTraceId = traceRow?.status === 'conflict' ? null : traceId
+    const identityKey = provisionalDevSpaceIdentityKey(event.metadataId, trustedTraceId)
+    rememberUnboundIdentityMembers(identityKey, [event.metadataId])
+    const current = unboundDevSpaceTurns.get(identityKey)
+    const persistedStartAt = Number(
+      (trustedTraceId ? traceRow?.firstSeenAt : null)
+      || binding.firstSeenAt
+      || event.startedAtMs,
+    )
+    // trace 不变就一定还是同一 execution lineage；只有 metadata-fallback 才继续沿用旧的
+    // firstSeenAt generation restart 判定。
+    const generationRestarted = Boolean(
+      current
+      && identityKey.startsWith('meta:')
+      && persistedStartAt > Number(current.startedAt || 0),
+    )
     const shouldDeferStartNotification = (!current || generationRestarted)
       && shouldDeferUnboundWatchdogStartForCatalog(
         activeTurns.values(),
         event.startedAtMs,
         DEVSPACE_UNBOUND_START_OWNERSHIP_GRACE_MS,
       )
+    const metadataIds = [...new Set([...(current?.metadataIds ?? []), event.metadataId])]
     const nextCandidate = {
+      identityKey,
+      traceId: trustedTraceId ?? null,
+      metadataId: current?.metadataId ?? event.metadataId,
+      metadataIds,
       startedAt: generationRestarted ? persistedStartAt : (current?.startedAt ?? persistedStartAt),
       lastEventAt: Math.max(Number(current?.lastEventAt || 0), event.startedAtMs),
       lastAuditId: event.id,
@@ -7804,7 +7848,8 @@ async function main() {
         : (current?.startNotificationDeferredUntil
           ?? (shouldDeferStartNotification ? event.startedAtMs + DEVSPACE_UNBOUND_START_OWNERSHIP_GRACE_MS : null)),
     }
-    unboundDevSpaceTurns.set(event.metadataId, nextCandidate)
+    unboundDevSpaceTurns.set(identityKey, nextCandidate)
+    rememberUnboundIdentityMembers(identityKey, metadataIds)
     if (!current || generationRestarted) {
       const title = binding.displayTitle ?? metadataState?.title ?? null
       if (shouldDeferStartNotification) {
@@ -7816,10 +7861,11 @@ async function main() {
         })
       }
       else {
-        dispatchUnboundWatchdogStartNotification(event.metadataId, nextCandidate, title)
+        dispatchUnboundWatchdogStartNotification(nextCandidate.metadataId, nextCandidate, title)
       }
       void log('DevSpace first tool started unbound watchdog', {
-        metadataId: event.metadataId,
+        metadataId: nextCandidate.metadataId,
+        traceId: nextCandidate.traceId,
         startedAt: nextCandidate.startedAt,
         titlePresent: Boolean(String(title || '').trim()),
         startNotificationDeferred: shouldDeferStartNotification,
@@ -8000,7 +8046,7 @@ async function main() {
       bodyCalls,
     })
 
-    const provisional = unboundDevSpaceTurns.get(match.activity.metadataId)
+    const provisional = unboundCandidateForMetadata(match.activity.metadataId).candidate
     return {
       metadataId: match.activity.metadataId,
       startAt: provisional?.startedAt ?? match.activity.firstAt,
@@ -8120,7 +8166,7 @@ async function main() {
       requestId,
       evidence,
       confidence: 'high',
-      lifecycleState: activeTurns.has(conversationId) || unboundDevSpaceTurns.has(candidate.metadataId)
+      lifecycleState: activeTurns.has(conversationId) || Boolean(unboundCandidateForMetadata(candidate.metadataId).candidate)
         ? 'active'
         : 'closed',
     })
@@ -8555,7 +8601,7 @@ async function main() {
     if (timedOutEntries.length === 0) return 0
 
     const generation = timedOutEntries
-      .map(([metadataId, pending]) => `${metadataId}:${Number(pending.watchdogAt)}`)
+      .map(([identityKey, pending]) => `${identityKey}:${Number(pending.watchdogAt)}`)
       .join('|')
     const candidateConversationIds = new Set([
       ...activeTurns.keys(),
@@ -8584,11 +8630,16 @@ async function main() {
 
   const checkUnboundDevSpaceTimeouts = () => {
     const now = Date.now()
-    for (const [metadataId, candidate] of [...unboundDevSpaceTurns.entries()]) {
-      const currentBinding = archive.getDevSpaceMetadataBinding(metadataId)
+    for (const [identityKey, candidate] of [...unboundDevSpaceTurns.entries()]) {
+      const metadataId = candidate.metadataId
+      const metadataIds = candidate.metadataIds?.length ? candidate.metadataIds : [metadataId]
+      const currentBinding = metadataIds
+        .map(id => archive.getDevSpaceMetadataBinding(id))
+        .find(row => row?.conversationId) ?? archive.getDevSpaceMetadataBinding(metadataId)
       if (currentBinding?.conversationId) {
-        unboundDevSpaceTurns.delete(metadataId)
-        pendingUnboundWatchdogDiagnoses.delete(metadataId)
+        unboundDevSpaceTurns.delete(identityKey)
+        pendingUnboundWatchdogDiagnoses.delete(identityKey)
+        forgetUnboundIdentityIfUnused(identityKey)
         flushDeferredCatalogWatchdogCandidates('durable-binding-cleared-unbound-candidate')
         void log('stale unbound watchdog candidate cleared after durable binding', {
           metadataId,
@@ -8604,7 +8655,7 @@ async function main() {
         // 即使 Bark 发送失败，45m timeout/diagnosis 仍会继续工作，不会因为展示层失败而续命。
         candidate.startNotificationDeferredAt = null
         candidate.startNotificationDeferredUntil = null
-        unboundDevSpaceTurns.set(metadataId, candidate)
+        unboundDevSpaceTurns.set(identityKey, candidate)
         void log('deferred unbound watchdog start notification released after ownership grace', {
           metadataId,
           startedAt: candidate.startedAt,
@@ -8614,11 +8665,14 @@ async function main() {
       if (now - Number(candidate.startedAt) < watchdogMs) continue
 
       const startedAt = Number(candidate.startedAt || currentBinding?.firstSeenAt || now)
-      archive.markDevSpaceUnboundWatchdog(metadataId, now)
-      const diagnosisKey = unboundWatchdogDiagnosisNotificationKey(metadataId, startedAt)
-      if (!archive.hasTurnNotification(diagnosisKey) && !pendingUnboundWatchdogDiagnoses.has(metadataId)) {
-        pendingUnboundWatchdogDiagnoses.set(metadataId, {
+      for (const memberMetadataId of metadataIds) archive.markDevSpaceUnboundWatchdog(memberMetadataId, now)
+      const diagnosisKey = unboundWatchdogDiagnosisNotificationKey(metadataId, startedAt, identityKey)
+      if (!archive.hasTurnNotification(diagnosisKey) && !pendingUnboundWatchdogDiagnoses.has(identityKey)) {
+        pendingUnboundWatchdogDiagnoses.set(identityKey, {
+          identityKey,
+          traceId: candidate.traceId ?? null,
           metadataId,
+          metadataIds,
           startedAt,
           watchdogAt: now,
           title: currentBinding?.displayTitle ?? devSpaceAuditBridge.metadataToolState(metadataId)?.title ?? null,
@@ -8635,7 +8689,7 @@ async function main() {
       })
       // 45m 到点后这代 provisional generation 立即结束。CID 解析/Body 诊断由上面的
       // pendingUnboundWatchdogDiagnoses 独立持有；后续真实 audit 会从新的 first_seen_at 起表。
-      unboundDevSpaceTurns.delete(metadataId)
+      unboundDevSpaceTurns.delete(identityKey)
       void scheduleGapRepair('devspace-unbound-timeout')
     }
   }
