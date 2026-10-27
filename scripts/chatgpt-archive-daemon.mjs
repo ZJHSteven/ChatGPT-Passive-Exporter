@@ -3133,9 +3133,27 @@ async function main() {
       startType: String(candidate.startType || 'catalog:async-active:deferred'),
       lastDiagnosticTurnKey: candidate.bodyTurnExchangeId ?? null,
     }
+    // canonical title 仍是 New chat 时，用本轮 user message 的一小段可读文本做临时身份提示。
+    // 这只影响 Bark subtitle，不修改服务端 conversation title；等 ChatGPT 自动命名后，后续
+    // 通知仍会自然回到正式标题。
+    const bodyUserTitleHint = candidate.bodyUserMessageId
+      ? compactNotificationText(
+          archive.db.prepare(`
+            SELECT text
+            FROM messages
+            WHERE conversation_id = ? AND message_id = ?
+            LIMIT 1
+          `).get(conversationId, candidate.bodyUserMessageId)?.text,
+          28,
+        )
+      : ''
     activeTurns.set(conversationId, nextActive)
     persistActiveTurn(conversationId, nextActive)
-    dispatchWatchdogStartNotification(conversationId, nextActive, candidate.title ?? null)
+    dispatchWatchdogStartNotification(
+      conversationId,
+      nextActive,
+      bodyUserTitleHint || candidate.title || null,
+    )
     armCheckpointWatch(conversationId, `${nextActive.startType}:confirmed`, nextActive.startedAt)
     deferredCatalogWatchdogCandidates.delete(conversationId)
     void log('deferred catalog watchdog candidate confirmed by canonical Body', {
@@ -3148,10 +3166,17 @@ async function main() {
     return true
   }
 
-  const recordDeferredCatalogBodyObservation = (conversationId, diagnostic, observedAt = Date.now()) => {
-    const candidate = deferredCatalogWatchdogCandidates.get(conversationId)
+  const recordDeferredCatalogBodyObservation = (
+    conversationId,
+    diagnostic,
+    bodyTurnStartedAt = null,
+    observedAt = Date.now(),
+  ) => {
+    let candidate = deferredCatalogWatchdogCandidates.get(conversationId)
     if (!candidate) return false
+    candidate = reanchorDeferredCatalogWatchdogCandidate(candidate, bodyTurnStartedAt, observedAt)
     candidate.bodyTurnExchangeId = diagnostic?.turnExchangeId ?? candidate.bodyTurnExchangeId ?? null
+    candidate.bodyUserMessageId = diagnostic?.userMessageId ?? candidate.bodyUserMessageId ?? null
     candidate.bodyCompletionEvidence = diagnostic?.bodyCompletionEvidence ?? 'none'
     candidate.bodyObservedAt = Number(observedAt) || Date.now()
     deferredCatalogWatchdogCandidates.set(conversationId, candidate)
