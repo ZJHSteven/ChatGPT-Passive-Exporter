@@ -8,6 +8,7 @@ import {
   devSpaceTraceIdFromRequestMetaJson,
   groupDevSpaceActivity,
   matchDevSpaceCandidateForTurn,
+  matchingDevSpaceTraceRequestPairsForTurn,
   matchingDevSpaceTraceIdsForTurn,
   parseDevSpaceBodyToolCall,
   type DevSpaceAuditEvent,
@@ -66,6 +67,52 @@ describe('DevSpace audit bridge', () => {
       activity: matched!.activity,
       bodyCalls,
     })).toEqual([traceId])
+  })
+
+  test('steering 同一 TID 可把两个 trace 双向唯一配到各自 request_id', () => {
+    const traceA = '6adc85b000000000464321cc21366ad1'
+    const traceB = '6adc861600000000919acdf4682052cc'
+    const activity = groupDevSpaceActivity([
+      { ...audit('a1', 'meta-shared', 10_000, { cmd: 'echo request-a' }), traceId: traceA },
+      { ...audit('a2', 'meta-shared', 20_000, { cmd: 'echo request-a-2' }), traceId: traceA },
+      { ...audit('b1', 'meta-shared', 15_000, { cmd: 'echo request-b' }), traceId: traceB },
+    ])[0]!
+    const bodyCalls = [
+      parseDevSpaceBodyToolCall(JSON.stringify({
+        path: '/devspace/link_x/exec_command',
+        args: { cmd: 'echo request-a' },
+      }), 10_100, 'request-a'),
+      parseDevSpaceBodyToolCall(JSON.stringify({
+        path: '/devspace/link_x/exec_command',
+        args: { cmd: 'echo request-a-2' },
+      }), 20_100, 'request-a'),
+      parseDevSpaceBodyToolCall(JSON.stringify({
+        path: '/devspace/link_x/exec_command',
+        args: { cmd: 'echo request-b' },
+      }), 15_100, 'request-b'),
+    ].filter((value): value is NonNullable<typeof value> => Boolean(value))
+
+    expect(matchingDevSpaceTraceRequestPairsForTurn({ activity, bodyCalls })).toEqual([
+      { traceId: traceA, requestId: 'request-a' },
+      { traceId: traceB, requestId: 'request-b' },
+    ])
+
+    // 同一 trace 若 exact evidence 同时指向两个 request，不能靠“更近的时间”猜。
+    expect(matchingDevSpaceTraceRequestPairsForTurn({
+      activity: groupDevSpaceActivity([
+        { ...audit('ambiguous', 'meta-shared', 30_000, { cmd: 'echo same' }), traceId: traceA },
+      ])[0]!,
+      bodyCalls: [
+        parseDevSpaceBodyToolCall(JSON.stringify({
+          path: '/devspace/link_x/exec_command',
+          args: { cmd: 'echo same' },
+        }), 30_100, 'request-a')!,
+        parseDevSpaceBodyToolCall(JSON.stringify({
+          path: '/devspace/link_x/exec_command',
+          args: { cmd: 'echo same' },
+        }), 30_200, 'request-b')!,
+      ],
+    })).toEqual([])
   })
 
   test('activityBetween 用物化 trace_id 完成 canonical trace verification，不必读取 requestMetaJson', () => {

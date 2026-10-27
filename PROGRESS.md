@@ -980,3 +980,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 Steering identity 收口第7步：binding worker 两条消费路径已改为遍历 verifier 返回的所有 trace rows；每个 verified trace 都执行 member inheritance，避免多 trace Turn 只 canonicalize 但只给第一条 trace 做成员归并。
 
 - 2026-10-27 Steering identity 兼容收口：parseDevSpaceBodyToolCall 的第三参数保持可选；无 RID 时不额外写 `requestId:null` 字段，旧调用方/测试对象形状保持不变。
+
+- 2026-10-27 Steering identity matcher 回归：新增同一 metadata activity 下 trace-A→RID-A、trace-B→RID-B 的双向唯一配对测试；另覆盖同一 trace 同时命中两个 RID 时必须返回空集合，禁止用最近时间猜测。
