@@ -78,6 +78,20 @@ export function mergeDeferredCatalogWatchdogCandidate(
   },
 ): Record<string, unknown> | null
 
+/** canonical Body 到达后，只允许把 catalog late-start 起点向前校正到真实 user create_time。 */
+export function reanchorDeferredCatalogWatchdogCandidate<T extends Record<string, unknown> | null | undefined>(
+  candidate: T,
+  bodyTurnStartedAt: unknown,
+  observedAt?: number,
+): T
+
+/** 未绑定 DevSpace first-tool 是否应等待近期 catalog generation 的 ownership 解析后再发第二条 start。 */
+export function shouldDeferUnboundWatchdogStartForCatalog(
+  activeStates: Iterable<Record<string, unknown>> | null | undefined,
+  auditAt: unknown,
+  graceMs?: number,
+): boolean
+
 /** catalog update_time 前进只推进 lastEventAt 证据，不能修改 generation.startedAt。 */
 export function recordCatalogWatchdogProgress<T extends Record<string, unknown> | null | undefined>(
   active: T,
