@@ -265,17 +265,19 @@ describe('ChatArchiveDb', () => {
       db.upsertDevSpaceBindingTurnEvidence({
         conversationId: 'conversation-old',
         turnExchangeId: 'turn-old',
-        firstToolAt: 1_000,
-        lastToolAt: 2_000,
+        // 必须明确放到正式 matcher 的 ±120s 窗口之外；否则它本来就应该被视为
+        // 同一 metadata 的历史候选，测试不能把 8 秒差误写成“不重叠”。
+        firstToolAt: 500_000,
+        lastToolAt: 501_000,
         toolCallCount: 1,
         evidenceRevision: 'rev-old',
-        observedAt: 3_000,
+        observedAt: 502_000,
       })
       db.markDevSpaceBindingTurnEvidenceMatched({
         conversationId: 'conversation-old',
         turnExchangeId: 'turn-old',
         metadataId: 'meta-a',
-        matchedAt: 3_500,
+        matchedAt: 502_500,
         evidenceRevision: 'rev-old',
         metadataRevision: 'meta-rev-old',
       })
