@@ -8083,6 +8083,18 @@ async function main() {
       requestId: storedEvidence?.requestId ?? null,
       verifiedAt: observedAt,
     })
+    if (row?.status === 'verified' && row.conversationId && row.turnExchangeId) {
+      const mirrored = devSpaceAuditBridge.mirrorTraceBinding({
+        traceId: row.traceId,
+        conversationId: row.conversationId,
+        turnExchangeId: row.turnExchangeId,
+        requestId: row.requestId ?? null,
+        evidence: 'archive:exact-tool-args-trace',
+        confidence: 'high',
+        observedAt,
+      })
+      if (mirrored) devSpaceBindingMirrors += 1
+    }
     if (row?.status === 'conflict') {
       void log('DevSpace trace/turn identity conflict detected', {
         traceId: row.traceId,
