@@ -968,3 +968,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 Steering identity 收口第1步：DevSpaceBodyToolCall 现在保留 canonical tool-call 自身 request_id；新增 matchingDevSpaceTraceRequestPairsForTurn()，仅在 exact tool+args + ±120s 证据下接受 trace→唯一 RID 且 RID→唯一 trace 的双向单值 pair。多 RID/多 trace 歧义继续 fail-closed，不用时间最近值猜测。
 
 - 2026-10-27 Steering identity 收口第2步：daemon 已接入 trace/request pair matcher；canonical message→DevSpace recovery supersede 路径也把 message.requestId 传入 Body tool-call 解析，确保后续证据链不再丢 RID。
+
+- 2026-10-27 Steering identity 收口第3步（证据构建前半）：stored Turn evidence 现在逐个 canonical tool-call 把 row.requestId 传进 DevSpaceBodyToolCall，避免 steering Turn 在进入 matcher 前丢失 RID。

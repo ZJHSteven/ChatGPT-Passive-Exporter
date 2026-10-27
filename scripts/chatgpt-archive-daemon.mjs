@@ -8007,7 +8007,11 @@ async function main() {
     const workerMs = performance.now() - workerStartedAt
     const buildStartedAt = performance.now()
     const bodyCalls = rows
-      .map(row => parseDevSpaceBodyToolCall(String(row.text || ''), Number(row.createTime) * 1000))
+      .map(row => parseDevSpaceBodyToolCall(
+        String(row.text || ''),
+        Number(row.createTime) * 1000,
+        typeof row.requestId === 'string' ? row.requestId : null,
+      ))
       .filter(Boolean)
     if (bodyCalls.length === 0) return null
 
