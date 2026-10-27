@@ -294,7 +294,7 @@ describe('ChatArchiveDb', () => {
         'turn-overlap',
         22_000,
         'rev-overlap',
-        'trace-v8:meta-rev-overlap',
+        'trace-v9:meta-rev-overlap',
       )
       expect(db.listDevSpaceMatchedEvidenceForProvisionalTraces()).toEqual([])
     }

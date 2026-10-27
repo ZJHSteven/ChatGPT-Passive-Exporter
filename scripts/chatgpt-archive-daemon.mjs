@@ -8241,7 +8241,7 @@ async function main() {
       .digest('hex')
   }
 
-  const traceAwareBindingRevision = metadataRevision => `trace-v8:${metadataRevision}`
+  const traceAwareBindingRevision = metadataRevision => `trace-v9:${metadataRevision}`
 
   const attemptDevSpaceBindingQueueEvidence = async (queueRow, { source = 'queue' } = {}) => {
     if (!queueRow || !['pending', 'matched'].includes(queueRow.status)) return false
