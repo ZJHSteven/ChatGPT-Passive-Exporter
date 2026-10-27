@@ -74,6 +74,8 @@ import {
   bodyCompletionBelongsToCurrentGeneration,
   mergePostCompletionDevSpaceCandidate,
   mergeDeferredCatalogWatchdogCandidate,
+  reanchorDeferredCatalogWatchdogCandidate,
+  shouldDeferUnboundWatchdogStartForCatalog,
   unboundBindingResolvesNewerGeneration,
   syncTriggerPriority,
   preferredSyncTrigger,
@@ -1470,6 +1472,49 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       bodyCompletionEvidence: null,
       bodyObservedAt: null,
     })
+  })
+
+  test('catalog deferred Watchdog 在 Body 到达后向前重锚到真实 user create_time，但绝不向后续命', () => {
+    const candidate = {
+      conversationId: 'catalog-a',
+      startedAt: 180_000,
+      lastEventAt: 180_000,
+      startType: 'catalog:async-active:gap-repair',
+    }
+
+    expect(reanchorDeferredCatalogWatchdogCandidate(candidate, 133_000, 210_000)).toEqual({
+      ...candidate,
+      startedAt: 133_000,
+    })
+    expect(reanchorDeferredCatalogWatchdogCandidate(candidate, 190_000, 210_000)).toBe(candidate)
+    expect(reanchorDeferredCatalogWatchdogCandidate(candidate, 220_000, 210_000)).toBe(candidate)
+  })
+
+  test('近期 catalog generation 会暂缓第二条 unbound DevSpace start，旧 catalog 或普通 DevSpace generation 不会', () => {
+    const auditAt = 300_000
+    expect(shouldDeferUnboundWatchdogStartForCatalog([
+      {
+        startedAt: 180_000,
+        lastEventAt: 181_000,
+        startType: 'catalog:async-active:gap-repair',
+      },
+    ], auditAt, 5 * 60_000)).toBe(true)
+
+    expect(shouldDeferUnboundWatchdogStartForCatalog([
+      {
+        startedAt: 1_000,
+        lastEventAt: 1_000,
+        startType: 'catalog:async-active:gap-repair',
+      },
+    ], auditAt, 60_000)).toBe(false)
+
+    expect(shouldDeferUnboundWatchdogStartForCatalog([
+      {
+        startedAt: 180_000,
+        lastEventAt: 250_000,
+        startType: 'devspace:first-tool',
+      },
+    ], auditAt, 5 * 60_000)).toBe(false)
   })
 
   test('catalog update_time 变化必须开启新的 observation 起点，未变化才沿用 firstSeenAt', () => {
