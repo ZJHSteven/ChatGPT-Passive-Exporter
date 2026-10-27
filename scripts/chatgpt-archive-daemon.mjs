@@ -8078,47 +8078,62 @@ async function main() {
     observedAt = Date.now(),
   }) => {
     const traceIds = Array.isArray(candidate?.traceIds) ? candidate.traceIds : []
-    if (traceIds.length !== 1) {
-      if (traceIds.length > 1) {
-        void log('DevSpace canonical turn matched multiple trace ids; trace identity left provisional', {
-          metadataId: candidate?.metadataId ?? null,
-          conversationId,
-          turnExchangeId,
-          traceIds,
-        })
-      }
-      return null
-    }
-    const row = archive.verifyDevSpaceTraceTurn({
-      traceId: traceIds[0],
-      metadataId: candidate.metadataId,
-      conversationId,
-      turnExchangeId,
-      requestId: storedEvidence?.requestId ?? null,
-      verifiedAt: observedAt,
-    })
-    if (row?.status === 'verified' && row.conversationId && row.turnExchangeId) {
-      const mirrored = devSpaceAuditBridge.mirrorTraceBinding({
-        traceId: row.traceId,
-        conversationId: row.conversationId,
-        turnExchangeId: row.turnExchangeId,
-        requestId: row.requestId ?? null,
-        evidence: 'archive:exact-tool-args-trace',
-        confidence: 'high',
-        observedAt,
-      })
-      if (mirrored) devSpaceBindingMirrors += 1
-    }
-    if (row?.status === 'conflict') {
-      void log('DevSpace trace/turn identity conflict detected', {
-        traceId: row.traceId,
-        metadataId: row.metadataId,
+    if (traceIds.length === 0) return []
+
+    const pairByTrace = new Map(
+      (Array.isArray(candidate?.traceRequestPairs) ? candidate.traceRequestPairs : [])
+        .map(pair => [pair.traceId, pair.requestId]),
+    )
+    // 单 trace 保持旧路径：若整个 Turn 只有一个 RID，仍可用 storedEvidence.requestId。
+    // 多 trace 则必须每条 trace 都有 exact evidence 证明自己的 RID；禁止把 Turn 的首个 RID
+    // 复制给所有 trace，也禁止只 verify 一半后留下语义不完整的 steering Turn。
+    if (traceIds.length > 1 && traceIds.some(traceId => !pairByTrace.has(traceId))) {
+      void log('DevSpace steering turn trace/request mapping ambiguous; trace identity left provisional', {
+        metadataId: candidate?.metadataId ?? null,
         conversationId,
         turnExchangeId,
-        conflictReason: row.conflictReason,
+        traceIds,
+        traceRequestPairs: candidate?.traceRequestPairs ?? [],
       })
+      return []
     }
-    return row
+
+    const rows = []
+    for (const traceId of traceIds) {
+      const requestId = pairByTrace.get(traceId)
+        ?? (traceIds.length === 1 ? storedEvidence?.requestId ?? null : null)
+      const row = archive.verifyDevSpaceTraceTurn({
+        traceId,
+        metadataId: candidate.metadataId,
+        conversationId,
+        turnExchangeId,
+        requestId,
+        verifiedAt: observedAt,
+      })
+      if (row?.status === 'verified' && row.conversationId && row.turnExchangeId) {
+        const mirrored = devSpaceAuditBridge.mirrorTraceBinding({
+          traceId: row.traceId,
+          conversationId: row.conversationId,
+          turnExchangeId: row.turnExchangeId,
+          requestId: row.requestId ?? null,
+          evidence: 'archive:exact-tool-args-trace',
+          confidence: 'high',
+          observedAt,
+        })
+        if (mirrored) devSpaceBindingMirrors += 1
+      }
+      if (row?.status === 'conflict') {
+        void log('DevSpace trace/turn identity conflict detected', {
+          traceId: row.traceId,
+          metadataId: row.metadataId,
+          conversationId,
+          turnExchangeId,
+          conflictReason: row.conflictReason,
+        })
+      }
+      if (row) rows.push(row)
+    }
+    return rows
   }
 
   /**
