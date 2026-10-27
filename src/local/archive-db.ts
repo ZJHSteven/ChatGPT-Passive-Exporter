@@ -5460,6 +5460,10 @@ export class ChatArchiveDb {
        AND t.status='provisional'
       WHERE e.status='matched'
         AND e.matched_metadata_id IS NOT NULL
+        AND (
+          e.last_attempt_metadata_revision IS NULL
+          OR e.last_attempt_metadata_revision NOT LIKE 'trace-v8:%'
+        )
         AND e.last_tool_at >= t.first_seen_at - 120000
         AND e.first_tool_at <= t.last_seen_at + 120000
       ORDER BY e.last_tool_at DESC

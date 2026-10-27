@@ -8212,6 +8212,8 @@ async function main() {
       .digest('hex')
   }
 
+  const traceAwareBindingRevision = metadataRevision => `trace-v8:${metadataRevision}`
+
   const attemptDevSpaceBindingQueueEvidence = async (queueRow, { source = 'queue' } = {}) => {
     if (!queueRow || !['pending', 'matched'].includes(queueRow.status)) return false
     const profileStartedAt = performance.now()
@@ -8268,13 +8270,10 @@ async function main() {
       firstToolAt: storedEvidence.startAt,
       lastToolAt: storedEvidence.endAt,
     })
+    const attemptMetadataRevision = traceAwareBindingRevision(metadataRevision)
     profile.metadataRevisionMs = performance.now() - phaseStartedAt
-    const hasVerifiedTraceForTurn = archive
-      .listDevSpaceTraceTurnsByTurn(queueRow.conversationId, queueRow.turnExchangeId)
-      .some(row => row.status === 'verified')
     if (queueRow.lastAttemptEvidenceRevision === storedEvidence.revision
-      && queueRow.lastAttemptMetadataRevision === metadataRevision
-      && hasVerifiedTraceForTurn) {
+      && queueRow.lastAttemptMetadataRevision === attemptMetadataRevision) {
       logProfile('unchanged-revision')
       return false
     }
@@ -8294,7 +8293,7 @@ async function main() {
         queueRow.turnExchangeId,
         Date.now(),
         storedEvidence.revision,
-        metadataRevision,
+        attemptMetadataRevision,
       )
       profile.durableMarkMs = performance.now() - phaseStartedAt
       logProfile('no-candidate')
@@ -8313,7 +8312,7 @@ async function main() {
           queueRow.turnExchangeId,
           observedAt,
           storedEvidence.revision,
-          metadataRevision,
+          attemptMetadataRevision,
         )
         profile.durableMarkMs = performance.now() - phaseStartedAt
         void log('DevSpace matching queue rejected cross-conversation bound candidate', {
@@ -8334,7 +8333,7 @@ async function main() {
         metadataId: candidate.metadataId,
         matchedAt: observedAt,
         evidenceRevision: storedEvidence.revision,
-        metadataRevision,
+        metadataRevision: attemptMetadataRevision,
       })
       profile.durableMarkMs = performance.now() - phaseStartedAt
       phaseStartedAt = performance.now()
@@ -8370,7 +8369,7 @@ async function main() {
       metadataId: candidate.metadataId,
       matchedAt: observedAt,
       evidenceRevision: storedEvidence.revision,
-      metadataRevision,
+      metadataRevision: attemptMetadataRevision,
     })
     profile.durableMarkMs = performance.now() - phaseStartedAt
     phaseStartedAt = performance.now()

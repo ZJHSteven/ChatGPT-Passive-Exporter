@@ -288,6 +288,15 @@ describe('ChatArchiveDb', () => {
         status: 'matched',
         matchedMetadataId: 'meta-a',
       }])
+
+      db.markDevSpaceBindingTurnEvidenceAttempt(
+        'conversation-overlap',
+        'turn-overlap',
+        22_000,
+        'rev-overlap',
+        'trace-v8:meta-rev-overlap',
+      )
+      expect(db.listDevSpaceMatchedEvidenceForProvisionalTraces()).toEqual([])
     }
     finally {
       db.close()

@@ -962,3 +962,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 历史 canonicalization 回归锁定：Bridge 测试证明 `activityBetween()` 即使 requestMetaJson 为 NULL，也可仅凭 v12 物化 `trace_id` 让 canonical trace verifier 命中；Archive DB 测试证明历史 A+B member 可无损补齐，且 reverify 候选只包含 matched metadata 与 provisional trace 在 ±120s 内实际重叠的 Turn，旧跨 Turn metadata 不会被误拉进来。
 
 - 2026-10-27 回归夹具修正：首版“非重叠”样本只与 trace 相差 8 秒，实际仍在正式 matcher 的 ±120s 容差内，因此被正确列入候选。负例现移动到 120s 之外，确保测试验证的是边界语义而不是错误时间假设。
+
+- 2026-10-27 历史 reverify 启动税收口：新版 matcher 把 attempt metadata revision 写成 `trace-v8:<revision>`。历史启动修复只挑尚未被 trace-v8 尝试过的 provisional 候选；证据不足的孤例最多补跑一次，后续重启不再重复。未来 live audit/member 若变化，正常 overlap scan 仍会因新 revision 重新尝试。
