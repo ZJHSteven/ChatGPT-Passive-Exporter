@@ -7488,6 +7488,27 @@ async function main() {
     })
     if (lifecycleState === 'active' && (!timedOutBeforeBinding || bindingResolvedNewerGeneration)) {
       activateBoundDevSpaceTurn(binding, input.startAt)
+      const activeAfterBinding = activeTurns.get(input.conversationId)
+      const deferredStartWasPending = Number(provisional?.startNotificationDeferredUntil || 0) > 0
+      if (
+        deferredStartWasPending
+        && activeAfterBinding
+        && /^(?:catalog|project-catalog):/u.test(String(activeAfterBinding.startType || ''))
+      ) {
+        // 正常情况：Catalog start 已经成功发过，persistent ledger 会让这里成为 no-op。
+        // 异常情况：Catalog Bark 失败，则 exact binding 后用正确 CID/group 再试一次，避免
+        // “为了去重”把起点通知彻底吞掉。
+        dispatchWatchdogStartNotification(
+          input.conversationId,
+          activeAfterBinding,
+          conversationTitle(input.conversationId),
+        )
+        void log('resolved deferred unbound start against existing catalog generation', {
+          metadataId: input.metadataId,
+          conversationId: input.conversationId,
+          catalogStartedAt: activeAfterBinding.startedAt,
+        })
+      }
     }
     else if (completedAt > 0) {
       // late binding 时 provisional firstSeenAt 可能仍落在上一轮 completion 之前，而同 metadata
