@@ -972,3 +972,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 Steering identity 收口第3步（证据构建前半）：stored Turn evidence 现在逐个 canonical tool-call 把 row.requestId 传进 DevSpaceBodyToolCall，避免 steering Turn 在进入 matcher 前丢失 RID。
 
 - 2026-10-27 Steering identity 收口第4步：Turn 级 requestId 只有全部 DevSpace Body tool-call 共享同一 RID 时才保留；多 RID steering Turn 返回 null，禁止拿“第一条 RID”冒充整个 Turn。evidence revision 同时纳入每条 tool-call RID，request/generation 关系变化会触发重新匹配。
+
+- 2026-10-27 Steering identity 收口第5步：stored Turn matcher 在原有 traceIds 之外同步产出 `traceRequestPairs`，pair 仅来自同一 matched metadata activity 内的 exact fingerprint/time 证据，为多 trace TID 的逐 request canonical verification 做准备。

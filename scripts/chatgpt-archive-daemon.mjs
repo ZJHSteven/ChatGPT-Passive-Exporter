@@ -8054,6 +8054,10 @@ async function main() {
       activity: match.activity,
       bodyCalls,
     })
+    const traceRequestPairs = matchingDevSpaceTraceRequestPairsForTurn({
+      activity: match.activity,
+      bodyCalls,
+    })
 
     const provisional = unboundCandidateForMetadata(match.activity.metadataId).candidate
     return {
@@ -8062,6 +8066,7 @@ async function main() {
       exactMatches: match.exactMatches,
       uniqueMatches: match.uniqueMatches,
       traceIds,
+      traceRequestPairs,
     }
   }
 
