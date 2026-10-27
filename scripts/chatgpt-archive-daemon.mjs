@@ -8439,6 +8439,21 @@ async function main() {
         })
         continue
       }
+      const deferredUntil = Number(candidate.startNotificationDeferredUntil || 0)
+      if (deferredUntil > 0 && now >= deferredUntil) {
+        const title = currentBinding?.displayTitle ?? devSpaceAuditBridge.metadataToolState(metadataId)?.title ?? null
+        dispatchUnboundWatchdogStartNotification(metadataId, candidate, title)
+        // 只释放“通知延迟”；Watchdog generation 自身一直从真实 first-tool startedAt 计时。
+        // 即使 Bark 发送失败，45m timeout/diagnosis 仍会继续工作，不会因为展示层失败而续命。
+        candidate.startNotificationDeferredAt = null
+        candidate.startNotificationDeferredUntil = null
+        unboundDevSpaceTurns.set(metadataId, candidate)
+        void log('deferred unbound watchdog start notification released after ownership grace', {
+          metadataId,
+          startedAt: candidate.startedAt,
+          titlePresent: Boolean(String(title || '').trim()),
+        })
+      }
       if (now - Number(candidate.startedAt) < watchdogMs) continue
 
       const startedAt = Number(candidate.startedAt || currentBinding?.firstSeenAt || now)
