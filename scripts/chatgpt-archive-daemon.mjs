@@ -141,6 +141,12 @@ const DEVSPACE_AUDIT_BATCH_SIZE = 1
 const DEVSPACE_FALLBACK_POLL_MS = 60_000
 const DEVSPACE_IDLE_ALERT_THRESHOLDS_MS = [60_000, 180_000, 300_000]
 const DEVSPACE_IDLE_STARTUP_LOOKBACK_MS = 6 * 60_000
+// Catalog 可能比 DevSpace first-tool 更早发现同一个新 turn。若 metadata 尚未绑定 CID，
+// 立即再发一条 unbound start 会造成“同一 turn 两条 Watchdog 开始”，而且 Bark group
+// 分别落到 Chat/<cid> 与 Chat/meta/<alias>。这里给 canonical matching 一个很短的归属窗口：
+// Watchdog 计时本身照常立即建立，只延迟第二条“未绑定起点通知”。5 分钟与现有 unbound
+// 诊断窗口一致；到期仍无法绑定时才恢复发送 unbound start，避免真正孤立的 DevSpace turn 静默。
+const DEVSPACE_UNBOUND_START_OWNERSHIP_GRACE_MS = 5 * 60_000
 // 新 completion 后首次 DevSpace activity 只允许一次主动 Body 身份确认。给页面自然 Body 一个很短的
 // 抢先窗口；若 passive Body 先到，ready queue 会直接复用它，从而省掉主动 GET。这里不是 idle probe。
 const POST_COMPLETION_TURN_CHECK_DELAY_MS = 1_500
@@ -526,6 +532,54 @@ export function mergeDeferredCatalogWatchdogCandidate(existing, input = {}) {
     bodyCompletionEvidence: existing?.bodyCompletionEvidence ?? null,
     bodyObservedAt: existing?.bodyObservedAt ?? null,
   }
+}
+
+/**
+ * Catalog 只能先拿到“首次观察 active”的晚起点；canonical Body 到达后，如果已经能定位
+ * 当前 turn 的 user create_time，就把 generation 起点向前校正到真实用户发言时刻。
+ *
+ * 只允许“向前修正”：后来的 Body / catalog progress 绝不能把 45 分钟窗口向后续命。
+ */
+export function reanchorDeferredCatalogWatchdogCandidate(candidate, bodyTurnStartedAt, observedAt = Date.now()) {
+  if (!candidate || typeof candidate !== 'object') return candidate
+  const currentStartedAt = Number(candidate.startedAt)
+  const bodyStartedAt = Number(bodyTurnStartedAt)
+  const observed = Number(observedAt)
+  if (!Number.isFinite(currentStartedAt) || currentStartedAt <= 0) return candidate
+  if (!Number.isFinite(bodyStartedAt) || bodyStartedAt <= 0) return candidate
+  if (!Number.isFinite(observed) || observed <= 0 || bodyStartedAt > observed) return candidate
+  if (bodyStartedAt >= currentStartedAt) return candidate
+  return {
+    ...candidate,
+    startedAt: bodyStartedAt,
+  }
+}
+
+/**
+ * 未绑定 DevSpace first-tool 是否可能属于刚刚由 Catalog 建立的 canonical generation。
+ *
+ * 这里只决定“第二条未绑定 start 通知要不要先等 ownership 解析”，不做 metadata→CID 绑定，
+ * 因此不会把并发聊天凭时间硬猜成同一 conversation。真正归属仍必须走 exact tool+args matching。
+ */
+export function shouldDeferUnboundWatchdogStartForCatalog(
+  activeStates,
+  auditAt,
+  graceMs = DEVSPACE_UNBOUND_START_OWNERSHIP_GRACE_MS,
+) {
+  const at = Number(auditAt)
+  const grace = Math.max(0, Number(graceMs) || 0)
+  if (!Number.isFinite(at) || at <= 0 || grace <= 0) return false
+  if (!activeStates || typeof activeStates[Symbol.iterator] !== 'function') return false
+  for (const active of activeStates) {
+    if (!active || typeof active !== 'object') continue
+    if (!/^(?:catalog|project-catalog):/u.test(String(active.startType || ''))) continue
+    const startedAt = Number(active.startedAt)
+    const lastEventAt = Number(active.lastEventAt || active.startedAt)
+    if (!Number.isFinite(startedAt) || startedAt <= 0 || startedAt > at) continue
+    const evidenceAt = Math.min(at, Math.max(startedAt, Number.isFinite(lastEventAt) ? lastEventAt : startedAt))
+    if (at - evidenceAt <= grace) return true
+  }
+  return false
 }
 
 /**
