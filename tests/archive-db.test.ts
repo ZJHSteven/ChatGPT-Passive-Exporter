@@ -215,6 +215,83 @@ describe('ChatArchiveDb', () => {
     }
   })
 
+  test('DevSpace 历史 trace member backfill 可补齐 rotation，并只筛选时间重叠的 matched turn 做 reverify', () => {
+    const db = tempDb()
+    try {
+      const traceId = '6ae050a800000000d1e6c4dc18ff35e2'
+      expect(db.backfillDevSpaceTraceMetadataMember({
+        traceId,
+        metadataId: 'meta-a',
+        firstSeenAt: 10_000,
+        lastSeenAt: 15_000,
+        firstAuditId: 'audit-a1',
+        lastAuditId: 'audit-a2',
+      })).toEqual({ created: true, changed: true })
+      expect(db.backfillDevSpaceTraceMetadataMember({
+        traceId,
+        metadataId: 'meta-b',
+        firstSeenAt: 14_000,
+        lastSeenAt: 20_000,
+        firstAuditId: 'audit-b1',
+        lastAuditId: 'audit-b2',
+      })).toEqual({ created: true, changed: true })
+      expect(db.listDevSpaceTraceMetadataMembers(traceId)).toMatchObject([
+        { metadataId: 'meta-a', firstSeenAt: 10_000, lastSeenAt: 15_000 },
+        { metadataId: 'meta-b', firstSeenAt: 14_000, lastSeenAt: 20_000 },
+      ])
+      expect(db.getDevSpaceTraceTurnByTrace(traceId)).toMatchObject({
+        status: 'provisional',
+        firstSeenAt: 10_000,
+        lastSeenAt: 20_000,
+      })
+
+      db.upsertDevSpaceBindingTurnEvidence({
+        conversationId: 'conversation-overlap',
+        turnExchangeId: 'turn-overlap',
+        firstToolAt: 11_000,
+        lastToolAt: 19_000,
+        toolCallCount: 2,
+        evidenceRevision: 'rev-overlap',
+        observedAt: 21_000,
+      })
+      db.markDevSpaceBindingTurnEvidenceMatched({
+        conversationId: 'conversation-overlap',
+        turnExchangeId: 'turn-overlap',
+        metadataId: 'meta-a',
+        matchedAt: 21_500,
+        evidenceRevision: 'rev-overlap',
+        metadataRevision: 'meta-rev-overlap',
+      })
+      db.upsertDevSpaceBindingTurnEvidence({
+        conversationId: 'conversation-old',
+        turnExchangeId: 'turn-old',
+        firstToolAt: 1_000,
+        lastToolAt: 2_000,
+        toolCallCount: 1,
+        evidenceRevision: 'rev-old',
+        observedAt: 3_000,
+      })
+      db.markDevSpaceBindingTurnEvidenceMatched({
+        conversationId: 'conversation-old',
+        turnExchangeId: 'turn-old',
+        metadataId: 'meta-a',
+        matchedAt: 3_500,
+        evidenceRevision: 'rev-old',
+        metadataRevision: 'meta-rev-old',
+      })
+
+      expect(db.listDevSpaceMatchedEvidenceForProvisionalTraces()).toMatchObject([{
+        conversationId: 'conversation-overlap',
+        turnExchangeId: 'turn-overlap',
+        status: 'matched',
+        matchedMetadataId: 'meta-a',
+      }])
+    }
+    finally {
+      db.close()
+    }
+  })
+
   test('占位标题不能覆盖真实标题，但后续真实重命名可以更新', () => {
     expect(preferredConversationTitle('正式标题', 'New chat', 'cid')).toBe('正式标题')
     expect(preferredConversationTitle('正式标题', '新聊天', 'cid')).toBe('正式标题')

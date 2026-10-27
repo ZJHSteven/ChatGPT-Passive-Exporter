@@ -958,3 +958,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 历史成员迁移补口第2步：Archive DB 新增 `backfillDevSpaceTraceMetadataMember()` 无损补齐 member 首末时间/audit，不改 canonical status；并新增 `listDevSpaceMatchedEvidenceForProvisionalTraces()`，只挑 matched metadata 与 provisional trace 在正式 ±120s 边界内重叠的历史 turn，供 cooperative worker 做一次 exact re-verify，避免全量扫所有 turn。
 
 - 2026-10-27 历史成员迁移补口第3步：daemon startup 先从 DevSpace v12 百级 member 窄表补齐 Archive，再把与 provisional trace 重叠的 matched turn evidence 排入现有 cooperative binding worker。worker 的 unchanged-revision 快速跳过现在仅在该 TID 已有 verified trace 时生效；因此旧 matched metadata 可只补做一次 trace canonicalization，之后恢复正常低负担跳过。
+
+- 2026-10-27 历史 canonicalization 回归锁定：Bridge 测试证明 `activityBetween()` 即使 requestMetaJson 为 NULL，也可仅凭 v12 物化 `trace_id` 让 canonical trace verifier 命中；Archive DB 测试证明历史 A+B member 可无损补齐，且 reverify 候选只包含 matched metadata 与 provisional trace 在 ±120s 内实际重叠的 Turn，旧跨 Turn metadata 不会被误拉进来。

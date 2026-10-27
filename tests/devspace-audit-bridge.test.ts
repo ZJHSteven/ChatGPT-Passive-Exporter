@@ -68,6 +68,64 @@ describe('DevSpace audit bridge', () => {
     })).toEqual([traceId])
   })
 
+  test('activityBetween 用物化 trace_id 完成 canonical trace verification，不必读取 requestMetaJson', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'archive-devspace-trace-column-'))
+    const dbPath = path.join(root, 'devspace.sqlite')
+    const traceId = '6ae04073000000001c750329f7ad982d'
+    const startedAt = '2026-10-27T06:14:25.000Z'
+    const db = new DatabaseSync(dbPath)
+    db.exec(`
+      CREATE TABLE tool_audit (
+        id TEXT PRIMARY KEY,
+        metadata_id TEXT,
+        request_meta_json TEXT,
+        trace_id TEXT,
+        tool TEXT NOT NULL,
+        args_json TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+    `)
+    db.prepare(`
+      INSERT INTO tool_audit (
+        id, metadata_id, request_meta_json, trace_id,
+        tool, args_json, started_at, finished_at
+      ) VALUES (?, ?, NULL, ?, ?, ?, ?, NULL)
+    `).run(
+      'trace-audit-1',
+      'meta-a',
+      traceId,
+      'exec_command',
+      JSON.stringify({ shell: 'pwsh', cmd: 'git status --short' }),
+      startedAt,
+    )
+    db.close()
+
+    const bridge = new DevSpaceAuditBridge(dbPath)
+    try {
+      const at = Date.parse(startedAt)
+      const activities = bridge.activityBetween(at - 1000, at + 1000)
+      expect(activities).toHaveLength(1)
+      expect(activities[0]?.audits[0]).toMatchObject({
+        metadataId: 'meta-a',
+        traceId,
+        requestMetaJson: null,
+      })
+      const bodyCalls = [parseDevSpaceBodyToolCall(JSON.stringify({
+        path: '/devspace/link_x/exec_command',
+        args: { shell: 'pwsh', cmd: 'git status --short' },
+      }), at + 200)!]
+      expect(matchingDevSpaceTraceIdsForTurn({
+        activity: activities[0]!,
+        bodyCalls,
+      })).toEqual([traceId])
+    }
+    finally {
+      bridge.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('Backup Tunnel 与 DevSpace 作为同一 MQ transport family 解析', () => {
     expect(parseDevSpaceBodyToolCall(JSON.stringify({
       path: '/Backup Tunnel/link_x/exec_command',
