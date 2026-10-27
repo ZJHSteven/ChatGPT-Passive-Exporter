@@ -8406,6 +8406,7 @@ async function main() {
           const rows = runControlPlaneStage('devspace-binding-audit-scan', () => archive.listPendingDevSpaceBindingTurnEvidence({
             overlapStartAt: Math.max(0, Number(event.startedAtMs) - 120_000),
             overlapEndAt: Number(event.startedAtMs) + 120_000,
+            includeMatched: true,
             limit: 256,
           }))
           for (const row of rows) {

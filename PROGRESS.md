@@ -929,3 +929,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 v8 migration 兼容性修正：migration 自包含确保旧 trace 主表存在，再做索引降级/成员 backfill；测试中所有 current schema 断言更新为 v8。此前核心 rotation/steering 回归已通过。
 
 - 2026-10-27 Identity Graph 第3步：binding queue 的 matched 改为“至少已有成员”而非终态，允许新 audit/metadata 触发增量重匹配；canonical exact-match 验证 trace 后会把该 trace 全部 metadata members 一次性继承 CID/TID/RID。audit 热路径若看到已 verified trace 的新 metadata，也直接做 trace-lineage inheritance，不再先创建第二套 unbound Watchdog。
+
+- 2026-10-27 queue API 兼容收紧：listPendingDevSpaceBindingTurnEvidence 默认仍只返回 pending；只有新 audit overlap scan 显式 includeMatched=true，使已匹配 Turn 在出现 rotation/steering 新成员时增量重匹配，而不会在启动时全量重扫历史 matched rows。

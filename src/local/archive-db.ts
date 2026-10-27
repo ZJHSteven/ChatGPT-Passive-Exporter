@@ -5390,12 +5390,12 @@ export class ChatArchiveDb {
   listPendingDevSpaceBindingTurnEvidence(input: {
     overlapStartAt?: number
     overlapEndAt?: number
+    includeMatched?: boolean
     limit?: number
   } = {}): DevSpaceBindingTurnEvidenceRow[] {
-    // `matched` 只表示“这个 canonical turn 已经至少找到过一个成员”，不是终态。
-    // 同一 trace 后续可能 rotation 出新 metadata，同一 TID 也可能 steering 出新 request/trace，
-    // 因此新 audit 到达时必须允许已 matched turn 重新参加增量匹配。
-    const clauses = [`status IN ('pending', 'matched')`]
+    // 默认契约仍然是“pending only”，避免启动恢复把所有历史 matched turn 重扫一遍。
+    // 只有新 audit 到达、需要检查 rotation/steering 新成员时，调用方显式 includeMatched。
+    const clauses = [input.includeMatched ? `status IN ('pending', 'matched')` : `status='pending'`]
     const params: Array<string | number> = []
     if (input.overlapStartAt !== undefined && input.overlapEndAt !== undefined) {
       const startAt = Math.max(0, Math.trunc(input.overlapStartAt))
