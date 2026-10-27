@@ -8366,15 +8366,17 @@ async function main() {
       })
       profile.durableMarkMs = performance.now() - phaseStartedAt
       phaseStartedAt = performance.now()
-      const traceRow = verifyMatchedDevSpaceTraceTurn({
+      const traceRows = verifyMatchedDevSpaceTraceTurn({
         candidate,
         storedEvidence,
         conversationId: queueRow.conversationId,
         turnExchangeId: queueRow.turnExchangeId,
         observedAt,
       })
-      if (traceRow?.status === 'verified') {
-        await bindVerifiedDevSpaceTraceMembers({ traceRow, observedAt })
+      for (const traceRow of traceRows) {
+        if (traceRow?.status === 'verified') {
+          await bindVerifiedDevSpaceTraceMembers({ traceRow, observedAt })
+        }
       }
       profile.traceVerifyMs = performance.now() - phaseStartedAt
       devSpaceBindingQueueMatches += 1
@@ -8402,15 +8404,17 @@ async function main() {
     })
     profile.durableMarkMs = performance.now() - phaseStartedAt
     phaseStartedAt = performance.now()
-    const traceRow = verifyMatchedDevSpaceTraceTurn({
+    const traceRows = verifyMatchedDevSpaceTraceTurn({
       candidate,
       storedEvidence,
       conversationId: queueRow.conversationId,
       turnExchangeId: queueRow.turnExchangeId,
       observedAt,
     })
-    if (traceRow?.status === 'verified') {
-      await bindVerifiedDevSpaceTraceMembers({ traceRow, observedAt })
+    for (const traceRow of traceRows) {
+      if (traceRow?.status === 'verified') {
+        await bindVerifiedDevSpaceTraceMembers({ traceRow, observedAt })
+      }
     }
     profile.traceVerifyMs = performance.now() - phaseStartedAt
     devSpaceBindingQueueMatches += 1

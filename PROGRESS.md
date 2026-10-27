@@ -976,3 +976,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 Steering identity 收口第5步：stored Turn matcher 在原有 traceIds 之外同步产出 `traceRequestPairs`，pair 仅来自同一 matched metadata activity 内的 exact fingerprint/time 证据，为多 trace TID 的逐 request canonical verification 做准备。
 
 - 2026-10-27 Steering identity 收口第6步：trace verifier 不再把“同 TID 命中多个 trace”当异常；单 trace 保持旧兼容路径，多 trace 只有在每条 trace 都有唯一 exact RID pair 时才逐条 verify 到同一 CID/TID。缺任意 pair 时整组保持 provisional，继续 fail-closed。
+
+- 2026-10-27 Steering identity 收口第7步：binding worker 两条消费路径已改为遍历 verifier 返回的所有 trace rows；每个 verified trace 都执行 member inheritance，避免多 trace Turn 只 canonicalize 但只给第一条 trace 做成员归并。
