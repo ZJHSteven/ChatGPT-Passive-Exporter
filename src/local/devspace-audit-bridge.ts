@@ -72,6 +72,13 @@ export interface DevSpaceBodyToolCall {
   tool: string
   argsJson: string
   startedAtMs: number
+  /** canonical Body 中该 tool-call 所属的 request/generation。steering 时同一 TID 可出现多个 RID。 */
+  requestId?: string | null
+}
+
+export interface DevSpaceTraceRequestPair {
+  traceId: string
+  requestId: string
 }
 
 export interface DevSpaceBindingMatch {
@@ -151,7 +158,11 @@ export function groupDevSpaceActivity(events: DevSpaceAuditEvent[]): DevSpaceMet
  * binding 不再依赖“某个时间窗里只有一个 metadata”这种脆弱条件，而是比较
  * 两边都已经存在的 tool + args，并要求同一 fingerprint 的 audit/body 时间足够接近。
  */
-export function parseDevSpaceBodyToolCall(text: string, startedAtMs: number): DevSpaceBodyToolCall | null {
+export function parseDevSpaceBodyToolCall(
+  text: string,
+  startedAtMs: number,
+  requestId: string | null = null,
+): DevSpaceBodyToolCall | null {
   try {
     const payload = JSON.parse(text) as { path?: unknown, args?: unknown }
     const toolPath = typeof payload.path === 'string' ? payload.path : ''
@@ -166,6 +177,7 @@ export function parseDevSpaceBodyToolCall(text: string, startedAtMs: number): De
       tool,
       argsJson: JSON.stringify(payload.args ?? {}),
       startedAtMs,
+      requestId,
     }
   }
   catch {
@@ -334,6 +346,62 @@ export function matchingDevSpaceTraceIdsForTurn(input: {
     if (traceId) traces.add(traceId)
   }
   return [...traces].sort()
+}
+
+/**
+ * 把同一 Turn Exchange 内的多个 trace 精确拆到各自 request_id。
+ *
+ * steering 会让一个 TID 内出现多个 request/generation；这时仅知道“多个 trace 属于同一 TID”
+ * 还不够，必须继续证明 trace↔RID。这里仍复用 exact tool+args + ±120s 时间容差：
+ * - trace 命中多个 RID：歧义，不输出；
+ * - RID 被多个 trace 命中：歧义，不输出。
+ *
+ * 所以返回 pair 只包含双向单值证据。未来 Host 行为若改变，会 fail-closed 留 provisional。
+ */
+export function matchingDevSpaceTraceRequestPairsForTurn(input: {
+  activity: DevSpaceMetadataActivity
+  bodyCalls: DevSpaceBodyToolCall[]
+}): DevSpaceTraceRequestPair[] {
+  const bodyByFingerprint = new Map<string, Array<{ startedAtMs: number, requestId: string }>>()
+  for (const call of input.bodyCalls) {
+    const requestId = typeof call.requestId === 'string' ? call.requestId.trim() : ''
+    if (!requestId) continue
+    const fingerprint = devSpaceToolArgsFingerprint(call.tool, call.argsJson)
+    if (!fingerprint) continue
+    const calls = bodyByFingerprint.get(fingerprint) ?? []
+    calls.push({ startedAtMs: call.startedAtMs, requestId })
+    bodyByFingerprint.set(fingerprint, calls)
+  }
+
+  const requestIdsByTrace = new Map<string, Set<string>>()
+  for (const audit of input.activity.audits) {
+    const fingerprint = devSpaceToolArgsFingerprint(audit.tool, audit.argsJson)
+    if (!fingerprint) continue
+    const matchingCalls = (bodyByFingerprint.get(fingerprint) ?? []).filter(
+      call => Math.abs(call.startedAtMs - audit.startedAtMs) <= DEVSPACE_BINDING_TIME_TOLERANCE_MS,
+    )
+    if (matchingCalls.length === 0) continue
+    const traceId = typeof audit.traceId === 'string' && audit.traceId.trim()
+      ? audit.traceId.trim().toLowerCase()
+      : devSpaceTraceIdFromRequestMetaJson(audit.requestMetaJson)
+    if (!traceId) continue
+    const requestIds = requestIdsByTrace.get(traceId) ?? new Set<string>()
+    for (const call of matchingCalls) requestIds.add(call.requestId)
+    requestIdsByTrace.set(traceId, requestIds)
+  }
+
+  const uniqueTracePairs = [...requestIdsByTrace.entries()]
+    .filter(([, requestIds]) => requestIds.size === 1)
+    .map(([traceId, requestIds]) => ({ traceId, requestId: [...requestIds][0]! }))
+  const traceOwnersByRequest = new Map<string, Set<string>>()
+  for (const pair of uniqueTracePairs) {
+    const owners = traceOwnersByRequest.get(pair.requestId) ?? new Set<string>()
+    owners.add(pair.traceId)
+    traceOwnersByRequest.set(pair.requestId, owners)
+  }
+  return uniqueTracePairs
+    .filter(pair => traceOwnersByRequest.get(pair.requestId)?.size === 1)
+    .sort((a, b) => a.traceId.localeCompare(b.traceId))
 }
 
 export class DevSpaceAuditBridge {
