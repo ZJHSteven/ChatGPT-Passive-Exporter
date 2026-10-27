@@ -105,6 +105,16 @@ export interface DevSpaceTraceBindingMirror {
   observedAt: number
 }
 
+/** DevSpace v12 从 raw tool_audit 物化出的 trace↔metadata 历史成员事实。 */
+export interface DevSpaceTraceMetadataMemberMirror {
+  traceId: string
+  metadataId: string
+  firstSeenAt: number
+  lastSeenAt: number
+  firstAuditId: string
+  lastAuditId: string
+}
+
 /** 默认沿用 DevSpace 自身的 storage.stateDir 默认值。 */
 export function defaultDevSpaceDbPath(env: NodeJS.ProcessEnv = process.env): string {
   const home = env.HOME || env.USERPROFILE || homedir()
@@ -335,6 +345,7 @@ export class DevSpaceAuditBridge {
   private hasError = false
   private hasBindingTable = false
   private hasTraceBindingTable = false
+  private hasTraceMetadataMembersTable = false
   private hasMetadataContextTable = false
 
   constructor(dbPath: string) {
@@ -369,6 +380,11 @@ export class DevSpaceAuditBridge {
     this.hasTraceBindingTable = Boolean(db.prepare(`
       SELECT 1 AS ok FROM sqlite_master
       WHERE type='table' AND name='chatgpt_trace_bindings'
+      LIMIT 1
+    `).get())
+    this.hasTraceMetadataMembersTable = Boolean(db.prepare(`
+      SELECT 1 AS ok FROM sqlite_master
+      WHERE type='table' AND name='chatgpt_trace_metadata_members'
       LIMIT 1
     `).get())
     this.hasMetadataContextTable = Boolean(db.prepare(`
@@ -744,6 +760,56 @@ export class DevSpaceAuditBridge {
         firstAt,
         lastAt,
         auditCount: Number(row.auditCount || 0),
+      }]
+    })
+  }
+
+  /**
+   * 读取 DevSpace v12 已从 raw audit 回填出的 trace↔metadata 成员。
+   *
+   * 这是一次启动/迁移级的百行窄表扫描，不碰 args/result/requestMeta 大字段；用于 Archive
+   * 首次升级 v8 时补回旧 schema 无法表达的第二 metadata 成员。DevSpace 未升级 v12 时
+   * 安全返回空数组，未来 live audit 仍会逐步建立成员关系。
+   */
+  traceMetadataMembers(limit = 10_000): DevSpaceTraceMetadataMemberMirror[] {
+    if (!this.open() || !this.db) return []
+    if (!this.hasTraceMetadataMembersTable) {
+      this.hasTraceMetadataMembersTable = Boolean(this.db.prepare(`
+        SELECT 1 AS ok FROM sqlite_master
+        WHERE type='table' AND name='chatgpt_trace_metadata_members'
+        LIMIT 1
+      `).get())
+    }
+    if (!this.hasTraceMetadataMembersTable) return []
+    const rows = this.db.prepare(`
+      SELECT trace_id AS traceId,
+             metadata_id AS metadataId,
+             first_seen_at AS firstSeenAt,
+             last_seen_at AS lastSeenAt,
+             first_audit_id AS firstAuditId,
+             last_audit_id AS lastAuditId
+      FROM chatgpt_trace_metadata_members
+      ORDER BY first_seen_at ASC, trace_id ASC, metadata_id ASC
+      LIMIT ?
+    `).all(Math.max(1, Math.trunc(limit))) as Array<{
+      traceId: string
+      metadataId: string
+      firstSeenAt: string
+      lastSeenAt: string
+      firstAuditId: string
+      lastAuditId: string
+    }>
+    return rows.flatMap(row => {
+      const firstSeenAt = Date.parse(row.firstSeenAt)
+      const lastSeenAt = Date.parse(row.lastSeenAt)
+      if (!Number.isFinite(firstSeenAt) || !Number.isFinite(lastSeenAt)) return []
+      return [{
+        traceId: row.traceId.trim().toLowerCase(),
+        metadataId: row.metadataId,
+        firstSeenAt,
+        lastSeenAt,
+        firstAuditId: row.firstAuditId,
+        lastAuditId: row.lastAuditId,
       }]
     })
   }
