@@ -945,3 +945,8 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 双端 identity graph 镜像第3步：Archive DB 新增 `listVerifiedDevSpaceTraceTurns()`，用于 daemon 启动后把部署前已 canonical verify 的 trace 小规模回填到 DevSpace v12 mirror，避免镜像只覆盖未来新 trace。
 
 - 2026-10-27 双端 identity graph 镜像第4步：daemon startup 在历史 metadata seed 后遍历现有 verified trace rows，旁路写入 DevSpace `chatgpt_trace_bindings`；旧 DevSpace 无 v12 表时自然 no-op。至此 future verify 与 historical verified trace 都有本地 mirror 路径。
+
+## 2026-10-27 Identity Graph 封版验收
+- Archive 最终 npm run check 通过：typecheck；33 个 test files / 335 tests 全部通过；Chrome MV3、Edge MV3、Firefox MV2、userscript 四套 build 全部成功。首次最终 check 曾出现 Windows 临时目录清理 ENOTEMPTY，同文件立即重跑 16/16 通过，随后完整 check 335/335 再次全绿，确认不是功能回归。
+- Identity graph 已完成 Archive/Watchdog 主路径迁移：trace↔metadata 一对多、同 TID 多 request/trace、verified trace member inheritance、matched turn 增量吸收新成员、unbound Watchdog 以 trace 为 provisional identity、canonical verify 后 trace→CID/TID/RID 镜像到 DevSpace。
+- 生产部署顺序固定：先 DevSpace v12 上线并完成 trace schema/migration，再重启 Archive 触发 v8 migration 与 historical verified trace mirror backfill；最后核对 FPGA/Recover 两个双 metadata trace 与旧 false conflicts。
