@@ -14,6 +14,8 @@ import { DatabaseSync } from 'node:sqlite'
 export interface DevSpaceAuditEvent {
   id: string
   metadataId: string
+  /** DevSpace v12 起直接物化的 W3C trace-id；旧库/fixture 可缺省并回退解析 requestMetaJson。 */
+  traceId?: string | null
   tool: string
   argsJson: string
   /** 旧 fixture / 兼容调用可以缺省；真实 SQLite poll 会返回 null 或最终值。 */
@@ -316,7 +318,9 @@ export function matchingDevSpaceTraceIdsForTurn(input: {
     const fingerprint = devSpaceToolArgsFingerprint(audit.tool, audit.argsJson)
     const times = fingerprint ? bodyByFingerprint.get(fingerprint) : null
     if (!times?.some(time => Math.abs(time - audit.startedAtMs) <= DEVSPACE_BINDING_TIME_TOLERANCE_MS)) continue
-    const traceId = devSpaceTraceIdFromRequestMetaJson(audit.requestMetaJson)
+    const traceId = typeof audit.traceId === 'string' && audit.traceId.trim()
+      ? audit.traceId.trim().toLowerCase()
+      : devSpaceTraceIdFromRequestMetaJson(audit.requestMetaJson)
     if (traceId) traces.add(traceId)
   }
   return [...traces].sort()
@@ -326,6 +330,7 @@ export class DevSpaceAuditBridge {
   readonly dbPath: string
   private db: DatabaseSync | null = null
   private hasRequestMetaJson = false
+  private hasTraceId = false
   private hasResultJson = false
   private hasError = false
   private hasBindingTable = false
@@ -353,6 +358,7 @@ export class DevSpaceAuditBridge {
     }
     const columns = db.prepare('PRAGMA table_info(tool_audit)').all() as Array<{ name?: string }>
     this.hasRequestMetaJson = columns.some(column => column.name === 'request_meta_json')
+    this.hasTraceId = columns.some(column => column.name === 'trace_id')
     this.hasResultJson = columns.some(column => column.name === 'result_json')
     this.hasError = columns.some(column => column.name === 'error')
     this.hasBindingTable = Boolean(db.prepare(`
@@ -671,8 +677,9 @@ export class DevSpaceAuditBridge {
     // 后才在 JS 里 <= end 过滤，会把窗口之后的大量 result_json/request_meta 一并从
     // 800MiB DevSpace DB 搬出来；真实 ±2min 窗口最终只有 1~5 个 activity，却可耗时
     // 400~500ms。这里直接让 SQLite 用 started_at 索引做闭区间查询，并只选 matcher 字段。
+    const traceIdExpr = this.hasTraceId ? 'trace_id' : 'NULL'
     const rows = this.db.prepare(`
-      SELECT id, metadata_id AS metadataId, tool, args_json AS argsJson,
+      SELECT id, metadata_id AS metadataId, ${traceIdExpr} AS traceId, tool, args_json AS argsJson,
              started_at AS startedAt
       FROM tool_audit
       WHERE metadata_id IS NOT NULL
@@ -684,6 +691,7 @@ export class DevSpaceAuditBridge {
     `).all(start, end, Math.max(1, Math.trunc(limit))) as Array<{
       id: string
       metadataId: string
+      traceId: string | null
       tool: string
       argsJson: string
       startedAt: string

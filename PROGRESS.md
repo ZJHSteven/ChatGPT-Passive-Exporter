@@ -950,3 +950,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - Archive 最终 npm run check 通过：typecheck；33 个 test files / 335 tests 全部通过；Chrome MV3、Edge MV3、Firefox MV2、userscript 四套 build 全部成功。首次最终 check 曾出现 Windows 临时目录清理 ENOTEMPTY，同文件立即重跑 16/16 通过，随后完整 check 335/335 再次全绿，确认不是功能回归。
 - Identity graph 已完成 Archive/Watchdog 主路径迁移：trace↔metadata 一对多、同 TID 多 request/trace、verified trace member inheritance、matched turn 增量吸收新成员、unbound Watchdog 以 trace 为 provisional identity、canonical verify 后 trace→CID/TID/RID 镜像到 DevSpace。
 - 生产部署顺序固定：先 DevSpace v12 上线并完成 trace schema/migration，再重启 Archive 触发 v8 migration 与 historical verified trace mirror backfill；最后核对 FPGA/Recover 两个双 metadata trace 与旧 false conflicts。
+
+- 2026-10-27 首次生产 v8 验收发现 trace verifier 的历史性能裁剪缺口：`activityBetween()` 为避免搬运大 request_meta_json 曾把它置空，而 `matchingDevSpaceTraceIdsForTurn()` 又只从该 JSON 解 trace，导致 metadata exact-match 成功后 trace 永远无法 verify。DevSpace v12 已有 32-byte 物化 `tool_audit.trace_id`，Archive bridge 现仅多读取该窄列；matcher 优先使用 audit.traceId，旧库/fixture 才回退解析 requestMetaJson，既恢复 trace verification 又不重新搬大 JSON。
