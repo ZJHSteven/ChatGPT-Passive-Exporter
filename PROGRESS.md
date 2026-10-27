@@ -937,3 +937,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 Watchdog trace-first 第1步：runtime 新增 trace:<trace-id> provisional identity key 与 metadata→identity alias；daemon 重启时按最近 trace member 恢复 generation，同 trace 多 metadata 合并为一个 active/pending candidate。无 trace 或 trace conflict 才 fallback 到 meta:<metadata-id>；同时兼容识别旧 metadata-key notification ledger。
 
 - 2026-10-27 Watchdog trace-first 第2步：运行中 first-tool、binding、45m timeout、pending diagnosis、matching queue 全部改为通过 metadata→trace identity alias 访问 provisional state。同 trace A→B 在 Body 到来前也只保留一个 timer/通知链；timeout 会给该 trace 全部 metadata 成员落硬边界，诊断 recovery 计数按所有成员求和。metadata fallback 仍保留。
+
+- 2026-10-27 双端 identity graph 镜像第1步：Archive 的 DevSpaceAuditBridge 新增 `mirrorTraceBinding()`，可把已 canonical verify 的 trace→CID/TID/RID 写入 DevSpace v12 `chatgpt_trace_bindings`。旧 DevSpace 尚未部署 v12 时安全返回 false，不阻塞 Archive。

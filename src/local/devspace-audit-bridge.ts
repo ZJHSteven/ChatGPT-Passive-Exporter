@@ -92,6 +92,17 @@ export interface DevSpaceConversationBindingMirror {
   observedAt: number
 }
 
+/** Archive canonical matcher 回写给 DevSpace 的 trace→request/turn/conversation 镜像。 */
+export interface DevSpaceTraceBindingMirror {
+  traceId: string
+  conversationId: string
+  turnExchangeId: string
+  requestId?: string | null
+  evidence: string
+  confidence: string
+  observedAt: number
+}
+
 /** 默认沿用 DevSpace 自身的 storage.stateDir 默认值。 */
 export function defaultDevSpaceDbPath(env: NodeJS.ProcessEnv = process.env): string {
   const home = env.HOME || env.USERPROFILE || homedir()
@@ -318,6 +329,7 @@ export class DevSpaceAuditBridge {
   private hasResultJson = false
   private hasError = false
   private hasBindingTable = false
+  private hasTraceBindingTable = false
   private hasMetadataContextTable = false
 
   constructor(dbPath: string) {
@@ -346,6 +358,11 @@ export class DevSpaceAuditBridge {
     this.hasBindingTable = Boolean(db.prepare(`
       SELECT 1 AS ok FROM sqlite_master
       WHERE type='table' AND name='chatgpt_conversation_bindings'
+      LIMIT 1
+    `).get())
+    this.hasTraceBindingTable = Boolean(db.prepare(`
+      SELECT 1 AS ok FROM sqlite_master
+      WHERE type='table' AND name='chatgpt_trace_bindings'
       LIMIT 1
     `).get())
     this.hasMetadataContextTable = Boolean(db.prepare(`
@@ -759,6 +776,59 @@ export class DevSpaceAuditBridge {
       observedAt,
       binding.evidence,
       binding.confidence,
+    )
+    return true
+  }
+
+  /**
+   * 把 Archive 已 canonical verify 的 trace 身份镜像回 DevSpace。
+   *
+   * DevSpace 是本地 Recovery 的事实执行端，但 canonical CID/TID/RID 仍由 Archive 推断；
+   * 因此这里只接受已验证关系，不在 DevSpace 侧自行猜 conversation/turn。旧生产 DevSpace 尚未
+   * 部署 v12 时表不存在，返回 false 即可，不能反向阻塞 Archive 主链。
+   */
+  mirrorTraceBinding(binding: DevSpaceTraceBindingMirror): boolean {
+    if (!this.open() || !this.db) return false
+    if (!this.hasTraceBindingTable) {
+      this.hasTraceBindingTable = Boolean(this.db.prepare(`
+        SELECT 1 AS ok FROM sqlite_master
+        WHERE type='table' AND name='chatgpt_trace_bindings'
+        LIMIT 1
+      `).get())
+    }
+    if (!this.hasTraceBindingTable) return false
+    const observedAt = new Date(binding.observedAt).toISOString()
+    this.db.prepare(`
+      INSERT INTO chatgpt_trace_bindings (
+        trace_id, conversation_id, turn_exchange_id, request_id,
+        status, verified_at, evidence, confidence,
+        first_seen_at, last_seen_at, conflict_reason
+      ) VALUES (?, ?, ?, ?, 'verified', ?, ?, ?, ?, ?, NULL)
+      ON CONFLICT(trace_id) DO UPDATE SET
+        conversation_id=excluded.conversation_id,
+        turn_exchange_id=excluded.turn_exchange_id,
+        request_id=COALESCE(excluded.request_id, chatgpt_trace_bindings.request_id),
+        status='verified',
+        verified_at=excluded.verified_at,
+        evidence=excluded.evidence,
+        confidence=excluded.confidence,
+        first_seen_at=COALESCE(chatgpt_trace_bindings.first_seen_at, excluded.first_seen_at),
+        last_seen_at=CASE
+          WHEN chatgpt_trace_bindings.last_seen_at IS NULL THEN excluded.last_seen_at
+          WHEN excluded.last_seen_at > chatgpt_trace_bindings.last_seen_at THEN excluded.last_seen_at
+          ELSE chatgpt_trace_bindings.last_seen_at
+        END,
+        conflict_reason=NULL
+    `).run(
+      binding.traceId.trim().toLowerCase(),
+      binding.conversationId,
+      binding.turnExchangeId,
+      binding.requestId ?? null,
+      observedAt,
+      binding.evidence,
+      binding.confidence,
+      observedAt,
+      observedAt,
     )
     return true
   }
