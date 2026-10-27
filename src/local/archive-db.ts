@@ -5428,6 +5428,45 @@ export class ChatArchiveDb {
     `).all(...params) as unknown as DevSpaceBindingTurnEvidenceRow[]
   }
 
+  /**
+   * 启动历史修复专用：只挑已经有 canonical metadata match、但关联 trace 仍 provisional 的 turn。
+   *
+   * 旧 schema 曾经把 trace 的第二 metadata 丢掉，而且 trace verifier 还因为性能裁剪拿不到
+   * trace-id；v8/v12 升级后只需要把这小批历史 matched evidence 再走一次现有 exact matcher。
+   * 时间 overlap 仍沿用正式 matcher 的 ±120s 边界，避免把同一 metadata 跨 turn 复用误连。
+   */
+  listDevSpaceMatchedEvidenceForProvisionalTraces(limit = 1000): DevSpaceBindingTurnEvidenceRow[] {
+    return this.db.prepare(`
+      SELECT DISTINCT
+             e.conversation_id AS conversationId,
+             e.turn_exchange_id AS turnExchangeId,
+             e.first_tool_at AS firstToolAt,
+             e.last_tool_at AS lastToolAt,
+             e.tool_call_count AS toolCallCount,
+             e.evidence_revision AS evidenceRevision,
+             e.status AS status,
+             e.matched_metadata_id AS matchedMetadataId,
+             e.first_queued_at AS firstQueuedAt,
+             e.last_queued_at AS lastQueuedAt,
+             e.last_attempt_at AS lastAttemptAt,
+             e.attempt_count AS attemptCount,
+             e.last_attempt_evidence_revision AS lastAttemptEvidenceRevision,
+             e.last_attempt_metadata_revision AS lastAttemptMetadataRevision
+      FROM devspace_binding_turn_evidence e
+      JOIN devspace_trace_metadata_members m
+        ON m.metadata_id=e.matched_metadata_id
+      JOIN devspace_trace_turn_bindings t
+        ON t.trace_id=m.trace_id
+       AND t.status='provisional'
+      WHERE e.status='matched'
+        AND e.matched_metadata_id IS NOT NULL
+        AND e.last_tool_at >= t.first_seen_at - 120000
+        AND e.first_tool_at <= t.last_seen_at + 120000
+      ORDER BY e.last_tool_at DESC
+      LIMIT ?
+    `).all(Math.max(1, Math.min(10_000, Math.trunc(limit)))) as unknown as DevSpaceBindingTurnEvidenceRow[]
+  }
+
   markDevSpaceBindingTurnEvidenceAttempt(
     conversationId: string,
     turnExchangeId: string,
@@ -5531,6 +5570,104 @@ export class ChatArchiveDb {
         END
     `).run(traceId, metadataId, observedAt, observedAt, auditId, auditId)
     return row
+  }
+
+  /**
+   * 把 DevSpace v12 从 raw tool_audit 物化出的历史 trace↔metadata member 无损补进 Archive。
+   *
+   * 这是 migration/backfill API，不改变 canonical status/CID/TID/RID；只修正 trace 与 member 的
+   * 首末时间/audit 边界。这样 DevSpace 仍是 raw execution facts 的事实源，Archive 不需要猜。
+   */
+  backfillDevSpaceTraceMetadataMember(input: {
+    traceId: string
+    metadataId: string
+    firstSeenAt: number
+    lastSeenAt: number
+    firstAuditId: string
+    lastAuditId: string
+  }): { created: boolean, changed: boolean } {
+    const traceId = input.traceId.trim().toLowerCase()
+    const metadataId = input.metadataId.trim()
+    const firstSeenAt = Math.max(0, Math.trunc(input.firstSeenAt))
+    const lastSeenAt = Math.max(firstSeenAt, Math.trunc(input.lastSeenAt))
+    const firstAuditId = input.firstAuditId.trim()
+    const lastAuditId = input.lastAuditId.trim()
+    const before = this.db.prepare(`
+      SELECT first_seen_at AS firstSeenAt,
+             last_seen_at AS lastSeenAt,
+             first_audit_id AS firstAuditId,
+             last_audit_id AS lastAuditId
+      FROM devspace_trace_metadata_members
+      WHERE trace_id=? AND metadata_id=?
+    `).get(traceId, metadataId) as {
+      firstSeenAt: number
+      lastSeenAt: number
+      firstAuditId: string
+      lastAuditId: string
+    } | undefined
+
+    this.db.prepare(`
+      INSERT INTO devspace_trace_turn_bindings (
+        trace_id, metadata_id,
+        first_seen_at, last_seen_at,
+        first_audit_id, last_audit_id,
+        status
+      ) VALUES (?, ?, ?, ?, ?, ?, 'provisional')
+      ON CONFLICT(trace_id) DO UPDATE SET
+        first_seen_at=min(devspace_trace_turn_bindings.first_seen_at, excluded.first_seen_at),
+        first_audit_id=CASE
+          WHEN excluded.first_seen_at < devspace_trace_turn_bindings.first_seen_at
+          THEN excluded.first_audit_id
+          ELSE devspace_trace_turn_bindings.first_audit_id
+        END,
+        last_seen_at=max(devspace_trace_turn_bindings.last_seen_at, excluded.last_seen_at),
+        last_audit_id=CASE
+          WHEN excluded.last_seen_at >= devspace_trace_turn_bindings.last_seen_at
+          THEN excluded.last_audit_id
+          ELSE devspace_trace_turn_bindings.last_audit_id
+        END
+    `).run(traceId, metadataId, firstSeenAt, lastSeenAt, firstAuditId, lastAuditId)
+
+    this.db.prepare(`
+      INSERT INTO devspace_trace_metadata_members (
+        trace_id, metadata_id,
+        first_seen_at, last_seen_at,
+        first_audit_id, last_audit_id
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(trace_id, metadata_id) DO UPDATE SET
+        first_seen_at=min(devspace_trace_metadata_members.first_seen_at, excluded.first_seen_at),
+        first_audit_id=CASE
+          WHEN excluded.first_seen_at < devspace_trace_metadata_members.first_seen_at
+          THEN excluded.first_audit_id
+          ELSE devspace_trace_metadata_members.first_audit_id
+        END,
+        last_seen_at=max(devspace_trace_metadata_members.last_seen_at, excluded.last_seen_at),
+        last_audit_id=CASE
+          WHEN excluded.last_seen_at >= devspace_trace_metadata_members.last_seen_at
+          THEN excluded.last_audit_id
+          ELSE devspace_trace_metadata_members.last_audit_id
+        END
+    `).run(traceId, metadataId, firstSeenAt, lastSeenAt, firstAuditId, lastAuditId)
+
+    const after = this.db.prepare(`
+      SELECT first_seen_at AS firstSeenAt,
+             last_seen_at AS lastSeenAt,
+             first_audit_id AS firstAuditId,
+             last_audit_id AS lastAuditId
+      FROM devspace_trace_metadata_members
+      WHERE trace_id=? AND metadata_id=?
+    `).get(traceId, metadataId) as {
+      firstSeenAt: number
+      lastSeenAt: number
+      firstAuditId: string
+      lastAuditId: string
+    }
+    const changed = !before
+      || before.firstSeenAt !== after.firstSeenAt
+      || before.lastSeenAt !== after.lastSeenAt
+      || before.firstAuditId !== after.firstAuditId
+      || before.lastAuditId !== after.lastAuditId
+    return { created: !before, changed }
   }
 
   verifyDevSpaceTraceTurn(input: {

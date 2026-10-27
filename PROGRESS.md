@@ -954,3 +954,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 首次生产 v8 验收发现 trace verifier 的历史性能裁剪缺口：`activityBetween()` 为避免搬运大 request_meta_json 曾把它置空，而 `matchingDevSpaceTraceIdsForTurn()` 又只从该 JSON 解 trace，导致 metadata exact-match 成功后 trace 永远无法 verify。DevSpace v12 已有 32-byte 物化 `tool_audit.trace_id`，Archive bridge 现仅多读取该窄列；matcher 优先使用 audit.traceId，旧库/fixture 才回退解析 requestMetaJson，既恢复 trace verification 又不重新搬大 JSON。
 
 - 2026-10-27 历史成员迁移补口第1步：DevSpaceAuditBridge 新增 `traceMetadataMembers()`，只读取 v12 `chatgpt_trace_metadata_members` 百级窄表，供 Archive v8 启动时补齐旧 schema 丢失的第二 metadata 成员；不扫描 tool_audit 大字段，DevSpace 未升级 v12 时安全 no-op。
+
+- 2026-10-27 历史成员迁移补口第2步：Archive DB 新增 `backfillDevSpaceTraceMetadataMember()` 无损补齐 member 首末时间/audit，不改 canonical status；并新增 `listDevSpaceMatchedEvidenceForProvisionalTraces()`，只挑 matched metadata 与 provisional trace 在正式 ±120s 边界内重叠的历史 turn，供 cooperative worker 做一次 exact re-verify，避免全量扫所有 turn。
