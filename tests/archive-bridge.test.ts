@@ -10,6 +10,89 @@ import {
   type ArchiveBridgeTurnInput,
 } from '../src/local/archive-bridge.ts'
 import { ActorSubmissionQueue, isRetryableInfrastructureError, isSubmissionOutcomeUnknownError } from '../src/local/actor-submission-queue.ts'
+import { resolveSubmissionCompletion } from '../src/local/submission-completion.ts'
+
+test('生成中的 final 消息绝不构成任务完成证据', () => {
+  const at = Date.now()
+  const user = { role: 'user', text: '请摘要', createTime: at / 1000, turnExchangeId: 'new-turn' }
+  const final = {
+    role: 'assistant', channel: 'final', text: '## 通知与',
+    createTime: at / 1000 + 1, turnExchangeId: 'new-turn',
+    status: 'in_progress', endTurn: null, messageId: 'assistant-final',
+  }
+  const archive = mockArchive()
+  archive.getMessages = () => [user, final]
+  const record = {
+    id: 'task-1', idempotencyKey: 'key-1', requestHash: 'hash',
+    input: { text: '请摘要', conversationId: 'cid-1', projectName: null, mode: 'continue' as const, targetMode: 'guardian' as const },
+    status: 'accepted' as const, attemptCount: 1,
+    createdAt: at, updatedAt: at, nextAttemptAt: null, lastError: null,
+    result: { conversationId: 'cid-1', submittedAt: at },
+    completion: { status: 'pending' as const },
+  }
+  expect(resolveSubmissionCompletion(archive, record)).toBeNull()
+  // 即使已经有文本，也必须同时观察到 finished_successfully + endTurn。
+  final.status = 'finished_successfully'
+  expect(resolveSubmissionCompletion(archive, record)).toBeNull()
+  Object.assign(final, { endTurn: 1, finishType: 'stop', text: '## 本堂讲了什么\n完整正文' })
+  expect(resolveSubmissionCompletion(archive, record)).toMatchObject({
+    status: 'completed',
+    messageId: 'assistant-final',
+    text: '## 本堂讲了什么\n完整正文',
+  })
+  // 过去的同名提示词不能污染新提交的结果。
+  archive.getMessages = () => [{ ...user, createTime: (at - 180_000) / 1000 }, final]
+  expect(resolveSubmissionCompletion(archive, record)).toBeNull()
+})
+
+test('公共 Job API 只暴露已确认的最终回答，支持状态落盘与重启恢复', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-public-job-'))
+  const queuePath = path.join(dir, 'jobs.json')
+  const archive = mockArchive()
+  const now = Date.now()
+  const messages: Array<Record<string, unknown>> = [
+    { role: 'user', text: 'task prompt', createTime: now / 1000, turnExchangeId: 'turn-task' },
+    { role: 'assistant', channel: 'final', text: '## 通知与', status: 'in_progress',
+      endTurn: null, createTime: now / 1000 + 1, turnExchangeId: 'turn-task', messageId: 'msg-task' },
+  ]
+  archive.getMessages = () => messages
+  let submits = 0
+  const submitTurn = async () => {
+    submits++
+    return { conversationId: 'cid-1', submittedAt: now, runningConfirmed: true }
+  }
+  const { bridge, base, headers } = await startBridge(submitTurn, archive, { submissionQueuePath: queuePath, submissionQueuePollIntervalMs: 10 })
+  const response = await fetch(`${base}/v1/jobs`, {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ text: 'task prompt', conversationId: 'cid-1', mode: 'continue', idempotencyKey: 'unit-job-1' }),
+  })
+  expect(response.status).toBe(202)
+  const getJob = async (origin = base) => {
+    const value = await fetch(`${origin}/v1/jobs?key=unit-job-1`, { headers })
+    return (await value.json() as { job: Record<string, any> }).job
+  }
+  const deadline = Date.now() + 2000
+  while ((await getJob()).status !== 'accepted' && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 15))
+  }
+  expect((await getJob()).result).toBeNull()
+  bridge.publish({ version: 1, at: Date.now(), kind: 'canonical-update', conversationId: 'cid-1' })
+  await new Promise(resolve => setTimeout(resolve, 50))
+  expect((await getJob()).status).toBe('accepted')
+  Object.assign(messages[1], { status: 'finished_successfully', endTurn: 1, finishType: 'stop', text: '完整结果' })
+  bridge.publish({ version: 1, at: Date.now(), kind: 'canonical-update', conversationId: 'cid-1' })
+  const completeDeadline = Date.now() + 2000
+  while ((await getJob()).status !== 'completed' && Date.now() < completeDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 15))
+  }
+  expect((await getJob()).result.text).toBe('完整结果')
+  expect(submits).toBe(1)
+  await bridge.stop()
+  const restarted = await startBridge(submitTurn, archive, { submissionQueuePath: queuePath, submissionQueuePollIntervalMs: 10 })
+  expect((await getJob(restarted.base)).result.text).toBe('完整结果')
+  expect(submits).toBe(1)
+  await fs.rm(dir, { recursive: true, force: true })
+})
 
 test('Actor submission 把页面输入暂时缺失视为可重试基础设施错误', () => {
   expect(isRetryableInfrastructureError('ChatGPT actor prompt input not found')).toBe(true)
