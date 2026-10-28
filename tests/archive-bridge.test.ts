@@ -79,7 +79,7 @@ test('公共 Job API 只暴露已确认的最终回答，支持状态落盘与�
   bridge.publish({ version: 1, at: Date.now(), kind: 'canonical-update', conversationId: 'cid-1' })
   await new Promise(resolve => setTimeout(resolve, 50))
   expect((await getJob()).status).toBe('accepted')
-  Object.assign(messages[1], { status: 'finished_successfully', endTurn: 1, finishType: 'stop', text: '完整结果' })
+  Object.assign(messages[1]!, { status: 'finished_successfully', endTurn: 1, finishType: 'stop', text: '完整结果' })
   bridge.publish({ version: 1, at: Date.now(), kind: 'canonical-update', conversationId: 'cid-1' })
   const completeDeadline = Date.now() + 2000
   while ((await getJob()).status !== 'completed' && Date.now() < completeDeadline) {
