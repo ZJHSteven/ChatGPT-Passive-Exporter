@@ -301,7 +301,13 @@ export class ActorSubmissionQueue {
     if (this.timer) clearTimeout(this.timer)
     this.timer = setTimeout(() => {
       this.timer = null
-      void this.drain()
+      // 定时回调的异常不能变成无人接收的 Promise rejection；尤其是 Windows
+      // 防病毒软件短暂占用状态文件时，不能因此让整个 Archive daemon 崩溃。
+      void this.drain().catch(error => {
+        void this.options.log?.('actor submission queue drain failed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
     }, Math.max(0, delayMs))
     this.timer.unref?.()
   }
@@ -506,7 +512,26 @@ export class ActorSubmissionQueue {
     // 最终仍通过原子 rename 覆盖正式状态文件。
     const tempPath = this.options.filePath + '.tmp-' + process.pid + '-' + randomUUID()
     await fs.writeFile(tempPath, JSON.stringify(state, null, 2) + '\n', 'utf8')
-    await fs.rename(tempPath, this.options.filePath)
+    try {
+      // 在 Windows 上，已有目标文件可能被 Defender/备份软件短暂打开，
+      // 同目录 rename 会偶发 EPERM/EACCES。只重试短暂文件占用；
+      // 永不在真正的持久化失败时把内存状态假装成写盘成功。
+      for (let attempt = 0; attempt < 6; attempt++) {
+        try {
+          await fs.rename(tempPath, this.options.filePath)
+          return
+        }
+        catch (error) {
+          const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : ''
+          if (!['EPERM', 'EACCES', 'EBUSY'].includes(code) || attempt === 5) throw error
+          await new Promise(resolve => setTimeout(resolve, 20 * (attempt + 1)))
+        }
+      }
+    }
+    finally {
+      // 成功时路径已被 rename 移走；失败时移除孤立临时文件。
+      await fs.rm(tempPath, { force: true }).catch(() => {})
+    }
   }
 
   private async persist(): Promise<void> {
