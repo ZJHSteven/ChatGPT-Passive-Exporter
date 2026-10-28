@@ -225,7 +225,11 @@ export function latestAssistantFinal(messages, submittedAtMs) {
     const created = Number(row?.createTime || 0)
     if (Number.isFinite(created) && created > 0 && created < floorSeconds) return false
     const channel = String(row?.channel || '').toLowerCase()
-    return channel === 'final' || row?.endTurn === true || Number(row?.endTurn || 0) === 1
+    // final 通道不是完成事件。必须观察到模型最终成功结束的规范化记录。
+    const ended = row?.endTurn === true || row?.endTurn === 1
+    const finished = row?.status === 'finished_successfully'
+    const finishType = row?.finishType
+    return channel === 'final' && ended && finished && (!finishType || finishType === 'stop')
   })
   return candidates.length > 0 ? candidates[candidates.length - 1] : null
 }
