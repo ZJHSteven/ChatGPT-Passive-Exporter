@@ -50,7 +50,9 @@ export function resolveSubmissionCompletion(
 
   // 模型可能先把消息标成 final，再经过十几秒才真正 end_turn=true。
   // status 与 endTurn 任一缺失，都只能保持 pending，不能落盘或向外发送。
-  if (final.status !== 'finished_successfully' || final.endTurn !== true) return null
+  // SQLite INTEGER boolean 读取后是 1；测试假数据/Bridge 映射也可能是 true。
+  const endTurn = final.endTurn === true || final.endTurn === 1
+  if (final.status !== 'finished_successfully' || !endTurn) return null
   const finishType = typeof final.finishType === 'string' ? final.finishType : null
   if (finishType && finishType !== 'stop') {
     return { status: 'failed', error: `assistant_finished_with_${finishType}`, completedAt: Date.now() }
