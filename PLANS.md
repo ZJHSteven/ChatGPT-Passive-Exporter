@@ -1141,3 +1141,10 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 6. DevSpace 本地镜像 canonical trace binding，使 Archive 暂不可用时 Recovery 仍可凭 trace 保持完整执行链。
 7. 保留 metadata-only fallback：仅当调用缺失 traceparent 时，继续使用 metadata + exact fingerprint 的旧路径。
 8. 回归必须覆盖：同 trace A→B metadata rotation、metadata 跨 turn复用、Body Behind、同 TID steering→双 request/trace、Watchdog 不重复、Recovery 包含同 trace 全部 metadata 副作用。
+
+## 2026-10-28 RQCI 对外 Job 结果服务（已部署）
+- [x] 提交与最终生成分离：queued/submitting/accepted/completed/failed；只有 canonical final + status=finished_successfully + endTurn=true 能完成。
+- [x] Bridge 新增 POST/GET /v1/jobs，result.text 持久化，外部 GET 不读取原始 Archive 消息；内部 canonical-update 驱动，15s 仅本地补偿查询。
+- [x] CLI 新增 job submit/status/result/wait，原 actor send --wait-final 严格终止判定。
+- [x] 340 项测试、四种构建；Windows daemon 2026-10-28 23:45 CST 安全重启恢复，远端 N1 Job API 调用成功。
+- [x] 完整公共契约见 docs/async-job-api.md。历史队列 tracked=false，保留兼容；不擅自重放已接收的 ChatGPT 请求。

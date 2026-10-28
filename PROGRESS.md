@@ -984,3 +984,10 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 2026-10-27 Steering identity matcher 回归：新增同一 metadata activity 下 trace-A→RID-A、trace-B→RID-B 的双向唯一配对测试；另覆盖同一 trace 同时命中两个 RID 时必须返回空集合，禁止用最近时间猜测。
 
 - 2026-10-27 Steering request-aware matcher 升级 attempt marker 到 `trace-v9:`。原因：旧 trace-v8 已对部分 multi-trace TID 做过“多 trace 留 provisional”的尝试；v9 允许这些历史候选仅按新算法再补跑一次，随后再次进入持久化 skip。正常 live 新证据仍按 revision 变化触发。
+
+## 2026-10-28 RQCI 对外 Job 结果服务（已部署）
+- [x] 提交与最终生成分离：queued/submitting/accepted/completed/failed；只有 canonical final + status=finished_successfully + endTurn=true 能完成。
+- [x] Bridge 新增 POST/GET /v1/jobs，result.text 持久化，外部 GET 不读取原始 Archive 消息；内部 canonical-update 驱动，15s 仅本地补偿查询。
+- [x] CLI 新增 job submit/status/result/wait，原 actor send --wait-final 严格终止判定。
+- [x] 340 项测试、四种构建；Windows daemon 2026-10-28 23:45 CST 安全重启恢复，远端 N1 Job API 调用成功。
+- [x] 完整公共契约见 docs/async-job-api.md。历史队列 tracked=false，保留兼容；不擅自重放已接收的 ChatGPT 请求。
