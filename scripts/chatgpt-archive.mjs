@@ -42,6 +42,7 @@ const DEFAULT_TURN_TRACE_PATH = path.join(PROJECT_ROOT, 'data', 'active-turn-tra
 const DEFAULT_ACTOR_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'archive-actor-state.json')
 const DEFAULT_PROTOCOL_LEDGER_PATH = path.join(PROJECT_ROOT, 'data', 'protocol-fingerprints.json')
 const DEFAULT_DOM_LEDGER_PATH = path.join(PROJECT_ROOT, 'data', 'dom-fingerprints.json')
+const DEFAULT_BRIDGE_AUTH_PATH = path.join(PROJECT_ROOT, 'data', 'archive-bridge-auth.local.json')
 const DEFAULT_NOTIFICATION_CONFIG_PATH = path.join(PROJECT_ROOT, 'data', 'archive-notification.local.json')
 const DEFAULT_PROTOCOL_REPORT_STATE_PATH = path.join(PROJECT_ROOT, 'data', 'protocol-report-state.json')
 const DEFAULT_PROTOCOL_APPROVALS_PATH = path.join(PROJECT_ROOT, 'data', 'protocol-template-approvals.json')
@@ -69,6 +70,10 @@ Usage:
   chatgpt-archive incidents [--status open|resolved] [--limit N] [--db <path>]
   chatgpt-archive turn-trace [--limit N] [--trace <path>] [--cluster-ms N]
   chatgpt-archive actor send --prompt-file <path> [--mode auto|new|continue|steer] [--project <name>] [--wait-final] [--final-timeout-ms N] [--target guardian|dedicated] [--conversation <UUID>] [--cdp URL] [--trace <path>] [--state <path>] [--dom-ledger <path>]
+  chatgpt-archive job submit --prompt-file <path> --key <idempotency-key> [--mode new|continue|steer] [--conversation <UUID>] [--project <name>]
+  chatgpt-archive job status --key <idempotency-key>
+  chatgpt-archive job result --key <idempotency-key>
+  chatgpt-archive job wait --key <idempotency-key> [--timeout-ms 1800000]
   chatgpt-archive actor batch --jobs-file <json> [--target guardian|dedicated] [--min-gap-ms N] [--cdp URL] [--trace <path>] [--state <path>] [--dom-ledger <path>]
   chatgpt-archive actor inspect [--target guardian|dedicated] [--cdp URL] [--state <path>]
   chatgpt-archive actor status [--cdp URL] [--state <path>]
@@ -130,6 +135,73 @@ function parseArgs(argv) {
 function dbPath(flags) {
   const explicit = flags.get('db') ?? process.env.CHATGPT_ARCHIVE_DB
   return explicit === undefined ? DEFAULT_DB_PATH : path.resolve(String(explicit))
+}
+
+/**
+ * 异步任务的 CLI 是正式公共接口：所有命令只访问 RQCI Bridge 的 Job API，
+ * 不访问 ChatGPT、不扫描 Archive messages；Bridge 在生产者侧维护最终结果。
+ * 长任务调用方使用 submit -> status/result，也可按需使用阻塞的 CLI wait。
+ */
+async function archiveJobRequest(flags, method, query = '', body) {
+  const bridgeUrl = String(flags.get('bridge-url') || 'http://127.0.0.1:47832').replace(/\/$/u, '')
+  const authPath = path.resolve(String(flags.get('bridge-auth') || DEFAULT_BRIDGE_AUTH_PATH))
+  const auth = JSON.parse(await fs.readFile(authPath, 'utf8'))
+  if (typeof auth.token !== 'string' || !auth.token) throw new Error('Archive Bridge auth token not configured')
+  const response = await fetch(`${bridgeUrl}/v1/jobs${query}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${auth.token}`,
+      ...(body ? { 'content-type': 'application/json' } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(20_000),
+  })
+  const payload = await response.json()
+  if (!response.ok) throw new Error(`RQCI Job API HTTP ${response.status}: ${payload.error || 'unknown'}`)
+  if (!payload.job) throw new Error('RQCI Job API omitted job')
+  return payload.job
+}
+
+async function runJobCommand(action, flags) {
+  const key = String(flags.get('key') || '').trim()
+  if (!key) throw new Error('job command requires --key <idempotency-key>')
+  if (action === 'submit') {
+    const file = flags.get('prompt-file')
+    if (typeof file !== 'string' || !file) throw new Error('job submit requires --prompt-file <path>')
+    const mode = String(flags.get('mode') || 'new')
+    if (!['new', 'continue', 'steer'].includes(mode)) throw new Error('--mode must be new|continue|steer')
+    const conversationId = typeof flags.get('conversation') === 'string' ? String(flags.get('conversation')) : null
+    if (mode !== 'new' && !conversationId) throw new Error('continue/steer requires --conversation')
+    const job = await archiveJobRequest(flags, 'POST', '', {
+      idempotencyKey: key,
+      text: await fs.readFile(path.resolve(file), 'utf8'),
+      mode,
+      conversationId,
+      projectName: typeof flags.get('project') === 'string' ? String(flags.get('project')) : null,
+    })
+    console.log(JSON.stringify(job, null, 2))
+    return
+  }
+  if (!['status', 'result', 'wait'].includes(action)) throw new Error('job action must be submit|status|result|wait')
+  const readJob = () => archiveJobRequest(flags, 'GET', `?key=${encodeURIComponent(key)}`)
+  if (action === 'status') {
+    console.log(JSON.stringify(await readJob(), null, 2))
+    return
+  }
+  const timeoutMs = Number(flags.get('timeout-ms') || 30 * 60_000)
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) throw new Error('--timeout-ms must be >= 1000')
+  const deadline = Date.now() + (action === 'wait' ? timeoutMs : 0)
+  while (true) {
+    const job = await readJob()
+    if (job.status === 'completed') {
+      console.log(JSON.stringify(job.result, null, 2))
+      return
+    }
+    if (job.status === 'failed') throw new Error(`RQCI job failed: ${job.error || key}`)
+    if (action !== 'wait') throw new Error(`RQCI job not complete: ${job.status}`)
+    if (Date.now() >= deadline) throw new Error(`RQCI job wait timed out: ${key}`)
+    await new Promise(resolve => setTimeout(resolve, 1500))
+  }
 }
 
 /** 计算安装审批需要绑定的本地 payload SHA256，避免审批后文件被悄悄替换。 */
