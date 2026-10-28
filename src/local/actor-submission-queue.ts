@@ -131,12 +131,15 @@ export class ActorSubmissionQueue {
   private readonly options: Required<Pick<
     ActorSubmissionQueueOptions,
     'filePath' | 'submitTurn' | 'pollIntervalMs' | 'retryBaseMs' | 'retryMaxMs'
-  >> & Pick<ActorSubmissionQueueOptions, 'confirmTurn' | 'log' | 'onAccepted' | 'onAttemptError'>
+  >> & Pick<ActorSubmissionQueueOptions, 'confirmTurn' | 'resolveCompletion' | 'log' | 'onAccepted' | 'onAttemptError'>
 
   private readonly recordsByKey = new Map<string, ActorSubmissionRecord>()
   private started = false
   private draining = false
   private timer: NodeJS.Timeout | null = null
+  private completionTimer: NodeJS.Timeout | null = null
+  /** 规范化结果写盘串行化，避免多个 canonical-update 同时争用状态文件。 */
+  private completionTail: Promise<void> = Promise.resolve()
   private globalNotBefore = 0
   /**
    * 同一 submission queue 的持久化必须串行。
@@ -150,6 +153,7 @@ export class ActorSubmissionQueue {
       filePath: options.filePath,
       submitTurn: options.submitTurn,
       confirmTurn: options.confirmTurn,
+      resolveCompletion: options.resolveCompletion,
       pollIntervalMs: Math.max(10, options.pollIntervalMs ?? 1000),
       retryBaseMs: Math.max(100, options.retryBaseMs ?? 5000),
       retryMaxMs: Math.max(1000, options.retryMaxMs ?? 60_000),
@@ -185,12 +189,25 @@ export class ActorSubmissionQueue {
     }
     if (repaired) await this.persist()
     this.schedule(0)
+    // 只查询本机 canonical 投影，绝不发送新的 ChatGPT 请求。
+    // 事件驱动为主，定期恢复用于守护进程重启/丢失事件时的补偿。
+    this.completionTimer = setInterval(() => {
+      void this.refreshCompletions().catch(error =>
+        this.options.log?.('task completion reconciliation failed', {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      )
+    }, 15_000)
+    this.completionTimer.unref?.()
+    await this.refreshCompletions()
   }
 
   async stop(): Promise<void> {
     this.started = false
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
+    if (this.completionTimer) clearInterval(this.completionTimer)
+    this.completionTimer = null
     // stop 既是测试清理边界，也是 daemon 重启时的 durability 边界。
     // 不能只停 timer 就返回，否则调用方可能在最后一次 drain/persist 仍进行时关闭进程、
     // 删除目录或替换文件，造成“内存已终态、磁盘还没写完”的窗口。
@@ -198,6 +215,7 @@ export class ActorSubmissionQueue {
       await new Promise(resolve => setTimeout(resolve, 10))
     }
     await this.persistTail
+    await this.completionTail
   }
 
   async enqueue(idempotencyKey: string, input: ActorSubmissionInput): Promise<ActorSubmissionRecord> {
@@ -226,6 +244,7 @@ export class ActorSubmissionQueue {
       nextAttemptAt: null,
       lastError: null,
       result: null,
+      completion: { status: 'pending' },
     }
     this.recordsByKey.set(key, record)
     await this.persist()
@@ -238,6 +257,43 @@ export class ActorSubmissionQueue {
     if (!key) return null
     const record = this.recordsByKey.get(key)
     return record ? cloneRecord(record) : null
+  }
+
+  /**
+   * Archive 合并 canonical Body 后调用。只处理本系统持久化的 accepted 任务，
+   * 将完成回复保存到队列文件，外部 GET 绝不临时查询 Archive 或 ChatGPT。
+   * 旧版无 completion 字段的记录维持兼容，不为全部历史作无谓扫描。
+   */
+  async refreshCompletions(conversationId?: string): Promise<void> {
+    if (!this.options.resolveCompletion) return
+    const work = this.completionTail.then(async () => {
+      for (const record of this.recordsByKey.values()) {
+        if (record.status !== 'accepted' || record.completion?.status !== 'pending') continue
+        const recordCid = record.result?.conversationId ?? record.input.conversationId
+        if (conversationId && recordCid !== conversationId) continue
+        let completion: ActorSubmissionCompletion | null
+        try {
+          completion = this.options.resolveCompletion!(cloneRecord(record))
+        }
+        catch (error) {
+          await this.options.log?.('canonical completion read failed', {
+            idempotencyKey: record.idempotencyKey,
+            error: error instanceof Error ? error.message : String(error),
+          })
+          continue
+        }
+        if (!completion || completion.status === 'pending') continue
+        record.completion = completion
+        record.updatedAt = Date.now()
+        await this.persist()
+        await this.options.log?.('actor final result persisted', {
+          idempotencyKey: record.idempotencyKey,
+          completionStatus: completion.status,
+        })
+      }
+    })
+    this.completionTail = work.catch(() => {})
+    await work
   }
 
   private schedule(delayMs: number): void {
@@ -308,6 +364,7 @@ export class ActorSubmissionQueue {
               record.updatedAt = Date.now()
               record.nextAttemptAt = null
               await this.persist()
+              void this.refreshCompletions(record.result?.conversationId as string | undefined)
               await this.options.onAccepted?.(cloneRecord(record))
               await this.options.log?.('actor submission confirmed from canonical history', {
                 submissionId: record.id,
@@ -340,6 +397,7 @@ export class ActorSubmissionQueue {
           record.updatedAt = Date.now()
           record.nextAttemptAt = null
           await this.persist()
+          void this.refreshCompletions(record.result?.conversationId as string | undefined)
           await this.options.onAccepted?.(cloneRecord(record))
           await this.options.log?.('actor submission accepted', {
             submissionId: record.id,
@@ -362,6 +420,7 @@ export class ActorSubmissionQueue {
           else if (!retryable) {
             record.status = 'failed'
             record.nextAttemptAt = null
+            record.completion = { status: 'failed', error: message, completedAt: Date.now() }
           }
           else {
             const explicitUntil = parseCooldownUntil(message)
