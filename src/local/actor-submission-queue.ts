@@ -27,6 +27,21 @@ export type ActorSubmissionStatus =
   | 'accepted'
   | 'failed'
 
+/**
+ * 提交接管状态（status）与模型最终产出（completion）彼此独立：
+ * accepted 仅表示 POST 已被 ChatGPT 接收，消费者必须等待 completion=completed。
+ */
+export interface ActorSubmissionCompletion {
+  status: 'pending' | 'completed' | 'failed'
+  completedAt?: number
+  conversationId?: string
+  turnExchangeId?: string
+  messageId?: string | null
+  modelSlug?: string | null
+  text?: string
+  error?: string
+}
+
 export interface ActorSubmissionRecord {
   id: string
   idempotencyKey: string
@@ -39,6 +54,7 @@ export interface ActorSubmissionRecord {
   nextAttemptAt: number | null
   lastError: string | null
   result: Record<string, unknown> | null
+  completion?: ActorSubmissionCompletion
 }
 
 interface ActorSubmissionQueueState {
@@ -58,6 +74,8 @@ export interface ActorSubmissionQueueOptions {
   filePath: string
   submitTurn: (input: ActorSubmissionInput) => Promise<Record<string, unknown>>
   confirmTurn?: (input: ActorSubmissionInput) => Promise<Record<string, unknown> | null>
+  /** 生产者本地读取 canonical 数据；外部调用方无法触碰原始消息结构。 */
+  resolveCompletion?: (record: ActorSubmissionRecord) => ActorSubmissionCompletion | null
   pollIntervalMs?: number
   retryBaseMs?: number
   retryMaxMs?: number
