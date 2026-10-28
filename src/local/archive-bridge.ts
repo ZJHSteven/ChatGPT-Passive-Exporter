@@ -488,6 +488,8 @@ function publicJob(record: ActorSubmissionRecord): Record<string, unknown> {
     id: record.id,
     key: record.idempotencyKey,
     status,
+    // 历史记录可能创建于 Job API 上线之前；只允许它们走显式迁移兼容路径。
+    tracked: Boolean(record.completion),
     conversationId: completion?.conversationId ?? record.result?.conversationId ?? record.input.conversationId,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
