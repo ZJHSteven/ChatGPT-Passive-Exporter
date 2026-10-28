@@ -894,6 +894,11 @@ async function main() {
     return
   }
 
+  if (command === 'job') {
+    await runJobCommand(positionals[0], flags)
+    return
+  }
+
   if (command === 'turn-trace') {
     const tracePath = flags.has('trace')
       ? path.resolve(String(flags.get('trace')))
