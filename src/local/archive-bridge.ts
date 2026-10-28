@@ -7,6 +7,7 @@ import {
   ActorSubmissionQueue,
   type ActorSubmissionRecord,
 } from './actor-submission-queue.ts'
+import { resolveSubmissionCompletion } from './submission-completion.ts'
 
 /**
  * Phase 5 本地 Bridge 只暴露 Archive 自己的、安全收缩后的数据面。
@@ -468,6 +469,40 @@ function sanitizeActorSubmissionRecord(record: ActorSubmissionRecord): Record<st
     nextAttemptAt: record.nextAttemptAt,
     lastError: record.lastError,
     result: record.result,
+    completion: record.completion ?? null,
+  }
+}
+
+/**
+ * 对外 Job API 的唯一结果契约：调用方不需要理解 Archive message 结构，
+ * 也不需要通过 GET 时触发任何模型端/Archive 端扫描。
+ */
+function publicJob(record: ActorSubmissionRecord): Record<string, unknown> {
+  const completion = record.completion
+  const status = record.status === 'failed' || completion?.status === 'failed'
+    ? 'failed'
+    : completion?.status === 'completed'
+      ? 'completed'
+      : record.status === 'processing' ? 'submitting' : record.status
+  return {
+    id: record.id,
+    key: record.idempotencyKey,
+    status,
+    conversationId: completion?.conversationId ?? record.result?.conversationId ?? record.input.conversationId,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    nextAttemptAt: record.nextAttemptAt,
+    result: status === 'completed'
+      ? {
+          text: completion?.text,
+          conversationId: completion?.conversationId,
+          turnExchangeId: completion?.turnExchangeId,
+          messageId: completion?.messageId,
+          modelSlug: completion?.modelSlug,
+          completedAt: completion?.completedAt,
+        }
+      : null,
+    error: status === 'failed' ? completion?.error ?? record.lastError : null,
   }
 }
 
@@ -532,6 +567,7 @@ export class ArchiveBridgeServer {
             this.options.archive,
             input as ArchiveBridgeTurnInput,
           ),
+          resolveCompletion: record => resolveSubmissionCompletion(this.options.archive, record),
           log: options.submissionQueueLog,
           onAccepted: async record => this.publishAcceptedSubmission(record),
           onAttemptError: options.onSubmissionAttemptError,
@@ -589,6 +625,11 @@ export class ArchiveBridgeServer {
   }
 
   publish(event: ArchiveBridgeEvent): void {
+    // 生产者收到 canonical 更新即尝试在本地固化已完成任务；
+    // 此处不会向 ChatGPT 或任何远程后端发起查询。
+    if (event.kind === 'canonical-update' && event.conversationId) {
+      void this.submissionQueue?.refreshCompletions(event.conversationId).catch(() => {})
+    }
     const payload = `event: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`
     for (const client of this.sseClients) {
       if (client.destroyed || client.writableEnded) this.sseClients.delete(client)
@@ -870,7 +911,7 @@ export class ArchiveBridgeServer {
       return
     }
 
-    if (url.pathname === '/v1/submissions' && method === 'GET') {
+    if ((url.pathname === '/v1/submissions' || url.pathname === '/v1/jobs') && method === 'GET') {
       if (!this.submissionQueue) {
         jsonResponse(res, 404, { error: 'submission_queue_disabled' })
         return
@@ -885,15 +926,19 @@ export class ArchiveBridgeServer {
         jsonResponse(res, 404, { error: 'submission_not_found' })
         return
       }
-      jsonResponse(res, 200, {
-        submission: sanitizeActorSubmissionRecord(submission),
-      })
+      jsonResponse(res, 200, url.pathname === '/v1/jobs'
+        ? { job: publicJob(submission) }
+        : { submission: sanitizeActorSubmissionRecord(submission) })
       return
     }
 
-    if (url.pathname === '/v1/turns' && method === 'POST') {
+    if ((url.pathname === '/v1/turns' || url.pathname === '/v1/jobs') && method === 'POST') {
       try {
         const input = validateTurnInput(await readJsonBody(req, this.options.maxBodyBytes))
+        if (url.pathname === '/v1/jobs' && (!input.idempotencyKey || !this.submissionQueue)) {
+          jsonResponse(res, 400, { error: 'jobs_require_idempotency_key_and_persistent_queue' })
+          return
+        }
         if (input.idempotencyKey && this.submissionQueue) {
           const submission = await this.submissionQueue.enqueue(input.idempotencyKey, {
             text: input.text,
@@ -902,10 +947,9 @@ export class ArchiveBridgeServer {
             mode: input.mode,
             targetMode: input.targetMode,
           })
-          jsonResponse(res, 202, {
-            accepted: true,
-            submission: sanitizeActorSubmissionRecord(submission),
-          })
+          jsonResponse(res, 202, url.pathname === '/v1/jobs'
+            ? { job: publicJob(submission) }
+            : { accepted: true, submission: sanitizeActorSubmissionRecord(submission) })
           return
         }
         const result = await this.options.submitTurn(input)
