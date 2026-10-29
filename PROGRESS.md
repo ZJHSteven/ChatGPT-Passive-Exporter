@@ -1,3 +1,11 @@
+## 2026-10-30 Archive Actor 长文本输入与 CRM 服务端错误收口（当前最新）
+
+- 本次真正根因不是原始 ASR 达到 119877 字符：CRM 保存 40301 字符（342 个 CRLF），浏览器规范化 39959 字符，ChatGPT 最终看到恰好 **39959×3=119877** 字符，逐字符证明 Agent 多轮重试未清空后台 ProseMirror 输入框而重复累加。旧 2048 分块不能解决清空失败。
+- 原始 ChatGPT POST 的 HTTP 200 SSE 明确报 `input_too_large/last_user_message`；当前 127 个前端 bundle 显示错误解析规则，但没有可信固定字符上限，故不硬编码猜测值。
+- Actor 内部统一改用 DOM Selection + 原生 CDP Input.insertText 覆盖输入，每块默认 512 Unicode 字符，后续块重新把选区光标定位到末尾，POST 前验证真实编辑器文本与规范化原文**完整逐字一致**；任何差异 fail-closed。后台独立浏览器无 POST 长文本测试 39829 字符、78 块、9.16 秒、全量精确一致。
+- SSE 服务端错误已内置 Archive 队列的结构化持久化与无凭据历史恢复，SSE 比 accepted 先到亦有测试；公共 Job API 暴露 `status=failed`、`errorCode`、`errorReason`、`error`，CLI `job result` 非零退出。实际生产旧任务 `classflow:debate:2026-10-29:postmatch-allpoints-v1` 已由 accepted 修复为 failed，errorCode=input_too_large、reason=last_user_message；未自动重发。
+- 生产 daemon 已完成受控 resume，supervised=true/maintenance=false；最终 `npm run check` 34/34 files、344/344 tests、四构建通过；详见 `docs/actor-input-and-terminal-errors-20261030.md`。剩余：真实新 Actor 短消息 POST E2E 与长期重试稳定性验收、后端真实长文本分条/附件策略，不在本轮盲目发送。
+
 ## 2026-10-30 长篇 ClassFlow ASR 的 CRM CDP 输入超时修复
 
 - 用户赛后点评三源合校 ASR 约 117 KB 提交到课堂录音→笔记 Project，原 CDP Input.insertText 在 10 秒客户端超时，Archive RQCI job 进入 retry_waiting。
