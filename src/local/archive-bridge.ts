@@ -8,7 +8,7 @@ import {
   type ActorSubmissionRecord,
   type ActorSubmissionServerError,
 } from './actor-submission-queue.ts'
-import { matchesSubmissionServerError, resolveSubmissionCompletion } from './submission-completion.ts'
+import { matchesExactComposerPrompt, matchesSubmissionServerError, resolveSubmissionCompletion } from './submission-completion.ts'
 
 /**
  * Phase 5 本地 Bridge 只暴露 Archive 自己的、安全收缩后的数据面。
@@ -95,7 +95,7 @@ export function confirmCanonicalExactPrompt(
     const matched = messages.some(message => (
       String(message.role || '') === 'user'
       && typeof message.text === 'string'
-      && message.text === input.text
+      && matchesExactComposerPrompt(message.text, input.text)
     ))
     if (!matched) continue
     return {
