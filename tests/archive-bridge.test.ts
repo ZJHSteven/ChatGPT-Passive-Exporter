@@ -10,7 +10,41 @@ import {
   type ArchiveBridgeTurnInput,
 } from '../src/local/archive-bridge.ts'
 import { ActorSubmissionQueue, isRetryableInfrastructureError, isSubmissionOutcomeUnknownError } from '../src/local/actor-submission-queue.ts'
-import { resolveSubmissionCompletion } from '../src/local/submission-completion.ts'
+import { matchesSubmissionServerError, resolveSubmissionCompletion } from '../src/local/submission-completion.ts'
+
+test('CRLF 浏览器规范化允许精确确认，历史三倍重复仅允许归属失败而非成功', () => {
+  const now = Date.now()
+  const expected = 'first line\r\nsecond line'
+  const normalized = expected.replace(/\r\n/gu, '\n')
+  const user: Record<string, unknown> = {
+    role: 'user', text: normalized, createTime: now / 1000,
+    turnExchangeId: 'same-turn',
+  }
+  const archive = mockArchive()
+  const final: Record<string, unknown> = {
+    role: 'assistant', channel: 'final', text: 'Good note', status: 'finished_successfully',
+    endTurn: true, createTime: now / 1000 + 1, turnExchangeId: 'same-turn',
+  }
+  archive.getMessages = () => [user, final]
+  const record = {
+    id: 'r', idempotencyKey: 'k', requestHash: 'h',
+    input: { text: expected, conversationId: null, projectName: null, mode: 'new' as const, targetMode: 'guardian' as const },
+    status: 'accepted' as const, attemptCount: 1, createdAt: now, updatedAt: now,
+    nextAttemptAt: null, lastError: null, result: { conversationId: 'cid', submittedAt: now },
+    completion: { status: 'pending' as const },
+  }
+  expect(resolveSubmissionCompletion(archive, record)?.status).toBe('completed')
+  user.text = normalized.repeat(3)
+  expect(resolveSubmissionCompletion(archive, record)).toBeNull()
+  expect(matchesSubmissionServerError(archive, record, {
+    conversationId: 'cid', turnExchangeId: 'same-turn',
+    code: 'input_too_large', reason: 'last_user_message', message: 'too long', at: now + 1000,
+  })).toBe(true)
+  expect(matchesSubmissionServerError(archive, record, {
+    conversationId: 'cid', turnExchangeId: 'different-turn',
+    code: 'input_too_large', reason: 'last_user_message', message: 'too long', at: now + 1000,
+  })).toBe(false)
+})
 
 test('生成中的 final 消息绝不构成任务完成证据', () => {
   const at = Date.now()
