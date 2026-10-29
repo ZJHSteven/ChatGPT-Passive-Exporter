@@ -6,8 +6,9 @@ import {
   ActorSubmissionConflictError,
   ActorSubmissionQueue,
   type ActorSubmissionRecord,
+  type ActorSubmissionServerError,
 } from './actor-submission-queue.ts'
-import { resolveSubmissionCompletion } from './submission-completion.ts'
+import { matchesSubmissionServerError, resolveSubmissionCompletion } from './submission-completion.ts'
 
 /**
  * Phase 5 本地 Bridge 只暴露 Archive 自己的、安全收缩后的数据面。
@@ -505,6 +506,8 @@ function publicJob(record: ActorSubmissionRecord): Record<string, unknown> {
         }
       : null,
     error: status === 'failed' ? completion?.error ?? record.lastError : null,
+    errorCode: status === 'failed' ? completion?.errorCode ?? null : null,
+    errorReason: status === 'failed' ? completion?.errorReason ?? null : null,
   }
 }
 
@@ -570,6 +573,7 @@ export class ArchiveBridgeServer {
             input as ArchiveBridgeTurnInput,
           ),
           resolveCompletion: record => resolveSubmissionCompletion(this.options.archive, record),
+          matchServerError: (record, error) => matchesSubmissionServerError(this.options.archive, record, error),
           log: options.submissionQueueLog,
           onAccepted: async record => this.publishAcceptedSubmission(record),
           onAttemptError: options.onSubmissionAttemptError,
@@ -637,6 +641,11 @@ export class ArchiveBridgeServer {
       if (client.destroyed || client.writableEnded) this.sseClients.delete(client)
       else client.write(payload)
     }
+  }
+
+  /** 服务端 SSE 回传的 error_code/error_reason 由统一任务接口归因并持久化。 */
+  async reportActorServerError(error: ActorSubmissionServerError): Promise<void> {
+    await this.submissionQueue?.observeServerError(error)
   }
 
   async stop(): Promise<void> {
