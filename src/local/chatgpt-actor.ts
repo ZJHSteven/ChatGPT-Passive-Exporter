@@ -1422,6 +1422,30 @@ async function clearAndTypePrompt(
   const startedAt = Date.now()
   const totalChunks = Math.ceil(characters.length / chunkSize)
   for (let offset = 0; offset < characters.length; offset += chunkSize) {
+    if (offset > 0) {
+      // ProseMirror 在后台页连续插入多块时可能发生 selection 位置漂移：
+      // 真实测试出现最后一个换行附近 B/C 顺序颠倒，虽然总字符数完全相同。
+      // 每次都重新用真实 DOM Selection 定位编辑器末尾，避免内容错序。
+      const atEnd = await evaluateValue(client, `(() => {
+        const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
+          .find(element => element.closest('form[data-chatgpt-composer]')) || null
+        if (!input) return false
+        input.focus()
+        if (input instanceof HTMLTextAreaElement) {
+          input.setSelectionRange(input.value.length, input.value.length)
+          return true
+        }
+        const selection = window.getSelection()
+        if (!selection) return false
+        const range = document.createRange()
+        range.selectNodeContents(input)
+        range.collapse(false)
+        selection.removeAllRanges()
+        selection.addRange(range)
+        return true
+      })()`)
+      if (!atEnd) throw new Error(`CDP input caret positioning failed at Unicode offset ${offset}`)
+    }
     const chunk = characters.slice(offset, offset + chunkSize).join('')
     // 每块必须等真正的 CDP ACK。超时后不在同一 composer 盲目重试，以免重复输入；
     // 本次 Actor 调用整体失败，持久队列下一轮会先 Ctrl+A 清空重新发送。
