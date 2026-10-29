@@ -11,6 +11,25 @@ export interface CanonicalCompletionSource {
   getMessages(conversationId: string): Array<Record<string, unknown>>
 }
 
+/** 浏览器原生 composer 会把 Windows CRLF 规范化为 LF，不能按原始字节比较。 */
+export function normalizeComposerPrompt(text: string): string {
+  return text.replace(/\r\n?/gu, '\n')
+}
+
+export function matchesExactComposerPrompt(actual: unknown, submitted: string): boolean {
+  return typeof actual === 'string' && normalizeComposerPrompt(actual) === normalizeComposerPrompt(submitted)
+}
+
+/** 只用于归属失败，不用于声称成功：兼容旧 Actor 未清空导致的完全重复消息。 */
+function matchesHistoricalDuplicatedPrompt(actual: unknown, submitted: string): boolean {
+  if (typeof actual !== 'string') return false
+  const normal = normalizeComposerPrompt(submitted)
+  const observed = normalizeComposerPrompt(actual)
+  if (!normal) return false
+  return [2, 3, 4].some(copies => observed.length === normal.length * copies
+    && observed === normal.repeat(copies))
+}
+
 /**
  * 与同一个 Conversation 中其他 turn 严格隔离：
  * 只接受已经获得 POST 绑定、且在本次 POST 时窗内存在完整相同 user prompt 的失败事件。
@@ -29,7 +48,8 @@ export function matchesSubmissionServerError(
   if (error.at < submittedAt - 15_000 || error.at > submittedAt + 30 * 60_000) return false
   return archive.getMessages(error.conversationId).some(message =>
     message.role === 'user'
-    && message.text === record.input.text
+    && (matchesExactComposerPrompt(message.text, record.input.text)
+      || matchesHistoricalDuplicatedPrompt(message.text, record.input.text))
     && Number(message.createTime || 0) * 1000 >= submittedAt - 15_000
     && (!error.turnExchangeId || message.turnExchangeId === error.turnExchangeId),
   )
@@ -54,7 +74,7 @@ export function resolveSubmissionCompletion(
   const floorSeconds = (submittedAt - 10_000) / 1000
   const users = messages.filter(message =>
     message.role === 'user'
-    && message.text === record.input.text
+    && matchesExactComposerPrompt(message.text, record.input.text)
     && Number(message.createTime || 0) >= floorSeconds,
   )
   const user = users.at(-1)
