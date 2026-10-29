@@ -69,7 +69,7 @@ Usage:
   chatgpt-archive reindex [--all|--search-only|--bigram-only] [--db <path>]
   chatgpt-archive incidents [--status open|resolved] [--limit N] [--db <path>]
   chatgpt-archive turn-trace [--limit N] [--trace <path>] [--cluster-ms N]
-  chatgpt-archive actor send --prompt-file <path> [--mode auto|new|continue|steer] [--project <name>] [--wait-final] [--final-timeout-ms N] [--target guardian|dedicated] [--conversation <UUID>] [--cdp URL] [--trace <path>] [--state <path>] [--dom-ledger <path>]
+  chatgpt-archive actor send --prompt-file <path> [--mode auto|new|continue|steer] [--project <name>] [--wait-final] [--final-timeout-ms N] [--input-chunk-chars 64..2048] [--target guardian|dedicated] [--conversation <UUID>] [--cdp URL] [--trace <path>] [--state <path>] [--dom-ledger <path>]
   chatgpt-archive job submit --prompt-file <path> --key <idempotency-key> [--mode new|continue|steer] [--conversation <UUID>] [--project <name>]
   chatgpt-archive job status --key <idempotency-key>
   chatgpt-archive job result --key <idempotency-key>
@@ -994,6 +994,7 @@ async function main() {
         mode: actorMode,
         targetMode: actorTarget,
         timeoutMs,
+        inputChunkChars: Number(flags.get('input-chunk-chars') ?? 512),
       })
       if (!flags.has('wait-final')) {
         console.log(JSON.stringify(sendResult, null, 2))
