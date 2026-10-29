@@ -40,6 +40,18 @@ export interface ActorSubmissionCompletion {
   modelSlug?: string | null
   text?: string
   error?: string
+  errorCode?: string
+  errorReason?: string | null
+}
+
+/** 通过 ChatGPT 原始 SSE 确认的错误；没有原始正文、cookie 或流恢复凭据。 */
+export interface ActorSubmissionServerError {
+  conversationId: string
+  turnExchangeId: string | null
+  code: string
+  reason: string | null
+  message: string
+  at: number
 }
 
 export interface ActorSubmissionRecord {
@@ -61,6 +73,8 @@ interface ActorSubmissionQueueState {
   version: 1
   globalNotBefore: number | null
   records: ActorSubmissionRecord[]
+  /** SSE 错误可能早于 accepted 回调，因此先持久化，随后与任务精确配对。 */
+  serverErrors?: ActorSubmissionServerError[]
 }
 
 export class ActorSubmissionConflictError extends Error {
@@ -76,6 +90,7 @@ export interface ActorSubmissionQueueOptions {
   confirmTurn?: (input: ActorSubmissionInput) => Promise<Record<string, unknown> | null>
   /** 生产者本地读取 canonical 数据；外部调用方无法触碰原始消息结构。 */
   resolveCompletion?: (record: ActorSubmissionRecord) => ActorSubmissionCompletion | null
+  matchServerError?: (record: ActorSubmissionRecord, error: ActorSubmissionServerError) => boolean
   pollIntervalMs?: number
   retryBaseMs?: number
   retryMaxMs?: number
@@ -131,9 +146,10 @@ export class ActorSubmissionQueue {
   private readonly options: Required<Pick<
     ActorSubmissionQueueOptions,
     'filePath' | 'submitTurn' | 'pollIntervalMs' | 'retryBaseMs' | 'retryMaxMs'
-  >> & Pick<ActorSubmissionQueueOptions, 'confirmTurn' | 'resolveCompletion' | 'log' | 'onAccepted' | 'onAttemptError'>
+  >> & Pick<ActorSubmissionQueueOptions, 'confirmTurn' | 'resolveCompletion' | 'matchServerError' | 'log' | 'onAccepted' | 'onAttemptError'>
 
   private readonly recordsByKey = new Map<string, ActorSubmissionRecord>()
+  private serverErrors: ActorSubmissionServerError[] = []
   private started = false
   private draining = false
   private timer: NodeJS.Timeout | null = null
@@ -154,6 +170,7 @@ export class ActorSubmissionQueue {
       submitTurn: options.submitTurn,
       confirmTurn: options.confirmTurn,
       resolveCompletion: options.resolveCompletion,
+      matchServerError: options.matchServerError,
       pollIntervalMs: Math.max(10, options.pollIntervalMs ?? 1000),
       retryBaseMs: Math.max(100, options.retryBaseMs ?? 5000),
       retryMaxMs: Math.max(1000, options.retryMaxMs ?? 60_000),
@@ -260,12 +277,36 @@ export class ActorSubmissionQueue {
   }
 
   /**
+   * 服务端 SSE 错误与 Actor accepted 的先后顺序不稳定：
+   * 先记录最少量结构化证据，之后才通过精确 prompt + turn 绑定。
+   * 禁止仅凭 CID 将同一会话内的其他用户发送误判为本 Job 失败。
+   */
+  async observeServerError(error: ActorSubmissionServerError): Promise<void> {
+    if (!error.conversationId || !error.code || !Number.isFinite(error.at)) return
+    const safe: ActorSubmissionServerError = {
+      conversationId: error.conversationId.slice(0, 128),
+      turnExchangeId: error.turnExchangeId?.slice(0, 128) ?? null,
+      code: error.code.slice(0, 128),
+      reason: error.reason?.slice(0, 128) ?? null,
+      message: error.message.slice(0, 1000),
+      at: error.at,
+    }
+    if (!this.serverErrors.some(item => item.conversationId === safe.conversationId
+      && item.turnExchangeId === safe.turnExchangeId && item.code === safe.code && item.at === safe.at)) {
+      this.serverErrors.push(safe)
+      this.serverErrors = this.serverErrors.slice(-256)
+      await this.persist()
+    }
+    await this.refreshCompletions(safe.conversationId)
+  }
+
+  /**
    * Archive 合并 canonical Body 后调用。只处理本系统持久化的 accepted 任务，
    * 将完成回复保存到队列文件，外部 GET 绝不临时查询 Archive 或 ChatGPT。
    * 旧版无 completion 字段的记录维持兼容，不为全部历史作无谓扫描。
    */
   async refreshCompletions(conversationId?: string): Promise<void> {
-    if (!this.options.resolveCompletion) return
+    if (!this.options.resolveCompletion && !this.options.matchServerError) return
     const work = this.completionTail.then(async () => {
       for (const record of this.recordsByKey.values()) {
         if (record.status !== 'accepted' || record.completion?.status !== 'pending') continue
@@ -273,7 +314,19 @@ export class ActorSubmissionQueue {
         if (conversationId && recordCid !== conversationId) continue
         let completion: ActorSubmissionCompletion | null
         try {
-          completion = this.options.resolveCompletion!(cloneRecord(record))
+          const serverError = this.options.matchServerError
+            ? this.serverErrors.find(error => error.conversationId === recordCid
+              && this.options.matchServerError!(cloneRecord(record), error))
+            : null
+          completion = serverError ? {
+            status: 'failed',
+            conversationId: serverError.conversationId,
+            turnExchangeId: serverError.turnExchangeId ?? undefined,
+            error: serverError.message,
+            errorCode: serverError.code,
+            errorReason: serverError.reason,
+            completedAt: serverError.at,
+          } : this.options.resolveCompletion?.(cloneRecord(record)) ?? null
         }
         catch (error) {
           await this.options.log?.('canonical completion read failed', {
@@ -480,9 +533,11 @@ export class ActorSubmissionQueue {
 
   private async load(): Promise<void> {
     this.recordsByKey.clear()
+    this.serverErrors = []
     try {
       const parsed = JSON.parse(await fs.readFile(this.options.filePath, 'utf8')) as Partial<ActorSubmissionQueueState>
       const records = Array.isArray(parsed.records) ? parsed.records : []
+      this.serverErrors = Array.isArray(parsed.serverErrors) ? parsed.serverErrors.slice(-256) : []
       for (const record of records) {
         if (!record || typeof record !== 'object') continue
         if (typeof record.idempotencyKey !== 'string' || typeof record.requestHash !== 'string') continue
@@ -506,6 +561,7 @@ export class ActorSubmissionQueue {
       version: 1,
       globalNotBefore: this.globalNotBefore > Date.now() ? this.globalNotBefore : null,
       records: [...this.recordsByKey.values()].sort((left, right) => left.createdAt - right.createdAt),
+      serverErrors: this.serverErrors,
     }
     // 同一进程里 enqueue()/drain()/恢复写盘可能短时间重叠；只用 PID 会让多个 persist
     // 抢同一个临时文件，Windows rename 尤其容易出现 ENOENT。每次写盘使用独立临时名，
