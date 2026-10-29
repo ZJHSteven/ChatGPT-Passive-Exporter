@@ -170,6 +170,8 @@ interface ActorSendOptions {
   mode?: ActorSendMode
   targetMode?: ActorTargetMode
   timeoutMs?: number
+  /** 一次 CDP Input.insertText 写入多少个 Unicode 字符；默认 512，减少长 ASR 导致的 renderer ACK 超时。 */
+  inputChunkChars?: number
   /**
    * daemon/Bridge 可注入一个旁路通知回调：DOM 安全骨架发生未知漂移时，在真正抛错阻断发送之前
    * 把完整结构证据交给宿主。CLI 直调用不需要提供；回调失败也不能放行 Actor。
@@ -1347,7 +1349,11 @@ async function neutralizeGuardianAfterSubmit(
   }
 }
 
-async function clearAndTypePrompt(client: ActorCdpClient, prompt: string): Promise<void> {
+async function clearAndTypePrompt(
+  client: ActorCdpClient,
+  prompt: string,
+  inputChunkChars = 512,
+): Promise<{ inputChunks: number; inputCharacters: number; inputElapsedMs: number }> {
   const focused = await evaluateValue(client, `(() => {
     const usable = (element) => {
       if (!element || !element.isConnected) return false
@@ -1400,11 +1406,25 @@ async function clearAndTypePrompt(client: ActorCdpClient, prompt: string): Promi
   // 因此拆成较小的真实 CDP 文本输入事件，不绕开 React/ProseMirror 状态层。
   // 用 Array.from 按 Unicode 字符切分，避免把 emoji 等代理对从中间截断。
   const characters = Array.from(prompt)
-  const chunkSize = 2048
+  const chunkSize = Math.trunc(inputChunkChars)
+  if (!Number.isInteger(chunkSize) || chunkSize < 64 || chunkSize > 2048) {
+    throw new Error('actor inputChunkChars must be between 64 and 2048 Unicode characters')
+  }
+  const startedAt = Date.now()
+  const totalChunks = Math.ceil(characters.length / chunkSize)
   for (let offset = 0; offset < characters.length; offset += chunkSize) {
     const chunk = characters.slice(offset, offset + chunkSize).join('')
-    await client.send('Input.insertText', { text: chunk })
+    // 每块必须等真正的 CDP ACK。超时后不在同一 composer 盲目重试，以免重复输入；
+    // 本次 Actor 调用整体失败，持久队列下一轮会先 Ctrl+A 清空重新发送。
+    try {
+      await client.send('Input.insertText', { text: chunk }, 15_000)
+    }
+    catch (error) {
+      const chunkIndex = Math.floor(offset / chunkSize) + 1
+      throw new Error(`CDP Input.insertText chunk ${chunkIndex}/${totalChunks} at Unicode offset ${offset} failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
+  return { inputChunks: totalChunks, inputCharacters: characters.length, inputElapsedMs: Date.now() - startedAt }
 }
 
 async function clickSendHandler(client: ActorCdpClient): Promise<void> {
@@ -1655,7 +1675,7 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
       // 第二份保护“怎么发送”；两者都通过以后才允许把 prompt 写入页面。
       const domSignatureReady = await observeActorDomShape(client, domLedger, 'prompt input', options.onDomDrift)
 
-      await clearAndTypePrompt(client, options.prompt)
+      const inputStats = await clearAndTypePrompt(client, options.prompt, options.inputChunkChars ?? 512)
       // hidden/background target 可能因为 React 后台调度延迟挂载 submit 控件；这里等“状态变成可提交”，
       // 但最终成功仍以 Network 正式 POST + 2xx 为准，而不是按钮本身。
       await waitForSendButtonReady(client, timeoutMs)
@@ -1773,6 +1793,7 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
             postSubmitNeutralizeReason: postSubmit.reason,
             pageUrlAfter: postSubmit.href,
             targetMode,
+            ...inputStats,
             domSignatureBefore,
             domSignatureReady,
           }
