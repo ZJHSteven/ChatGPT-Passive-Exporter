@@ -13,7 +13,16 @@ export interface LiveSseCanonicalSnapshot {
   messageStreamComplete: boolean
   doneSeen: boolean
   decodeErrors: string[]
+  /** 服务端通过 SSE 返回的终止错误，不是前端 DOM 推测。 */
+  serverError: LiveSseServerError | null
   complete: boolean
+}
+
+export interface LiveSseServerError {
+  conversationId: string
+  code: string
+  reason: string | null
+  message: string
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -132,6 +141,7 @@ export class LiveSseCanonicalAccumulator {
   private messageStreamComplete = false
   private doneSeen = false
   private decodeErrors: string[] = []
+  private serverError: LiveSseServerError | null = null
   private messages = new Map<string, RawChatMessage>()
 
   ingestBase64(data: unknown): void {
@@ -183,6 +193,7 @@ export class LiveSseCanonicalAccumulator {
       messageStreamComplete: this.messageStreamComplete,
       doneSeen: this.doneSeen,
       decodeErrors: [...this.decodeErrors],
+      serverError: this.serverError ? { ...this.serverError } : null,
       complete,
     }
   }
@@ -245,6 +256,19 @@ export class LiveSseCanonicalAccumulator {
     }
     if (!isRecord(parsed)) {
       this.fail('unsupported SSE data shape')
+      return
+    }
+
+    // 真实生产样本：HTTP 200 建立 SSE 后返回 input_too_large/last_user_message。
+    // 注意这里没有臆测固定长度阈值；错误码由服务器经 SSE 原文返回。
+    if (typeof parsed.error_code === 'string' && typeof parsed.conversation_id === 'string') {
+      this.serverError = {
+        conversationId: parsed.conversation_id,
+        code: parsed.error_code.slice(0, 128),
+        reason: typeof parsed.error_reason === 'string' ? parsed.error_reason.slice(0, 128) : null,
+        message: typeof parsed.error === 'string' ? parsed.error.slice(0, 1000) : 'ChatGPT server rejected the turn',
+      }
+      this.fail(`server SSE error: ${this.serverError.code}`)
       return
     }
 
