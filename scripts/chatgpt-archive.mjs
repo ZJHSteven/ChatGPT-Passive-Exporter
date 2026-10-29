@@ -197,7 +197,12 @@ async function runJobCommand(action, flags) {
       console.log(JSON.stringify(job.result, null, 2))
       return
     }
-    if (job.status === 'failed') throw new Error(`RQCI job failed: ${job.error || key}`)
+    if (job.status === 'failed') {
+      // 把 ChatGPT SSE 的具体错误码直接作为 CLI 错误反馈给 ClassFlow 等调用端。
+      // 只展示公共 Job API 字段，调用端不必解析内部日志或原始 SSE。
+      const details = [job.errorCode, job.errorReason].filter(Boolean).join('/')
+      throw new Error(`RQCI job failed${details ? ` [${details}]` : ''}: ${job.error || key}`)
+    }
     if (action !== 'wait') throw new Error(`RQCI job not complete: ${job.status}`)
     if (Date.now() >= deadline) throw new Error(`RQCI job wait timed out: ${key}`)
     await new Promise(resolve => setTimeout(resolve, 1500))
