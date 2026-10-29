@@ -78,6 +78,7 @@ import {
 } from '../src/local/archive-bridge.ts'
 import { LifeOpsSyncClient, loadLifeOpsSyncConfig } from '../src/local/lifeops-sync.ts'
 import { sendActorPrompt } from '../src/local/chatgpt-actor.ts'
+import { recoverRecentActorSseErrors } from '../src/local/actor-server-error-recovery.ts'
 import {
   familyBackoffUntil,
   familyProbationRemaining,
@@ -11100,6 +11101,14 @@ async function main() {
       await archiveBridge.start()
       archiveBridgeStartedAt = Date.now()
       archiveBridgeLastError = null
+      // 兼容此前已 accepted、但旧版没有识别 HTTP 200 内 input_too_large 的任务。
+      // 延后到 Bridge 已监听后，异步回放近期有界 SSE；不会再次向 ChatGPT 发送任何消息。
+      void recoverRecentActorSseErrors(liveSseDir, error =>
+        archiveBridge.reportActorServerError(error),
+      ).then(result => log('Archive actor SSE terminal error recovery', result))
+        .catch(error => log('Archive actor SSE terminal error recovery failed', {
+          error: error instanceof Error ? error.message : String(error),
+        }))
       await log('Archive Bridge ready', {
         host: bridgeHost,
         port: archiveBridge.port,
