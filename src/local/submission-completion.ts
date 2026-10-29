@@ -5,10 +5,34 @@
  * 此模块只在生产者内部读取 canonical SQLite 投影，并将最终回答转换成
  * 持久化的任务结果。尤其注意：channel=final 只表示输出通道，并非结束事件。
  */
-import type { ActorSubmissionRecord, ActorSubmissionCompletion } from './actor-submission-queue.ts'
+import type { ActorSubmissionRecord, ActorSubmissionCompletion, ActorSubmissionServerError } from './actor-submission-queue.ts'
 
 export interface CanonicalCompletionSource {
   getMessages(conversationId: string): Array<Record<string, unknown>>
+}
+
+/**
+ * 与同一个 Conversation 中其他 turn 严格隔离：
+ * 只接受已经获得 POST 绑定、且在本次 POST 时窗内存在完整相同 user prompt 的失败事件。
+ * 当 SSE 能给出 turnExchangeId 时还必须严格匹配，以免将后来一轮错误错误归因。
+ */
+export function matchesSubmissionServerError(
+  archive: CanonicalCompletionSource,
+  record: ActorSubmissionRecord,
+  error: ActorSubmissionServerError,
+): boolean {
+  if (record.status !== 'accepted') return false
+  const cid = record.result?.conversationId ?? record.input.conversationId
+  if (cid !== error.conversationId) return false
+  const submittedAt = Number(record.result?.submittedAt)
+  if (!Number.isFinite(submittedAt) || submittedAt <= 0) return false
+  if (error.at < submittedAt - 15_000 || error.at > submittedAt + 30 * 60_000) return false
+  return archive.getMessages(error.conversationId).some(message =>
+    message.role === 'user'
+    && message.text === record.input.text
+    && Number(message.createTime || 0) * 1000 >= submittedAt - 15_000
+    && (!error.turnExchangeId || message.turnExchangeId === error.turnExchangeId),
+  )
 }
 
 /**
