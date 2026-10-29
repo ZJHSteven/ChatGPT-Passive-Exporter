@@ -1389,23 +1389,32 @@ async function clearAndTypePrompt(
   if (focused !== true) throw new Error('ChatGPT actor prompt input not found')
 
   // 用真实键盘清空 React composer，再走 CDP insertText；不直接篡改 textarea.value，避免绕过状态层。
-  await client.send('Input.dispatchKeyEvent', {
-    type: 'keyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, modifiers: 2,
-  })
-  await client.send('Input.dispatchKeyEvent', {
-    type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, modifiers: 2,
-  })
-  await client.send('Input.dispatchKeyEvent', {
-    type: 'keyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
-  })
-  await client.send('Input.dispatchKeyEvent', {
-    type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
-  })
+  // 后台 Guardian 里 Ctrl+A/Backspace 的 CDP ACK 并不意味着 ProseMirror 已清空。
+  // 使用真实选区 + 输入事件覆盖文档，避免多次重试把提示词重复累加。
+  const selected = await evaluateValue(client, `(() => {
+    const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
+      .find(element => element.closest('form[data-chatgpt-composer]')) || null
+    if (!input) return false
+    input.focus()
+    if (input instanceof HTMLTextAreaElement) {
+      input.setSelectionRange(0, input.value.length)
+      return true
+    }
+    const selection = window.getSelection()
+    if (!selection) return false
+    const range = document.createRange()
+    range.selectNodeContents(input)
+    selection.removeAllRanges()
+    selection.addRange(range)
+    return true
+  })()`)
+  if (!selected) throw new Error('CDP actor could not select all composer content before replacing input')
   // ClassFlow 的完整课堂 ASR 有时超过十万字节。一次性调用 Input.insertText
   // 容易使 Chrome/React 在 CDP 客户端 10 秒超时前无法完成输入事件。
   // 因此拆成较小的真实 CDP 文本输入事件，不绕开 React/ProseMirror 状态层。
   // 用 Array.from 按 Unicode 字符切分，避免把 emoji 等代理对从中间截断。
-  const characters = Array.from(prompt)
+  const normalizedPrompt = prompt.replace(/\r\n?/gu, '\n')
+  const characters = Array.from(normalizedPrompt)
   const chunkSize = Math.trunc(inputChunkChars)
   if (!Number.isInteger(chunkSize) || chunkSize < 64 || chunkSize > 2048) {
     throw new Error('actor inputChunkChars must be between 64 and 2048 Unicode characters')
@@ -1423,6 +1432,26 @@ async function clearAndTypePrompt(
       const chunkIndex = Math.floor(offset / chunkSize) + 1
       throw new Error(`CDP Input.insertText chunk ${chunkIndex}/${totalChunks} at Unicode offset ${offset} failed: ${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+  // 在点击发送前独立读取编辑器正文并逐字符比对；绝不把 ACK 误认为真实输入正确。
+  const actual = await evaluateValue(client, `(() => {
+    const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
+      .find(element => element.closest('form[data-chatgpt-composer]')) || null
+    if (!input) return null
+    if (input instanceof HTMLTextAreaElement) return input.value.replace(/\\r\\n?/g, '\\n')
+    const readInline = node => {
+      if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || ''
+      if (node.nodeName === 'BR') return node.classList?.contains('ProseMirror-trailingBreak') ? '' : '\\n'
+      return [...node.childNodes].map(readInline).join('')
+    }
+    return [...input.children].map(readInline).join('\\n')
+  })()`)
+  if (typeof actual !== 'string' || actual !== normalizedPrompt) {
+    const text = typeof actual === 'string' ? actual : ''
+    let firstMismatch = 0
+    while (firstMismatch < text.length && firstMismatch < normalizedPrompt.length
+      && text[firstMismatch] === normalizedPrompt[firstMismatch]) firstMismatch++
+    throw new Error(`CDP input verification failed before POST: expectedChars=${normalizedPrompt.length}, actualChars=${text.length}, firstMismatch=${firstMismatch}`)
   }
   return { inputChunks: totalChunks, inputCharacters: characters.length, inputElapsedMs: Date.now() - startedAt }
 }
