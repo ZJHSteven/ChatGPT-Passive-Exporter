@@ -1395,7 +1395,16 @@ async function clearAndTypePrompt(client: ActorCdpClient, prompt: string): Promi
   await client.send('Input.dispatchKeyEvent', {
     type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
   })
-  await client.send('Input.insertText', { text: prompt })
+  // ClassFlow 的完整课堂 ASR 有时超过十万字节。一次性调用 Input.insertText
+  // 容易使 Chrome/React 在 CDP 客户端 10 秒超时前无法完成输入事件。
+  // 因此拆成较小的真实 CDP 文本输入事件，不绕开 React/ProseMirror 状态层。
+  // 用 Array.from 按 Unicode 字符切分，避免把 emoji 等代理对从中间截断。
+  const characters = Array.from(prompt)
+  const chunkSize = 2048
+  for (let offset = 0; offset < characters.length; offset += chunkSize) {
+    const chunk = characters.slice(offset, offset + chunkSize).join('')
+    await client.send('Input.insertText', { text: chunk })
+  }
 }
 
 async function clickSendHandler(client: ActorCdpClient): Promise<void> {
