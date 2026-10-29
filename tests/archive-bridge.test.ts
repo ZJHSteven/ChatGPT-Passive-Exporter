@@ -94,6 +94,73 @@ test('公共 Job API 只暴露已确认的最终回答，支持状态落盘与�
   await fs.rm(dir, { recursive: true, force: true })
 })
 
+test('服务端 input_too_large 早于 accepted 到达，也应持久化为精确的 Job failed', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-sse-terminal-'))
+  const queuePath = path.join(dir, 'jobs.json')
+  const at = Date.now()
+  const archive = mockArchive()
+  archive.getMessages = cid => cid === 'cid-oversize' ? [{
+    role: 'user', text: 'long note prompt', turnExchangeId: 'turn-oversize',
+    createTime: at / 1000, status: 'finished_successfully',
+  }] : []
+  let resolveSubmit!: (value: Record<string, unknown>) => void
+  let submits = 0
+  const submitTurn = async () => {
+    submits++
+    return await new Promise<Record<string, unknown>>(resolve => { resolveSubmit = resolve })
+  }
+  const { bridge, base, headers } = await startBridge(submitTurn, archive, {
+    submissionQueuePath: queuePath, submissionQueuePollIntervalMs: 10,
+  })
+  const jobKey = 'test:oversize:once'
+  const post = await fetch(base + '/v1/jobs', {
+    method: 'POST',
+    headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ text: 'long note prompt', mode: 'new', idempotencyKey: jobKey }),
+  })
+  expect(post.status).toBe(202)
+  const getJob = async (origin = base) =>
+    ((await (await fetch(origin + '/v1/jobs?key=' + encodeURIComponent(jobKey), { headers })).json()) as {
+      job: Record<string, any>
+    }).job
+  const startDeadline = Date.now() + 2000
+  while (!resolveSubmit && Date.now() < startDeadline) await new Promise(resolve => setTimeout(resolve, 10))
+  expect(submits).toBe(1)
+
+  // 先到达的错误应持久化，而不是等 accepted 以后才开始监听。
+  await bridge.reportActorServerError({
+    conversationId: 'cid-oversize', turnExchangeId: 'wrong-turn',
+    code: 'input_too_large', reason: 'last_user_message', message: '不应误关联', at: at + 500,
+  })
+  await bridge.reportActorServerError({
+    conversationId: 'cid-oversize', turnExchangeId: 'turn-oversize',
+    code: 'input_too_large', reason: 'last_user_message',
+    message: '你提交的消息过长，请编辑后重新发送。', at: at + 1000,
+  })
+  resolveSubmit({ conversationId: 'cid-oversize', submittedAt: at, runningConfirmed: true })
+  const deadline = Date.now() + 2500
+  let job = await getJob()
+  while (job.status !== 'failed' && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 15))
+    job = await getJob()
+  }
+  expect(job.status).toBe('failed')
+  expect(job.errorCode).toBe('input_too_large')
+  expect(job.errorReason).toBe('last_user_message')
+  expect(job.error).toContain('消息过长')
+  expect(job.result).toBeNull()
+
+  await bridge.stop()
+  const restarted = await startBridge(submitTurn, archive, {
+    submissionQueuePath: queuePath, submissionQueuePollIntervalMs: 10,
+  })
+  const restored = await getJob(restarted.base)
+  expect(restored.status).toBe('failed')
+  expect(restored.errorCode).toBe('input_too_large')
+  expect(submits).toBe(1)
+  await fs.rm(dir, { recursive: true, force: true })
+})
+
 test('Actor submission 把页面输入暂时缺失视为可重试基础设施错误', () => {
   expect(isRetryableInfrastructureError('ChatGPT actor prompt input not found')).toBe(true)
   expect(isRetryableInfrastructureError('ChatGPT actor composer element not found')).toBe(true)

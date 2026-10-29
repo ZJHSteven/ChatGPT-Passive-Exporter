@@ -61,6 +61,26 @@ function syntheticCompleteStream(): string {
 }
 
 describe('LiveSseCanonicalAccumulator', () => {
+  test('HTTP 200 的 SSE 服务端拒绝必须保留结构化错误，不能视为生成成功', () => {
+    const accumulator = new LiveSseCanonicalAccumulator()
+    accumulator.ingestText(event('v1'))
+    accumulator.ingestText(event({
+      conversation_id: 'cid-rejected',
+      error_code: 'input_too_large',
+      error_reason: 'last_user_message',
+      error: '你提交的消息过长，请编辑后重新发送。',
+    }))
+    const snapshot = accumulator.snapshot()
+    expect(snapshot.serverError).toEqual({
+      conversationId: 'cid-rejected',
+      code: 'input_too_large',
+      reason: 'last_user_message',
+      message: '你提交的消息过长，请编辑后重新发送。',
+    })
+    expect(snapshot.complete).toBe(false)
+    expect(snapshot.decodeErrors).toContain('server SSE error: input_too_large')
+  })
+
   test('重建 v1 snapshot + patch，并只在 complete + DONE 后允许 canonical promotion', () => {
     const accumulator = new LiveSseCanonicalAccumulator()
     const stream = syntheticCompleteStream()
