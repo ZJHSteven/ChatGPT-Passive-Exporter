@@ -9133,9 +9133,36 @@ async function main() {
     }
 
     const registerLiveCanonicalDecoder = (requestId, canonical, source) => {
-      const state = { canonical, source, promoted: false, partialMerged: false, mergePromise: null }
+      const state = { canonical, source, promoted: false, partialMerged: false, mergePromise: null, serverErrorReported: false }
       liveCanonicalDecoders.set(String(requestId), state)
       return state
+    }
+
+    /**
+     * 服务器可能在 HTTP 200 的 SSE 中明确拒绝用户消息。
+     * 观察到后必须交给同一 Archive Job 控制面记录，不能由 ClassFlow 再去读日志。
+     * 每条 CDP 请求仅报告一次，且只传 code/reason/简短消息，不传原始 SSE 凭据。
+     */
+    const reportLiveServerError = (requestId) => {
+      const state = liveCanonicalDecoders.get(String(requestId))
+      if (!state || state.serverErrorReported) return
+      const snapshot = state.canonical.snapshot()
+      if (!snapshot.serverError) return
+      state.serverErrorReported = true
+      void archiveBridge?.reportActorServerError({
+        conversationId: snapshot.serverError.conversationId,
+        turnExchangeId: snapshot.turnExchangeId,
+        code: snapshot.serverError.code,
+        reason: snapshot.serverError.reason,
+        message: snapshot.serverError.message,
+        at: Date.now(),
+      }).catch(error => {
+        void log('actor server error reconciliation failed', {
+          requestId: String(requestId),
+          code: snapshot.serverError.code,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
     }
 
     const tryPromoteLiveCanonicalDecoder = async (requestId) => {
@@ -9393,6 +9420,7 @@ async function main() {
         appendJournalText(entry.cdpRequestId, item.encodedItem)
         entry.tracker.ingestText(item.encodedItem, receivedAt)
         entry.canonical.ingestText(item.encodedItem)
+        reportLiveServerError(entry.cdpRequestId)
         const state = activeLiveTransports.get(entry.liveKey)
         if (state) {
           state.lastDataAt = receivedAt
@@ -9644,6 +9672,7 @@ async function main() {
         appendJournalBase64(String(requestId), data)
         live.tracker.ingestBase64(data, chunk.at)
         live.canonical.ingestBase64(data)
+        reportLiveServerError(requestId)
       }
     })
 
