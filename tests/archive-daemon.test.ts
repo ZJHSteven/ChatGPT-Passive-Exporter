@@ -11,6 +11,8 @@ import {
   buildDevSpaceIdleNotificationPayload,
   buildDevSpaceIdleUnboundDiagnosisNotificationPayload,
   buildCooldownNotificationPayload,
+  isNonRetryableDeletedConversation,
+  shouldNotifyCooldownAgain,
   buildTurnFinalNotificationPayload,
   buildUnboundWatchdogDiagnosisNotificationPayload,
   buildUnboundWatchdogNotificationPayload,
@@ -1895,6 +1897,23 @@ describe('ChatGPT Archive daemon WSS parser', () => {
       .toBe(Date.parse('2026-10-10T19:36:36.000Z'))
     expect(cooldownDeadlineFromRetryAfter(null, { now, fallbackMs: 90_000 })).toBe(now + 90_000)
     expect(cooldownDeadlineFromRetryAfter('garbled', { now, fallbackMs: 90_000 })).toBe(now + 90_000)
+  })
+
+  test('服务端明确标记 conversation_deleted 且 can_retry=false 时不再重试', () => {
+    const response = { status: 404, body: { detail: { code: 'conversation_deleted', can_retry: false } } }
+    expect(isNonRetryableDeletedConversation(response)).toBe(true)
+    expect(isNonRetryableDeletedConversation({ ...response, body: { detail: { ...response.body.detail, can_retry: true } } })).toBe(false)
+    expect(isNonRetryableDeletedConversation({ ...response, status: 429 })).toBe(false)
+    expect(isNonRetryableDeletedConversation({ status: 404, body: { detail: { code: 'not_found', can_retry: false } } })).toBe(false)
+    expect(isNonRetryableDeletedConversation({ status: 404, body: null })).toBe(false)
+  })
+
+  test('同一 API family 的 429 Bark 告警 30 分钟内不重复', () => {
+    const now = Date.parse('2026-11-01T07:20:00Z')
+    expect(shouldNotifyCooldownAgain(null, now)).toBe(true)
+    expect(shouldNotifyCooldownAgain(now, now + 30_000)).toBe(false)
+    expect(shouldNotifyCooldownAgain(now, now + 29 * 60_000)).toBe(false)
+    expect(shouldNotifyCooldownAgain(now, now + 30 * 60_000)).toBe(true)
   })
 
   test('passive observer 不重复熔断 daemon 自己的 active replay 429', () => {

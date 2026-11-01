@@ -1354,6 +1354,19 @@ export function buildDevSpaceIdleUnboundDiagnosisNotificationPayload({
  *
  * 这里只负责生成稳定文案，便于单测；真正发送仍走现有 Bark provider。
  */
+/** 只有服务端明确声明“已删除且不可重试”的 404，才停止正文同步。 */
+export function isNonRetryableDeletedConversation(response) {
+  return Number(response?.status) === 404
+    && response?.body?.detail?.code === 'conversation_deleted'
+    && response?.body?.detail?.can_retry === false
+}
+
+/** 同一 API 请求族短时间反复 429 时，只发一次手机通知。 */
+export function shouldNotifyCooldownAgain(lastAttemptAt, now = Date.now(), intervalMs = 30 * 60_000) {
+  const previous = Number(lastAttemptAt || 0)
+  return previous <= 0 || now - previous >= intervalMs
+}
+
 export function buildCooldownNotificationPayload({
   reason,
   cooldownUntil,
@@ -2911,6 +2924,12 @@ async function main() {
   // 这样若上游新增稳定 query，可以自动继承，同时不会把 TPP/hide_snorlax=true 等过滤混入全量 catalog。
   let globalCatalogQueryTemplate = null
   const rateLimits = restoreFamilyRateLimitSnapshot(previousDaemonState)
+  // 告警节流跨进程重启持久化，避免重启服务再次触发通知风暴。
+  const cooldownNotificationAttempts = new Map(
+    Object.entries(previousDaemonState?.cooldownNotificationAttempts || {})
+      .filter(([, timestamp]) => Number.isFinite(Number(timestamp)) && Number(timestamp) > 0)
+      .map(([family, timestamp]) => [family, Number(timestamp)]),
+  )
   // cooldownUntil 仅保留为旧版 state 的一次性全局迁移闸门。
   // 新发生的 429 全部写入 rateLimits.families，不再回写这个全局值。
   let cooldownUntil = Number(rateLimits.legacyGlobalUntil || 0)
@@ -4917,6 +4936,7 @@ async function main() {
     cooldownRecoveryPending,
     recoveryProbeRemaining,
     rateLimits,
+    cooldownNotificationAttempts: Object.fromEntries(cooldownNotificationAttempts),
     notification: {
       enabled: Boolean(notificationConfig),
       provider: notificationConfig?.provider ?? null,
@@ -5758,7 +5778,9 @@ async function main() {
       probationRemaining: next.probationRemaining,
       ...details,
     })
-    if (!wasAlreadyCooling) {
+    if (!wasAlreadyCooling && notificationConfig
+      && shouldNotifyCooldownAgain(cooldownNotificationAttempts.get(family), now)) {
+      cooldownNotificationAttempts.set(family, now)
       dispatchCooldownNotification({
         reason,
         cooldownUntil: familyCooldownUntil,
@@ -6016,6 +6038,12 @@ async function main() {
     if (response.status === 401 || response.status === 403) {
       authHeaders = null
       throw new Error(`ChatGPT auth context expired: HTTP ${response.status}`)
+    }
+    if (isNonRetryableDeletedConversation(response)) {
+      const error = new Error('ChatGPT conversation permanently deleted (HTTP 404, can_retry=false)')
+      error.code = 'conversation_deleted'
+      error.canRetry = false
+      throw error
     }
     if (response.status < 200 || response.status >= 300 || !response.body) {
       throw new Error(`ChatGPT backend HTTP ${response.status}: ${response.text.slice(0, 240)}`)
@@ -7052,6 +7080,12 @@ async function main() {
         syncErrors += 1
         lastError = error instanceof Error ? error.message : String(error)
         await log('conversation sync failed', { conversationId, trigger, error: lastError })
+        // 确认删除（can_retry=false）是终局事实，不能再放回 5 秒重试队列。
+        if (error?.code === 'conversation_deleted' && error?.canRetry === false) {
+          clearSyncDemand(conversationId)
+          await log('non-retryable deleted conversation retired from sync queue', { conversationId, trigger })
+          return
+        }
         // 失败不能把 dirty 事实抹掉；同时保留 ready，等 auth/cooldown/页面恢复后再试。
         const existingTrigger = ready.get(conversationId)
         ready.set(conversationId, preferredSyncTrigger(existingTrigger, trigger))
