@@ -1006,3 +1006,9 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - [x] CLI 新增 job submit/status/result/wait，原 actor send --wait-final 严格终止判定。
 - [x] 340 项测试、四种构建；Windows daemon 2026-10-28 23:45 CST 安全重启恢复，远端 N1 Job API 调用成功。
 - [x] 完整公共契约见 docs/async-job-api.md。历史队列 tracked=false，保留兼容；不擅自重放已接收的 ChatGPT 请求。
+
+## 2026-11-01 Archive deleted-conversation 404 / Bark 429 风暴
+- 现场：15:08–15:29 CST 同一 CID 6ae6df2d-3ba4-83ea-9511-9fe5e5f7ae2a 因 WSS complete 触发重试；ChatGPT 正文返回 `404 conversation_deleted, can_retry=false`，旧 drainDirty 却仍每 5 秒重入队，继而触发 15:20–15:28 多轮 body 429 和 Bark 通知。
+- 修复：fetchChecked 将明确不可重试的已删除会话归类为终局错误；drainDirty 撤销该 CID 同步需求，其他 404 不改变语义。对每个 API family 的冷却告警新增 30 分钟节流，最近尝试时间随 daemon state 持久化，避免短 Retry-After 和重启刷通知。
+- 提交：2d83aa8、20d78fa；`npm run check` 通过（34 test files、346 tests，typecheck 与 4 种 build 全绿）。
+- 运维：排查期间主动停止 Archive daemon，随后恢复 PID 63884；15:34 CST 状态 running、Bridge listening、ready=0、lastError=null。尚待以后自然样本验证删除会话分支和 WSS 连接恢复，不应将纯测试结果说成已完成真实 E2E。
