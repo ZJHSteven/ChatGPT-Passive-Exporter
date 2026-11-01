@@ -300,6 +300,19 @@ export function shouldTripObserved429(
   base?: string,
 ): boolean
 
+/** 服务端明确返回 404/conversation_deleted/can_retry=false 时才可终止重试。 */
+export function isNonRetryableDeletedConversation(response: {
+  status?: number
+  body?: { detail?: { code?: string, can_retry?: boolean } } | null
+} | null): boolean
+
+/** 同一个请求族的 429 告警至少间隔 30 分钟，可跨 daemon 重启恢复。 */
+export function shouldNotifyCooldownAgain(
+  lastAttemptAt: number | null | undefined,
+  now?: number,
+  intervalMs?: number,
+): boolean
+
 /** 将绝对时间戳格式化为人类可读的北京时间字符串；内部存储仍保持 epoch/UTC。 */
 export function formatBeijingTime(value: unknown): string
 export function formatBeijingClock(value: unknown): string
