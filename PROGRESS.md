@@ -1,3 +1,11 @@
+## 2026-11-05 Archive Actor / ClassFlow 过渡期止损与单次验收
+
+- **Archive 不停机**：生产 daemon 正常运行，Bridge/WSS/主动与被动归档保持可用；Actor 生产队列禁用自动重试和重启时复活，单次失败即终止。旧 ClassFlow Summary 积压已封存备份，不让数千次尝试继续增长。相关提交 `8eae503`。
+- **失败原因已拆开**：11 月 3 日 09:00–10:00 Guardian 原生 Body GET 99 次且无 429，同期 Actor 有 102 次输入校验错误。HTTP 200 只证明对应 GET 成功，不证明 React 编辑器已稳定。已观察普通 `/c/<CID>` 自动改写为 `/g/<Project>/c/<CID>`，输入途中重挂载使后续 Input.insertText 丢失；Guardian 任务失败时旧路由未及时退出、旧草稿也可在重开会话时恢复。
+- **小范围修复**：正式 POST 前健康检查及编辑器路由稳定观察、分块输入之间让出 React 事件处理时间；正式 POST **开始前**失败时 Guardian 尽力回首页（正式 POST 之后不打断 SSE）；清理旧草稿失败时回退全选替换并坚持发送前逐字校验；daemon 队列提交等 Guardian 初始化后再执行。提交 `f8980a5`、`795a12f`、`28b0b10`、`993c4bd`。
+- **真实正例**：`classflow:lecture:7b00664dbb...:summary:v2:0:initial` 已通过正式 HTTP 200 SSE 发送 513 字符、原生 Body 200、首段数据确认、Guardian 成功返回首页；Archive canonical 存在同 turn 的 1323 字符 Assistant 最终答复，状态 finished_successfully / endTurn=true / stop，满足 ClassFlow 必需的“## 本堂讲了什么”。通过原始 Actor trace + canonical 双重核对，已与原幂等 Job 对齐，Bridge 状态 `accepted`、`completion=completed`，未伪造完成结果。
+- **仍需修复**：旧 `6e2da0aa81...` 会话重开可恢复 **3109 字符的历史未发送重复摘要草稿**，前台/后台及专用 target 都可能无法稳定覆盖；其他三条旧摘要只读探查尚未确认可操作。为避免请求风暴，未继续强行提交；保留旧任务为 failed，不会自动再试。已做 3.5 万英文及 4.1 万中文的不发送分块输入测试，但不足以证明全部新 Notes E2E 稳定。下一步应在 ClassFlow 侧限制旧课堂自动调度，单独解决持久草稿；不能宣称所有积压已完成。
+
 ## 2026-11-04 Archive Actor Guardian 同源错误页恢复（待生产验证）
 
 - 22:50 后现场确认：Guardian 进程和 CDP 在线、healthFailures=0，但当前会话页面显示「无法加载此 ChatGPT 对话／再试一次」；Actor `inspect` 返回 `composerPresent=false`、`sendReady=false`，所以 ClassFlow 的 Notes 和 summary 不断在 `waitForHealthyActorShell` 超时。
