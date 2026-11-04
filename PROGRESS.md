@@ -1,3 +1,10 @@
+## 2026-11-04 Archive Actor Guardian 同源错误页恢复（待生产验证）
+
+- 22:50 后现场确认：Guardian 进程和 CDP 在线、healthFailures=0，但当前会话页面显示「无法加载此 ChatGPT 对话／再试一次」；Actor `inspect` 返回 `composerPresent=false`、`sendReady=false`，所以 ClassFlow 的 Notes 和 summary 不断在 `waitForHealthyActorShell` 超时。
+- Archive 提交队列 124 条，当前 3 条 `retry_waiting` + 1 条 `processing`，历史无效尝试已达到约 2725 / 1310 / 276 / 115 次；另有一条 summary 196 次后失败。错误页不应无限重试。
+- 重要排除：裸 `fetch` 缺少网页认证 Bearer 头导致 API 404 `conversation_inaccessible`，**不能认定历史会话丢失**；补上会话 Bearer 后原会话和其他历史对话 HTTP 200，正文可读取。
+- 源码修复已提交 `04c94e0`：页面快照识别同源 conversation-load-error；Actor 进入 healthy-shell 阶段时只执行一次到 ChatGPT 首页的安全恢复，不发消息、不覆盖 prompt；新增回归断言。当前仍需 typecheck、全量测试、正式部署和谨慎观察队列。
+
 ## 2026-10-30 Archive Actor 长文本输入与 CRM 服务端错误收口（当前最新）
 
 - 本次真正根因不是原始 ASR 达到 119877 字符：CRM 保存 40301 字符（342 个 CRLF），浏览器规范化 39959 字符，ChatGPT 最终看到恰好 **39959×3=119877** 字符，逐字符证明 Agent 多轮重试未清空后台 ProseMirror 输入框而重复累加。旧 2048 分块不能解决清空失败。
