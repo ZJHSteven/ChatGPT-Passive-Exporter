@@ -11097,9 +11097,9 @@ async function main() {
         host: bridgeHost,
         port: bridgePort,
         submissionQueuePath: actorSubmissionQueuePath,
-        // ClassFlow may poll the same key, but Archive must never silently
-        // retry or resurrect an Actor send after a failed attempt.
-        submissionQueueAutoRetry: false,
+        // ClassFlow 只管理业务任务，不处理内部瞬态 CDP/Guardian 故障：
+        // Archive 本身负责有限退避重试；已失败/人工取消的旧 Job 不会因此复活。
+        submissionQueueAutoRetry: true,
         submissionQueueLog: log,
         onSubmissionAttemptError: notifyActorSubmissionAttemptError,
         submitTurn: async (input) => {
@@ -11108,14 +11108,50 @@ async function main() {
           // 再执行真正的 Actor；这只是同一次提交内的就绪等待，不是自动重试。
           if (input.targetMode === 'guardian') {
             const deadline = Date.now() + 45_000
-            while (!guardian?.targetId || !guardianReadyAt) {
-              if (stopping || Date.now() >= deadline) {
-                throw new Error('Archive Guardian was not ready within startup grace period')
+            let ready = false
+            let lastError = 'Guardian has no initialized target'
+            while (!stopping && Date.now() < deadline) {
+              // Guardian 已有 targetId 并不表示它的 CDP 页面已 attach、React 已 hydration。
+              // 这里必须通过实际 Runtime.evaluate 验证，不能仅按时间戳判定就绪。
+              const current = guardian
+              if (current?.targetId && !current.page?.closed && guardianReadyAt) {
+                try {
+                  const probe = await current.page.send('Runtime.evaluate', {
+                    expression: `(() => ({
+                      href: String(location.href),
+                      hydrated: Boolean(document.querySelector('form[data-chatgpt-composer] #prompt-textarea')
+                        || document.querySelector('form[data-chatgpt-composer] [contenteditable="true"][role="textbox"]')),
+                      documentReady: document.readyState,
+                    }))()`,
+                    returnByValue: true,
+                  }, 2_000)
+                  const page = probe.result?.value
+                  if (current === guardian && page?.hydrated
+                    && page?.documentReady !== 'loading'
+                    && String(page.href).startsWith('https://chatgpt.com/')) {
+                    // 新开一个 CDP session 还要求目标存在于 /json/list。
+                    const targets = await fetch(`${cdpHttp}/json/list`).then(res => res.json())
+                    if (targets.some(target => target.id === current.targetId
+                      && typeof target.webSocketDebuggerUrl === 'string')) {
+                      await writeState()
+                      ready = true
+                      break
+                    }
+                    lastError = 'Guardian target not available for new CDP attachment'
+                  }
+                  else lastError = 'Guardian composer not hydrated after attach'
+                }
+                catch (error) {
+                  lastError = error instanceof Error ? error.message : String(error)
+                }
               }
-              await new Promise(resolve => setTimeout(resolve, 200))
+              await new Promise(resolve => setTimeout(resolve, 500))
             }
-            // acquireActorTarget 使用 daemon-state.json 识别 Guardian，必须先落盘。
-            await writeState()
+            if (!ready) {
+              // 外部 ClassFlow 只看到 Job 仍在排队，Guardian supervisor 同期负责
+              // 检测失效页面并重建；重试预算在队列内部管理，不会无限循环。
+              throw new Error(`ChatGPT Guardian unavailable after readiness grace period: ${lastError}`)
+            }
           }
           return await sendActorPrompt({
           cdpHttp,
