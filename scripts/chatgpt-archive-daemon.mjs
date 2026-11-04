@@ -11102,7 +11102,22 @@ async function main() {
         submissionQueueAutoRetry: false,
         submissionQueueLog: log,
         onSubmissionAttemptError: notifyActorSubmissionAttemptError,
-        submitTurn: async (input) => await sendActorPrompt({
+        submitTurn: async (input) => {
+          // Bridge 队列比 Guardian 初始化得早：开机恢复旧 queued Job 时，不能在
+          // CDP 页面尚未创建的瞬间就判失败。等到 Guardian 完成初始化并刷新状态文件，
+          // 再执行真正的 Actor；这只是同一次提交内的就绪等待，不是自动重试。
+          if (input.targetMode === 'guardian') {
+            const deadline = Date.now() + 45_000
+            while (!guardian?.targetId || !guardianReadyAt) {
+              if (stopping || Date.now() >= deadline) {
+                throw new Error('Archive Guardian was not ready within startup grace period')
+              }
+              await new Promise(resolve => setTimeout(resolve, 200))
+            }
+            // acquireActorTarget 使用 daemon-state.json 识别 Guardian，必须先落盘。
+            await writeState()
+          }
+          return await sendActorPrompt({
           cdpHttp,
           statePath: actorStatePath,
           daemonStatePath: statePath,
@@ -11133,7 +11148,8 @@ async function main() {
               retryAfter: details.retryAfter,
             })
           },
-        }),
+          })
+        },
       })
       await archiveBridge.start()
       archiveBridgeStartedAt = Date.now()
