@@ -1427,24 +1427,32 @@ async function resetGuardianAfterPrePostFailure(client: ActorCdpClient): Promise
 async function waitForStableActorComposer(client: ActorCdpClient, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + Math.max(3_000, timeoutMs)
   const stableMs = 1_200
-  let lastHref: string | null = null
+  let lastSignature: string | null = null
   let stableSince = 0
   while (Date.now() < deadline) {
     const snapshot = await evaluateValue(client, `(() => {
       const input = ${ACTOR_VISIBLE_COMPOSER_EXPRESSION}
-      const changed = window.__chatgptArchiveActorComposerRef !== input
-      window.__chatgptArchiveActorComposerRef = input
-      return { href: String(location.href), ready: Boolean(input && input.isConnected), changed }
+      const bounds = input?.getBoundingClientRect()
+      return {
+        href: String(location.href),
+        ready: Boolean(input && input.isConnected && document.readyState !== 'loading'),
+        editorWidth: bounds ? Math.round(bounds.width) : 0,
+      }
     })()`)
     const now = Date.now()
-    if (!snapshot?.ready || snapshot.changed || snapshot.href !== lastHref) {
+    // React 会在同一 URL 和相同尺寸下反复创建新的编辑器 DOM 对象，
+    // 因而不能把“节点引用没变”当成稳定前提，否则会无休止地等待。
+    // 只校验 URL、就绪状态和可见编辑器几何形态；逐块真实文本反馈负责
+    // 处理后续可能发生的重挂载或焦点漂移。
+    const signature = snapshot?.ready ? `${snapshot.href}|${snapshot.editorWidth}` : null
+    if (!signature || signature !== lastSignature) {
       stableSince = now
-      lastHref = snapshot?.href ?? null
+      lastSignature = signature
     }
     else if (now - stableSince >= stableMs) return
     await new Promise(resolve => setTimeout(resolve, 100))
   }
-  throw new Error('ChatGPT actor composer or project route did not stabilize before input')
+  throw new Error(`ChatGPT actor composer or project route did not stabilize before input (lastSignature=${lastSignature ?? 'none'})`)
 }
 
 async function clearAndTypePrompt(
@@ -1778,6 +1786,11 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
         }
         if (contextBodyRequestIds.size > 0 && contextBodyResponseAt === null) {
           throw new Error(`ChatGPT actor conversation body did not load successfully (status=${contextBodyStatus ?? 'unknown'})`)
+        }
+        if (contextBodyRequestIds.size > 0 && contextBodyStatus !== null
+          && (contextBodyStatus < 200 || contextBodyStatus >= 300)) {
+          // UI 在 429 时可能仍显示旧的 composer/消息 DOM，不能据此越过正文加载门。
+          throw new Error(`ChatGPT actor conversation body did not load successfully (status=${contextBodyStatus})`)
         }
       }
 
