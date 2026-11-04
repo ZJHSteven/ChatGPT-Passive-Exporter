@@ -1416,6 +1416,36 @@ async function resetGuardianAfterPrePostFailure(client: ActorCdpClient): Promise
   await clearGuardianComposerDraft(client)
 }
 
+/**
+ * ChatGPT 可能先渲染 /c/<CID>，再异步改写为 /g/<Project>/c/<CID>。
+ * 在旧路由的 composer 刚出现就开始插入长文本，会被后续 React 重挂载清空、截断。
+ * 因此要求 URL 和真实 contenteditable 节点连续稳定一小段时间，才允许输入。
+ * 这里只读观察 DOM，不增加任何 Body GET 或额外页面导航。
+ */
+async function waitForStableActorComposer(client: ActorCdpClient, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + Math.max(3_000, timeoutMs)
+  const stableMs = 1_200
+  let lastHref: string | null = null
+  let stableSince = 0
+  while (Date.now() < deadline) {
+    const snapshot = await evaluateValue(client, `(() => {
+      const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
+        .find(element => element.closest('form[data-chatgpt-composer]')) || null
+      const changed = window.__chatgptArchiveActorComposerRef !== input
+      window.__chatgptArchiveActorComposerRef = input
+      return { href: String(location.href), ready: Boolean(input && input.isConnected), changed }
+    })()`)
+    const now = Date.now()
+    if (!snapshot?.ready || snapshot.changed || snapshot.href !== lastHref) {
+      stableSince = now
+      lastHref = snapshot?.href ?? null
+    }
+    else if (now - stableSince >= stableMs) return
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  throw new Error('ChatGPT actor composer or project route did not stabilize before input')
+}
+
 async function clearAndTypePrompt(
   client: ActorCdpClient,
   prompt: string,
@@ -1522,6 +1552,9 @@ async function clearAndTypePrompt(
     // 本次 Actor 调用整体失败，持久队列下一轮会先 Ctrl+A 清空重新发送。
     try {
       await client.send('Input.insertText', { text: chunk }, 15_000)
+      // 隐藏页在第一块输入后可能把焦点交还给新挂载的 ProseMirror；
+      // 给前端一个事件处理窗口，再用下一块的 focus + Range 精确定位光标。
+      await new Promise(resolve => setTimeout(resolve, offset === 0 ? 300 : 100))
     }
     catch (error) {
       const chunkIndex = Math.floor(offset / chunkSize) + 1
@@ -1794,6 +1827,10 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
         waitingForFinal: routeSnapshot.waitingForFinal,
       })
       formalRequestUrl = mode === 'steer' ? steerRequestUrl : conversationRequestUrl
+
+      // 等待 /c/<CID> → /g/<Project>/c/<CID> 的前端跳转彻底稳定，
+      // 否则第一次 Input.insertText 即使 ACK，也可能被路由重挂载抹掉。
+      await waitForStableActorComposer(client, timeoutMs)
 
       // 目标 route/context 已经真正 ready 后再采第二份结构指纹。第一份保护“怎么导航”，
       // 第二份保护“怎么发送”；两者都通过以后才允许把 prompt 写入页面。
