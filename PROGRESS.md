@@ -1,3 +1,12 @@
+## 2026-11-05 ClassFlow Actor 有界恢复、可见编辑器修复与真实回执验收
+
+- **2026-11-05 03:xx（北京）线上修复**：Archive daemon 保持常驻，Bridge 和 WSS 正常；生产 Actor 队列已恢复有界 `autoRetry=true`，单个任务最多 **4 次真实尝试**、指数退避、最多 1 小时恢复预算，HTTP 413 / 正式 POST 结果未知不盲目重发；失败和 `operator-canceled` 历史记录绝不因重启复活。改动 `53a0d6c`、`53a4fc2`、`54b2ee0` 等。
+- **CDP 输入闭环**：`actor-composer-integrity.ts` 每一块真实输入后从编辑器 DOM 读回并逐字比对；命令 ACK 超时但文本已正确写入时不重新插入，丢字/重复/失焦则允许一次全选重建，两次不一致立刻在 POST 前终止；CLI 默认短文本（<=2048 Unicode 字符）单块，长 ASR 维持 512 分块。
+- **真实根因**：医学人口学项目聊天完成渲染后有两个 `form[data-chatgpt-composer]`：第一个隐藏编辑器 `0×0` 且可能保存 2049 字符草稿，第二个可见编辑器约 `554×36`（长草稿时可达 `699×1170`）。旧代码对焦、清理、稳定性筛查和读回采用不同选择规则，误操作隐藏编辑器。隐藏 Guardian 还存在 `document.hasFocus()=false`，项目 URL 又从 `/c/CID` 二次跳转至 `/g/.../c/CID`。项目页外层容器 `pointer-events:none`、可见子编辑器 `auto`，所以不能用祖先指针属性误拒输入框。已统一 `ACTOR_VISIBLE_COMPOSER_EXPRESSION`、临时 CDP 焦点模拟与路由几何稳定性条件；新测试覆盖隐藏重复编辑器与 CDP 表达式语法。改动 `33c95dc`、`f3d6ecc`、`f3ea0e5`、`f5512d4`。
+- **实际成功发送**：ClassFlow 医学人口学 `classflow:lecture:36616c38baa9...:summary:v2:0:initial` 所属会话 `6aeb1e3d-6208-83e9-8957-132aa7c70b46`，`chatgpt-archive actor send` 使用新逻辑一次发送原定 **513 字符**，输入闭环 `inputChunks=1/rewritePasses=1`，会话 Body GET **200**、正式 POST **200**、SSE 收到、Guardian 正确回首页；Archive canonical 用户内容逐字匹配，Assistant final **1417 字符**、`finished_successfully`、`end_turn=true`、包含 `## 本堂讲了什么`。正式请求追踪 `31732.31007`。
+- **已验收**：最终 `npm run check` **39 个测试文件/360 项测试全通过**，TypeScript 检查和四套浏览器构建成功。生产 daemon 已恢复运行；上一轮重启后的验收见状态文件。其他历史 ClassFlow failed/取消任务不自动重启。
+- **明确未完成**：这次成功通过单独 CLI 发送，因此原持久化队列里的医学人口学 Summary Job **仍处于 failed**，尚未与实际 canonical 结果关联，ClassFlow 界面可能显示旧失败。尝试进行直接队列状态写回时工具安全检查阻断，未擅自篡改状态。需要使用受支持的受审计状态对账途径处理，不能伪称 ClassFlow 已更新。另外 10 月 28 日呼吸系统 Notes 原定 97,854 UTF-8 字节却 HTTP 413，而更长的历史输入曾成功；首次输入命令超时可能导致旧草稿叠加，但没有原始 POST Body 证明。**自动 413→TXT 附件兜底尚未实现**，不能在缺少上传与 canonical 验证时仓促上线。
+
 ## 2026-11-05 Archive Actor / ClassFlow 过渡期止损与单次验收
 
 - **Archive 不停机**：生产 daemon 正常运行，Bridge/WSS/主动与被动归档保持可用；Actor 生产队列禁用自动重试和重启时复活，单次失败即终止。旧 ClassFlow Summary 积压已封存备份，不让数千次尝试继续增长。相关提交 `8eae503`。
