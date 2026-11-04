@@ -3,6 +3,7 @@ import path from 'node:path'
 // Node 24 直接执行本项目 `.ts` 源文件时不会像 Vite/Vitest 一样自动补扩展名；
 // 这是运行时 import（不是 type-only），因此必须显式写 `.ts`。
 import { ActiveTurnRecorder, buildActorSubmitTrace } from './active-turn-recorder.ts'
+import { inputActorPromptWithFeedback } from './actor-composer-integrity.ts'
 import {
   ActorDomDriftLedger,
   type ActorDomObservation,
@@ -1492,96 +1493,52 @@ async function clearAndTypePrompt(
   // 用真实键盘清空 React composer，再走 CDP insertText；不直接篡改 textarea.value，避免绕过状态层。
   // 后台 Guardian 里 Ctrl+A/Backspace 的 CDP ACK 并不意味着 ProseMirror 已清空。
   // 使用真实选区 + 输入事件覆盖文档，避免多次重试把提示词重复累加。
-  const selected = await evaluateValue(client, `(() => {
+  // 每块真实输入后直接从 ProseMirror 读取完整已输入前缀，进行严格逐字比对。
+  // 若 CDP 命令超时但实际内容正确，则只记账不重复插入；如果发现丢字、重复或失焦，
+  // 仅允许一次从头全选重建。连续两次不一致就 fail-closed，绝不会执行正式 POST。
+  const editorExpression = `(() => {
     const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
       .find(element => element.closest('form[data-chatgpt-composer]')) || null
-    if (!input) return false
+    if (!input) return null
+    if (input instanceof HTMLTextAreaElement) return input.value.replace(/\r\n?/g, '\n')
+    const readInline = node => {
+      if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || ''
+      if (node.nodeName === 'BR') return node.classList?.contains('ProseMirror-trailingBreak') ? '' : '\n'
+      return [...node.childNodes].map(readInline).join('')
+    }
+    return [...input.children].map(readInline).join('\n')
+  })()`
+  const position = (atEnd: boolean) => `(() => {
+    const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
+      .find(element => element.closest('form[data-chatgpt-composer]')) || null
+    if (!input || !input.isConnected) return false
     input.focus()
     if (input instanceof HTMLTextAreaElement) {
-      input.setSelectionRange(0, input.value.length)
+      input.setSelectionRange(${atEnd ? 'input.value.length, input.value.length' : '0, input.value.length'})
       return true
     }
     const selection = window.getSelection()
     if (!selection) return false
     const range = document.createRange()
     range.selectNodeContents(input)
+    ${atEnd ? 'range.collapse(false)' : ''}
     selection.removeAllRanges()
     selection.addRange(range)
     return true
-  })()`)
-  if (!selected) throw new Error('CDP actor could not select all composer content before replacing input')
-  // ClassFlow 的完整课堂 ASR 有时超过十万字节。一次性调用 Input.insertText
-  // 容易使 Chrome/React 在 CDP 客户端 10 秒超时前无法完成输入事件。
-  // 因此拆成较小的真实 CDP 文本输入事件，不绕开 React/ProseMirror 状态层。
-  // 用 Array.from 按 Unicode 字符切分，避免把 emoji 等代理对从中间截断。
-  const normalizedPrompt = prompt.replace(/\r\n?/gu, '\n')
-  const characters = Array.from(normalizedPrompt)
-  const chunkSize = Math.trunc(inputChunkChars)
-  if (!Number.isInteger(chunkSize) || chunkSize < 64 || chunkSize > 2048) {
-    throw new Error('actor inputChunkChars must be between 64 and 2048 Unicode characters')
-  }
-  const startedAt = Date.now()
-  const totalChunks = Math.ceil(characters.length / chunkSize)
-  for (let offset = 0; offset < characters.length; offset += chunkSize) {
-    if (offset > 0) {
-      // ProseMirror 在后台页连续插入多块时可能发生 selection 位置漂移：
-      // 真实测试出现最后一个换行附近 B/C 顺序颠倒，虽然总字符数完全相同。
-      // 每次都重新用真实 DOM Selection 定位编辑器末尾，避免内容错序。
-      const atEnd = await evaluateValue(client, `(() => {
-        const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
-          .find(element => element.closest('form[data-chatgpt-composer]')) || null
-        if (!input) return false
-        input.focus()
-        if (input instanceof HTMLTextAreaElement) {
-          input.setSelectionRange(input.value.length, input.value.length)
-          return true
-        }
-        const selection = window.getSelection()
-        if (!selection) return false
-        const range = document.createRange()
-        range.selectNodeContents(input)
-        range.collapse(false)
-        selection.removeAllRanges()
-        selection.addRange(range)
-        return true
-      })()`)
-      if (!atEnd) throw new Error(`CDP input caret positioning failed at Unicode offset ${offset}`)
-    }
-    const chunk = characters.slice(offset, offset + chunkSize).join('')
-    // 每块必须等真正的 CDP ACK。超时后不在同一 composer 盲目重试，以免重复输入；
-    // 本次 Actor 调用整体失败，持久队列下一轮会先 Ctrl+A 清空重新发送。
-    try {
-      await client.send('Input.insertText', { text: chunk }, 15_000)
-      // 隐藏页在第一块输入后可能把焦点交还给新挂载的 ProseMirror；
-      // 给前端一个事件处理窗口，再用下一块的 focus + Range 精确定位光标。
-      await new Promise(resolve => setTimeout(resolve, offset === 0 ? 300 : 100))
-    }
-    catch (error) {
-      const chunkIndex = Math.floor(offset / chunkSize) + 1
-      throw new Error(`CDP Input.insertText chunk ${chunkIndex}/${totalChunks} at Unicode offset ${offset} failed: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-  // 在点击发送前独立读取编辑器正文并逐字符比对；绝不把 ACK 误认为真实输入正确。
-  const actual = await evaluateValue(client, `(() => {
-    const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
-      .find(element => element.closest('form[data-chatgpt-composer]')) || null
-    if (!input) return null
-    if (input instanceof HTMLTextAreaElement) return input.value.replace(/\\r\\n?/g, '\\n')
-    const readInline = node => {
-      if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || ''
-      if (node.nodeName === 'BR') return node.classList?.contains('ProseMirror-trailingBreak') ? '' : '\\n'
-      return [...node.childNodes].map(readInline).join('')
-    }
-    return [...input.children].map(readInline).join('\\n')
-  })()`)
-  if (typeof actual !== 'string' || actual !== normalizedPrompt) {
-    const text = typeof actual === 'string' ? actual : ''
-    let firstMismatch = 0
-    while (firstMismatch < text.length && firstMismatch < normalizedPrompt.length
-      && text[firstMismatch] === normalizedPrompt[firstMismatch]) firstMismatch++
-    throw new Error(`CDP input verification failed before POST: expectedChars=${normalizedPrompt.length}, actualChars=${text.length}, firstMismatch=${firstMismatch}`)
-  }
-  return { inputChunks: totalChunks, inputCharacters: characters.length, inputElapsedMs: Date.now() - startedAt }
+  })()`
+  return await inputActorPromptWithFeedback(prompt, inputChunkChars, {
+    selectAll: async () => (await evaluateValue(client, position(false))) === true,
+    focusAtEnd: async () => (await evaluateValue(client, position(true))) === true,
+    insertText: async text => { await client.send('Input.insertText', { text }, 15_000) },
+    readText: async () => await evaluateValue(client, editorExpression),
+    settle: async first => { await new Promise(resolve => setTimeout(resolve, first ? 300 : 100)) },
+    recoverBeforeRewrite: async () => {
+      await waitForStableActorComposer(client, 6_000)
+      // 这个清理动作可能被隐藏页拒绝，因此它不是唯一清理路径：后续全选+覆盖
+      // 仍要被每个分块的真实 DOM 前缀验证。若无法恢复，控制器终止而非发送。
+      await clearGuardianComposerDraft(client)
+    },
+  })
 }
 
 async function clickSendHandler(client: ActorCdpClient): Promise<void> {
