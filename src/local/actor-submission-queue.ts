@@ -89,6 +89,10 @@ export interface ActorSubmissionQueueOptions {
   submitTurn: (input: ActorSubmissionInput) => Promise<Record<string, unknown>>
   /** Disable automatic retry and restart-time resurrection of failed submissions. */
   autoRetry?: boolean
+  /** 包括第一次执行，超过后永久失败，不允许变成无限重试。 */
+  maxAttempts?: number
+  /** 同一任务的最长故障恢复时间（毫秒）。 */
+  maxRetryAgeMs?: number
   confirmTurn?: (input: ActorSubmissionInput) => Promise<Record<string, unknown> | null>
   /** 生产者本地读取 canonical 数据；外部调用方无法触碰原始消息结构。 */
   resolveCompletion?: (record: ActorSubmissionRecord) => ActorSubmissionCompletion | null
@@ -141,14 +145,14 @@ export function isRetryableInfrastructureError(message: string): boolean {
   // 正式 POST 已经观察到、但最终 HTTP 结果未知时绝不能盲目重发；
   // 否则一次 CDP timeout 可能把“其实已经送达”的 turn 重复提交。
   if (isSubmissionOutcomeUnknownError(message)) return false
-  return /cooldown|HTTP 429|unavailable|CDP|target.*closed|target.*unavailable|lease timeout|timed out|timeout|fetch failed|ECONN|socket|waiting for full answer|still live|DOM drift|prompt input not found|composer.*not found|project not found or not visible in sidebar/iu.test(message)
+  return /cooldown|HTTP 429|unavailable|CDP|target.*closed|target.*unavailable|lease timeout|timed out|timeout|fetch failed|ECONN|socket|waiting for full answer|still live|DOM drift|prompt input not found|composer.*not found|project not found or not visible in sidebar|conversation body did not load|conversation context did not finish rendering|composer or project route did not stabilize|healthy ChatGPT shell/iu.test(message)
 }
 
 export class ActorSubmissionQueue {
   private readonly options: Required<Pick<
     ActorSubmissionQueueOptions,
     'filePath' | 'submitTurn' | 'pollIntervalMs' | 'retryBaseMs' | 'retryMaxMs'
-    | 'autoRetry'
+    | 'autoRetry' | 'maxAttempts' | 'maxRetryAgeMs'
   >> & Pick<ActorSubmissionQueueOptions, 'confirmTurn' | 'resolveCompletion' | 'matchServerError' | 'log' | 'onAccepted' | 'onAttemptError'>
 
   private readonly recordsByKey = new Map<string, ActorSubmissionRecord>()
@@ -178,6 +182,8 @@ export class ActorSubmissionQueue {
       retryBaseMs: Math.max(100, options.retryBaseMs ?? 5000),
       retryMaxMs: Math.max(1000, options.retryMaxMs ?? 60_000),
       autoRetry: options.autoRetry ?? true,
+      maxAttempts: Math.max(1, Math.trunc(options.maxAttempts ?? 4)),
+      maxRetryAgeMs: Math.max(10_000, options.maxRetryAgeMs ?? 60 * 60_000),
       log: options.log,
       onAccepted: options.onAccepted,
       onAttemptError: options.onAttemptError,
@@ -191,37 +197,39 @@ export class ActorSubmissionQueue {
     let repaired = false
     for (const record of this.recordsByKey.values()) {
       if (record.status === 'processing') {
-        // A prior process may already have sent the POST. Do not replay it
-        // after restart when the operator has disabled automatic retries.
-        record.status = this.options.autoRetry ? 'queued' : 'failed'
+        // 进程在发送中崩溃，不知道正式 POST 是否到达。不能把它当作普通失败
+        // 无条件重放：先只读核对 canonical，查不到则停止并保存证据等待人工复核。
+        let confirmed: Record<string, unknown> | null = null
+        if (this.options.confirmTurn) {
+          try { confirmed = await this.options.confirmTurn(record.input) }
+          catch { /* canonical 读取失败也不代表消息未发送 */ }
+        }
+        record.status = confirmed ? 'accepted' : 'failed'
+        record.result = confirmed ?? record.result
         record.nextAttemptAt = null
         record.updatedAt = Date.now()
-        if (!this.options.autoRetry) {
-          record.lastError = 'automatic Actor replay disabled: prior processing outcome unknown'
+        if (!confirmed) {
+          record.lastError = 'submission outcome unknown after process restart; canonical review required before replay'
           record.completion = { status: 'failed', error: record.lastError, completedAt: Date.now() }
         }
         repaired = true
         continue
       }
-      if (!this.options.autoRetry && record.status === 'retry_waiting') {
+      if (record.status === 'retry_waiting' && (
+        !this.options.autoRetry
+        || record.attemptCount >= this.options.maxAttempts
+        || Date.now() - record.createdAt >= this.options.maxRetryAgeMs
+      )) {
         record.status = 'failed'
         record.nextAttemptAt = null
         record.updatedAt = Date.now()
-        record.lastError = `automatic Actor retry disabled; previous error: ${record.lastError ?? 'unknown'}`
+        record.lastError = `Actor retry budget exhausted or disabled; previous error: ${record.lastError ?? 'unknown'}`
         record.completion = { status: 'failed', error: record.lastError, completedAt: Date.now() }
         repaired = true
         continue
       }
-      // 软件升级后若某类错误从“永久失败”被重新判定为基础设施瞬态错误，
-      // 旧 failed 记录也要自动回到重试队列；否则同一 idempotencyKey 会永远卡死。
-      if (this.options.autoRetry && record.status === 'failed'
-        && record.lastError
-        && isRetryableInfrastructureError(record.lastError)) {
-        record.status = 'retry_waiting'
-        record.nextAttemptAt = Date.now()
-        record.updatedAt = Date.now()
-        repaired = true
-      }
+      // 历史 failed（包括 operator-canceled）始终是终态：即便开启有限自动重试，
+      // 重启时也绝不能复活已经取消的旧 ClassFlow 任务。
     }
     if (repaired) await this.persist()
     this.schedule(0)
@@ -489,13 +497,11 @@ export class ActorSubmissionQueue {
           const retryable = isRetryableInfrastructureError(message)
           record.lastError = message
           record.updatedAt = Date.now()
-          if (this.options.autoRetry && outcomeUnknown && record.attemptCount < 2) {
-            // ambiguous POST 最多只允许一次后续重发。重发前下一轮会先走 confirmTurn；
-            // 因而正常路径是“先确认，确认不到才第二次 POST”，不会无限复制 turn。
-            record.status = 'retry_waiting'
-            record.nextAttemptAt = Date.now() + this.retryDelay(record.attemptCount)
-          }
-          else if (!this.options.autoRetry || !retryable) {
+          // POST 结果未知不具备安全的重发资格；客户端崩溃/网络中断时先封存，
+          // 不能仅因下一次查询 canonical 暂时为空就把消息重发一次。
+          const exhausted = record.attemptCount >= this.options.maxAttempts
+            || Date.now() - record.createdAt >= this.options.maxRetryAgeMs
+          if (outcomeUnknown || !this.options.autoRetry || !retryable || exhausted) {
             record.status = 'failed'
             record.nextAttemptAt = null
             record.completion = { status: 'failed', error: message, completedAt: Date.now() }
