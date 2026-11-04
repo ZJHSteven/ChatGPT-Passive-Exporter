@@ -738,7 +738,8 @@ async function readActorPageSnapshot(client: ActorCdpClient): Promise<ActorPageS
       composerHydrated: Boolean(input && usable(input) && (!form || form.hasAttribute('data-chatgpt-composer'))),
       composerHasText: Boolean(input && String(input.innerText ?? input.value ?? '').trim()),
       // 只在编辑器缺失时识别页面末尾的明确错误提示，避免匹配到正文里引用的报错。
-      conversationLoadFailed: Boolean(!input && /无法加载(?:此|该|这个)?\s*(?:ChatGPT\s*)?对话|unable to load (?:this |the )?(?:ChatGPT )?conversation|failed to load conversation/iu.test(bodyText.slice(-600))),
+      // 注意：这里处于外层 TypeScript 模板字符串内，正则的反斜杠必须双重转义。
+      conversationLoadFailed: Boolean(!input && /无法加载(?:此|该|这个)?\\s*(?:ChatGPT\\s*)?对话|unable to load (?:this |the )?(?:ChatGPT )?conversation|failed to load conversation/iu.test(bodyText.slice(-600))),
       sendReady: Boolean(sendButton && !sendButton.disabled),
       stopVisible: Boolean(stopButton && !stopButton.disabled),
       waitingForFinal: /连接已中断|等待完整答复|connection interrupted|waiting for (?:the )?full (?:answer|response)/iu.test(bodyText),
