@@ -11097,6 +11097,9 @@ async function main() {
         host: bridgeHost,
         port: bridgePort,
         submissionQueuePath: actorSubmissionQueuePath,
+        // ClassFlow may poll the same key, but Archive must never silently
+        // retry or resurrect an Actor send after a failed attempt.
+        submissionQueueAutoRetry: false,
         submissionQueueLog: log,
         onSubmissionAttemptError: notifyActorSubmissionAttemptError,
         submitTurn: async (input) => await sendActorPrompt({

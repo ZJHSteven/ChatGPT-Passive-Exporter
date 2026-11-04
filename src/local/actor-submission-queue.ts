@@ -87,6 +87,8 @@ export class ActorSubmissionConflictError extends Error {
 export interface ActorSubmissionQueueOptions {
   filePath: string
   submitTurn: (input: ActorSubmissionInput) => Promise<Record<string, unknown>>
+  /** Disable automatic retry and restart-time resurrection of failed submissions. */
+  autoRetry?: boolean
   confirmTurn?: (input: ActorSubmissionInput) => Promise<Record<string, unknown> | null>
   /** 生产者本地读取 canonical 数据；外部调用方无法触碰原始消息结构。 */
   resolveCompletion?: (record: ActorSubmissionRecord) => ActorSubmissionCompletion | null
@@ -146,6 +148,7 @@ export class ActorSubmissionQueue {
   private readonly options: Required<Pick<
     ActorSubmissionQueueOptions,
     'filePath' | 'submitTurn' | 'pollIntervalMs' | 'retryBaseMs' | 'retryMaxMs'
+    | 'autoRetry'
   >> & Pick<ActorSubmissionQueueOptions, 'confirmTurn' | 'resolveCompletion' | 'matchServerError' | 'log' | 'onAccepted' | 'onAttemptError'>
 
   private readonly recordsByKey = new Map<string, ActorSubmissionRecord>()
@@ -174,6 +177,7 @@ export class ActorSubmissionQueue {
       pollIntervalMs: Math.max(10, options.pollIntervalMs ?? 1000),
       retryBaseMs: Math.max(100, options.retryBaseMs ?? 5000),
       retryMaxMs: Math.max(1000, options.retryMaxMs ?? 60_000),
+      autoRetry: options.autoRetry ?? true,
       log: options.log,
       onAccepted: options.onAccepted,
       onAttemptError: options.onAttemptError,
@@ -187,15 +191,30 @@ export class ActorSubmissionQueue {
     let repaired = false
     for (const record of this.recordsByKey.values()) {
       if (record.status === 'processing') {
-        record.status = 'queued'
+        // A prior process may already have sent the POST. Do not replay it
+        // after restart when the operator has disabled automatic retries.
+        record.status = this.options.autoRetry ? 'queued' : 'failed'
         record.nextAttemptAt = null
         record.updatedAt = Date.now()
+        if (!this.options.autoRetry) {
+          record.lastError = 'automatic Actor replay disabled: prior processing outcome unknown'
+          record.completion = { status: 'failed', error: record.lastError, completedAt: Date.now() }
+        }
+        repaired = true
+        continue
+      }
+      if (!this.options.autoRetry && record.status === 'retry_waiting') {
+        record.status = 'failed'
+        record.nextAttemptAt = null
+        record.updatedAt = Date.now()
+        record.lastError = `automatic Actor retry disabled; previous error: ${record.lastError ?? 'unknown'}`
+        record.completion = { status: 'failed', error: record.lastError, completedAt: Date.now() }
         repaired = true
         continue
       }
       // 软件升级后若某类错误从“永久失败”被重新判定为基础设施瞬态错误，
       // 旧 failed 记录也要自动回到重试队列；否则同一 idempotencyKey 会永远卡死。
-      if (record.status === 'failed'
+      if (this.options.autoRetry && record.status === 'failed'
         && record.lastError
         && isRetryableInfrastructureError(record.lastError)) {
         record.status = 'retry_waiting'
@@ -470,13 +489,13 @@ export class ActorSubmissionQueue {
           const retryable = isRetryableInfrastructureError(message)
           record.lastError = message
           record.updatedAt = Date.now()
-          if (outcomeUnknown && record.attemptCount < 2) {
+          if (this.options.autoRetry && outcomeUnknown && record.attemptCount < 2) {
             // ambiguous POST 最多只允许一次后续重发。重发前下一轮会先走 confirmTurn；
             // 因而正常路径是“先确认，确认不到才第二次 POST”，不会无限复制 turn。
             record.status = 'retry_waiting'
             record.nextAttemptAt = Date.now() + this.retryDelay(record.attemptCount)
           }
-          else if (!retryable) {
+          else if (!this.options.autoRetry || !retryable) {
             record.status = 'failed'
             record.nextAttemptAt = null
             record.completion = { status: 'failed', error: message, completedAt: Date.now() }

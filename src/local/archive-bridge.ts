@@ -128,6 +128,8 @@ export interface ArchiveBridgeOptions {
   maxBodyBytes?: number
   submissionQueuePath?: string | null
   submissionQueuePollIntervalMs?: number
+  /** Set false in production to prevent automatic Actor submission retries. */
+  submissionQueueAutoRetry?: boolean
   /** 把持久化 submission queue 的状态日志汇入 daemon 主日志。 */
   submissionQueueLog?: (message: string, extra?: Record<string, unknown>) => void | Promise<void>
   /** submission 每次尝试失败后的只读通知钩子；不得改变队列状态。 */
@@ -560,6 +562,7 @@ export class ArchiveBridgeServer {
     this.submissionQueue = options.submissionQueuePath
       ? new ActorSubmissionQueue({
           filePath: options.submissionQueuePath,
+          autoRetry: options.submissionQueueAutoRetry ?? true,
           pollIntervalMs: options.submissionQueuePollIntervalMs,
           submitTurn: async input => sanitizeArchiveBridgeTurnResult(
             input as ArchiveBridgeTurnInput,
