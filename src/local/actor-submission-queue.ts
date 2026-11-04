@@ -495,6 +495,34 @@ export class ActorSubmissionQueue {
           const message = error instanceof Error ? error.message : String(error)
           const outcomeUnknown = isSubmissionOutcomeUnknownError(message)
           const retryable = isRetryableInfrastructureError(message)
+          // 请求已经发出但响应丢失：先从 Archive 的 canonical 消息查找
+          // 同一原文的用户消息。若已存在，直接视为 accepted；若无法确认，
+          // 宁可作为未知结果终止，也绝不能盲目重发造成重复课堂。
+          if (outcomeUnknown && this.options.confirmTurn) {
+            let confirmed: Record<string, unknown> | null = null
+            try { confirmed = await this.options.confirmTurn(record.input) }
+            catch (confirmError) {
+              await this.options.log?.('actor submission canonical check after unknown POST failed', {
+                submissionId: record.id,
+                error: confirmError instanceof Error ? confirmError.message : String(confirmError),
+              })
+            }
+            if (confirmed) {
+              record.status = 'accepted'
+              record.result = confirmed
+              record.lastError = null
+              record.nextAttemptAt = null
+              record.updatedAt = Date.now()
+              await this.persist()
+              void this.refreshCompletions(record.result?.conversationId as string | undefined)
+              await this.options.onAccepted?.(cloneRecord(record))
+              await this.options.log?.('actor submission confirmed after unknown formal POST', {
+                submissionId: record.id,
+                idempotencyKey: record.idempotencyKey,
+              })
+              continue
+            }
+          }
           record.lastError = message
           record.updatedAt = Date.now()
           // POST 结果未知不具备安全的重发资格；客户端崩溃/网络中断时先封存，
