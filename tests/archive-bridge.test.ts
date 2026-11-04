@@ -328,7 +328,7 @@ test('ambiguous submission 会先 canonical 确认，命中时不做第二次 PO
   await fs.rm(dir, { recursive: true, force: true })
 })
 
-test('ambiguous submission canonical 未命中时最多只重发一次', async () => {
+test('ambiguous submission canonical 未命中时禁止再次正式 POST', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-ambiguous-retry-'))
   const queuePath = path.join(dir, 'queue.json')
   let attempts = 0
@@ -357,8 +357,8 @@ test('ambiguous submission canonical 未命中时最多只重发一次', async (
   }
   const record = queue.get('ambiguous-retry')
   expect(record?.status).toBe('failed')
-  expect(record?.attemptCount).toBe(2)
-  expect(attempts).toBe(2)
+  expect(record?.attemptCount).toBe(1)
+  expect(attempts).toBe(1)
   await queue.stop()
   await fs.rm(dir, { recursive: true, force: true })
 })

@@ -1500,13 +1500,13 @@ async function clearAndTypePrompt(
     const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
       .find(element => element.closest('form[data-chatgpt-composer]')) || null
     if (!input) return null
-    if (input instanceof HTMLTextAreaElement) return input.value.replace(/\r\n?/g, '\n')
+    if (input instanceof HTMLTextAreaElement) return input.value.replace(/\\r\\n?/g, '\\n')
     const readInline = node => {
       if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || ''
-      if (node.nodeName === 'BR') return node.classList?.contains('ProseMirror-trailingBreak') ? '' : '\n'
+      if (node.nodeName === 'BR') return node.classList?.contains('ProseMirror-trailingBreak') ? '' : '\\n'
       return [...node.childNodes].map(readInline).join('')
     }
-    return [...input.children].map(readInline).join('\n')
+    return [...input.children].map(readInline).join('\\n')
   })()`
   const position = (atEnd: boolean) => `(() => {
     const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
