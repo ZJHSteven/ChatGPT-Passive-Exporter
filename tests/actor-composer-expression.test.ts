@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { Script } from 'node:vm'
 import { test, expect } from 'vitest'
+import { ACTOR_VISIBLE_COMPOSER_EXPRESSION } from '../src/local/actor-composer-target.ts'
 
 test('CDP composer read expression stays valid JavaScript after template literal interpolation', () => {
   // Actor source contains a JavaScript expression string evaluated inside Chromium.
@@ -16,6 +17,6 @@ test('CDP composer read expression stays valid JavaScript after template literal
   const end = source.indexOf('`\n  const position', start)
   expect(end).toBeGreaterThan(start)
   const content = source.slice(start + marker.length, end)
-  const expression = new Function(`return \`${content}\``)() as string
+  const expression = new Function('ACTOR_VISIBLE_COMPOSER_EXPRESSION', `return \`${content}\``)(ACTOR_VISIBLE_COMPOSER_EXPRESSION) as string
   expect(() => new Script(expression)).not.toThrow()
 })
