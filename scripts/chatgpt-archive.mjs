@@ -994,7 +994,10 @@ async function main() {
         mode: actorMode,
         targetMode: actorTarget,
         timeoutMs,
-        inputChunkChars: Number(flags.get('input-chunk-chars') ?? 512),
+        // 未显式传值时交给 Actor 按实际文本长度选择策略：
+        // 短标题/摘要单块输入，长课堂转写维持 512 字符闭环分块。
+        inputChunkChars: flags.has('input-chunk-chars')
+          ? Number(flags.get('input-chunk-chars')) : undefined,
       })
       if (!flags.has('wait-final')) {
         console.log(JSON.stringify(sendResult, null, 2))
