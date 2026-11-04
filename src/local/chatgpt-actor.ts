@@ -4,6 +4,7 @@ import path from 'node:path'
 // 这是运行时 import（不是 type-only），因此必须显式写 `.ts`。
 import { ActiveTurnRecorder, buildActorSubmitTrace } from './active-turn-recorder.ts'
 import { inputActorPromptWithFeedback } from './actor-composer-integrity.ts'
+import { ACTOR_VISIBLE_COMPOSER_EXPRESSION } from './actor-composer-target.ts'
 import {
   ActorDomDriftLedger,
   type ActorDomObservation,
@@ -1373,10 +1374,10 @@ async function clearGuardianComposerDraft(client: ActorCdpClient): Promise<boole
   const before = await readActorPageSnapshot(client)
   if (!before.composerHasText) return true
   const deleted = await evaluateValue(client, `(() => {
-    const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
-      .find(element => element.closest('form[data-chatgpt-composer]')) || null
+    const input = ${ACTOR_VISIBLE_COMPOSER_EXPRESSION}
     if (!input) return false
     input.focus()
+    if (document.activeElement !== input) return false
     if (input instanceof HTMLTextAreaElement) {
       input.setSelectionRange(0, input.value.length)
     }
@@ -1430,8 +1431,7 @@ async function waitForStableActorComposer(client: ActorCdpClient, timeoutMs: num
   let stableSince = 0
   while (Date.now() < deadline) {
     const snapshot = await evaluateValue(client, `(() => {
-      const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
-        .find(element => element.closest('form[data-chatgpt-composer]')) || null
+      const input = ${ACTOR_VISIBLE_COMPOSER_EXPRESSION}
       const changed = window.__chatgptArchiveActorComposerRef !== input
       window.__chatgptArchiveActorComposerRef = input
       return { href: String(location.href), ready: Boolean(input && input.isConnected), changed }
@@ -1497,8 +1497,7 @@ async function clearAndTypePrompt(
   // 若 CDP 命令超时但实际内容正确，则只记账不重复插入；如果发现丢字、重复或失焦，
   // 仅允许一次从头全选重建。连续两次不一致就 fail-closed，绝不会执行正式 POST。
   const editorExpression = `(() => {
-    const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
-      .find(element => element.closest('form[data-chatgpt-composer]')) || null
+    const input = ${ACTOR_VISIBLE_COMPOSER_EXPRESSION}
     if (!input) return null
     if (input instanceof HTMLTextAreaElement) return input.value.replace(/\\r\\n?/g, '\\n')
     const readInline = node => {
@@ -1509,10 +1508,10 @@ async function clearAndTypePrompt(
     return [...input.children].map(readInline).join('\\n')
   })()`
   const position = (atEnd: boolean) => `(() => {
-    const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
-      .find(element => element.closest('form[data-chatgpt-composer]')) || null
+    const input = ${ACTOR_VISIBLE_COMPOSER_EXPRESSION}
     if (!input || !input.isConnected) return false
     input.focus()
+    if (document.activeElement !== input) return false
     if (input instanceof HTMLTextAreaElement) {
       input.setSelectionRange(${atEnd ? 'input.value.length, input.value.length' : '0, input.value.length'})
       return true
@@ -1648,7 +1647,13 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
 
   const client = new ActorCdpClient(target.webSocketDebuggerUrl)
   await client.connect()
+  let focusEmulationEnabled = false
   try {
+    // Guardian 隐藏窗口可能让 document.hasFocus() 长时间为 false。
+    // 临时模拟焦点，确保可见 ProseMirror 能被原生光标与选区操作。
+    // 这个本地 CDP 命令不发 ChatGPT 后端请求，也不创建新标签页。
+    await client.send('Emulation.setFocusEmulationEnabled', { enabled: true }, 5_000)
+    focusEmulationEnabled = true
     // `Page.enable` / `Runtime.enable` 都不是当前 Actor 的必要条件。生产 canary 已证实后台
     // Guardian 会偶发只在这些无关 ACK 上超时；把它们当硬门闩会让一次完全没碰 UI 的发送
     // 直接失败。真正必须先建立的是 Network observer，因为后续正式 POST/HTTP/SSE 全靠它验收。
@@ -1996,6 +2001,9 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
     }
   }
   finally {
+    if (focusEmulationEnabled) {
+      await client.send('Emulation.setFocusEmulationEnabled', { enabled: false }, 1_500).catch(() => {})
+    }
     client.close()
   }
 }
