@@ -48,7 +48,7 @@ test('disabled Actor auto retry never resends and never resurrects stale submiss
     const recovered = makeQueue()
     await recovered.start()
     expect(recovered.get(key)?.status).toBe('failed')
-    expect(recovered.get(key)?.lastError).toContain('automatic Actor retry disabled')
+    expect(recovered.get(key)?.lastError).toContain('Actor retry budget exhausted or disabled')
     expect(attempts).toBe(1)
     await recovered.stop()
 
@@ -59,7 +59,7 @@ test('disabled Actor auto retry never resends and never resurrects stale submiss
     const final = makeQueue()
     await final.start()
     expect(final.get(key)?.status).toBe('failed')
-    expect(final.get(key)?.lastError).toContain('prior processing outcome unknown')
+    expect(final.get(key)?.lastError).toContain('canonical review required before replay')
     expect(attempts).toBe(1)
     await final.stop()
   }
