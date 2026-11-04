@@ -27,6 +27,11 @@ describe('ChatGPT single actor helpers', () => {
     expect(actorDocumentFailureKind('https://example.com/')).toBe('wrong-document')
     expect(actorDocumentFailureKind('https://chatgpt.com/')).toBeNull()
     expect(actorDocumentFailureKind('https://chatgpt.com/c/123')).toBeNull()
+    // 2026-11-04 真实生产事故：同源 conversation 显示「无法加载此 ChatGPT 对话」，
+    // 即使 CDP 健康、URL 正确，也必须识别为业务页面故障并尝试恢复。
+    expect(actorDocumentFailureKind('https://chatgpt.com/c/123', true)).toBe('conversation-load-error')
+    expect(actorDocumentFailureKind('https://chatgpt.com/c/123', false)).toBeNull()
+    expect(actorDocumentFailureKind('about:blank', true)).toBe('wrong-document')
   })
 
   test('导航期空壳 DOM 只表示页面未就绪，不应作为稳定 drift 指纹', () => {

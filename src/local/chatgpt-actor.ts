@@ -106,17 +106,25 @@ interface ActorPageSnapshot {
   composerPresent: boolean
   composerHydrated: boolean
   composerHasText: boolean
+  /** ChatGPT 自身显示「无法加载此对话」，不是可用的会话页面。 */
+  conversationLoadFailed: boolean
   sendReady: boolean
   stopVisible: boolean
   waitingForFinal: boolean
   messageNodes: number
 }
 
-export function actorDocumentFailureKind(href: string): 'wrong-document' | null {
+export function actorDocumentFailureKind(
+  href: string,
+  conversationLoadFailed = false,
+): 'wrong-document' | 'conversation-load-error' | null {
   const raw = String(href || '').trim()
   if (!raw) return 'wrong-document'
   try {
-    return new URL(raw).origin === 'https://chatgpt.com' ? null : 'wrong-document'
+    // 域名正确只能说明浏览器打开了 ChatGPT，不能证明当前页面可交互。
+    // 登录态刷新或临时网络故障可能让同源 conversation 页面停在「再试一次」错误壳。
+    if (new URL(raw).origin !== 'https://chatgpt.com') return 'wrong-document'
+    return conversationLoadFailed ? 'conversation-load-error' : null
   }
   catch {
     return 'wrong-document'
@@ -129,18 +137,19 @@ async function waitForHealthyActorShell(
   targetMode: ActorTargetMode,
 ): Promise<ActorPageSnapshot> {
   const deadline = Date.now() + Math.max(1_000, timeoutMs)
-  let recoveredWrongDocument = false
+  let recoveredUnhealthyDocument = false
   let lastSnapshot: ActorPageSnapshot | null = null
   while (Date.now() < deadline) {
     lastSnapshot = await readActorPageSnapshot(client)
-    const documentFailure = actorDocumentFailureKind(lastSnapshot.href)
+    const documentFailure = actorDocumentFailureKind(lastSnapshot.href, lastSnapshot.conversationLoadFailed)
     if (!documentFailure && (
       lastSnapshot.composerHydrated
       || lastSnapshot.stopVisible
       || lastSnapshot.waitingForFinal
     )) return lastSnapshot
-    if (documentFailure && !recoveredWrongDocument) {
-      recoveredWrongDocument = true
+    if (documentFailure && !recoveredUnhealthyDocument) {
+      // 一次性退回健康首页：不重发、不改写 prompt，不在同一个失败会话里无限刷新。
+      recoveredUnhealthyDocument = true
       const recoveryUrl = targetMode === 'guardian'
         ? 'https://chatgpt.com/?chatgpt-archive-guardian=1'
         : 'https://chatgpt.com/'
@@ -728,6 +737,8 @@ async function readActorPageSnapshot(client: ActorCdpClient): Promise<ActorPageS
       composerPresent: Boolean(input && usable(input)),
       composerHydrated: Boolean(input && usable(input) && (!form || form.hasAttribute('data-chatgpt-composer'))),
       composerHasText: Boolean(input && String(input.innerText ?? input.value ?? '').trim()),
+      // 只在编辑器缺失时识别页面末尾的明确错误提示，避免匹配到正文里引用的报错。
+      conversationLoadFailed: Boolean(!input && /无法加载(?:此|该|这个)?\s*(?:ChatGPT\s*)?对话|unable to load (?:this |the )?(?:ChatGPT )?conversation|failed to load conversation/iu.test(bodyText.slice(-600))),
       sendReady: Boolean(sendButton && !sendButton.disabled),
       stopVisible: Boolean(stopButton && !stopButton.disabled),
       waitingForFinal: /连接已中断|等待完整答复|connection interrupted|waiting for (?:the )?full (?:answer|response)/iu.test(bodyText),
