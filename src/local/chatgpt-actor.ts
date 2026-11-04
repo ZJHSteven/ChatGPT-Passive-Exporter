@@ -1361,6 +1361,59 @@ async function neutralizeGuardianAfterSubmit(
   }
 }
 
+/**
+ * 清理 Guardian 专用页面上的旧草稿。导航回首页并不会保证 React/ProseMirror 丢弃草稿，
+ * 因而下一个 ClassFlow 任务必须在输入前确认编辑器已清空。
+ *
+ * 使用浏览器原生编辑命令触发真实的编辑事件；不能直接赋值 innerHTML/textContent，
+ * 否则可能造成 DOM 看起来已清空、React 内部状态仍保存旧文本的分裂。
+ */
+async function clearGuardianComposerDraft(client: ActorCdpClient): Promise<void> {
+  const before = await readActorPageSnapshot(client)
+  if (!before.composerHasText) return
+  const deleted = await evaluateValue(client, `(() => {
+    const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
+      .find(element => element.closest('form[data-chatgpt-composer]')) || null
+    if (!input) return false
+    input.focus()
+    if (input instanceof HTMLTextAreaElement) {
+      input.setSelectionRange(0, input.value.length)
+    }
+    else {
+      const selection = window.getSelection()
+      if (!selection) return false
+      const range = document.createRange()
+      range.selectNodeContents(input)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
+    return document.execCommand('delete', false, null)
+  })()`)
+  if (deleted !== true) throw new Error('ChatGPT actor failed to clear stale composer draft')
+  // 后台 React 可能在下一个 render 恢复旧值：连续观察几次，避免刚删完就插入。
+  for (let check = 0; check < 3; check++) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+    if (!(await readActorPageSnapshot(client)).composerHasText) return
+  }
+  throw new Error('ChatGPT actor stale composer draft reappeared after clearing')
+}
+
+/**
+ * 仅在正式 POST 尚未启动时复位失败的 Guardian 页面。
+ * 此时不存在可能正在生成的本轮回答，因此可安全退回无 conversation Body 的首页。
+ * 已开始正式 POST 的情形绝不能在这里导航，以免中断结果未知的 SSE。
+ */
+async function resetGuardianAfterPrePostFailure(client: ActorCdpClient): Promise<void> {
+  const homeUrl = 'https://chatgpt.com/?chatgpt-archive-guardian=1'
+  const href = String(await evaluateValue(client, 'location.href') || '')
+  let isHome = false
+  try { isHome = new URL(href).pathname === '/' }
+  catch { /* 无效文档直接导航首页 */ }
+  if (!isHome) await client.send('Page.navigate', { url: homeUrl }, 5_000)
+  await waitForRoute(client, null, 3_500)
+  await clearGuardianComposerDraft(client)
+}
+
 async function clearAndTypePrompt(
   client: ActorCdpClient,
   prompt: string,
@@ -1399,6 +1452,10 @@ async function clearAndTypePrompt(
     return true
   })()`)
   if (focused !== true) throw new Error('ChatGPT actor prompt input not found')
+
+  // 输入前显式抹除上次失败留下的草稿，再通过真实 CDP 按块插入本轮正文。
+  // 仅靠 Range 全选 + 首块覆盖，在 React 后台恢复草稿时可能留下旧内容。
+  await clearGuardianComposerDraft(client)
 
   // 用真实键盘清空 React composer，再走 CDP insertText；不直接篡改 textarea.value，避免绕过状态层。
   // 后台 Guardian 里 Ctrl+A/Backspace 的 CDP ACK 并不意味着 ProseMirror 已清空。
@@ -1895,6 +1952,12 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
     catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const submitEvent = submitState.event
+      if (targetMode === 'guardian' && sendArmedAt === 0) {
+        // 失败发生在点击发送按钮之前，回首页不可能中断本轮正式 POST。
+        // 复位失败不覆盖原错误，也不由队列自动再试；保留最初的故障原因供排查。
+        try { await resetGuardianAfterPrePostFailure(client) }
+        catch { /* 仍保留原始故障；下次任务的健康检查会重新判断页面 */ }
+      }
       if (
         submitEvent
         && acceptedConversationId
