@@ -1793,7 +1793,11 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
       // 第二份保护“怎么发送”；两者都通过以后才允许把 prompt 写入页面。
       const domSignatureReady = await observeActorDomShape(client, domLedger, 'prompt input', options.onDomDrift)
 
-      const inputStats = await clearAndTypePrompt(client, options.prompt, options.inputChunkChars ?? 512)
+      // 短 Summary/Title 默认一次完整插入，避免 513 字符被拆为 512+1，
+      // 产生一次毫无必要的焦点切换、并可能吞掉最后一个汉字。
+      // 长 ASR 仍保留 512 字符分块；显式 inputChunkChars 配置始终优先。
+      const defaultChunk = Array.from(options.prompt.replace(/\r\n?/gu, '\n')).length <= 2048 ? 2048 : 512
+      const inputStats = await clearAndTypePrompt(client, options.prompt, options.inputChunkChars ?? defaultChunk)
       // hidden/background target 可能因为 React 后台调度延迟挂载 submit 控件；这里等“状态变成可提交”，
       // 但最终成功仍以 Network 正式 POST + 2xx 为准，而不是按钮本身。
       await waitForSendButtonReady(client, timeoutMs)
