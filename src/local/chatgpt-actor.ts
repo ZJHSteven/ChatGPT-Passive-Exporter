@@ -1368,9 +1368,9 @@ async function neutralizeGuardianAfterSubmit(
  * 使用浏览器原生编辑命令触发真实的编辑事件；不能直接赋值 innerHTML/textContent，
  * 否则可能造成 DOM 看起来已清空、React 内部状态仍保存旧文本的分裂。
  */
-async function clearGuardianComposerDraft(client: ActorCdpClient): Promise<void> {
+async function clearGuardianComposerDraft(client: ActorCdpClient): Promise<boolean> {
   const before = await readActorPageSnapshot(client)
-  if (!before.composerHasText) return
+  if (!before.composerHasText) return true
   const deleted = await evaluateValue(client, `(() => {
     const input = [...document.querySelectorAll('#prompt-textarea, [contenteditable="true"][role="textbox"], textarea')]
       .find(element => element.closest('form[data-chatgpt-composer]')) || null
@@ -1389,13 +1389,15 @@ async function clearGuardianComposerDraft(client: ActorCdpClient): Promise<void>
     }
     return document.execCommand('delete', false, null)
   })()`)
-  if (deleted !== true) throw new Error('ChatGPT actor failed to clear stale composer draft')
+  // 后台标签页可能拒绝 execCommand，即使同样操作在前台 CDP 测试中成功。
+  // 返回 false 时让后续 Range 全选 + Input.insertText 接管；绝不因此直接发送。
+  if (deleted !== true) return false
   // 后台 React 可能在下一个 render 恢复旧值：连续观察几次，避免刚删完就插入。
   for (let check = 0; check < 3; check++) {
     await new Promise(resolve => setTimeout(resolve, 100))
-    if (!(await readActorPageSnapshot(client)).composerHasText) return
+    if (!(await readActorPageSnapshot(client)).composerHasText) return true
   }
-  throw new Error('ChatGPT actor stale composer draft reappeared after clearing')
+  return false
 }
 
 /**
