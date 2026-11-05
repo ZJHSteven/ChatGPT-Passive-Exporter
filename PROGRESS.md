@@ -1,5 +1,7 @@
 ## 2026-11-05 Watchdog SQLITE_BUSY 漏报事故修复
 
+- **生产闭环验收（22:35）**：修复提交 `ce3a82f` 经 `npm run check` 验证 39/39 文件、361/361 测试、TypeScript 与四类构建全部通过；`chatgpt-archive daemon resume` 已受控恢复到 PID 34940。恢复后 Worker代理方案评估同一原始 generation `startedAt=1793885748784` 于 22:33:52 补发 `watchdog-timeout`、22:34:52 补发 `watchdog-diagnosis`，两条 Bark HTTP 200；pending diagnosis 清零，WSS 3、Bridge 在线、maintenance/notification lastError 为空。服务端成功不等于 iOS 端横幅确实呈现，客户端侧仍是独立待调查问题。
+
 - 取证：《录音转录流程规划》21:48:59 timeout、21:49:11 diagnosis 入 Bark ledger 且 HTTP 200，手机呈现未确认；《Worker代理方案评估》21:36 启动、22:21 过期时 `watchdog-diagnostics` 抛 `database is locked`，漏发 timeout；22:22 的 5m Body 缺口属独立通道。
 - 改造：先持久化候选、后更新内存；优先派发到点通知，避免受后续 catalog/binding 写入影响；新增 SQLITE_BUSY 故障注入测试。全量验收及部署状态待更新。
 

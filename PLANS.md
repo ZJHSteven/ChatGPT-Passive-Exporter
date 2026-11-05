@@ -1,5 +1,8 @@
 ## 2026-11-05 Watchdog SQLite BUSY 导致 45 分钟通知漏报
 
+- [done] 2026-11-05 22:35 生产验收：`ce3a82f` 全量 39/361 测试通过、四构建成功，supervised daemon resume PID 34940；Worker 原 generation 22:33:52 timeout、22:34:52 diagnosis 两阶段均 Bark HTTP 200，pending 归零，WSS=3。
+- [pending] Bark HTTP 200 后 iOS 是否真正展示通知，需客户端侧独立验收，不再混同 Watchdog 触发失败。
+
 - [in_progress] 生产根因：Worker代理方案评估 22:21:02 的 `watchdog-diagnostics` 抛 `database is locked`；旧代码先修改 `active.lastWatchdogAt` 再持久化，失败后后续 tick 不再重试，第一阶段 Bark timeout 无 ledger。
 - [in_progress] 改为“候选状态 → SQLite 持久化成功 → pending / 从 active 摘除 → 立即派发超时通知 → 其他 metadata/catalog 操作”；SQLite BUSY 后保留 active 可重试，重启可由 durable pending 补发。
 - [pending] 故障注入测试、全量 check、受控生产 resume、检查漏报补发和 Body diagnosis，保持原 45m 阈值与两阶段语义。
