@@ -1,4 +1,11 @@
 export declare function acquireArchiveDaemonSingleton(input?: { host?: string; port?: number }): Promise<import('node:net').Server>
+export declare function persistTimedOutWatchdogGeneration<
+  T extends { startedAt: number; lastWatchdogAt?: number | null; watchdogPendingAt?: number | null }
+>(
+  active: T,
+  completedAt: number,
+  persist: (generation: T & { lastWatchdogAt: number; watchdogPendingAt: number; completedAt: number }) => void,
+): T & { lastWatchdogAt: number; watchdogPendingAt: number; completedAt: number }
 export declare function formatDaemonFatalError(error: unknown): string
 export declare function appendDaemonFatalLog(
   logPath: string,

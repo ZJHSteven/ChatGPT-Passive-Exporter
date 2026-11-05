@@ -39,6 +39,7 @@ import {
   devSpaceIdleRepairMode,
   devSpaceFirstToolWatchdogState,
   persistedWatchdogCompletionAt,
+  persistTimedOutWatchdogGeneration,
   retryTransientSqliteBusy,
   shouldStartPostCompletionDevSpaceTurnFromTrace,
   planDevSpaceBindingProbes,
@@ -550,6 +551,49 @@ test('SQLite busy retry is bounded and does not swallow non-busy failures', asyn
     throw new Error('corrupt payload')
   }, { attempts: 3, delayMs: 0 })).rejects.toThrow('corrupt payload')
   expect(fatalCalls).toBe(1)
+})
+
+test('Watchdog SQLite 写锁失败不提前置位，恢复后仍可超时通知', async () => {
+  const deadline = 45 * 60_000
+  const active = {
+    startedAt: 0,
+    lastEventAt: deadline - 10_000,
+    lastWatchdogAt: null,
+    watchdogPendingAt: null,
+    startType: 'devspace:first-tool-trace',
+  }
+  let attempts = 0
+  expect(() => persistTimedOutWatchdogGeneration(active, deadline, () => {
+    attempts += 1
+    throw new Error('database is locked')
+  })).toThrow('database is locked')
+  expect(active.lastWatchdogAt).toBeNull()
+  expect(active.watchdogPendingAt).toBeNull()
+  expect(shouldQueueWatchdogDiagnostic(active, deadline + 1, deadline)).toBe(true)
+
+  let persisted = null
+  const timedOut = persistTimedOutWatchdogGeneration(active, deadline + 5_000, (candidate) => {
+    attempts += 1
+    persisted = candidate
+  })
+  expect(attempts).toBe(2)
+  expect(persisted).toBe(timedOut)
+  expect(timedOut).toMatchObject({
+    lastWatchdogAt: deadline + 5_000,
+    watchdogPendingAt: deadline + 5_000,
+    completedAt: deadline + 5_000,
+  })
+  expect(shouldQueueWatchdogDiagnostic(timedOut, deadline * 2, deadline)).toBe(false)
+
+  // 生产主路径排序回归：通知必须排在其他可能争用数据库的 metadata 更新之前。
+  const daemon = await fs.readFile(new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url), 'utf8')
+  const start = daemon.indexOf('const queueWatchdogDiagnostics = () => {')
+  const end = daemon.indexOf('const reconcileCatalog = async', start)
+  const queue = daemon.slice(start, end)
+  expect(queue.indexOf('persistTimedOutWatchdogGeneration(active, now')).toBeGreaterThan(-1)
+  expect(queue.indexOf('pendingWatchdogDiagnoses.set(conversationId, timedOut)')).toBeGreaterThan(-1)
+  expect(queue.indexOf('dispatchWatchdogTimeoutNotification(conversationId, timedOut, now)'))
+    .toBeLessThan(queue.indexOf('archive.updateDevSpaceBindingTurn({'))
 })
 
 test('startup binding recovery 复用 cooperative worker，不同步 drain pending queue', async () => {

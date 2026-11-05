@@ -804,6 +804,22 @@ export function shouldQueueWatchdogDiagnostic(active, now = Date.now(), watchdog
   return lastWatchdogAt === null || !Number.isFinite(lastWatchdogAt)
 }
 
+/**
+ * 安全提交 Watchdog 超时：SQLite BUSY 时不能提前改变 active 内存状态。
+ * 候选状态先写入持久化层，成功后才由调用方登记 pending 并发送通知。
+ * 这样写锁失败后仍可重新到点检查，而重启能从 durable pending 补发。
+ */
+export function persistTimedOutWatchdogGeneration(active, completedAt, persist) {
+  const timedOut = {
+    ...active,
+    lastWatchdogAt: completedAt,
+    watchdogPendingAt: completedAt,
+    completedAt,
+  }
+  persist(timedOut)
+  return timedOut
+}
+
 export function persistedWatchdogCompletionAt(lastWatchdogAt) {
   if (lastWatchdogAt === null || lastWatchdogAt === undefined || lastWatchdogAt === '') return null
   const value = Number(lastWatchdogAt)
@@ -10111,16 +10127,20 @@ async function main() {
       if (!shouldQueueWatchdogDiagnostic(active, now, watchdogMs)) continue
       // 45m 硬边界本身就是当前 generation 的 completion。先停止 checkpoint、持久化独立
       // pending diagnosis，再从 activeTurns 摘除；Body 只负责随后异常分类，不再决定是否结束。
-      stopCheckpointWatch(conversationId, 'watchdog-timeout', now)
-      active.lastWatchdogAt = now
-      active.watchdogPendingAt = now
-      persistActiveTurn(conversationId, active)
-      pendingWatchdogDiagnoses.set(conversationId, {
-        ...active,
-        completedAt: now,
+      // 先持久化不可变候选；失败时 active 仍保留旧状态，下一轮可以安全重试。
+      const timedOut = persistTimedOutWatchdogGeneration(active, now, (candidate) => {
+        persistActiveTurn(conversationId, candidate)
       })
+      pendingWatchdogDiagnoses.set(conversationId, timedOut)
       recentConversationComplete.set(conversationId, now)
       postCompletionDevSpaceCandidates.delete(conversationId)
+      activeTurns.delete(conversationId)
+      stopCheckpointWatch(conversationId, 'watchdog-timeout', now)
+      // 与 catalog / DevSpace 额外数据库写入解耦：第一阶段告知优先调度。
+      dispatchWatchdogTimeoutNotification(conversationId, timedOut, now)
+      enqueueLifeOpsWatchdogTimeout(conversationId, timedOut, now)
+      const watchdogTrigger = watchdogTriggerForStartType(timedOut.startType)
+      markSyncReady(conversationId, watchdogTrigger, 0)
       if (isCatalogLateActive(active)) {
         archive.markCatalogWatchdogCompleted(
           conversationId,
@@ -10128,22 +10148,17 @@ async function main() {
           now,
         )
       }
-      activeTurns.delete(conversationId)
       archive.updateDevSpaceBindingTurn({
         conversationId,
         observedAt: now,
         lifecycleState: 'closed',
       })
       // Watchdog 到点事实与 body 是否可立即拉取无关：第一条通知现在始终立即发送。
-      enqueueLifeOpsWatchdogTimeout(conversationId, active, now)
-      dispatchWatchdogTimeoutNotification(conversationId, active, now)
-      const watchdogTrigger = watchdogTriggerForStartType(active.startType)
-      markSyncReady(conversationId, watchdogTrigger, 0)
       void log('active turn exceeded watchdog; queued diagnostic body sync', {
         conversationId,
-        activeForMs: now - active.startedAt,
-        lastEventAgoMs: now - active.lastEventAt,
-        startType: active.startType,
+        activeForMs: now - timedOut.startedAt,
+        lastEventAgoMs: now - timedOut.lastEventAt,
+        startType: timedOut.startType,
         trigger: watchdogTrigger,
         generationCompletedAt: now,
       })

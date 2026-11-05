@@ -1,3 +1,8 @@
+## 2026-11-05 Watchdog SQLITE_BUSY 漏报事故修复
+
+- 取证：《录音转录流程规划》21:48:59 timeout、21:49:11 diagnosis 入 Bark ledger 且 HTTP 200，手机呈现未确认；《Worker代理方案评估》21:36 启动、22:21 过期时 `watchdog-diagnostics` 抛 `database is locked`，漏发 timeout；22:22 的 5m Body 缺口属独立通道。
+- 改造：先持久化候选、后更新内存；优先派发到点通知，避免受后续 catalog/binding 写入影响；新增 SQLITE_BUSY 故障注入测试。全量验收及部署状态待更新。
+
 ## 2026-11-05 ClassFlow Actor 有界恢复、可见编辑器修复与真实回执验收
 
 - **2026-11-05 03:xx（北京）线上修复**：Archive daemon 保持常驻，Bridge 和 WSS 正常；生产 Actor 队列已恢复有界 `autoRetry=true`，单个任务最多 **4 次真实尝试**、指数退避、最多 1 小时恢复预算，HTTP 413 / 正式 POST 结果未知不盲目重发；失败和 `operator-canceled` 历史记录绝不因重启复活。改动 `53a0d6c`、`53a4fc2`、`54b2ee0` 等。

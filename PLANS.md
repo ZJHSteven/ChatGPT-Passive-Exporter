@@ -1,3 +1,9 @@
+## 2026-11-05 Watchdog SQLite BUSY 导致 45 分钟通知漏报
+
+- [in_progress] 生产根因：Worker代理方案评估 22:21:02 的 `watchdog-diagnostics` 抛 `database is locked`；旧代码先修改 `active.lastWatchdogAt` 再持久化，失败后后续 tick 不再重试，第一阶段 Bark timeout 无 ledger。
+- [in_progress] 改为“候选状态 → SQLite 持久化成功 → pending / 从 active 摘除 → 立即派发超时通知 → 其他 metadata/catalog 操作”；SQLite BUSY 后保留 active 可重试，重启可由 durable pending 补发。
+- [pending] 故障注入测试、全量 check、受控生产 resume、检查漏报补发和 Body diagnosis，保持原 45m 阈值与两阶段语义。
+
 # 2026-10-24 workspace rate-limit header 对齐
 
 - [done] 第一方 ChatGPT Web 已在多类 /backend-api 请求上稳定携带 x-openai-rate-limit-join-workspace: 1。Archive 不硬编码其值，只把该 header 加入 FIRST_PARTY_REPLAY_HEADER_ALLOWLIST，随最近一次真实第一方请求动态继承。
