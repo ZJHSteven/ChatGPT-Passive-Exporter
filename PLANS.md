@@ -6,7 +6,8 @@
 - [done] 对旧版 Project nested 字段缺采集的历史指纹和真实空列表排除假 Critical；新样本真正缺少 id/update_time 继续触发 Critical。
 - [done] Project `cursor` 和 Body 正常正整数 `num_turns` 值变更保留原始指纹，但不再当作生产协议破坏。
 - [done] 2026-11-09 重新计算生产账本：semanticActionable 由 12 降到 0，原始 exact-shape evidence 仍保留；40 文件、364 测试及 TypeScript/四种构建均通过。
-- [pending] 生产 Daemon 载入新代码前检查活跃 Turn；如当前仍有任务执行，避免为了低风险漂移热修复而中断正在运行的 ChatGPT 会话。
+- [done] 生产重载前确认无 Active Turn，受监督 `chatgpt-archive daemon resume` 成功，新的 PID 42032，WSS=3、gap=null、maintenance=false、syncErrors=0、active/ready/dirty=0；production semanticActionable=0。
+- [done] 重启后第一方 Project Catalog 已观察到 5 条 HTTP 200；尚没有自然触发的新版主动 Body 请求，不能虚报重新上线后的主动 GET E2E。
 
 ### 现场证据
 - 11 月 6–9 日的 9 项新语义告警都是同一个第一方请求头 `x-openai-rejoin-pro-cta` 横跨不同 API family；当前 CDP 只读网络采样显示值为 ASCII 字符串 `1`，没有已证明的签名编码或 turn 级临时性。

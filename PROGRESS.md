@@ -5,7 +5,7 @@
 - **兼容性**：11/06 以来 Archive 主动 Body 882 次、Catalog 512 次 HTTP 200，原代码尚未继承该 header，表明它不是当前成功 GET 的必要条件；新代码只动态继承第一方实际值。
 - **修复**：`src/core/first-party-request-context.ts` 加入 header allowlist；`src/local/protocol-drift.ts` 修正旧版 Project nested shape 缺采集导致的 Critical 误报、Project cursor 分页和 Body num_turns=1000 的误报。未知新增字段、真缺项目 ID 和异常分页取值继续报警。
 - **验收**：`npm run check` 全绿：typecheck、40/40 测试文件、364/364 测试、Chrome/Edge/Firefox/Userscript 四种构建。生产 ledger `semanticActionable=0`，`rawExactPending` 未清零且保留历史证据。
-- **生产上线**：代码已提交；本轮不把“本地检查器结果为 0”冒充运行中的 Daemon 已重启。上生产需要受控重载，并在之后重新核对 Guardian/WSS/主动 GET 和实际 Bark。
+- **生产上线**：活跃 Turn 清零后执行受监督 `chatgpt-archive daemon resume`，成功启动 PID **42032**；复核 `alive=true`、`startupPhase=running`、WSS=3、gap=null、maintenance=false、syncErrors=0、active/ready/dirty=0、notification.lastError=null、`semanticActionable=0`。重启后被动 Project Catalog 有 5 条 HTTP 200，尚未发生新的主动 Body 请求，因此不能虚报主动 GET 的重载后 E2E 已验证。
 
 ## 2026-11-05 Watchdog SQLITE_BUSY 漏报事故修复
 
