@@ -1,3 +1,16 @@
+## 2026-11-09 全量协议漂移告警审计与小范围兼容修复
+
+### 现场证据
+- 11 月 6–9 日的 9 项新语义告警都是同一个第一方请求头 `x-openai-rejoin-pro-cta` 横跨不同 API family；当前 CDP 只读网络采样显示值为 ASCII 字符串 `1`，没有已证明的签名编码或 turn 级临时性。
+- 主动 Body/Catalog 请求没有携带该头也连续获得 HTTP 200；本次修改不能硬编码 `1`，不能扩大主动请求范围。
+- 另外 3 项为旧的 Project sidebar nested shape、body `num_turns=1000` 和 Project catalog `cursor`；需分别判定是否真正改变 transport 契约。
+
+### 执行计划
+1. 审阅 12 项告警、第一方协议指纹、请求样本与当前生产兼容性；保留无法证明的细节为未知。
+2. 将经实测稳定的第一方头加入动态 replay allowlist，不保存取值；对正常分页 `cursor`、正整数 `num_turns` 的变化进行语义降噪。
+3. 修复旧版未采集 Project nested keys 的历史响应被误判 Critical，仍然对新样本里真实缺失 `id/update_time` 保持 Critical。
+4. 增加测试、全量 check、复查 semanticActionable；新代码经过验证后再按既有安全流程评估是否重载生产，避免打断当前运行。
+
 ## 2026-11-05 Watchdog SQLite BUSY 导致 45 分钟通知漏报
 
 - [done] 2026-11-05 22:35 生产验收：`ce3a82f` 全量 39/361 测试通过、四构建成功，supervised daemon resume PID 34940；Worker 原 generation 22:33:52 timeout、22:34:52 diagnosis 两阶段均 Bark HTTP 200，pending 归零，WSS=3。
