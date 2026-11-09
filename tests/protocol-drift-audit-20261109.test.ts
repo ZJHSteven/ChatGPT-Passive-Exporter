@@ -34,7 +34,7 @@ describe('2026-11-09 已核对的协议变化', () => {
       observedAt: 71_000,
     })!
     expect(observed.assessment).toMatchObject({ severity: 'info', notify: false })
-    expect(ledger.assessProductionHeaderCoverage(observed.signature, FIRST_PARTY_REPLAY_HEADER_ALLOWLIST))
+    expect(ledger.assessProductionHeaderCoverage(observed.signature, [...FIRST_PARTY_REPLAY_HEADER_ALLOWLIST]))
       .toBeNull()
 
     // sanitize 只接收“已经观测到”的 header：0 被原样继承，缺失则不凭空补一个 1。
