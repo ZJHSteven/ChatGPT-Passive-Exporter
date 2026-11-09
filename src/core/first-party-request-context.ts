@@ -27,6 +27,10 @@ export const FIRST_PARTY_REPLAY_HEADER_ALLOWLIST = [
   // 这里仅允许“动态继承第一方当前值”，绝不在 Archive 内硬编码为 1；
   // 如果上游以后改变取值/语义，Protocol Drift 仍能继续观察真实第一方行为。
   'x-openai-rate-limit-join-workspace',
+  // 2026-11-09 第一方 Chrome CDP 样本确认此头广泛用于账户/模型/会话请求，当前原始值为字符串 '1'。
+  // 与上面的 workspace 标志一样：只继承页面此刻实际捕获到的值；不硬编码取值、不凭名称推断业务权限。
+  // 避免把此头误认作 turn/session 签名；如果未来作用域发生变化，Protocol Drift 仍须继续审计。
+  'x-openai-rejoin-pro-cta',
   'x-openai-web-frontend',
 ] as const
 

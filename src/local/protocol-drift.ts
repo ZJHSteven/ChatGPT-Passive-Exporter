@@ -738,7 +738,10 @@ export class ProtocolDriftLedger {
 
     const knownQueryKeys = unionLists(refs.map(ref => ref.shape.queryKeys))
     const stableQueryKeys = intersectLists(refs.map(ref => ref.shape.queryKeys))
+    // Project Cursor 是官方页面翻页时按需增加的字段，不代表服务器改变了请求契约。
+    // 仍保留原始 fingerprint；只有这个明确识别的 family + key 被降级，其它新增参数继续报警。
     const addedQueryKeys = difference(shape.queryKeys, knownQueryKeys)
+      .filter(key => !(family === 'project-catalog' && key === 'cursor'))
     const missingStableQueryKeys = difference(stableQueryKeys, shape.queryKeys)
     if (addedQueryKeys.length > 0) details.push(`新增 query key: ${addedQueryKeys.join(', ')}`)
     if (missingStableQueryKeys.length > 0) details.push(`缺少 baseline 稳定 query key: ${missingStableQueryKeys.join(', ')}`)
@@ -746,6 +749,10 @@ export class ProtocolDriftLedger {
     const changedQueryValues = shape.queryKeys.filter(key => {
       if (queryValueIsVolatile(key)) return false
       const value = shape.query[key]
+      // num_turns=10/1000 只改变一次取回多少历史消息；这是正整数 page-size，不是 schema 协议版本。
+      // 保留异常值的差异监控（例如负数、0、字符串或超过四位的意外取值）。
+      if (['body-latest', 'body-cursor'].includes(family)
+        && key === 'num_turns' && typeof value === 'string' && /^[1-9]\d{0,3}$/u.test(value)) return false
       return refs.some(ref => key in ref.shape.query)
         && !refs.some(ref => ref.shape.query[key] === value)
     })
@@ -1004,13 +1011,21 @@ export class ProtocolDriftLedger {
       ? operationalPageInfo.filter(key => !shape.pageInfoKeys.includes(key))
       : []
 
-    const missingProjectGizmo = family === 'project-sidebar'
+    // 2026-10-17 以前的旧协议账本没有保存 projectGizmoKeys/projectConversationKeys。
+    // undefined 意味着“当时没有采集”，不是“第一方响应的字段缺失”。一个空项目列表同样不能
+    // 被误判为丢失 CID。只有实际观测到了嵌套实体的字段集合，才对其做缺失关键键的断言。
+    const hasObservedProjectGizmo = (shape.projectGizmoKeys?.length ?? 0) > 0
+      || (shape.projectConversationKeys?.length ?? 0) > 0
+    const missingProjectGizmo = family === 'project-sidebar' && hasObservedProjectGizmo
       ? ['id'].filter(key => !(shape.projectGizmoKeys || []).includes(key))
       : []
     const projectConversationKeys = family === 'project-sidebar'
       ? (shape.projectConversationKeys || [])
       : family === 'project-catalog' ? shape.itemKeys : []
-    const missingProjectConversation = ['project-sidebar', 'project-catalog'].includes(family)
+    const hasObservedProjectConversation = family === 'project-sidebar'
+      ? (shape.projectConversationKeys?.length ?? 0) > 0
+      : family === 'project-catalog' && shape.itemKeys.length > 0
+    const missingProjectConversation = hasObservedProjectConversation
       ? ['id', 'update_time'].filter(key => !projectConversationKeys.includes(key))
       : []
 
