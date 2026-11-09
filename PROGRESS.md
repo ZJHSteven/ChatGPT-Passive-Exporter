@@ -1,3 +1,12 @@
+## 2026-11-09 Archive Protocol Drift 全量核查和修复
+
+- **范围**：完整复核当前 12 项语义可操作告警（11 月新增的 9 项同一新头 + 10 月历史 3 项）。11/06、11/07、11/09 各一次 Bark HTTP 200 推送共 3 次，内部合并的告警数为 7+1+1。
+- **原始证据**：CDP 在已登录的 Chrome 第一方页面捕获 `x-openai-rejoin-pro-cta: 1`，ASCII 普通字符串；100 个网络事件记录包含原生请求与 ExtraInfo 的重复事件，不能当作 100 次独立请求，也不能证明历史取值。
+- **兼容性**：11/06 以来 Archive 主动 Body 882 次、Catalog 512 次 HTTP 200，原代码尚未继承该 header，表明它不是当前成功 GET 的必要条件；新代码只动态继承第一方实际值。
+- **修复**：`src/core/first-party-request-context.ts` 加入 header allowlist；`src/local/protocol-drift.ts` 修正旧版 Project nested shape 缺采集导致的 Critical 误报、Project cursor 分页和 Body num_turns=1000 的误报。未知新增字段、真缺项目 ID 和异常分页取值继续报警。
+- **验收**：`npm run check` 全绿：typecheck、40/40 测试文件、364/364 测试、Chrome/Edge/Firefox/Userscript 四种构建。生产 ledger `semanticActionable=0`，`rawExactPending` 未清零且保留历史证据。
+- **生产上线**：代码已提交；本轮不把“本地检查器结果为 0”冒充运行中的 Daemon 已重启。上生产需要受控重载，并在之后重新核对 Guardian/WSS/主动 GET 和实际 Bark。
+
 ## 2026-11-05 Watchdog SQLITE_BUSY 漏报事故修复
 
 - **生产闭环验收（22:35）**：修复提交 `ce3a82f` 经 `npm run check` 验证 39/39 文件、361/361 测试、TypeScript 与四类构建全部通过；`chatgpt-archive daemon resume` 已受控恢复到 PID 34940。恢复后 Worker代理方案评估同一原始 generation `startedAt=1793885748784` 于 22:33:52 补发 `watchdog-timeout`、22:34:52 补发 `watchdog-diagnosis`，两条 Bark HTTP 200；pending diagnosis 清零，WSS 3、Bridge 在线、maintenance/notification lastError 为空。服务端成功不等于 iOS 端横幅确实呈现，客户端侧仍是独立待调查问题。

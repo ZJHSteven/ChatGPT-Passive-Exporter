@@ -1,5 +1,13 @@
 ## 2026-11-09 全量协议漂移告警审计与小范围兼容修复
 
+### 本轮验收结果
+- [done] Chrome 第一方网络现场采样确认 `x-openai-rejoin-pro-cta: 1` 为普通字符串值；旧账本仅保存 header 名称，无法证明历史值恒定。
+- [done] 动态继承白名单增加该字段，绝不硬编码值；原来 observation-only 的接口仍然不会主动重放。
+- [done] 对旧版 Project nested 字段缺采集的历史指纹和真实空列表排除假 Critical；新样本真正缺少 id/update_time 继续触发 Critical。
+- [done] Project `cursor` 和 Body 正常正整数 `num_turns` 值变更保留原始指纹，但不再当作生产协议破坏。
+- [done] 2026-11-09 重新计算生产账本：semanticActionable 由 12 降到 0，原始 exact-shape evidence 仍保留；40 文件、364 测试及 TypeScript/四种构建均通过。
+- [pending] 生产 Daemon 载入新代码前检查活跃 Turn；如当前仍有任务执行，避免为了低风险漂移热修复而中断正在运行的 ChatGPT 会话。
+
 ### 现场证据
 - 11 月 6–9 日的 9 项新语义告警都是同一个第一方请求头 `x-openai-rejoin-pro-cta` 横跨不同 API family；当前 CDP 只读网络采样显示值为 ASCII 字符串 `1`，没有已证明的签名编码或 turn 级临时性。
 - 主动 Body/Catalog 请求没有携带该头也连续获得 HTTP 200；本次修改不能硬编码 `1`，不能扩大主动请求范围。
