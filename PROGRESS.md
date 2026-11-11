@@ -1,3 +1,10 @@
+## 2026-11-11 紧急止血：单会话 conversation_inaccessible 404→429 循环
+
+- 现场：北京时间 22:12–22:42 请求账本 142 条、其中 31 条 429 / 17 条 404；最近一小时 Archive 主动 Body 49 次 429、43 次 404。循环集中于 `6af462e0-a6a4-83e8-9034-bbe845f253db`，服务端明确 `404 conversation_inaccessible / can_retry=false`，旧代码只将 `conversation_deleted` 识别为不可重试。
+- 止血：这条 CID 进入持久化 `nonRetryableConversationIds` 隔离名单；`markDirty/markSyncReady` 不再调度它，其它 CID 的 WSS、Catalog、Body 同步维持运行。新增 `conversation_inaccessible / can_retry=false` 终止重试分类，并写入持久隔离名单；可重试 404 与其他错误不误隔离。
+- 告警：Bark 429 按 family 限制 30 分钟内只发一次。21:18、21:49、22:19 均有 Bark HTTP200，不能据此证明 iOS 已展示；长期持续限流的升级告警仍待单独设计，本次不扩范围。
+- 发布：提交 `5c10cc2`，archive-daemon 定向测试 111/111、TypeScript typecheck 通过。受监督 `daemon stop → resume` 成功，正式 PID 53244，running/Bridge/WSS=3/Guardian healthFailures=0，隔离名单已生效。重启后采样请求有其它 Body/Catalog HTTP200，未见新的 404/429；Actor dedicated 页面 `composerPresent=true`、`composerHydrated=true`、`conversationLoadFailed=false`，空输入 `sendReady=false` 属正常，不主动发送测试消息。
+
 ## 2026-11-09 Archive Protocol Drift 全量核查和修复
 
 - **范围**：完整复核当前 12 项语义可操作告警（11 月新增的 9 项同一新头 + 10 月历史 3 项）。11/06、11/07、11/09 各一次 Bark HTTP 200 推送共 3 次，内部合并的告警数为 7+1+1。
