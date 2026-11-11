@@ -1373,7 +1373,7 @@ export function buildDevSpaceIdleUnboundDiagnosisNotificationPayload({
 /** 只有服务端明确声明“已删除且不可重试”的 404，才停止正文同步。 */
 export function isNonRetryableDeletedConversation(response) {
   return Number(response?.status) === 404
-    && response?.body?.detail?.code === 'conversation_deleted'
+    && ['conversation_deleted', 'conversation_inaccessible'].includes(response?.body?.detail?.code)
     && response?.body?.detail?.can_retry === false
 }
 
@@ -2940,6 +2940,15 @@ async function main() {
   // 这样若上游新增稳定 query，可以自动继承，同时不会把 TPP/hide_snorlax=true 等过滤混入全量 catalog。
   let globalCatalogQueryTemplate = null
   const rateLimits = restoreFamilyRateLimitSnapshot(previousDaemonState)
+  // 紧急止血：服务端明确 can_retry=false 的会话不允许反复补抓。
+  // 保留历史隔离记录；下面的 CID 是 2026-11-11 实际引起 404/429 循环的会话。
+  // 仅隔离这一条，不禁用其他 Conversation 的 WSS、Body 或 Catalog 同步。
+  const nonRetryableConversationIds = new Set([
+    ...(Array.isArray(previousDaemonState?.nonRetryableConversationIds)
+      ? previousDaemonState.nonRetryableConversationIds.filter(id => typeof id === 'string')
+      : []),
+    '6af462e0-a6a4-83e8-9034-bbe845f253db',
+  ])
   // 告警节流跨进程重启持久化，避免重启服务再次触发通知风暴。
   const cooldownNotificationAttempts = new Map(
     Object.entries(previousDaemonState?.cooldownNotificationAttempts || {})
@@ -4952,6 +4961,7 @@ async function main() {
     cooldownRecoveryPending,
     recoveryProbeRemaining,
     rateLimits,
+    nonRetryableConversationIds: [...nonRetryableConversationIds],
     cooldownNotificationAttempts: Object.fromEntries(cooldownNotificationAttempts),
     notification: {
       enabled: Boolean(notificationConfig),
@@ -6056,8 +6066,8 @@ async function main() {
       throw new Error(`ChatGPT auth context expired: HTTP ${response.status}`)
     }
     if (isNonRetryableDeletedConversation(response)) {
-      const error = new Error('ChatGPT conversation permanently deleted (HTTP 404, can_retry=false)')
-      error.code = 'conversation_deleted'
+      const error = new Error(`ChatGPT conversation non-retryable (HTTP 404, ${response.body.detail.code}, can_retry=false)`)
+      error.code = response.body.detail.code
       error.canRetry = false
       throw error
     }
@@ -7097,9 +7107,10 @@ async function main() {
         lastError = error instanceof Error ? error.message : String(error)
         await log('conversation sync failed', { conversationId, trigger, error: lastError })
         // 确认删除（can_retry=false）是终局事实，不能再放回 5 秒重试队列。
-        if (error?.code === 'conversation_deleted' && error?.canRetry === false) {
+        if (['conversation_deleted', 'conversation_inaccessible'].includes(error?.code) && error?.canRetry === false) {
+          nonRetryableConversationIds.add(conversationId)
           clearSyncDemand(conversationId)
-          await log('non-retryable deleted conversation retired from sync queue', { conversationId, trigger })
+          await log('non-retryable conversation quarantined from sync queue', { conversationId, trigger, code: error.code })
           return
         }
         // 失败不能把 dirty 事实抹掉；同时保留 ready，等 auth/cooldown/页面恢复后再试。
@@ -7124,11 +7135,13 @@ async function main() {
 
   const markDirty = (conversationId, trigger) => {
     if (!conversationId) return
+    if (nonRetryableConversationIds.has(conversationId)) return
     dirty.set(conversationId, trigger)
   }
 
   const markSyncReady = (conversationId, trigger, delayMs = 500) => {
     if (!conversationId) return
+    if (nonRetryableConversationIds.has(conversationId)) return
     const now = Date.now()
     const existingTrigger = ready.get(conversationId)
     const selectedTrigger = preferredSyncTrigger(existingTrigger, trigger)

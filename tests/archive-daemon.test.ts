@@ -1949,6 +1949,8 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(isNonRetryableDeletedConversation({ ...response, body: { detail: { ...response.body.detail, can_retry: true } } })).toBe(false)
     expect(isNonRetryableDeletedConversation({ ...response, status: 429 })).toBe(false)
     expect(isNonRetryableDeletedConversation({ status: 404, body: { detail: { code: 'not_found', can_retry: false } } })).toBe(false)
+    expect(isNonRetryableDeletedConversation({ status: 404, body: { detail: { code: 'conversation_inaccessible', can_retry: false } } })).toBe(true)
+    expect(isNonRetryableDeletedConversation({ status: 404, body: { detail: { code: 'conversation_inaccessible', can_retry: true } } })).toBe(false)
     expect(isNonRetryableDeletedConversation({ status: 404, body: null })).toBe(false)
   })
 
