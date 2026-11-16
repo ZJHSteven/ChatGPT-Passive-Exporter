@@ -370,6 +370,24 @@ async function probeCdpBrowser(cdpHttp, timeoutMs = 1500) {
 }
 
 async function ensureCdpBrowser(flags, cdpHttp) {
+  // 固定日常 Chrome 必须先核对进程身份。仅探测 IPv4/IPv6 的 HTTP 200 并不安全：
+  // 漏引号的启动命令可能同时制造另一个全新的、没有 Google 登录状态的 Profile，
+  // 并分别抢占 127.0.0.1:9222 和 [::1]:9222。不能把两者当作同一实例。
+  if (process.platform === 'win32' && cdpHttp.replace(/\/$/u, '') === DEFAULT_CDP) {
+    const identityScript = 'D:\\Workspace\\browser-harness-js\\sdk\\ensure-daily-chrome.ps1'
+    const identityArgs = ['-NoProfile', '-File', identityScript]
+    if (flags.has('no-auto-launch-chrome')) identityArgs.push('-CheckOnly')
+    try {
+      await execFileAsync('pwsh.exe', identityArgs, { windowsHide: true, timeout: 45_000 })
+    }
+    catch (error) {
+      throw new Error(`Daily Chrome CDP identity check failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    const response = await fetch(`${DEFAULT_CDP}/json/version`, { signal: AbortSignal.timeout(3000) })
+    if (!response.ok) throw new Error(`Daily Chrome CDP HTTP ${response.status}`)
+    return { launched: false, cdpHttp: DEFAULT_CDP, version: await response.json() }
+  }
+
   const connected = await probeCdpBrowser(cdpHttp)
   if (connected) return { launched: false, cdpHttp: connected.endpoint, version: connected.version }
 
