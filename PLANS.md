@@ -1,3 +1,18 @@
+## 2026-11-16 晚间连续 Body 429 风暴修复
+
+### 现场判定与约束
+- 20:30 前后回溯的约 35 分钟内有 26 次真实 cooldown、27 次失败，其中 17 次为 reconcile:gap-repair；不是 Bark 重复通知。20:28 一次 unbound watchdog 触发的绑定恢复把 14 个 CID 全部排入 Body，其中至少 10 个本地状态是早在 10 月底/11 月初就结束的 final。
+- 根因之一是 queueTimedOutDevSpaceBindingProbes 无时间关联过滤，把所有 activeTurns/catalogActive 全量当候选；同时 body/mapping 每次只遵守 Retry-After（常为数十秒），连续失败不升级退避，所以每分钟持续撞 429。
+- 必须保留每个独立真实 429 的 Bark 实时告警、每个会话最终一致性、原生 WSS/被动观察，禁止静默或者无证据地隔离正常聊天。
+
+### 执行
+1. [doing] 将 unbound binding 的 Body 候选与 generation 真实开始时间、最近服务端更新/工具进展关联，排除老旧 final 和明显跨天的旧 active catalog；对有效的长时间运行实例保留进展证据。
+2. [todo] Body/Mapping 连续 429 引入可持久恢复的渐进退避，服务端 Retry-After 永远作为下限；冷却期 native 重复 429 不升级，连续成功后恢复正常。
+3. [todo] 单元测试覆盖老旧 final、近期开启新 turn、无更新戳、长运行进展、连续 429 与三次成功恢复；定向测试和完整 npm run check。
+4. [todo] Git 提交、受监督生产重载、检查请求日志/队列/Watchdog/Bark。没有足够后续观察时不虚报风暴已彻底消失。
+
+---
+
 ## 2026-11-16 429 Warning 取消通知节流
 
 ### 目标
