@@ -571,6 +571,10 @@ async function assertActorCooldownClear(daemonStatePath?: string | null): Promis
   const daemonState = await readJsonFile(daemonStatePath)
   const cooldownUntil = Math.max(
     Number(daemonState?.cooldownUntil || 0),
+    // 任一 REST family 观测到的服务端 Retry-After 都是共享闸门；
+    // Actor 虽使用独立 CDP target，也绝不允许绕过该服务器等待期限。
+    Number(daemonState?.rateLimits?.sharedRetryAfterUntil || 0),
+    Number(daemonState?.rateLimits?.legacyGlobalUntil || 0),
     Number(daemonState?.rateLimits?.families?.actor?.backoffUntil || 0),
   )
   if (Number.isFinite(cooldownUntil) && cooldownUntil > Date.now()) {

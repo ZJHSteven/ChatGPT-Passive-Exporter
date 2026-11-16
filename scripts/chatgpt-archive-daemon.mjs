@@ -6011,6 +6011,15 @@ async function main() {
         let status = null
         let errorMessage = null
         try {
+          // resume 虽然是 POST，但也是 Archive 主动恢复会话的网络请求。
+          // 与普通 Body/Catalog 共用唯一请求槽：不能一边分页 GET、一边并发恢复，
+          // 更不能有 GET 刚收到 429、resume 却已经发出去。
+          await serialActiveRequest(async () => {
+          requireRequestWindow('body')
+          await syncGuardianRateLimitBlocks()
+          requireRequestWindow('body')
+          await waitForRequestSlot('body')
+          requireRequestWindow('body')
           const response = await pageResumeConversation(guardian.page, {
             conversationId,
             offset,
@@ -6031,6 +6040,7 @@ async function main() {
             recordFamilySuccess(rateLimits, 'body', Date.now())
           }
           if (status === 401 || status === 403) authHeaders = null
+          })
           if (status === null || status < 200 || status >= 300) {
             errorMessage = `resume HTTP ${status ?? 'unknown'}`
           }
