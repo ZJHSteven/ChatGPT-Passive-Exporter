@@ -1,3 +1,16 @@
+## 2026-11-16 429 Warning 取消通知节流
+
+### 目标
+- 每一次被 Archive 判定为真实 429 的事件都立即触发 Warning 通知，不再按 API family 做 30 分钟静默。
+- 请求控制与告警可见性彻底分离：Retry-After、family backoff、Guardian REST block、probation 等请求层保护全部保留，不能为了“每次通知”而增加任何额外请求。
+- 继续保留 passive observer 对 daemon 自身 active replay 429 的同请求去重，避免同一个 HTTP 响应被观察链和主动链重复计算两次。
+
+### 执行计划
+1. 删除 429 Bark 的 30 分钟 shouldNotifyCooldownAgain 门控以及跨重启通知时间戳状态；tripCooldown 每次处理独立 429 时直接派发 Warning。
+2. 更新 429 Warning 文案，明确“每次 429 都通知，但请求仍按 Retry-After/分级退避”，避免继续显示旧的“滑动延长只记日志、不重复通知”。
+3. 修改类型声明与回归测试，新增连续 429 即使同 family 已处于 cooldown 仍会进入通知分支的可测试契约；保留现有请求退避/同响应去重测试。
+4. 跑定向测试、TypeScript 与全量 check；更新 PROGRESS 后受控重载 daemon，并核对 Bridge/WSS/Guardian/rate-limit 状态。
+
 ## 2026-11-09 全量协议漂移告警审计与小范围兼容修复
 
 ### 本轮验收结果
