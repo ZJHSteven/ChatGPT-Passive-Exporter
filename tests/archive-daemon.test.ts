@@ -4,6 +4,7 @@ import path from 'node:path'
 import { describe, expect, test } from 'vitest'
 import {
   acquireArchiveDaemonSingleton,
+  cdpLoopbackCandidates,
   activeApiAllowed,
   buildDevSpaceCheckpointNotificationPayload,
   buildDevSpaceConclusionNotificationPayload,
@@ -111,6 +112,16 @@ import {
 } from '../scripts/chatgpt-archive-daemon.mjs'
 import { extractProjectCatalogPayload } from '../src/local/project-catalog.ts'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
+
+test('Chrome CDP 只监听 IPv6 时自动尝试同端口本机 IPv6，不碰远程自定义地址', () => {
+  expect(cdpLoopbackCandidates('http://127.0.0.1:9222')).toEqual([
+    'http://127.0.0.1:9222', 'http://[::1]:9222',
+  ])
+  expect(cdpLoopbackCandidates('http://[::1]:9222/')).toEqual([
+    'http://[::1]:9222', 'http://127.0.0.1:9222',
+  ])
+  expect(cdpLoopbackCandidates('http://example.com:9222')).toEqual(['http://example.com:9222'])
+})
 import { familyRateLimitAllowed, recordFamily429, restoreFamilyRateLimitSnapshot } from '../src/local/rate-limit-state.ts'
 
 test('主动请求 FIFO 串行，第一条收到429后下一条不得抢在共享 Retry-After 之前发送', async () => {

@@ -340,14 +340,38 @@ function intFlag(flags, name, fallback, min = 0) {
  * 如果 9222 整体不可达，daemon 才用同一 executable + user-data-dir + profile 拉起 Chrome。
  * Chrome 已经运行时该函数只是廉价探活，不会启动第二个 browser process。
  */
+/**
+ * Windows 的 Chrome CDP 在不同启动路径中可能只监听 IPv4 或 IPv6 loopback。
+ * 这两个地址是同一台本机、同一调试端口，切换它们不代表更换浏览器或 Profile。
+ * 除本机 loopback 之外绝不猜测备用主机，避免把 --cdp 自定义远端错连到本机。
+ */
+export function cdpLoopbackCandidates(endpoint) {
+  const primary = String(endpoint || '').replace(/\/$/u, '')
+  const ipv4 = /^http:\/\/127\.0\.0\.1:(\d+)$/u.exec(primary)
+  if (ipv4) return [primary, `http://[::1]:${ipv4[1]}`]
+  const ipv6 = /^http:\/\/\[::1\]:(\d+)$/u.exec(primary)
+  if (ipv6) return [primary, `http://127.0.0.1:${ipv6[1]}`]
+  return [primary]
+}
+
+async function probeCdpBrowser(cdpHttp, timeoutMs = 1500) {
+  for (const endpoint of cdpLoopbackCandidates(cdpHttp)) {
+    try {
+      const response = await fetch(`${endpoint}/json/version`, {
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      if (response.ok) return { endpoint, version: await response.json() }
+    }
+    catch {
+      // 只尝试同一台本机的另一个 IP 协议族，不启动第二个 Chrome。
+    }
+  }
+  return null
+}
+
 async function ensureCdpBrowser(flags, cdpHttp) {
-  try {
-    const response = await fetch(`${cdpHttp}/json/version`, { signal: AbortSignal.timeout(3000) })
-    if (response.ok) return { launched: false, version: await response.json() }
-  }
-  catch {
-    // 进入启动恢复分支。
-  }
+  const connected = await probeCdpBrowser(cdpHttp)
+  if (connected) return { launched: false, cdpHttp: connected.endpoint, version: connected.version }
 
   if (flags.has('no-auto-launch-chrome')) {
     throw new Error(`CDP browser unavailable at ${cdpHttp} and auto launch is disabled`)
@@ -379,8 +403,16 @@ async function ensureCdpBrowser(flags, cdpHttp) {
   let lastError = null
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${cdpHttp}/json/version`, { signal: AbortSignal.timeout(2000) })
-      if (response.ok) return { launched: true, version: await response.json(), launcherPid: child.pid, shortcut }
+      const ready = await probeCdpBrowser(cdpHttp, 1000)
+      if (ready) {
+        return {
+          launched: true,
+          cdpHttp: ready.endpoint,
+          version: ready.version,
+          launcherPid: child.pid,
+          shortcut,
+        }
+      }
     }
     catch (error) {
       lastError = error
@@ -2775,7 +2807,7 @@ export function shouldRetireWssSocketsForFrameNavigation(frame) {
 async function main() {
   const flags = parseArgs(process.argv.slice(2))
   const daemonSingleton = await acquireArchiveDaemonSingleton()
-  const cdpHttp = String(flags.get('cdp') || DEFAULT_CDP).replace(/\/$/u, '')
+  let cdpHttp = String(flags.get('cdp') || DEFAULT_CDP).replace(/\/$/u, '')
   const dbPath = flags.has('db') ? path.resolve(String(flags.get('db'))) : DEFAULT_DB
   const statePath = flags.has('state') ? path.resolve(String(flags.get('state'))) : DEFAULT_STATE
   const logPath = flags.has('log') ? path.resolve(String(flags.get('log'))) : DEFAULT_LOG
@@ -11096,6 +11128,13 @@ async function main() {
 
   const establishGuardian = async (reason) => {
     const browserAvailability = await ensureCdpBrowser(flags, cdpHttp)
+    if (browserAvailability.cdpHttp !== cdpHttp) {
+      await log('Chrome CDP loopback address switched without restarting browser', {
+        previous: cdpHttp,
+        selected: browserAvailability.cdpHttp,
+      })
+      cdpHttp = browserAvailability.cdpHttp
+    }
     if (browserAvailability.launched) {
       await log('Chrome CDP browser relaunched', {
         reason,

@@ -15,6 +15,9 @@ export declare function appendDaemonFatalLog(
 ): Promise<string>
 export declare function daemonFatalLogPath(argv?: string[]): string
 
+/** CDP 同端口 IPv4/IPv6 回环地址候选，不扩展到非本机地址。 */
+export declare function cdpLoopbackCandidates(endpoint: string): string[]
+
 /**
  * `chatgpt-archive-daemon.mjs` 保持为可直接由 Node 执行的 ESM daemon。
  * 测试只导入其纯函数 WSS parser，因此用旁路声明维持严格 TypeScript 检查，
