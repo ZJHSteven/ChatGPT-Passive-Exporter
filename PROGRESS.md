@@ -3,7 +3,7 @@
 - 用户明确要求取消 429 Warning 的 30 分钟 Bark 静默：429 是否持续出现本身就是诊断请求轰炸/账户限流的重要信号，不能因为 family 已处于 cooldown 就隐藏后续事件。
 - 新策略把“请求退避”和“告警可见性”彻底分开：每一次被 Archive 接纳的独立 429 都立即触发 Warning；Retry-After、family backoff、Guardian REST block、probation 及 passive observer 对同一个 active replay 响应的去重全部保留，因此不会为了多通知而制造额外 ChatGPT 请求。
 - 删除跨重启 cooldownNotificationAttempts 节流状态与 shouldNotifyCooldownAgain 30 分钟门控；Warning 文案同步改为“每次观测到 429 都立即通知，请求层仍按 Retry-After/分级退避”。旧 state 若仍含 cooldownNotificationAttempts 字段会被新版安全忽略。
-- 回归测试新增“同一 family 已在 cooldown 中仍通知”的契约，并保留现有 Retry-After、family backoff 与 passive active-replay 去重测试。生产重载与最终运行状态待本轮测试完成后记录。
+- 回归测试新增“同一 family 已在 cooldown 中仍通知”的契约，并保留现有 Retry-After、family backoff 与 passive active-replay 去重测试。定向 archive-daemon 111/111 通过；完整 npm run check 为 40/40 测试文件、364/364 测试、TypeScript 与 Chrome/Edge/Firefox/Userscript 四构建全绿。生产重载与最终运行状态待记录。
 
 ## 2026-11-11 紧急止血：单会话 conversation_inaccessible 404→429 循环
 
