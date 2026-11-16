@@ -5102,7 +5102,46 @@ async function main() {
     lastError,
   })
 
-  const writeState = async () => fs.writeFile(statePath, JSON.stringify(state(), null, 2)).catch(() => {})
+  // 状态文件是监督器和 CLI 的共同真相源。直接 writeFile(statePath) 会先截断源文件：
+  // 2026-11-16 21:02 生产现场观察到进程仍在运行、文件却长期为 0 字节，
+  // 导致 status 错判 dead，且崩溃重启会丢失 429/不可重试 CID 的持久状态。
+  // 改为不同临时文件写完后原子替换；新的 revision 总是胜过旧的慢写任务。
+  // 文件系统操作若挂起最多等待 5 秒，之后允许控制面继续运行而不是永久 Await。
+  let stateWriteRevision = 0
+  const writeState = async () => {
+    const revision = ++stateWriteRevision
+    const snapshot = JSON.stringify(state(), null, 2)
+    const tempPath = `${statePath}.tmp-${process.pid}-${revision}`
+    const writing = (async () => {
+      try {
+        await fs.writeFile(tempPath, snapshot)
+        if (revision === stateWriteRevision) {
+          await fs.rename(tempPath, statePath)
+        }
+      }
+      finally {
+        await fs.rm(tempPath, { force: true }).catch(() => {})
+      }
+    })()
+    let timer = null
+    try {
+      await Promise.race([
+        writing,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('state writer stalled for 5 seconds')), 5000)
+        }),
+      ])
+    }
+    catch (error) {
+      await log('Archive state atomic write failed', {
+        revision,
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => {})
+    }
+    finally {
+      if (timer !== null) clearTimeout(timer)
+    }
+  }
   // `--no-reconcile-on-start` 的含义必须是“启动后先纯监听”。旧实现保留
   // lastReconcileAt=0，导致第一轮主循环把 periodic 当成“已经超过 6 小时”而立刻扫 list。
   if (!reconcileOnStart) lastReconcileAt = startedAt
@@ -5941,7 +5980,7 @@ async function main() {
     })
     // Actor/Bridge 会直接读取 daemon state 的 actor family；因此 429 熔断一旦建立，
     // 必须立即落盘，不能等到 5 秒主循环末尾才让其它入口看见。
-    await fs.writeFile(statePath, JSON.stringify(state(), null, 2)).catch(() => {})
+    await writeState()
     return effectiveCooldownUntil
   }
 
