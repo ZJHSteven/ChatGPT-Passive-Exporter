@@ -1831,6 +1831,9 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
 
       let sendHandlerAttempts = 1
       let retriedAfterPrepare = false
+      // 在导航、长文本分块输入期间，其他 Archive 请求可能已收到新的 Retry-After。
+      // 正式 POST 前再检查一次，防止仅靠入口检查绕过服务端冷却。
+      await assertActorCooldownClear(options.daemonStatePath)
       sendArmedAt = Date.now()
       await clickSendHandler(client)
       const deadline = Date.now() + timeoutMs

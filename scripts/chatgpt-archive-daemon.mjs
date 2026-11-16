@@ -5855,6 +5855,7 @@ async function main() {
       fallbackMs: cooldownMinutes * 60_000,
     })
     const familyCooldownUntil = Number(next.backoffUntil || 0)
+    const effectiveCooldownUntil = familyBackoffUntil(rateLimits, family, now)
 
     // catalog 429 只推进 catalog periodic 基准；body/mapping/actor 不再把 catalog 深扫时钟一起改写。
     if (family === 'catalog') lastReconcileAt = now
@@ -5862,6 +5863,7 @@ async function main() {
       reason,
       family,
       cooldownUntil: familyCooldownUntil,
+      sharedRetryAfterUntil: Number(rateLimits.sharedRetryAfterUntil || 0) || null,
       wasAlreadyCooling,
       previousCooldownUntil: previousCooldownUntil > 0 ? previousCooldownUntil : null,
       extensionMs: wasAlreadyCooling ? Math.max(0, familyCooldownUntil - previousCooldownUntil) : null,
@@ -5876,7 +5878,7 @@ async function main() {
     })) {
       dispatchCooldownNotification({
         reason,
-        cooldownUntil: familyCooldownUntil,
+        cooldownUntil: effectiveCooldownUntil,
         route: details.route ?? null,
         retryAfter: details.retryAfter ?? null,
       })
@@ -5890,7 +5892,7 @@ async function main() {
     // Actor/Bridge 会直接读取 daemon state 的 actor family；因此 429 熔断一旦建立，
     // 必须立即落盘，不能等到 5 秒主循环末尾才让其它入口看见。
     await fs.writeFile(statePath, JSON.stringify(state(), null, 2)).catch(() => {})
-    return familyCooldownUntil
+    return effectiveCooldownUntil
   }
 
   const requireRequestWindow = (family) => {
