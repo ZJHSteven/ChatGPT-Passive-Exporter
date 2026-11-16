@@ -4,6 +4,7 @@
 - 新策略把“请求退避”和“告警可见性”彻底分开：每一次被 Archive 接纳的独立 429 都立即触发 Warning；Retry-After、family backoff、Guardian REST block、probation 及 passive observer 对同一个 active replay 响应的去重全部保留，因此不会为了多通知而制造额外 ChatGPT 请求。
 - 删除跨重启 cooldownNotificationAttempts 节流状态与 shouldNotifyCooldownAgain 30 分钟门控；Warning 文案同步改为“每次观测到 429 都立即通知，请求层仍按 Retry-After/分级退避”。旧 state 若仍含 cooldownNotificationAttempts 字段会被新版安全忽略。
 - 回归测试新增“同一 family 已在 cooldown 中仍通知”的契约，并保留现有 Retry-After、family backoff 与 passive active-replay 去重测试。定向 archive-daemon 111/111 通过；完整 npm run check 为 40/40 测试文件、364/364 测试、TypeScript 与 Chrome/Edge/Firefox/Userscript 四构建全绿。生产重载与最终运行状态待记录。
+- 生产证据同时确认旧节流确实造成漏报：15:03:09 Body family 再次出现 429，而该 family 的旧 cooldownNotificationAttempts 仍停在 14:47:14；按旧 30 分钟规则，这条 15:03 的 429 会被静默。15:07 前又出现 Mapping/Body 429，随后受监督 resume 到 PID 29804。新进程启动后旧 cooldownNotificationAttempts 字段已不再输出，Bridge=true，WSS 在 reconnect grace 后恢复为 4，Guardian healthFailures=0，REST block 已随旧 backoff 到期解除，syncErrors=0，lastError=null；5 个 active turn 的持久 Watchdog 状态恢复。重载后尚未自然发生新的 429，故不人为制造服务端限流来验证手机展示。
 
 ## 2026-11-11 紧急止血：单会话 conversation_inaccessible 404→429 循环
 
