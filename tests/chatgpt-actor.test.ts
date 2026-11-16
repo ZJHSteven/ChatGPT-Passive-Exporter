@@ -6,6 +6,7 @@ import { buildActorSubmitTrace } from '../src/local/active-turn-recorder.ts'
 import {
   DEFAULT_ACTOR_MIN_SUBMIT_GAP_MS,
   actorSubmitGapDelayMs,
+  actorCooldownDeadline,
   actorConversationUrl,
   actorDocumentFailureKind,
   actorResponseMimeAccepted,
@@ -21,6 +22,18 @@ import {
 } from '../src/local/chatgpt-actor.ts'
 
 describe('ChatGPT single actor helpers', () => {
+  test('Actor 即使是独立页面也服从 Archive 所有 family 的共享 Retry-After', () => {
+    expect(actorCooldownDeadline(null)).toBe(0)
+    expect(actorCooldownDeadline({
+      rateLimits: {
+        sharedRetryAfterUntil: 150_000,
+        families: { actor: { backoffUntil: 50_000 }, body: { backoffUntil: 100_000 } },
+      },
+    })).toBe(150_000)
+    expect(actorCooldownDeadline({
+      rateLimits: { sharedRetryAfterUntil: 90_000, legacyGlobalUntil: 250_000 },
+    })).toBe(250_000)
+  })
   test('actor distinguishes wrong browser documents from ChatGPT DOM drift', () => {
     expect(actorDocumentFailureKind('chrome-error://chromewebdata/')).toBe('wrong-document')
     expect(actorDocumentFailureKind('about:blank')).toBe('wrong-document')

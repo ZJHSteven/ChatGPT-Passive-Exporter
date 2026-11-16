@@ -6010,6 +6010,7 @@ async function main() {
           : rawOffset
         let status = null
         let errorMessage = null
+        let networkAttempted = false
         try {
           // resume 虽然是 POST，但也是 Archive 主动恢复会话的网络请求。
           // 与普通 Body/Catalog 共用唯一请求槽：不能一边分页 GET、一边并发恢复，
@@ -6020,6 +6021,7 @@ async function main() {
           requireRequestWindow('body')
           await waitForRequestSlot('body')
           requireRequestWindow('body')
+          networkAttempted = true
           const response = await pageResumeConversation(guardian.page, {
             conversationId,
             offset,
@@ -6047,6 +6049,17 @@ async function main() {
         }
         catch (error) {
           errorMessage = error instanceof Error ? error.message : String(error)
+        }
+
+        // 在 FIFO 队列里排队时，另一条请求可能刚收到服务器 429。
+        // 这种「尚未触网就被共享 Retry-After 拦下」不是一次 resume 尝试，
+        // 绝不能白白扣掉该 turn 的有界 resume 次数，否则用户担心的
+        // 永久 Pending / 放弃恢复问题又会由我们自己的门限制造出来。
+        if (!networkAttempted && /cooldown|no captured first-party auth context|guardian page unavailable/iu.test(
+          errorMessage || '',
+        )) {
+          scheduleResumeRetry(conversationId, current.turnExchangeId, 'gate-blocked-before-request')
+          return
         }
 
         const attemptNumber = Number(current.resumeAttemptCount || 0) + 1

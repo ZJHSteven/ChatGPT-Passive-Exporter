@@ -567,9 +567,8 @@ async function acquireActorTarget(
  * cooldown 是账号级主动请求预算，不是 Guardian 私有状态。
  * Actor 无论借 Guardian 还是独立 tab 都必须尊重同一个 cooldown，避免用另一个页面绕过熔断。
  */
-async function assertActorCooldownClear(daemonStatePath?: string | null): Promise<void> {
-  const daemonState = await readJsonFile(daemonStatePath)
-  const cooldownUntil = Math.max(
+export function actorCooldownDeadline(daemonState: any): number {
+  return Math.max(
     Number(daemonState?.cooldownUntil || 0),
     // 任一 REST family 观测到的服务端 Retry-After 都是共享闸门；
     // Actor 虽使用独立 CDP target，也绝不允许绕过该服务器等待期限。
@@ -577,6 +576,11 @@ async function assertActorCooldownClear(daemonStatePath?: string | null): Promis
     Number(daemonState?.rateLimits?.legacyGlobalUntil || 0),
     Number(daemonState?.rateLimits?.families?.actor?.backoffUntil || 0),
   )
+}
+
+async function assertActorCooldownClear(daemonStatePath?: string | null): Promise<void> {
+  const daemonState = await readJsonFile(daemonStatePath)
+  const cooldownUntil = actorCooldownDeadline(daemonState)
   if (Number.isFinite(cooldownUntil) && cooldownUntil > Date.now()) {
     const until = new Date(cooldownUntil).toISOString()
     throw new Error(`ChatGPT actor blocked by active API cooldown until ${until}`)
