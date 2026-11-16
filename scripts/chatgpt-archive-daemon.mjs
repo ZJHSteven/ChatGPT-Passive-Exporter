@@ -792,7 +792,10 @@ export function shouldProbeUnboundBindingCandidate({
   const catalogAt = Number(catalogUpdatedAtMs) || 0
   const localAt = Number(localUpdatedAtMs) || 0
   const wasFinal = String(localTerminalState || '').toLowerCase() === 'final'
-  const fallbackAt = wasFinal ? 0 : Number(catalogFirstSeenAtMs) || 0
+  // 有真实 Catalog update_time 时，它才是服务端进展的权威时间。
+  // 仅当该字段确实缺失、且本地没有 final 时，才允许用「首次被观察到」作兜底。
+  // 否则一条多周前的旧 async-active 在今天重新被列表扫描到也会被误认为新进展。
+  const fallbackAt = wasFinal || catalogAt > 0 ? 0 : Number(catalogFirstSeenAtMs) || 0
   const signalAt = Math.max(activeAt, catalogAt, fallbackAt)
   if (!Number.isFinite(signalAt) || signalAt <= 0) return false
   // 如果服务器最后一次可证明的活跃更新不比本地 final 新，这个老聊天不可能

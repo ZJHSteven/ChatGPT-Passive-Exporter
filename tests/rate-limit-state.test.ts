@@ -137,7 +137,7 @@ describe('family rate-limit state', () => {
     expect(familyRateLimitAllowed(state, 'catalog', 2000)).toBe(true)
     expect(familyRateLimitAllowed(state, 'project-catalog', 2000)).toBe(true)
     expect(familyRateLimitAllowed(state, 'actor', 2000)).toBe(true)
-    expect(familyBackoffUntil(state, 'body', 2000)).toBe(31_000)
+    expect(familyBackoffUntil(state, 'body', 2000)).toBe(61_000)
   })
 
   test('project catalog has an independent catalog-style backoff bucket', () => {
