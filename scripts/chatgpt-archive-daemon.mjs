@@ -25,6 +25,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   ChatArchiveDb,
   devSpaceVirtualConversationId,
+  preferredConversationTitle,
 } from '../src/local/archive-db.ts'
 import { ArchiveMergeWorker } from '../src/local/archive-merge-worker-client.ts'
 import {
@@ -1849,6 +1850,41 @@ function chatgptTime(value) {
     return Number.isFinite(millis) ? millis / 1000 : null
   }
   return null
+}
+
+/**
+ * 判断 Catalog 的某项是否真的比已经归档的 Body 更新。
+ *
+ * 一个历史性的高频 429 来源是 Catalog 每次刷新都将旧 final 重新排入 Body：
+ * Body 存入 SQLite 时会经 preferredConversationTitle 规范化标题，将换行、连续空白
+ * 变成单个空格；Catalog 却曾把原始 title 和 SQLite title 逐字比较。
+ * 例如服务端返回「排查插件域名\n」，SQLite 存的是「排查插件域名」，
+ * 即使 update_time 完全相同，旧逻辑也会永远误判 changed。
+ *
+ * 本函数刻意复用 archive-db 的同一套标题规范化与 New Chat 占位符保护逻辑；
+ * 不依赖本地 TTL 和额外退避。只要真正的新 turn 推进了 update_time、
+ * 或用户做了真正的重命名，仍立刻要求同步，不会漏掉新的会话内容。
+ */
+export function catalogItemRequiresBodySync({
+  conversationId = null,
+  catalogTitle = null,
+  catalogUpdateTime = null,
+  archivedExists = false,
+  archivedTitle = null,
+  archivedUpdateTime = null,
+} = {}) {
+  if (!archivedExists) return true
+  const serverUpdate = chatgptTime(catalogUpdateTime)
+  if (
+    serverUpdate !== null
+    && (archivedUpdateTime === null || serverUpdate > Number(archivedUpdateTime) + 0.000001)
+  ) return true
+
+  // 已归档标题和即将存入的标题必须经过完全一致的规范化/占位符处理。
+  // 不应因目录中有尾部换行、重复空格、New chat 等临时名称再次下载整份正文。
+  const canonicalTitle = preferredConversationTitle(null, archivedTitle, conversationId)
+  const nextTitle = preferredConversationTitle(archivedTitle, catalogTitle, conversationId)
+  return canonicalTitle !== nextTitle
 }
 
 /**
@@ -9227,10 +9263,14 @@ async function main() {
       const local = archive.db.prepare(
         'SELECT title, update_time AS updateTime FROM conversations WHERE id=?',
       ).get(id)
-      const localUpdate = local?.updateTime ?? null
-      const changed = !local
-        || (serverUpdate !== null && (localUpdate === null || serverUpdate > Number(localUpdate) + 0.000001))
-        || String(item.title || '') !== String(local?.title || '')
+      const changed = catalogItemRequiresBodySync({
+        conversationId: id,
+        catalogTitle: item.title,
+        catalogUpdateTime: item.update_time,
+        archivedExists: Boolean(local),
+        archivedTitle: local?.title ?? null,
+        archivedUpdateTime: local?.updateTime ?? null,
+      })
       if (changed) {
         dirtyCount += 1
         markSyncReady(id, 'project-catalog:' + reason, 0)
@@ -10538,11 +10578,14 @@ async function main() {
           }
 
           const local = archive.db.prepare('SELECT title, update_time AS updateTime FROM conversations WHERE id=?').get(id)
-          const serverUpdate = chatgptTime(item.update_time)
-          const localUpdate = local?.updateTime ?? null
-          const changed = !local
-            || (serverUpdate !== null && (localUpdate === null || serverUpdate > Number(localUpdate) + 0.000001))
-            || String(item.title || '') !== String(local?.title || '')
+          const changed = catalogItemRequiresBodySync({
+            conversationId: id,
+            catalogTitle: item.title,
+            catalogUpdateTime: item.update_time,
+            archivedExists: Boolean(local),
+            archivedTitle: local?.title ?? null,
+            archivedUpdateTime: local?.updateTime ?? null,
+          })
           if (changed) {
             stableOverlap = 0
             dirtyCount += 1

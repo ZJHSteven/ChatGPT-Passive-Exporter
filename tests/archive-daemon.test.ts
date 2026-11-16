@@ -22,6 +22,7 @@ import {
   buildWatchdogStartNotificationPayload,
   buildWatchdogTimeoutNotificationPayload,
   catalogStableOverlapTarget,
+  catalogItemRequiresBodySync,
   classifyConversationBackendUrl,
   cooldownDeadlineFromRetryAfter,
   compactNotificationText,
@@ -112,6 +113,53 @@ import {
 } from '../scripts/chatgpt-archive-daemon.mjs'
 import { extractProjectCatalogPayload } from '../src/local/project-catalog.ts'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
+
+test('Catalog 元数据采用与 SQLite 完全一致的标题规范，旧 final 的尾部换行不再反复抓 Body', () => {
+  const base = {
+    conversationId: '6af84d4d-c45c-83ea-af79-38827d195c1f',
+    archivedExists: true,
+    archivedTitle: '排查插件域名',
+    archivedUpdateTime: 1794662594.678756,
+  }
+  // 真实线上 Body 标题含尾随换行；旧代码会一直判 changed，结果 newMessages=0。
+  expect(catalogItemRequiresBodySync({
+    ...base,
+    catalogTitle: '排查插件域名\n',
+    catalogUpdateTime: 1794662594.678756,
+  })).toBe(false)
+  // 不仅 trim，内部空白也必须和 SQLite 标题的规则一致。
+  expect(catalogItemRequiresBodySync({
+    ...base,
+    archivedTitle: '分支 · 教育智能体比赛报名',
+    catalogTitle: '分支  ·\n教育智能体比赛报名',
+    catalogUpdateTime: base.archivedUpdateTime,
+  })).toBe(false)
+  // ChatGPT 侧旧缓存偶尔退回 New Chat，不能把真实标题冲成占位符。
+  expect(catalogItemRequiresBodySync({
+    ...base, catalogTitle: 'New chat', catalogUpdateTime: base.archivedUpdateTime,
+  })).toBe(false)
+  expect(catalogItemRequiresBodySync({
+    ...base, catalogTitle: '新聊天\n', catalogUpdateTime: base.archivedUpdateTime,
+  })).toBe(false)
+  // 新的完整 turn 即使标题没变，server update_time 前进也要立即同步。
+  expect(catalogItemRequiresBodySync({
+    ...base, catalogTitle: '排查插件域名\n', catalogUpdateTime: base.archivedUpdateTime + 0.01,
+  })).toBe(true)
+  // 真正的重命名、完全未知的新 CID 依然会进入同步队列。
+  expect(catalogItemRequiresBodySync({
+    ...base, catalogTitle: '排查插件域名（后续）', catalogUpdateTime: base.archivedUpdateTime,
+  })).toBe(true)
+  expect(catalogItemRequiresBodySync({
+    ...base, archivedExists: false, catalogTitle: '新聊天',
+  })).toBe(true)
+  // 缺少服务器时间或服务器给出更旧时间时，不应误判为更新。
+  expect(catalogItemRequiresBodySync({
+    ...base, catalogTitle: '排查插件域名 ', catalogUpdateTime: null,
+  })).toBe(false)
+  expect(catalogItemRequiresBodySync({
+    ...base, catalogTitle: '排查插件域名', catalogUpdateTime: base.archivedUpdateTime - 1000,
+  })).toBe(false)
+})
 
 test('Chrome CDP 只监听 IPv6 时自动尝试同端口本机 IPv6，不碰远程自定义地址', () => {
   expect(cdpLoopbackCandidates('http://127.0.0.1:9222')).toEqual([

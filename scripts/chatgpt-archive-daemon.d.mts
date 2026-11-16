@@ -18,6 +18,16 @@ export declare function daemonFatalLogPath(argv?: string[]): string
 /** CDP 同端口 IPv4/IPv6 回环地址候选，不扩展到非本机地址。 */
 export declare function cdpLoopbackCandidates(endpoint: string): string[]
 
+/** Catalog 元数据确实比本地 Body 更新才重新抓正文；空白或占位符标题不构成新版本。 */
+export declare function catalogItemRequiresBodySync(input?: {
+  conversationId?: string | null
+  catalogTitle?: string | null
+  catalogUpdateTime?: number | string | null
+  archivedExists?: boolean
+  archivedTitle?: string | null
+  archivedUpdateTime?: number | null
+}): boolean
+
 /**
  * `chatgpt-archive-daemon.mjs` 保持为可直接由 Node 执行的 ESM daemon。
  * 测试只导入其纯函数 WSS parser，因此用旁路声明维持严格 TypeScript 检查，
