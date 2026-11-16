@@ -12,7 +12,7 @@ import {
   buildDevSpaceIdleUnboundDiagnosisNotificationPayload,
   buildCooldownNotificationPayload,
   isNonRetryableDeletedConversation,
-  shouldNotifyCooldownAgain,
+  shouldNotifyCooldownEvent,
   buildTurnFinalNotificationPayload,
   buildUnboundWatchdogDiagnosisNotificationPayload,
   buildUnboundWatchdogNotificationPayload,
@@ -1131,7 +1131,7 @@ describe('ChatGPT Archive daemon WSS parser', () => {
         '请求：/backend-api/conversation/example',
         'Retry-After：120',
         '主动 API 冷却至：2026-10-06 17:02:52 北京时间',
-        'WSS/CDP 被动监听继续运行；滑动延长只记日志，不重复通知。',
+        'WSS/CDP 被动监听继续运行；每次观测到 429 都立即通知，请求层仍按 Retry-After/分级退避。',
       ].join('\n'),
       group: 'Archive-Warning',
     })
@@ -1954,12 +1954,19 @@ describe('ChatGPT Archive daemon WSS parser', () => {
     expect(isNonRetryableDeletedConversation({ status: 404, body: null })).toBe(false)
   })
 
-  test('同一 API family 的 429 Bark 告警 30 分钟内不重复', () => {
-    const now = Date.parse('2026-11-01T07:20:00Z')
-    expect(shouldNotifyCooldownAgain(null, now)).toBe(true)
-    expect(shouldNotifyCooldownAgain(now, now + 30_000)).toBe(false)
-    expect(shouldNotifyCooldownAgain(now, now + 29 * 60_000)).toBe(false)
-    expect(shouldNotifyCooldownAgain(now, now + 30 * 60_000)).toBe(true)
+  test('429 Bark 不做时间节流：同一 family 已在 cooldown 中仍应通知', () => {
+    expect(shouldNotifyCooldownEvent({
+      notificationEnabled: false,
+      wasAlreadyCooling: false,
+    })).toBe(false)
+    expect(shouldNotifyCooldownEvent({
+      notificationEnabled: true,
+      wasAlreadyCooling: false,
+    })).toBe(true)
+    expect(shouldNotifyCooldownEvent({
+      notificationEnabled: true,
+      wasAlreadyCooling: true,
+    })).toBe(true)
   })
 
   test('passive observer 不重复熔断 daemon 自己的 active replay 429', () => {

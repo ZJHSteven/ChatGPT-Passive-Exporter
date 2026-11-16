@@ -313,11 +313,12 @@ export function isNonRetryableDeletedConversation(response: {
   body?: { detail?: { code?: string, can_retry?: boolean } } | null
 } | null): boolean
 
-/** 同一个请求族的 429 告警至少间隔 30 分钟，可跨 daemon 重启恢复。 */
-export function shouldNotifyCooldownAgain(
-  lastAttemptAt: number | null | undefined,
-  now?: number,
-  intervalMs?: number,
+/** 429 告警不做时间节流；即使同一 family 已在 cooldown 中，新的独立 429 仍通知。 */
+export function shouldNotifyCooldownEvent(
+  input?: {
+    notificationEnabled?: boolean
+    wasAlreadyCooling?: boolean
+  },
 ): boolean
 
 /** 将绝对时间戳格式化为人类可读的北京时间字符串；内部存储仍保持 epoch/UTC。 */

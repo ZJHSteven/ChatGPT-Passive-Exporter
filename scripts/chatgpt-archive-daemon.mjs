@@ -1377,10 +1377,19 @@ export function isNonRetryableDeletedConversation(response) {
     && response?.body?.detail?.can_retry === false
 }
 
-/** 同一 API 请求族短时间反复 429 时，只发一次手机通知。 */
-export function shouldNotifyCooldownAgain(lastAttemptAt, now = Date.now(), intervalMs = 30 * 60_000) {
-  const previous = Number(lastAttemptAt || 0)
-  return previous <= 0 || now - previous >= intervalMs
+/**
+ * 429 告警是否应该发送。
+ *
+ * 这里故意把“请求是否已经处于 cooldown”作为输入，但不拿它做告警静默条件：
+ * cooldown/backoff 只负责阻止 Archive 继续主动打服务端；告警负责把每一次真实 429 暴露给用户。
+ * 这样即使同一个 family 已经在退避窗口里，只要又观察到新的独立 429，仍会立即通知。
+ */
+export function shouldNotifyCooldownEvent({
+  notificationEnabled = false,
+  wasAlreadyCooling = false,
+} = {}) {
+  void wasAlreadyCooling
+  return Boolean(notificationEnabled)
 }
 
 export function buildCooldownNotificationPayload({
@@ -1394,7 +1403,7 @@ export function buildCooldownNotificationPayload({
     route ? `请求：${route}` : null,
     retryAfter ? `Retry-After：${retryAfter}` : null,
     `主动 API 冷却至：${formatBeijingTime(cooldownUntil)}`,
-    'WSS/CDP 被动监听继续运行；滑动延长只记日志，不重复通知。',
+    'WSS/CDP 被动监听继续运行；每次观测到 429 都立即通知，请求层仍按 Retry-After/分级退避。',
   ].filter(Boolean)
   return {
     title: 'ChatGPT API 429 冷却',
@@ -2949,12 +2958,6 @@ async function main() {
       : []),
     '6af462e0-a6a4-83e8-9034-bbe845f253db',
   ])
-  // 告警节流跨进程重启持久化，避免重启服务再次触发通知风暴。
-  const cooldownNotificationAttempts = new Map(
-    Object.entries(previousDaemonState?.cooldownNotificationAttempts || {})
-      .filter(([, timestamp]) => Number.isFinite(Number(timestamp)) && Number(timestamp) > 0)
-      .map(([family, timestamp]) => [family, Number(timestamp)]),
-  )
   // cooldownUntil 仅保留为旧版 state 的一次性全局迁移闸门。
   // 新发生的 429 全部写入 rateLimits.families，不再回写这个全局值。
   let cooldownUntil = Number(rateLimits.legacyGlobalUntil || 0)
@@ -4962,7 +4965,6 @@ async function main() {
     recoveryProbeRemaining,
     rateLimits,
     nonRetryableConversationIds: [...nonRetryableConversationIds],
-    cooldownNotificationAttempts: Object.fromEntries(cooldownNotificationAttempts),
     notification: {
       enabled: Boolean(notificationConfig),
       provider: notificationConfig?.provider ?? null,
@@ -5389,8 +5391,8 @@ async function main() {
   /**
    * 429 cooldown 是独立运行状态提醒，不写 incidents 表，也不改变 Watchdog taxonomy。
    *
-   * 只在“未冷却 -> 进入冷却”的边沿调用；同一 cooldown 内后续 429 只延长窗口并写日志，
-   * 避免手机被重复轰炸。发送仍然 detached，Bark 自己不能阻塞 cooldown 状态切换。
+   * 每一次被 tripCooldown 接纳的独立 429 都调用；即使 family 已在 cooldown 中，也继续通知。
+   * 请求退避与通知可见性分离：Bark 发送仍 detached，绝不能阻塞 cooldown 状态切换。
    */
   const dispatchCooldownNotification = ({
     reason,
@@ -5804,9 +5806,10 @@ async function main() {
       probationRemaining: next.probationRemaining,
       ...details,
     })
-    if (!wasAlreadyCooling && notificationConfig
-      && shouldNotifyCooldownAgain(cooldownNotificationAttempts.get(family), now)) {
-      cooldownNotificationAttempts.set(family, now)
+    if (shouldNotifyCooldownEvent({
+      notificationEnabled: Boolean(notificationConfig),
+      wasAlreadyCooling,
+    })) {
       dispatchCooldownNotification({
         reason,
         cooldownUntil: familyCooldownUntil,
