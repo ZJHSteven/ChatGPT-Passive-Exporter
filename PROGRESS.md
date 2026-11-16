@@ -2,6 +2,12 @@
 - devspace-audit recover 未发现未收口工具调用；生产状态文件原子化正常，PID10776/WSS3/Bridge正常，但 21:14～21:39 49 次主动请求中23次429。
 - 正在修复 reconcileCatalog / observeProjectCatalogConversations 将原始目录标题与已规范化持久化标题逐字比较的假变更循环。旧会话正文实际存在尾部换行，本地保存标题无尾部换行；两者 update_time 一致。尚未部署此修复。
 
+### 21:55 上线反馈（后续证据覆盖上面的“尚未部署”）
+- 已提交 ad9aab6（共用 archive-db 的 preferredConversationTitle 来比较 Catalog 与本地标题）及 a745ebb（确保 Global/Project 两个入口均使用统一判定，防止回退）。新进展的 update_time 和真实改名仍会同步。
+- 完整 npm run check：40 个测试文件 / 373 个测试、TypeScript 及 4 种浏览器/脚本构建全部通过；daemon 受监督重启为 PID16232，running、WSS=3、Bridge=true、maintenance=false、lastError=null。
+- 首轮 gap-repair 的 dirtyCount 从旧版21:45的11下降到新版21:51的2；21:55 队列 ready=0、dirty=1、active=3（均有真实 DevSpace 当前工具进展）。此前反复读取的4个旧 final CID 自新 PID 启动后均为0次读取。
+- 两个相邻5分钟窗口：旧版21:45–21:50，14请求/9次200/5次429（全部Body）；新版21:50:30–21:55:30，12请求/9次200/3次429（Body 1、Mapping 2）。持续429尚未彻底消失，但最新来自仍在活动的新消息/DevSpace post-completion检查，并非旧标题假变更循环。按用户要求保留真实429逐次Bark，不额外指数退避；继续观察，不宣称长期已无429。
+
 ---
 
 ## 2026-11-16 21:54 Archive Catalog 429 风暴二次修复验收

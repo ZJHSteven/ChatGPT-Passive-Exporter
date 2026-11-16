@@ -3,6 +3,7 @@
 - **强嫌疑根因**：archive-db.ts 持久化标题调用 preferredConversationTitle，会 trim/折叠空白、保护已有标题免被 New Chat 占位符覆盖；但 global/project Catalog 中 changed 直接对原始标题和数据库标题做字符串比较，导致带末尾换行的旧标题永远判定变更。21:36 旧会话 Body 标题有尾部换行，本地记录无尾部换行，Body update_time 相同。
 - **修复任务**：两个 Catalog changed 路径统一使用持久化标题的规范化/占位符策略；纯函数测试覆盖空白、占位符、真正改名、server update_time 前进、新会话、缺时间戳。不得屏蔽 WSS 新 turn，也不得静音真实 429。
 - **验收**：TypeScript、定向测试、全量构建；生产观察 Catalog dirty/ready 是否收敛、旧 final 重复 Body GET 是否停止、真实 429 是否下降。不得仅凭短时无429断言永久结束。
+- **21:55 执行结果**：代码与全量373测试全部完成，生产 PID16232 WSS3/Bridge OK，gap-repair dirtyCount 11→2；四个曾经重复刷的旧final CID启动后无读取。相邻五分钟429数 5→3，剩余是3个活跃 DevSpace 聊天的实际正文/Mapping读取；未来如再次出现旧final重复刷或持续每分钟429，应独立按新的CID/trigger定位，不能用新指数退避/静音掩盖。
 
 ---
 
