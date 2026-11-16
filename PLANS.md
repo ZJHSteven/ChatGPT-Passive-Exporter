@@ -8,6 +8,11 @@
 
 ## 2026-11-16 21:43 中断恢复后的持续 429 剩余问题
 
+### 21:54 已完成事项
+- [done] 确认 Catalog 标题入库规范化与目录原始字符串比较导致旧 final 被反复标 changed；通过 catalogItemRequiresBodySync 修复，Global/Project 同用，保留真正的时间/标题变化同步。commit ad9aab6、a745ebb。
+- [done] 生产新版本 PID16232，21:51 gap-repair pages2/dirty2，旧版本21:22 pages5/dirty14；全量40文件373测试及四构建通过。
+- [done] 保留用户的服务端 Retry-After 共享闸门、单并发与实时429告警。21:52有两条真实活动对话相关429，属于本次修复之外的真实服务器限流，并非证明旧标题风暴还存在。后续若告警再次持续发生，按 CID 和 trigger 单独复核，不能隐瞒。
+
 - 已从 DevSpace Recover 恢复此前审计：生产 PID10776 running，WSS3、Bridge 正常、state 文件持续原子更新，之前零字节故障已修复。
 - 21:14～21:39 请求账本仍有 49 条主动请求（26 次 HTTP200、23 次 HTTP429）；即使每次都守共享 Retry-After，reconcile:gap-repair 仍对数日前已 final 的旧 CID 重复抓 Body，部分成功响应 newMessages=0。
 - 当前 Catalog changed 条件是本地缺失 OR 服务器更新时间更晚 OR 标题字符串不同，最后一项可能把只改标题、空标题或接口命名不一致的历史对话重新纳入巨大 Body 拉取；必须把元数据更新和正文变化分开判断，并用测试覆盖。

@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-11-16 21:54 Archive Catalog 429 风暴二次修复验收
+
+- Catalog 旧 final 重复拉 Body 的直接诱因已定位：标题入库通过 preferredConversationTitle 统一清洗换行/重复空白与占位标题，但目录以前拿原始 title 和 SQLite title 直接比较，即使 update_time 相同仍判定 changed。修复提交 ad9aab6，Global 与 Project Catalog 共用 catalogItemRequiresBodySync；新标题真实变更和更新时间推进依旧能触发同步。回归补充 a745ebb。
+- 生产新版本 PID16232 21:50 起 running，Bridge=true、WSS3、Garden 复用当前登录 Chrome，21:51 global gap-repair 只扫2页、dirtyCount=2（上一轮21:22仍扫5页、dirtyCount=14），无标题假变更导致的批量历史正文拉取。21:50～21:51 采样12条请求均 HTTP200；21:52仍有两次真实429（mapping/body），都来自近期活跃对话及 DevSpace 后验确认，不能宣称以后不再有任何429。
+- 全量 npm run check：40/40文件、373/373测试、TypeScript、Chrome/Edge/Firefox/Userscript全部通过。21:54 daemon PID16232 running、WSS3、Bridge=true、ready1、dirty3、无lastError，状态文件正常。连续真实429继续按服务端Retry-After共享闸门及请求串行处理，保留每条Bark实时告警。
+
+---
+
 ## 2026-11-16 21:43 中断现场恢复
 
 - devspace-audit recover 恢复上一轮 Archive 故障现场，未完成操作不直接重放；已提交原子状态写入 8294af3 和生产验收说明 3538ed4。
