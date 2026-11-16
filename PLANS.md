@@ -1,3 +1,11 @@
+## 2026-11-16 21:43 起持续 429（中断恢复后修复）
+- **排查确认**：21:14～21:39 49 次 Archive 主动请求，26 次 200、23 次 429；reconcile:gap-repair 多次重读早已 final 的旧聊天，成功回包常为 newMessages=0。
+- **强嫌疑根因**：archive-db.ts 持久化标题调用 preferredConversationTitle，会 trim/折叠空白、保护已有标题免被 New Chat 占位符覆盖；但 global/project Catalog 中 changed 直接对原始标题和数据库标题做字符串比较，导致带末尾换行的旧标题永远判定变更。21:36 旧会话 Body 标题有尾部换行，本地记录无尾部换行，Body update_time 相同。
+- **修复任务**：两个 Catalog changed 路径统一使用持久化标题的规范化/占位符策略；纯函数测试覆盖空白、占位符、真正改名、server update_time 前进、新会话、缺时间戳。不得屏蔽 WSS 新 turn，也不得静音真实 429。
+- **验收**：TypeScript、定向测试、全量构建；生产观察 Catalog dirty/ready 是否收敛、旧 final 重复 Body GET 是否停止、真实 429 是否下降。不得仅凭短时无429断言永久结束。
+
+---
+
 ## 2026-11-16 21:43 中断恢复后的持续 429 剩余问题
 
 - 已从 DevSpace Recover 恢复此前审计：生产 PID10776 running，WSS3、Bridge 正常、state 文件持续原子更新，之前零字节故障已修复。

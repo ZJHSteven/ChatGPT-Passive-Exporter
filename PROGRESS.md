@@ -1,3 +1,9 @@
+## 2026-11-16 21:44 持续 429 问题仍未闭环
+- devspace-audit recover 未发现未收口工具调用；生产状态文件原子化正常，PID10776/WSS3/Bridge正常，但 21:14～21:39 49 次主动请求中23次429。
+- 正在修复 reconcileCatalog / observeProjectCatalogConversations 将原始目录标题与已规范化持久化标题逐字比较的假变更循环。旧会话正文实际存在尾部换行，本地保存标题无尾部换行；两者 update_time 一致。尚未部署此修复。
+
+---
+
 ## 2026-11-16 21:43 中断现场恢复
 
 - devspace-audit recover 恢复上一轮 Archive 故障现场，未完成操作不直接重放；已提交原子状态写入 8294af3 和生产验收说明 3538ed4。
