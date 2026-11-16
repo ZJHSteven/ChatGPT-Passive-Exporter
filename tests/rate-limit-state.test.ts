@@ -73,7 +73,7 @@ describe('family rate-limit state', () => {
         now, retryAfter: '20', requestedDeadline: now + 20_000,
       })
       expect(current.stage).toBe(expectedIndex)
-      expect(current.backoffUntil).toBe(now + DETAIL_BACKOFF_MS[expectedIndex])
+      expect(current.backoffUntil).toBe(now + DETAIL_BACKOFF_MS[expectedIndex]!)
       const duplicate = recordFamily429(state, 'body', {
         now: now + 1000, retryAfter: '10', requestedDeadline: now + 11_000,
       })

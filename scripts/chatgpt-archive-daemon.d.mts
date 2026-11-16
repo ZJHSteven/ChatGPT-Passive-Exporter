@@ -185,6 +185,17 @@ export function planDevSpaceBindingProbes(input?: {
   targets: string[]
 }
 
+/** 避免一次 unbound watchdog 把已结束多日的旧 Catalog 聊天重新纳入探测队列。 */
+export function shouldProbeUnboundBindingCandidate(input?: {
+  pendingStartsAtMs?: number[]
+  activeLastEventAtMs?: number | null
+  catalogUpdatedAtMs?: number | null
+  catalogFirstSeenAtMs?: number | null
+  localUpdatedAtMs?: number | null
+  localTerminalState?: string | null
+  lookbackMs?: number
+}): boolean
+
 /** 当前 canonical exact match 只允许覆盖 legacy backfill binding，不覆盖另一个在线 exact binding。 */
 export function shouldSupersedeDevSpaceBinding(
   existing: { conversationId?: unknown, evidence?: unknown } | null | undefined,
