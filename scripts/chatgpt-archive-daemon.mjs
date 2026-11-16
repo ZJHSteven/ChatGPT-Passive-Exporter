@@ -769,6 +769,33 @@ export function planDevSpaceBindingProbes({
 }
 
 /**
+ * 所有 Archive 主动只读 GET 共用一个 FIFO 串行请求门。
+ *
+ * 为什么不用「各 family 自己的定时器」：即使每条请求都遵守 6 秒间隔，
+ * Catalog / Mapping / Body 分别 await 网络时仍可能并发在飞；如果其中一条
+ * 返回 429，其余请求可能已经同时撞向服务端。
+ *
+ * 本队列把整个「等待时隙→发送→收响应→登记 Retry-After」视为一个原子任务：
+ * 同时最多一个请求在飞；即使任务失败，也通过 finally 释放下一位。
+ * 与被动 WSS/SSE/CDP 观察完全无关，不会阻塞它们。
+ */
+export function createSerialRequestQueue() {
+  let tail = Promise.resolve()
+  return async (task) => {
+    const previous = tail
+    let release
+    tail = new Promise(resolve => { release = resolve })
+    await previous
+    try {
+      return await task()
+    }
+    finally {
+      release()
+    }
+  }
+}
+
+/**
  * Unbound DevSpace watchdog 的目标是找出「这一代刚运行过的聊天」，不能因为
  * 旧 Catalog 里还保留 async-active，就对几周前已有 final 的聊天全部抓正文。
  *
@@ -6053,7 +6080,10 @@ async function main() {
     return true
   }
 
- const fetchChecked = async (request, options = {}) => {
+ // 单实例、单并发：即使 Catalog repair 与 Body sync 在不同异步任务中启动，
+ // 后端请求仍严格 FIFO，先处理上一条服务器响应与共享 Retry-After 再发送下一条。
+ const serialActiveRequest = createSerialRequestQueue()
+ const fetchChecked = async (request, options = {}) => serialActiveRequest(async () => {
    const family = requestFamilyForKind(request.kind)
    // backoff 到期后先把 Guardian 对应 URL pattern 解封，再真正发 probation probe。
    // sync 后再次检查 gate，避免 CDP block 状态不确定时继续向外请求。
@@ -6067,6 +6097,9 @@ async function main() {
    if (options.skipRequestSlot !== true) {
      await waitForRequestSlot(request.kind)
  }
+   // 排队等待或基础间隔内可能收到 passive/native 429：发请求之前必须再次验证
+   // 所有 family 共用的 Retry-After 闸门，而不能沿用队列入场时的旧状态。
+   requireRequestWindow(family)
 
     activeReplayRequestUrl = relativeBackendUrl(request.url)
     let response
@@ -6122,7 +6155,7 @@ async function main() {
       }
     }
     return response.body
-  }
+  })
 
   /** 当前 conversation 是否已经被本机真正的 SSE / turn-WSS 覆盖。 */
   const hasLiveTransportForConversation = (conversationId) => [...activeLiveTransports.values()]

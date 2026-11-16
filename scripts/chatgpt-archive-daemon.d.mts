@@ -185,6 +185,9 @@ export function planDevSpaceBindingProbes(input?: {
   targets: string[]
 }
 
+/** 单进程内严格 FIFO 的 Archive 主动 HTTP 请求队列，失败也释放后继。 */
+export function createSerialRequestQueue(): <T>(task: () => Promise<T> | T) => Promise<T>
+
 /** 避免一次 unbound watchdog 把已结束多日的旧 Catalog 聊天重新纳入探测队列。 */
 export function shouldProbeUnboundBindingCandidate(input?: {
   pendingStartsAtMs?: number[]
