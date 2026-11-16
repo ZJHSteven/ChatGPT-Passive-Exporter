@@ -20,8 +20,8 @@ export interface FamilyRateLimitState {
   /** 绝对 epoch 毫秒；0 表示当前没有 hard backoff。 */
   backoffUntil: number
   /**
-   * 退避阶梯下标；-1 表示完全健康。
-   * catalog 与 body/mapping 分别使用不同阶梯；actor 保留原服务端 Retry-After 行为。
+   * catalog 退避阶梯下标；-1 表示完全健康。
+   * Body/Mapping 仅依照服务端 Retry-After，不增加客户端指数退避。
    */
   stage: number
   /** cooldown 到期后的 slow-start 还剩多少次主动成功请求。 */
@@ -40,6 +40,11 @@ export interface FamilyRateLimitSnapshot {
    * 新版 family 429 永远不会写这里；它到期以后自然归零。
    */
   legacyGlobalUntil: number
+  /**
+   * 服务端任一 API family 给出 Retry-After 后，本机所有 Archive 主动请求共用这一 deadline。
+   * 这不是额外延长的退避时间，恰好等于服务端要求的最晚时间；不控制手机或其他设备。
+   */
+  sharedRetryAfterUntil: number
   families: Record<RateLimitFamily, FamilyRateLimitState>
 }
 
@@ -49,20 +54,6 @@ export const CATALOG_BACKOFF_MS = [
   20 * 60_000,
   30 * 60_000,
   60 * 60_000,
-] as const
-
-/**
- * 历史 Body 429 风暴的根因之一是反复收到 10~50 秒 Retry-After，就每分钟重新碰限流。
- * 服务端的 Retry-After 只是「至少等多久」，不是「到期必定有配额」。
- * 因此对只读正文/映射请求增加本地渐进冷却，成功三次以后才回到正常间隔；
- * 这里不改变 Actor 的正式聊天发送，也不改变每次真实 429 的 Bark 告警。
- */
-export const DETAIL_BACKOFF_MS = [
-  60_000,
-  2 * 60_000,
-  4 * 60_000,
-  8 * 60_000,
-  12 * 60_000,
 ] as const
 
 function finiteFuture(value: unknown, now: number): number {
@@ -142,6 +133,9 @@ export function restoreFamilyRateLimitSnapshot(
   return {
     version: 1,
     legacyGlobalUntil,
+    sharedRetryAfterUntil: hasFamilyState
+      ? finiteFuture(rawRateLimits?.sharedRetryAfterUntil, now)
+      : 0,
     families,
   }
 }
@@ -153,6 +147,7 @@ export function familyRateLimitAllowed(
   now = Date.now(),
 ): boolean {
   if (Number(snapshot.legacyGlobalUntil || 0) > now) return false
+  if (Number(snapshot.sharedRetryAfterUntil || 0) > now) return false
   return Number(snapshot.families[family]?.backoffUntil || 0) <= now
 }
 
@@ -168,7 +163,10 @@ export function familyBackoffUntil(
   const familyUntil = Number(snapshot.families[family]?.backoffUntil || 0) > now
     ? Number(snapshot.families[family].backoffUntil)
     : 0
-  return Math.max(legacy, familyUntil)
+  const shared = Number(snapshot.sharedRetryAfterUntil || 0) > now
+    ? Number(snapshot.sharedRetryAfterUntil)
+    : 0
+  return Math.max(legacy, familyUntil, shared)
 }
 
 /**
@@ -199,12 +197,12 @@ export function prepareFamilyProbation(
  * 记录某 family 的 429。
  *
  * catalog 没有 Retry-After 时使用 5→10→20→30→60 分钟阶梯。
- * body/mapping 即使有 Retry-After，也至少使用 1→2→4→8→12 分钟本地阶梯。
+ * body/mapping 只服从服务端 Retry-After，不人为延迟。
  * 同一个 backoff 窗口内页面自己重复撞 429 时**不升级阶梯、不续杯**，否则 sidebar 每分钟
  * 自己重试几次就会瞬间被放大到 60 分钟，重演旧版“滑动一小时”问题。
  *
  * caller 如果拿到了 Retry-After，应提前算好 requestedDeadline 传入；服务端时间是硬下限，
- * 只向后延长、不缩短已有窗口，但不阻止客户端主动选择更长的恢复保护期。
+ * 同时设置跨 family 的共享闸门，不容许 Catalog/Mapping/Body 互相越过这个期限。
  */
 export function recordFamily429(
   snapshot: FamilyRateLimitSnapshot,
@@ -225,6 +223,13 @@ export function recordFamily429(
     : null
 
   const requestedDeadline = Number(options.requestedDeadline ?? 0)
+  // 独立真实 429 可继续逐条告警，但同一 Retry-After 时间窗内不得因重复观察而
+  // 把共享闸门延长到服务器未要求的时间；有更晚的真实 deadline 才向后延长。
+  if (current.lastRetryAfter && Number.isFinite(requestedDeadline) && requestedDeadline > now) {
+    snapshot.sharedRetryAfterUntil = Math.max(
+      Number(snapshot.sharedRetryAfterUntil || 0), requestedDeadline,
+    )
+  }
   // 已处于 hard backoff 时，catalog/native 这种“没有 Retry-After 的重复 429”不升级、不续杯；
   // 但服务端如果明确给出一个更晚的 Retry-After deadline，仍然必须尊重并向后延长。
   if (current.backoffUntil > now) {
@@ -234,23 +239,10 @@ export function recordFamily429(
     return current
   }
 
-  if (family === 'body' || family === 'mapping') {
-    // 只有真正走过上一个 cooldown、再次发起请求且收到 429，才升级一级。
-    // 冷却窗口内观察到的 native 429 走上面的早返回，不会「滑动续杯」。
-    const nextStage = Math.min(current.stage + 1, DETAIL_BACKOFF_MS.length - 1)
-    current.stage = Math.max(0, nextStage)
-    const serverDeadline = Number.isFinite(requestedDeadline) && requestedDeadline > now
-      ? requestedDeadline
-      : now + Math.max(1000, Number(options.fallbackMs) || 60 * 60_000)
-    current.backoffUntil = Math.max(now + DETAIL_BACKOFF_MS[current.stage]!, serverDeadline)
-    current.probationRemaining = 0
-    return current
-  }
-
   if (Number.isFinite(requestedDeadline) && requestedDeadline > now) {
     current.backoffUntil = requestedDeadline
     current.probationRemaining = 0
-    // actor 不使用阶梯；catalog 如果服务端未来开始给 Retry-After，
+    // body、mapping、actor 不使用阶梯；catalog 如果服务端未来开始给 Retry-After，
     // 仍保留既有 stage，probation 失败时可以继续从原阶梯升一级。
     return current
   }
@@ -324,6 +316,16 @@ export function guardianBlockedUrlPatterns(
     return [
       'https://chatgpt.com/backend-api/conversations*',
       'https://chatgpt.com/backend-api/conversation/*',
+    ]
+  }
+  if (snapshot.sharedRetryAfterUntil > now) {
+    // 仅阻断 Archive Guardian 同源上可精确识别的 conversation 读取路由；
+    // mapping 与 stream_status 共享前缀，不能在 CDP 层宽泛拦截。
+    return [
+      'https://chatgpt.com/backend-api/conversations?*',
+      'https://chatgpt.com/backend-api/conversations/*',
+      'https://chatgpt.com/backend-api/gizmos/snorlax/sidebar*',
+      'https://chatgpt.com/backend-api/gizmos/*/conversations*',
     ]
   }
 
