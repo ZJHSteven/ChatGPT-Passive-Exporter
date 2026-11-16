@@ -1,5 +1,14 @@
 ## 2026-11-16 晚间连续 Body 429 风暴修复
 
+### 上线验收（21:10 CST）
+- [done] 取证：四次429后最终返回404 conversation_deleted/can_retry=false 的 CID 已被隔离；另有 unbound gap-repair 探测范围过宽。
+- [done] 旧候选筛选：同类修复从14个CID降为6个；删除旧 final 不再混入新 generation。
+- [done] 取消新加的 Body/Mapping 指数退避，共享服务器 Retry-After；主动 GET 与 Resume 串行；排队受限时不扣 Resume 尝试次数，Bark 按真实429逐次通知。
+- [done] CDP IPv4/IPv6回环自适应，解决只监听 ::1 时 IPv4-only 导致的假离线。
+- [done] 针对状态JSON长期0字节增加原子临时文件写入和5秒超时保护。
+- [done] 最终主逻辑全量40文件371测试、TypeScript与四构建成功；状态文件加固后定向144项与TypeScript成功。受监督重启PID10776，running、Bridge可用、WSS3、maintenance=false、lastError=null；新PID首批12次请求均200、无429。
+- [follow-up] 以上为短时生产验收，不能证明未来绝不出现真实429；持续故障仍通过实时Bark与请求账本排查，不恢复30分钟静默。
+
 ### 用户在 20:45 的最新策略决定（覆盖上一轮指数退避建议）
 - **严格服从真实 Retry-After**，不额外施加 Body/Mapping 1→2→4→8→12 分钟指数退避。前一补丁 e31932b 中该策略须撤回。
 - **一个共享的 Retry-After 闸门**：服务端在任一 Archive 主动只读 family 返回明确等待时间后，所有 Archive 主动请求族均不得在此期限之前发送；不能各自只守 family 闸门。浏览器第一方自然流量不作跨设备拦截。
