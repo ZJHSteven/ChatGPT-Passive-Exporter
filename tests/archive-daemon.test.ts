@@ -161,6 +161,19 @@ test('Catalog 元数据采用与 SQLite 完全一致的标题规范，旧 final 
   })).toBe(false)
 })
 
+test('Global 与 Project Catalog 都调用统一变更判定，不再直接比较原始标题', async () => {
+  const source = await fs.readFile(new URL('../scripts/chatgpt-archive-daemon.mjs', import.meta.url), 'utf8')
+  const projectStart = source.indexOf('const observeProjectCatalogConversations = async')
+  const globalStart = source.indexOf('const reconcileCatalog = async')
+  const project = source.slice(projectStart, source.indexOf('const rememberPassiveProjectCatalogResponse', projectStart))
+  const global = source.slice(globalStart, source.indexOf('const scheduleGapRepair', globalStart))
+  for (const flow of [project, global]) {
+    expect(flow).toContain('const changed = catalogItemRequiresBodySync({')
+    expect(flow).not.toContain("String(item.title || '') !== String(local?.title || '')")
+    expect(flow).toContain('markSyncReady(id,')
+  }
+})
+
 test('Chrome CDP 只监听 IPv6 时自动尝试同端口本机 IPv6，不碰远程自定义地址', () => {
   expect(cdpLoopbackCandidates('http://127.0.0.1:9222')).toEqual([
     'http://127.0.0.1:9222', 'http://[::1]:9222',
