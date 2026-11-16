@@ -43,6 +43,7 @@ import {
   retryTransientSqliteBusy,
   shouldStartPostCompletionDevSpaceTurnFromTrace,
   planDevSpaceBindingProbes,
+  shouldProbeUnboundBindingCandidate,
   extractDevSpaceCheckpoint,
   extractDevSpaceConclusion,
   estuaryFileIdFromUrl,
@@ -109,6 +110,43 @@ import {
 } from '../scripts/chatgpt-archive-daemon.mjs'
 import { extractProjectCatalogPayload } from '../src/local/project-catalog.ts'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
+
+test('未绑定 watchdog 候选必须有同期进展，不能把多周前 final 批量重新拉取', () => {
+  const hour = 60 * 60_000
+  const now = Date.UTC(2026, 10, 16, 12, 30)
+  const pending = [now - 45 * 60_000]
+  const base = { pendingStartsAtMs: pending, localTerminalState: 'final' }
+  // 旧 Catalog 仍写着 active，但十一天前已经有 final：不能进入 Body 探测。
+  expect(shouldProbeUnboundBindingCandidate({
+    ...base, catalogUpdatedAtMs: now - 11 * 24 * hour,
+    catalogFirstSeenAtMs: now, localUpdatedAtMs: now - 11 * 24 * hour + 2000,
+  })).toBe(false)
+  // 即使缺失 Catalog update_time，也不能把旧 final 当成新消息。
+  expect(shouldProbeUnboundBindingCandidate({
+    ...base, catalogFirstSeenAtMs: now, localUpdatedAtMs: now - hour,
+  })).toBe(false)
+  // 服务端已产生真正的新一轮更新，必须继续恢复，以免漏掉有效新聊天。
+  expect(shouldProbeUnboundBindingCandidate({
+    ...base, catalogUpdatedAtMs: now - 10_000, localUpdatedAtMs: now - 4 * hour,
+  })).toBe(true)
+  // 多小时会话有最近工具事件，即使之前已有 final，也必须能被识别。
+  expect(shouldProbeUnboundBindingCandidate({
+    ...base, activeLastEventAtMs: now - 20_000, localUpdatedAtMs: now - 3 * hour,
+  })).toBe(true)
+  // 长期无进展的旧非终态也不构成新 unbound generation 的同期候选。
+  expect(shouldProbeUnboundBindingCandidate({
+    pendingStartsAtMs: pending,
+    catalogUpdatedAtMs: now - 8 * 24 * hour,
+    catalogFirstSeenAtMs: now,
+    localTerminalState: 'none',
+  })).toBe(false)
+  // 真正没有本地历史的新聊天，只要刚观察到 active，允许短期兜底探测。
+  expect(shouldProbeUnboundBindingCandidate({
+    pendingStartsAtMs: pending,
+    catalogFirstSeenAtMs: now - 10_000,
+  })).toBe(true)
+  expect(shouldProbeUnboundBindingCandidate({ pendingStartsAtMs: [] })).toBe(false)
+})
 
 test('daemon fatal 记录 Error stack 与任意 rejection，并尊重 --log', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-daemon-fatal-'))

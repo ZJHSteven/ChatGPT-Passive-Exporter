@@ -769,6 +769,40 @@ export function planDevSpaceBindingProbes({
 }
 
 /**
+ * Unbound DevSpace watchdog 的目标是找出「这一代刚运行过的聊天」，不能因为
+ * 旧 Catalog 里还保留 async-active，就对几周前已有 final 的聊天全部抓正文。
+ *
+ * 只接受与任何待绑定 generation 时间相邻的真实活动：新的工具事件优先，
+ * 其次使用 Catalog 服务端 update_time；没有 update_time 时只把首次看到的
+ * 新聊天作为兜底，绝不让旧 final 仅凭 Catalog 首次被重新扫描就复活。
+ * 两小时余量保留长运行会话的可能性，而不是把未绑定问题扩散成无限历史遍历。
+ */
+export function shouldProbeUnboundBindingCandidate({
+  pendingStartsAtMs = [],
+  activeLastEventAtMs = null,
+  catalogUpdatedAtMs = null,
+  catalogFirstSeenAtMs = null,
+  localUpdatedAtMs = null,
+  localTerminalState = null,
+  lookbackMs = 2 * 60 * 60_000,
+} = {}) {
+  const starts = pendingStartsAtMs.map(Number).filter(value => Number.isFinite(value) && value > 0)
+  if (starts.length === 0) return false
+  const activeAt = Number(activeLastEventAtMs) || 0
+  const catalogAt = Number(catalogUpdatedAtMs) || 0
+  const localAt = Number(localUpdatedAtMs) || 0
+  const wasFinal = String(localTerminalState || '').toLowerCase() === 'final'
+  const fallbackAt = wasFinal ? 0 : Number(catalogFirstSeenAtMs) || 0
+  const signalAt = Math.max(activeAt, catalogAt, fallbackAt)
+  if (!Number.isFinite(signalAt) || signalAt <= 0) return false
+  // 如果服务器最后一次可证明的活跃更新不比本地 final 新，这个老聊天不可能
+  // 解释当前 unbound turn；无时间戳的旧 final 同样不能靠「被重新看到」复活。
+  if (wasFinal && signalAt <= localAt + 1000) return false
+  const lookback = Math.max(0, Number(lookbackMs) || 0)
+  return starts.some(start => signalAt >= start - lookback)
+}
+
+/**
  * 当前 turn 的 canonical exact match 可以纠正历史 backfill；反过来不允许。
  *
  * `body:exact-tool-args-backfill` 来自一次性历史扫描，曾因缺少 per-call 时间局部性把
@@ -8718,10 +8752,29 @@ async function main() {
     const generation = timedOutEntries
       .map(([identityKey, pending]) => `${identityKey}:${Number(pending.watchdogAt)}`)
       .join('|')
-    const candidateConversationIds = new Set([
-      ...activeTurns.keys(),
-      ...catalogActive.keys(),
-    ])
+    const pendingStartsAtMs = timedOutEntries.map(([, pending]) => Number(
+      pending.startedAt || Number(pending.watchdogAt) - watchdogMs,
+    ))
+    const rawCandidateIds = new Set([...activeTurns.keys(), ...catalogActive.keys()])
+    const candidateConversationIds = new Set()
+    const candidateLookup = archive.db.prepare(
+      'SELECT update_time AS updateTime, terminal_state AS terminalState FROM conversations WHERE id=?',
+    )
+    for (const conversationId of rawCandidateIds) {
+      const active = activeTurns.get(conversationId)
+      const catalog = catalogActive.get(conversationId)
+      const local = candidateLookup.get(conversationId)
+      const serverUpdatedSeconds = chatgptTime(catalog?.updateTime)
+      if (!shouldProbeUnboundBindingCandidate({
+        pendingStartsAtMs,
+        activeLastEventAtMs: active?.lastEventAt ?? null,
+        catalogUpdatedAtMs: serverUpdatedSeconds === null ? null : serverUpdatedSeconds * 1000,
+        catalogFirstSeenAtMs: catalog?.firstSeenAt ?? null,
+        localUpdatedAtMs: local?.updateTime ? Number(local.updateTime) * 1000 : null,
+        localTerminalState: local?.terminalState ?? null,
+      })) continue
+      candidateConversationIds.add(conversationId)
+    }
     const plan = planDevSpaceBindingProbes({
       generation,
       previousGeneration: devSpaceBindingProbeGeneration,
@@ -8736,6 +8789,8 @@ async function main() {
     if (plan.targets.length > 0) {
       void log('queued bounded DevSpace binding body probes after catalog repair', {
         generationCount: timedOutEntries.length,
+        catalogAndActiveCandidates: rawCandidateIds.size,
+        timeCorrelatedCandidates: candidateConversationIds.size,
         targetCount: plan.targets.length,
         conversationIds: plan.targets,
       })

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   CATALOG_BACKOFF_MS,
+  DETAIL_BACKOFF_MS,
   familyBackoffUntil,
   familyProbationRemaining,
   familyRateLimitAllowed,
@@ -53,13 +54,53 @@ describe('family rate-limit state', () => {
       requestedDeadline: 31_000,
       retryAfter: '7',
     })
-    expect(first.backoffUntil).toBe(31_000)
+    expect(first.backoffUntil).toBe(61_000)
     const extended = recordFamily429(state, 'body', {
       now: 2000,
-      requestedDeadline: 60_000,
+      requestedDeadline: 120_000,
       retryAfter: '53',
     })
-    expect(extended.backoffUntil).toBe(60_000)
+    expect(extended.backoffUntil).toBe(120_000)
+    expect(extended.stage).toBe(0)
+  })
+
+  test('Body 连续 429 会逐级退避到 12 分钟，重启恢复后继续，而不是每分钟探测', () => {
+    const state = restoreFamilyRateLimitSnapshot({}, 0)
+    let now = 10_000
+    for (let index = 0; index < DETAIL_BACKOFF_MS.length + 2; index += 1) {
+      const expectedIndex = Math.min(index, DETAIL_BACKOFF_MS.length - 1)
+      const current = recordFamily429(state, 'body', {
+        now, retryAfter: '20', requestedDeadline: now + 20_000,
+      })
+      expect(current.stage).toBe(expectedIndex)
+      expect(current.backoffUntil).toBe(now + DETAIL_BACKOFF_MS[expectedIndex])
+      const duplicate = recordFamily429(state, 'body', {
+        now: now + 1000, retryAfter: '10', requestedDeadline: now + 11_000,
+      })
+      expect(duplicate.stage).toBe(expectedIndex)
+      expect(duplicate.backoffUntil).toBe(current.backoffUntil)
+      const restored = restoreFamilyRateLimitSnapshot({ rateLimits: state }, now + 2000)
+      expect(restored.families.body.stage).toBe(expectedIndex)
+      now = current.backoffUntil + 1
+    }
+    const probe = recordFamilySuccess(state, 'body', now)
+    expect(probe.probationRemaining).toBe(2)
+    expect(recordFamilySuccess(state, 'body', now + 1000).probationRemaining).toBe(1)
+    expect(recordFamilySuccess(state, 'body', now + 2000).stage).toBe(-1)
+  })
+
+  test('服务端长 Retry-After 始终优先，Mapping 连续失败也有独立阶梯', () => {
+    const state = restoreFamilyRateLimitSnapshot({}, 0)
+    const first = recordFamily429(state, 'mapping', {
+      now: 1000, retryAfter: '300', requestedDeadline: 301_000,
+    })
+    expect(first.backoffUntil).toBe(301_000)
+    expect(first.stage).toBe(0)
+    const next = recordFamily429(state, 'mapping', {
+      now: 301_001, retryAfter: '5', requestedDeadline: 306_001,
+    })
+    expect(next.backoffUntil).toBe(421_001)
+    expect(state.families.body.stage).toBe(-1)
   })
 
   test('catalog 到期进入三次 probation，连续成功后恢复 HEALTHY', () => {

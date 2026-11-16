@@ -20,8 +20,8 @@ export interface FamilyRateLimitState {
   /** 绝对 epoch 毫秒；0 表示当前没有 hard backoff。 */
   backoffUntil: number
   /**
-   * catalog 的退避阶梯下标；-1 表示完全健康。
-   * 其它 family 目前不使用指数阶梯，但保留同一字段以保持状态结构一致。
+   * 退避阶梯下标；-1 表示完全健康。
+   * catalog 与 body/mapping 分别使用不同阶梯；actor 保留原服务端 Retry-After 行为。
    */
   stage: number
   /** cooldown 到期后的 slow-start 还剩多少次主动成功请求。 */
@@ -49,6 +49,20 @@ export const CATALOG_BACKOFF_MS = [
   20 * 60_000,
   30 * 60_000,
   60 * 60_000,
+] as const
+
+/**
+ * 历史 Body 429 风暴的根因之一是反复收到 10~50 秒 Retry-After，就每分钟重新碰限流。
+ * 服务端的 Retry-After 只是「至少等多久」，不是「到期必定有配额」。
+ * 因此对只读正文/映射请求增加本地渐进冷却，成功三次以后才回到正常间隔；
+ * 这里不改变 Actor 的正式聊天发送，也不改变每次真实 429 的 Bark 告警。
+ */
+export const DETAIL_BACKOFF_MS = [
+  60_000,
+  2 * 60_000,
+  4 * 60_000,
+  8 * 60_000,
+  12 * 60_000,
 ] as const
 
 function finiteFuture(value: unknown, now: number): number {
@@ -185,11 +199,12 @@ export function prepareFamilyProbation(
  * 记录某 family 的 429。
  *
  * catalog 没有 Retry-After 时使用 5→10→20→30→60 分钟阶梯。
+ * body/mapping 即使有 Retry-After，也至少使用 1→2→4→8→12 分钟本地阶梯。
  * 同一个 backoff 窗口内页面自己重复撞 429 时**不升级阶梯、不续杯**，否则 sidebar 每分钟
  * 自己重试几次就会瞬间被放大到 60 分钟，重演旧版“滑动一小时”问题。
  *
- * caller 如果拿到了 Retry-After，应提前算好 requestedDeadline 传入；这时所有 family 都以
- * 服务端 deadline 为主要真相源，只向后延长、不缩短已有窗口。
+ * caller 如果拿到了 Retry-After，应提前算好 requestedDeadline 传入；服务端时间是硬下限，
+ * 只向后延长、不缩短已有窗口，但不阻止客户端主动选择更长的恢复保护期。
  */
 export function recordFamily429(
   snapshot: FamilyRateLimitSnapshot,
@@ -219,10 +234,23 @@ export function recordFamily429(
     return current
   }
 
+  if (family === 'body' || family === 'mapping') {
+    // 只有真正走过上一个 cooldown、再次发起请求且收到 429，才升级一级。
+    // 冷却窗口内观察到的 native 429 走上面的早返回，不会「滑动续杯」。
+    const nextStage = Math.min(current.stage + 1, DETAIL_BACKOFF_MS.length - 1)
+    current.stage = Math.max(0, nextStage)
+    const serverDeadline = Number.isFinite(requestedDeadline) && requestedDeadline > now
+      ? requestedDeadline
+      : now + Math.max(1000, Number(options.fallbackMs) || 60 * 60_000)
+    current.backoffUntil = Math.max(now + DETAIL_BACKOFF_MS[current.stage]!, serverDeadline)
+    current.probationRemaining = 0
+    return current
+  }
+
   if (Number.isFinite(requestedDeadline) && requestedDeadline > now) {
     current.backoffUntil = requestedDeadline
     current.probationRemaining = 0
-    // 非 catalog family 不使用阶梯；catalog 如果服务端未来开始给 Retry-After，
+    // actor 不使用阶梯；catalog 如果服务端未来开始给 Retry-After，
     // 仍保留既有 stage，probation 失败时可以继续从原阶梯升一级。
     return current
   }
