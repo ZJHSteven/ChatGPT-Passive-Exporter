@@ -43,6 +43,7 @@ import {
   retryTransientSqliteBusy,
   shouldStartPostCompletionDevSpaceTurnFromTrace,
   planDevSpaceBindingProbes,
+  createSerialRequestQueue,
   shouldProbeUnboundBindingCandidate,
   extractDevSpaceCheckpoint,
   extractDevSpaceConclusion,
@@ -110,6 +111,45 @@ import {
 } from '../scripts/chatgpt-archive-daemon.mjs'
 import { extractProjectCatalogPayload } from '../src/local/project-catalog.ts'
 import { ChatArchiveDb } from '../src/local/archive-db.ts'
+import { familyRateLimitAllowed, recordFamily429, restoreFamilyRateLimitSnapshot } from '../src/local/rate-limit-state.ts'
+
+test('主动请求 FIFO 串行，第一条收到429后下一条不得抢在共享 Retry-After 之前发送', async () => {
+  const runSerial = createSerialRequestQueue()
+  const state = restoreFamilyRateLimitSnapshot({}, 0)
+  const actions: string[] = []
+  let resolveFirst!: () => void
+  const firstPending = new Promise<void>(resolve => { resolveFirst = resolve })
+  let active = 0
+  let maxActive = 0
+  const first = runSerial(async () => {
+    active += 1
+    maxActive = Math.max(maxActive, active)
+    actions.push('first-enter')
+    await firstPending
+    recordFamily429(state, 'body', {
+      now: 1000, retryAfter: '30', requestedDeadline: 31_000,
+    })
+    actions.push('first-429')
+    active -= 1
+  })
+  const second = runSerial(async () => {
+    active += 1
+    maxActive = Math.max(maxActive, active)
+    actions.push('second-enter')
+    expect(familyRateLimitAllowed(state, 'catalog', 2000)).toBe(false)
+    expect(familyRateLimitAllowed(state, 'mapping', 31_000)).toBe(true)
+    active -= 1
+  })
+  await Promise.resolve()
+  expect(actions).toEqual(['first-enter'])
+  resolveFirst()
+  await Promise.all([first, second])
+  expect(maxActive).toBe(1)
+  expect(actions).toEqual(['first-enter', 'first-429', 'second-enter'])
+  // 已失败的请求也必须释放队列，不能产生一个永远 pending 的首任务。
+  await expect(runSerial(() => { throw new Error('terminal') })).rejects.toThrow('terminal')
+  expect(await runSerial(async () => 42)).toBe(42)
+})
 
 test('未绑定 watchdog 候选必须有同期进展，不能把多周前 final 批量重新拉取', () => {
   const hour = 60 * 60_000
