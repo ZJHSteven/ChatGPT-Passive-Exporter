@@ -1,5 +1,12 @@
 ## 2026-11-16 晚间连续 Body 429 风暴修复
 
+### 用户在 20:45 的最新策略决定（覆盖上一轮指数退避建议）
+- **严格服从真实 Retry-After**，不额外施加 Body/Mapping 1→2→4→8→12 分钟指数退避。前一补丁 e31932b 中该策略须撤回。
+- **一个共享的 Retry-After 闸门**：服务端在任一 Archive 主动只读 family 返回明确等待时间后，所有 Archive 主动请求族均不得在此期限之前发送；不能各自只守 family 闸门。浏览器第一方自然流量不作跨设备拦截。
+- **单并发、串行队列**：Archive 主动 GET 统一排队，发出一个并确认响应/冷却状态后才允许下一个；轮询、目录和正文不能同时冲撞。Bark 仍逐个真实 429 实时告警。
+- 核心是删掉「无终态且无成功可能」的重复任务，已知 can_retry=false 的 404 继续持久隔离；未绑定扫描只探测同期有证据的 CID。
+- 生产重载后 Garden 显示未登录，WSS=0；须与 429 独立核查，不能把无认证当成服务端限流。
+
 ### 现场判定与约束
 - 20:30 前后回溯的约 35 分钟内有 26 次真实 cooldown、27 次失败，其中 17 次为 reconcile:gap-repair；不是 Bark 重复通知。20:28 一次 unbound watchdog 触发的绑定恢复把 14 个 CID 全部排入 Body，其中至少 10 个本地状态是早在 10 月底/11 月初就结束的 final。
 - 根因之一是 queueTimedOutDevSpaceBindingProbes 无时间关联过滤，把所有 activeTurns/catalogActive 全量当候选；同时 body/mapping 每次只遵守 Retry-After（常为数十秒），连续失败不升级退避，所以每分钟持续撞 429。
