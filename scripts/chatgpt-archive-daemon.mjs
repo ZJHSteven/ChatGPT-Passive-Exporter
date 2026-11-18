@@ -11447,7 +11447,7 @@ async function main() {
            // daemon GET 刚完成/429 时又发出网页 GET，造成两个流量源相互放大。
            return await serialActiveRequest(async () => {
            requireRequestWindow('actor')
-           const result = await sendActorPrompt({
+           return await sendActorPrompt({
           cdpHttp,
           statePath: actorStatePath,
           daemonStatePath: statePath,
@@ -11471,15 +11471,14 @@ async function main() {
               latencyMs: null,
               backoffStage: rateLimits.families.actor.stage,
            })
-           return result
-           })
-            return await tripCooldown('actor turn submit HTTP 429', {
+             return await tripCooldown('actor turn submit HTTP 429', {
               family: 'actor',
               route: details.requestUrl,
               requestId: details.requestId,
               retryAfter: details.retryAfter,
-            })
-          },
+           })
+           },
+           })
           })
         },
       })
