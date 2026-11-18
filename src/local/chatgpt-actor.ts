@@ -578,21 +578,32 @@ export function actorCooldownDeadline(daemonState: any): number {
   )
 }
 
-/** 只有正式 POST 尚未触发的本机冷却门拦截才允许归还 Actor retry 预算。 */
-export class ActorPreSubmitCooldownError extends Error {
-  readonly code = 'ACTOR_PRE_SUBMIT_COOLDOWN'
+/**
+ * 只有在 SPA 导航开始之前被冷却阻断，才能确定本次 Actor 没有发出任何
+ * ChatGPT 正文 GET；这时才可以把 retry 预算退还给用户。
+ * 已经完成导航再被挡住时，浏览器可能已发出 GET/Mapping，必须计数，
+ * 否则会造成「每个 Retry-After 到期就又导航一次」的一小时循环。
+ */
+export class ActorPreNavigationCooldownError extends Error {
+  readonly code = 'ACTOR_PRE_NAVIGATION_COOLDOWN'
   constructor(until: string) {
     super(`ChatGPT actor blocked by active API cooldown until ${until}`)
-    this.name = 'ActorPreSubmitCooldownError'
+    this.name = 'ActorPreNavigationCooldownError'
   }
 }
 
-async function assertActorCooldownClear(daemonStatePath?: string | null): Promise<void> {
+async function assertActorCooldownClear(
+  daemonStatePath?: string | null,
+  beforeNavigation = true,
+): Promise<void> {
   const daemonState = await readJsonFile(daemonStatePath)
   const cooldownUntil = actorCooldownDeadline(daemonState)
   if (Number.isFinite(cooldownUntil) && cooldownUntil > Date.now()) {
     const until = new Date(cooldownUntil).toISOString()
-    throw new ActorPreSubmitCooldownError(until)
+    if (beforeNavigation) throw new ActorPreNavigationCooldownError(until)
+    // 已经导航过，即使正式 POST 没有发生，页面本身的 Body GET 也可能已失败。
+    // 保留有限尝试次数，避免原生网络请求在一小时内无上限重放。
+    throw new Error(`ChatGPT actor blocked by active API cooldown until ${until}`)
   }
 }
 
@@ -1777,7 +1788,7 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
     try {
       // SPA 路由切换会让网页自动 GET 整份旧 conversation。
       // 因此必须在 ensureActorRoute **之前**再查一次门限，而不能只在函数入口查。
-      await assertActorCooldownClear(options.daemonStatePath)
+      await assertActorCooldownClear(options.daemonStatePath, false)
       const route = await ensureActorRoute(client, expectedConversationId, timeoutMs, projectName, targetMode)
       await waitForComposer(client, timeoutMs)
 

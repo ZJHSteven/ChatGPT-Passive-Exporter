@@ -519,12 +519,11 @@ export class ActorSubmissionQueue {
         }
         catch (error) {
           const message = error instanceof Error ? error.message : String(error)
-          // Actor 在真正触发正式 POST 之前可能遇到一个刚刚到来的共享 429。
-          // 只有明确带此结构化错误码的「未正式提交」才退还预算；
-          // 真实 POST 已被服务端拒绝的 HTTP429 不得退还，否则会形成无限重试。
+          // 只有在 SPA 导航之前、尚未触发任何原生 Body GET 的冷却才退还预算。
+          // 导航后的原生429和正式 POST 的429都不能退还，避免无限次打开聊天页。
           const preSubmitCooldown = Boolean(
             error && typeof error === 'object'
-            && (error as { code?: unknown }).code === 'ACTOR_PRE_SUBMIT_COOLDOWN',
+            && (error as { code?: unknown }).code === 'ACTOR_PRE_NAVIGATION_COOLDOWN',
           )
           if (preSubmitCooldown) record.attemptCount = Math.max(0, record.attemptCount - 1)
           const outcomeUnknown = isSubmissionOutcomeUnknownError(message)

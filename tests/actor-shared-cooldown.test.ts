@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { expect, test } from 'vitest'
 import { ActorSubmissionQueue } from '../src/local/actor-submission-queue.ts'
-import { ActorPreSubmitCooldownError } from '../src/local/chatgpt-actor.ts'
+import { ActorPreNavigationCooldownError } from '../src/local/chatgpt-actor.ts'
 
 /** 测试只使用临时文件和假的提交函数，不接入真实 ChatGPT，也不会产生任何 POST。 */
 const input = {
@@ -65,7 +65,7 @@ test('导航前的新冷却属于未正式提交，退还次数；真实 POST 42
     submitTurn: async () => {
       calls += 1
       if (calls === 1) {
-        throw new ActorPreSubmitCooldownError(new Date(Date.now() + 140).toISOString())
+        throw new ActorPreNavigationCooldownError(new Date(Date.now() + 140).toISOString())
       }
       return { conversationId: 'existing-conversation', accepted: true }
     },
@@ -89,7 +89,8 @@ test('导航前的新冷却属于未正式提交，退还次数；真实 POST 42
     pollIntervalMs: 10, maxAttempts: 1,
     submitTurn: async () => {
       realPostAttempts += 1
-      throw new Error('ChatGPT actor formal POST received HTTP 429')
+      // 已经导航产生了 GET，但尚未 POST，此类本地 gate 也必须计入有限重试预算。
+      throw new Error('ChatGPT actor blocked by active API cooldown until 2026-11-18T12:06:04.742Z')
     },
   })
   try {
