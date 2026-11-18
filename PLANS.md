@@ -1,3 +1,13 @@
+## 2026-11-18 20:23 ClassFlow Actor 429 风暴与有限重试预算修复
+
+- [done] 现场定位：Guardian Actor 的 SPA导航会生成第一方 Body/Mapping GET；先前Archive主动GET只在内部串行，Actor独立于此通道，ClassFlow标题任务重复导航在429中反复重试；仅本地冷却拒绝也算次数，造成正常任务错误失败。每次真实429 Bark仍按用户要求通知。
+- [done] 添加 Actor 任务在占用重试次数之前读取全局Retry-After门限、持久等待；Actor导航/发送与Archive主动GET/Resume共用串行队列；导航前纯门限失败可返还次数，导航后已可能发GET失败仍计有限重试。不新增指数退避、不关Archive、不关Chrome。
+- [done] 156项定向测试通过，包含共享门限待机、导航前无网络不扣次数、导航后/真实429不退还预算。
+- [doing] 全量 npm run check、语法与浏览器构建，随后监督重载生产daemon并检查WSS3/Bridge/429账本与Actor队列；若发现回归先修复，不用临时静音或长停机。
+- [todo] ClassFlow现有标题任务已failed，依据确切正式POST/Canonical证据决定是否安全补发；不能盲目复活或造成重复标题。
+
+---
+
 ## 2026-11-16 21:43 起持续 429（中断恢复后修复）
 - **排查确认**：21:14～21:39 49 次 Archive 主动请求，26 次 200、23 次 429；reconcile:gap-repair 多次重读早已 final 的旧聊天，成功回包常为 newMessages=0。
 - **强嫌疑根因**：archive-db.ts 持久化标题调用 preferredConversationTitle，会 trim/折叠空白、保护已有标题免被 New Chat 占位符覆盖；但 global/project Catalog 中 changed 直接对原始标题和数据库标题做字符串比较，导致带末尾换行的旧标题永远判定变更。21:36 旧会话 Body 标题有尾部换行，本地记录无尾部换行，Body update_time 相同。

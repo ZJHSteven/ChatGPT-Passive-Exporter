@@ -1,3 +1,12 @@
+## 2026-11-18 20:23 再次429风暴：ClassFlow Actor导航与主动同步碰撞
+
+- 当前 Archive daemon PID12412 running、Bridge true、WSS3，不能关闭 Archive 或静音每条真实429。19:08～20:08 请求账本8个429（Archive主动Body4、Guardian上的网页原生Body3/Mapping1），都关联Guardian target 4B468F98...。
+- 准确找到关键放大链：ClassFlow人口学课堂笔记的 notes Actor submission 已成功，但自动标题任务于20:04～20:06反复导航 Guardian 到人口学CID 6afd924c...；导航自动发出原生Body和Mapping GET、触发429；队列4次尝试中包含仅因共享Retry-After尚未结束的本地阻断，最终错误耗尽预算并标 failed。其余新turn同步也偶有429，但部分请求确实带回210/23条新消息，不是单一永远Pending的旧CID。
+- 本轮新增代码：Bridge Actor工作阶段与Active GET/Resume共用单并发 serialActiveRequest；队列执行前从本机rateLimits获取共享Retry-After门限，门未开则持久等待、不进入页面、不扣次数；导航前再次检查；只有导航前结构化冷却拒绝才可退还次数，导航后（可能已触发原生GET）或正式POST 429必须扣有限次数，避免无限循环。提交0e79ba6、a813eda、480ea65、9d613dd、76181be。
+- 定向4个文件156项测试通过、TypeScript曾通过；最新导航阶段区分补丁仍需全量check及生产重载。恢复失败标题任务需检查是否有正式POST/重复的可能；没有验证前不得直接复活失败记录。
+
+---
+
 ## 2026-11-16 21:44 持续 429 问题仍未闭环
 - devspace-audit recover 未发现未收口工具调用；生产状态文件原子化正常，PID10776/WSS3/Bridge正常，但 21:14～21:39 49 次主动请求中23次429。
 - 正在修复 reconcileCatalog / observeProjectCatalogConversations 将原始目录标题与已规范化持久化标题逐字比较的假变更循环。旧会话正文实际存在尾部换行，本地保存标题无尾部换行；两者 update_time 一致。尚未部署此修复。
