@@ -1,3 +1,11 @@
+### 2026-11-18 20:27 最终热修补丁生产验收
+
+- 最后发现并修复 Actor 排队等待时，前一 Archive GET 刚收到新 Retry-After 的竞态：即使 Actor 在最初 queue preflight 时通过，也必须在串行请求队首、任何 SPA 导航之前再次检查；阻断时抛结构化 pre-navigation cooldown，不消耗 attemptCount。提交 b85170a，定向4文件156项、TypeScript/语法均通过。
+- 生产先在无正在 processing Actor/无 syncInFlight 时执行一次受监督短时重载；最终PID37700于20:27 running，WSS3、Bridge true、maintenance false、Ready0/Dirty0、lastError null，Bark仍启用。新PID启动后已观察7次HTTP200、0次HTTP429，但尚未发起真实ClassFlow请求验证新导航规则，不能据短窗宣称永久不再429。
+- 人口学 notes Actor 记录已accepted且completion completed；title:0:initial 标记failed，attemptCount4，未自动复活，避免可能重复POST。须单独做精确canonical审计后决定补发。无需重启Chrome、修改账号或静音429。
+
+---
+
 ## 2026-11-18 20:23 再次429风暴：ClassFlow Actor导航与主动同步碰撞
 
 - 当前 Archive daemon PID12412 running、Bridge true、WSS3，不能关闭 Archive 或静音每条真实429。19:08～20:08 请求账本8个429（Archive主动Body4、Guardian上的网页原生Body3/Mapping1），都关联Guardian target 4B468F98...。

@@ -1,3 +1,11 @@
+### 2026-11-18 20:27 上线反馈
+
+- [done] 最终边界修复 b85170a：在 Actor 真正进入共享串行槽时二次验证 Retry-After，期间新到429不算Actor提交尝试。全部旧行为保护保留。
+- [done] 41文件375项全量测试、TypeScript+四浏览器构建通过；最终竞态修复另跑4文件156项测试+TypeScript成功。短时监督重载PID37700，Running/WSS3/Bridge正常、Ready0/Dirty0，最初7个请求全HTTP200。
+- [follow-up] 仍需观察下一次真实ClassFlow Actor提交是否正常，在不生成重复prompt的前提下单独审计/恢复既有failed标题任务；不通过人为制造服务器429来做验收。
+
+---
+
 ## 2026-11-18 20:23 ClassFlow Actor 429 风暴与有限重试预算修复
 
 - [done] 现场定位：Guardian Actor 的 SPA导航会生成第一方 Body/Mapping GET；先前Archive主动GET只在内部串行，Actor独立于此通道，ClassFlow标题任务重复导航在429中反复重试；仅本地冷却拒绝也算次数，造成正常任务错误失败。每次真实429 Bark仍按用户要求通知。
