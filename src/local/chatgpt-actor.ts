@@ -1788,7 +1788,7 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
     try {
       // SPA 路由切换会让网页自动 GET 整份旧 conversation。
       // 因此必须在 ensureActorRoute **之前**再查一次门限，而不能只在函数入口查。
-      await assertActorCooldownClear(options.daemonStatePath, false)
+      await assertActorCooldownClear(options.daemonStatePath, true)
       const route = await ensureActorRoute(client, expectedConversationId, timeoutMs, projectName, targetMode)
       await waitForComposer(client, timeoutMs)
 
@@ -1856,7 +1856,7 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
       let retriedAfterPrepare = false
       // 在导航、长文本分块输入期间，其他 Archive 请求可能已收到新的 Retry-After。
       // 正式 POST 前再检查一次，防止仅靠入口检查绕过服务端冷却。
-      await assertActorCooldownClear(options.daemonStatePath)
+      await assertActorCooldownClear(options.daemonStatePath, false)
       sendArmedAt = Date.now()
       await clickSendHandler(client)
       const deadline = Date.now() + timeoutMs
