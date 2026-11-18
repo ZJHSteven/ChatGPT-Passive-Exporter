@@ -123,6 +123,8 @@ export interface ArchiveBridgeOptions {
   archive: ArchiveBridgeDataSource
   authToken: string
   submitTurn: (input: ArchiveBridgeTurnInput) => Promise<Record<string, unknown>>
+  /** Archive 所有主动请求共用的 Retry-After 期限，读取本机状态，不产生额外 API。 */
+  submissionGetNotBefore?: () => number | Promise<number>
   host?: string
   port?: number
   maxBodyBytes?: number
@@ -571,6 +573,7 @@ export class ArchiveBridgeServer {
               idempotencyKey: null,
             }),
           ),
+          getNotBefore: options.submissionGetNotBefore,
           confirmTurn: async input => confirmCanonicalExactPrompt(
             this.options.archive,
             input as ArchiveBridgeTurnInput,

@@ -87,6 +87,12 @@ export class ActorSubmissionConflictError extends Error {
 export interface ActorSubmissionQueueOptions {
   filePath: string
   submitTurn: (input: ActorSubmissionInput) => Promise<Record<string, unknown>>
+  /**
+   * 在扣除「真实提交尝试次数」之前查询服务端 Retry-After 共享截止时间。
+   * 如果截止时间还没到，队列只持久化下一次唤醒时间，不触碰 Chrome，不消耗 attemptCount。
+   * 这里由 daemon 直接提供本机当前状态，不额外访问 ChatGPT 后端。
+   */
+  getNotBefore?: () => number | Promise<number>
   /** Disable automatic retry and restart-time resurrection of failed submissions. */
   autoRetry?: boolean
   /** 包括第一次执行，超过后永久失败，不允许变成无限重试。 */
@@ -153,7 +159,7 @@ export class ActorSubmissionQueue {
     ActorSubmissionQueueOptions,
     'filePath' | 'submitTurn' | 'pollIntervalMs' | 'retryBaseMs' | 'retryMaxMs'
     | 'autoRetry' | 'maxAttempts' | 'maxRetryAgeMs'
-  >> & Pick<ActorSubmissionQueueOptions, 'confirmTurn' | 'resolveCompletion' | 'matchServerError' | 'log' | 'onAccepted' | 'onAttemptError'>
+  >> & Pick<ActorSubmissionQueueOptions, 'confirmTurn' | 'resolveCompletion' | 'matchServerError' | 'log' | 'onAccepted' | 'onAttemptError' | 'getNotBefore'>
 
   private readonly recordsByKey = new Map<string, ActorSubmissionRecord>()
   private serverErrors: ActorSubmissionServerError[] = []
@@ -175,6 +181,7 @@ export class ActorSubmissionQueue {
     this.options = {
       filePath: options.filePath,
       submitTurn: options.submitTurn,
+      getNotBefore: options.getNotBefore,
       confirmTurn: options.confirmTurn,
       resolveCompletion: options.resolveCompletion,
       matchServerError: options.matchServerError,
@@ -432,6 +439,25 @@ export class ActorSubmissionQueue {
           return
         }
 
+        // Archive REST 和 Actor 共用服务器给出的同一个 Retry-After。
+        // 将门限放在「processing/attemptCount++」之前，才能避免把纯本地
+        // cooldown 拒绝当成一次真实发送失败，进而耗尽 ClassFlow 的有限预算。
+        const serverNotBefore = Number(await this.options.getNotBefore?.() ?? 0)
+        if (Number.isFinite(serverNotBefore) && serverNotBefore > Date.now()) {
+          record.status = 'retry_waiting'
+          record.nextAttemptAt = serverNotBefore
+          record.updatedAt = Date.now()
+          this.globalNotBefore = Math.max(this.globalNotBefore, serverNotBefore)
+          await this.persist()
+          await this.options.log?.('actor submission waits for shared Retry-After without consuming attempt', {
+            submissionId: record.id,
+            nextAttemptAt: serverNotBefore,
+            attemptCount: record.attemptCount,
+          })
+          this.schedule(Math.max(1, serverNotBefore - Date.now()))
+          return
+        }
+
         // 正式 POST 的结果如果处于 unknown，下一次动作不是立刻重发，而是先从
         // Archive canonical history 精确确认同一条 user prompt 是否已经出现。
         // 这一步不消耗 attemptCount；命中即直接 accepted，避免重复 turn。
@@ -493,6 +519,14 @@ export class ActorSubmissionQueue {
         }
         catch (error) {
           const message = error instanceof Error ? error.message : String(error)
+          // Actor 在真正触发正式 POST 之前可能遇到一个刚刚到来的共享 429。
+          // 只有明确带此结构化错误码的「未正式提交」才退还预算；
+          // 真实 POST 已被服务端拒绝的 HTTP429 不得退还，否则会形成无限重试。
+          const preSubmitCooldown = Boolean(
+            error && typeof error === 'object'
+            && (error as { code?: unknown }).code === 'ACTOR_PRE_SUBMIT_COOLDOWN',
+          )
+          if (preSubmitCooldown) record.attemptCount = Math.max(0, record.attemptCount - 1)
           const outcomeUnknown = isSubmissionOutcomeUnknownError(message)
           const retryable = isRetryableInfrastructureError(message)
           // 请求已经发出但响应丢失：先从 Archive 的 canonical 消息查找

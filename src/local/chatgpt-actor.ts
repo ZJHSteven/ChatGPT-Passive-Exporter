@@ -578,12 +578,21 @@ export function actorCooldownDeadline(daemonState: any): number {
   )
 }
 
+/** 只有正式 POST 尚未触发的本机冷却门拦截才允许归还 Actor retry 预算。 */
+export class ActorPreSubmitCooldownError extends Error {
+  readonly code = 'ACTOR_PRE_SUBMIT_COOLDOWN'
+  constructor(until: string) {
+    super(`ChatGPT actor blocked by active API cooldown until ${until}`)
+    this.name = 'ActorPreSubmitCooldownError'
+  }
+}
+
 async function assertActorCooldownClear(daemonStatePath?: string | null): Promise<void> {
   const daemonState = await readJsonFile(daemonStatePath)
   const cooldownUntil = actorCooldownDeadline(daemonState)
   if (Number.isFinite(cooldownUntil) && cooldownUntil > Date.now()) {
     const until = new Date(cooldownUntil).toISOString()
-    throw new Error(`ChatGPT actor blocked by active API cooldown until ${until}`)
+    throw new ActorPreSubmitCooldownError(until)
   }
 }
 
@@ -1766,6 +1775,9 @@ async function sendActorPromptUnlocked(options: ActorSendOptions): Promise<Recor
     })
 
     try {
+      // SPA 路由切换会让网页自动 GET 整份旧 conversation。
+      // 因此必须在 ensureActorRoute **之前**再查一次门限，而不能只在函数入口查。
+      await assertActorCooldownClear(options.daemonStatePath)
       const route = await ensureActorRoute(client, expectedConversationId, timeoutMs, projectName, targetMode)
       await waitForComposer(client, timeoutMs)
 

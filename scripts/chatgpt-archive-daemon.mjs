@@ -11387,6 +11387,9 @@ async function main() {
         // Archive 本身负责有限退避重试；已失败/人工取消的旧 Job 不会因此复活。
         submissionQueueAutoRetry: true,
         submissionQueueLog: log,
+        // ClassFlow 的标题/摘要任务必须与主动 GET/Resume 共享同一服务端
+        // Retry-After 门限；在真正占用 Actor 尝试之前完成预检，不扣无效次数。
+        submissionGetNotBefore: () => familyBackoffUntil(rateLimits, 'actor', Date.now()),
         onSubmissionAttemptError: notifyActorSubmissionAttemptError,
         submitTurn: async (input) => {
           // Bridge 队列比 Guardian 初始化得早：开机恢复旧 queued Job 时，不能在
@@ -11439,7 +11442,12 @@ async function main() {
               throw new Error(`ChatGPT Guardian unavailable after readiness grace period: ${lastError}`)
             }
           }
-          return await sendActorPrompt({
+           // 与 Archive 主动 GET/Resume 共用串行槽。Actor 的 SPA 导航会
+           // **间接触发网页原生 Body/Mapping GET**，不串行就会在另一个
+           // daemon GET 刚完成/429 时又发出网页 GET，造成两个流量源相互放大。
+           return await serialActiveRequest(async () => {
+           requireRequestWindow('actor')
+           const result = await sendActorPrompt({
           cdpHttp,
           statePath: actorStatePath,
           daemonStatePath: statePath,
@@ -11462,7 +11470,9 @@ async function main() {
               retryAfter: details.retryAfter,
               latencyMs: null,
               backoffStage: rateLimits.families.actor.stage,
-            })
+           })
+           return result
+           })
             return await tripCooldown('actor turn submit HTTP 429', {
               family: 'actor',
               route: details.requestUrl,
