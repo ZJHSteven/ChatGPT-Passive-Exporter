@@ -78,7 +78,7 @@ import {
   ensureArchiveBridgeAuthToken,
 } from '../src/local/archive-bridge.ts'
 import { LifeOpsSyncClient, loadLifeOpsSyncConfig } from '../src/local/lifeops-sync.ts'
-import { sendActorPrompt } from '../src/local/chatgpt-actor.ts'
+import { sendActorPrompt, ActorPreNavigationCooldownError } from '../src/local/chatgpt-actor.ts'
 import { recoverRecentActorSseErrors } from '../src/local/actor-server-error-recovery.ts'
 import {
   familyBackoffUntil,
@@ -11445,8 +11445,19 @@ async function main() {
            // 与 Archive 主动 GET/Resume 共用串行槽。Actor 的 SPA 导航会
            // **间接触发网页原生 Body/Mapping GET**，不串行就会在另一个
            // daemon GET 刚完成/429 时又发出网页 GET，造成两个流量源相互放大。
-           return await serialActiveRequest(async () => {
-           requireRequestWindow('actor')
+            return await serialActiveRequest(async () => {
+            // 在 Actor 刚入队时预检通过，不代表排到串行队首时仍有额度。
+            // 前一个 Archive GET 可能就在这段等待期间拿到新的 Retry-After。
+            // 此时 Actor 还没有改变页面，也没有产生原生 Body GET，应退还本地尝试数。
+            const now = Date.now()
+            const gateUntil = Math.max(
+              familyBackoffUntil(rateLimits, 'actor', now),
+              cooldownRecoveryPending ? Number(cooldownUntil || 0) : 0,
+            )
+            if (gateUntil > now) {
+              throw new ActorPreNavigationCooldownError(new Date(gateUntil).toISOString())
+            }
+            requireRequestWindow('actor')
            return await sendActorPrompt({
           cdpHttp,
           statePath: actorStatePath,
