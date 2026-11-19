@@ -1266,3 +1266,28 @@ ClassFlow 当前不等待完整 Project CRUD，只需要一个非常窄的生产
 - [x] CLI 新增 job submit/status/result/wait，原 actor send --wait-final 严格终止判定。
 - [x] 340 项测试、四种构建；Windows daemon 2026-10-28 23:45 CST 安全重启恢复，远端 N1 Job API 调用成功。
 - [x] 完整公共契约见 docs/async-job-api.md。历史队列 tracked=false，保留兼容；不擅自重放已接收的 ChatGPT 请求。
+
+## 2026-11-19 Active Archive Hot/Cold Maintenance Model
+
+### 决策
+- Archive **仍是现役生产服务**，不是退役数据库；所有存储收缩必须走 maintenance/shadow migration，禁止直接在生产库 DROP/NULL/VACUUM 试错。
+- 保留两条长期事实链：
+  1. **Hot canonical messages**：只保存正常搜索/阅读/关联所需的规范字段（message/conversation/parent/author/time/status/text，以及确有在线查询必要的少量派生字段）。
+  2. **Cold observation evidence**：每一次 Body / Mapping / SSE / WSS / 其他协议观察仍保留一个独立 event；event 记录 observation_kind、conversation/message/request/endpoint/time、payload SHA-256 等索引，而原始 payload 只按 hash 在 Cold Evidence CAS 保存一份。
+- 允许低频 forensic 查询较慢：先 conversation/message/request → event → CAS hash，再读取 gzip payload。无需为 raw header/metadata JSON 维持毫秒级 SQLite 热索引。
+- `messages.metadata_json / content_json / raw_json` 等字段不能因为“看起来重复”直接删除。先把当前在线逻辑对这些字段的真实依赖改为：ingress 时使用 incoming raw，历史恢复/重建时从 CAS 按 hash 读取；只有 shadow rebuild 与线上回归证明等价后，才从 Hot DB 剥离重复 JSON。
+- `live_observations.raw_json_gzip` 不能丢。Legacy observation 必须逐行转换成：CAS blob（dedupe）+ event journal/index；即使多个 observation payload hash 相同，也保留每次 observation event，只复用 blob。
+
+### Maintenance 验收门
+1. 对生产 DB 做一致性快照/只读影子，不在 live DB 直接实验。
+2. Legacy `live_observations` → CAS + event 回填；每行有可追溯 event，payload 解压 SHA 与 CAS hash 一致。
+3. 给 message raw 建立稳定 `evidence_sha/raw_hash` 关联；验证资源、图片、no-op fingerprint、rebuild 等现有用途都可从 incoming raw/CAS完成。
+4. 从 Cold Evidence + 精简 Hot schema 构造全新 shadow DB，而不是原库原地“删列后希望没坏”。
+5. 对账 conversation/message/current_node/resource/tool/搜索结果、随机历史消息与指定事故证据；执行 canonical rebuild 和 FTS rebuild。
+6. daemon 在 shadow schema 上跑受控 canary，验证被动 capture、Body sync、SSE、Actor/Job、Watchdog/Identity Graph 均无回归。
+7. 仅在上述全部通过后才安排维护窗切库；旧完整 DB 先保留为 rollback snapshot，观察期结束后再压缩/冷备。
+
+### 目标结果
+- Hot SQLite 不再同时保存 text + content_json + metadata_json + raw_json 多份语义重叠内容。
+- Cold Evidence 中 raw payload 按内容寻址去重，但 observation event 不去重，从而保留完整时间线与研究证据。
+- Archive 后续进入“维护器”阶段仍可继续做协议研究：任一历史 observation 都能由 event 找回原始 CAS payload。
