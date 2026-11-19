@@ -1131,3 +1131,5 @@ Fleet Watch 为了监控“手机发起、桌面没有打开”的其它 convers
 - 修复：fetchChecked 将明确不可重试的已删除会话归类为终局错误；drainDirty 撤销该 CID 同步需求，其他 404 不改变语义。对每个 API family 的冷却告警新增 30 分钟节流，最近尝试时间随 daemon state 持久化，避免短 Retry-After 和重启刷通知。
 - 提交：2d83aa8、20d78fa；`npm run check` 通过（34 test files、346 tests，typecheck 与 4 种 build 全绿）。
 - 运维：排查期间主动停止 Archive daemon，随后恢复 PID 63884；15:34 CST 状态 running、Bridge listening、ready=0、lastError=null。尚待以后自然样本验证删除会话分支和 WSS 连接恢复，不应将纯测试结果说成已完成真实 E2E。
+
+- 2026-11-19：用户明确 Archive 继续现役，不按退役数据库处理。存储方向收敛为 Hot canonical message + Cold Evidence observation event/CAS：每次 observation event 永久保留；raw payload 以 SHA-256 CAS 去重；低频 forensic 可通过 conversation/message/request→event→CAS 慢查。禁止直接删除 legacy observation；messages 的 metadata/content/raw JSON 也必须先消除在线依赖并用 shadow rebuild 验证后才剥离。当前只固化 maintenance 方案，未修改生产 SQLite schema/数据。
